@@ -577,7 +577,6 @@ describe("Session edit exercise pager", () => {
         await user.type(activePane().getByLabelText("RIR"), "3");
       } else {
         await user.clear(activePane().getByLabelText("Comment"));
-        await user.click(activePane().getByRole("button", { name: "+ Comment" }));
         await user.type(activePane().getByLabelText("Comment"), "after");
       }
       await user.click(activePane().getByRole("button", { name: "Update set" }));

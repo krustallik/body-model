@@ -178,7 +178,7 @@ describe("DiagnosticsClient body-composition card", () => {
   it("explains modeled expenditure periods, completion status, and omits the misleading today estimate", async () => {
     render(<DiagnosticsClient />);
     expect(await screen.findByText("Енерговитрати останнього змодельованого дня")).toBeTruthy();
-    expect(screen.getByText("Типова підтримка · вікно 28 днів")).toBeTruthy();
+    expect(screen.getByText("Типова підтримка · середнє за 28 днів")).toBeTruthy();
     expect(screen.getByText("22/28 придатних модельних днів")).toBeTruthy();
     expect(screen.getByText("Сім календарних днів перед останнім змодельованим днем")).toBeTruthy();
     expect(screen.getByText(/Стан на останній змодельований день · розрахунок повний/)).toBeTruthy();
@@ -186,7 +186,7 @@ describe("DiagnosticsClient body-composition card", () => {
     expect(screen.getByText("17 вер. 2026 р.")).toBeTruthy();
     expect(screen.getAllByText("немає актуальної оцінки")).toHaveLength(6);
     expect(screen.getAllByText("оцінка моделі")).toHaveLength(7);
-    expect(screen.getByText(/Оцінка останнього дня може відрізнятися/i)).toBeTruthy();
+    expect(screen.getByText(/Значення останнього дня може відрізнятися/i)).toBeTruthy();
     expect(screen.queryByText("Сьогодні")).toBeNull();
   });
 
@@ -215,7 +215,7 @@ describe("DiagnosticsClient body-composition card", () => {
     expect(await screen.findByText("Сім календарних днів перед останнім змодельованим днем")).toBeTruthy();
     expect(container.querySelectorAll("time[datetime]")).toHaveLength(7);
     expect(screen.getByText("Енерговитрати останнього змодельованого дня")).toBeTruthy();
-    expect(screen.queryByText("Типова підтримка · вікно 28 днів")).toBeNull();
+    expect(screen.queryByText("Типова підтримка · середнє за 28 днів")).toBeNull();
   });
 
   it("does not show a prior available expenditure as the latest day's missing estimate", async () => {

@@ -39,7 +39,7 @@ describe("Dashboard activity and priority cards", () => {
     localeState.locale = "en";
   });
 
-  it("shows active work, workout details, and puts empty priority cards after the daily overview", async () => {
+  it("shows active work and workout details without empty priority cards", async () => {
     const today = todayInCalendarTimeZone();
     const todayFact = {
       ...emptyTrainingDayFact(today),
@@ -89,21 +89,21 @@ describe("Dashboard activity and priority cards", () => {
 
     render(<DashboardClient />);
 
-    expect((await screen.findByRole("link", { name: "Resume workout" })).getAttribute("href")).toBe("/training/sessions/44");
+    expect((await screen.findByRole("link", { name: "Resume workout" })).getAttribute("href")).toBe("/training/sessions/44?returnTo=%2Fdashboard");
     expect(screen.getByText("Light handling / packing")).toBeTruthy();
     expect(screen.getByText("Work activity")).toBeTruthy();
     const workout = screen.getByText("Strength Training").closest("details");
     expect(workout).toBeTruthy();
     fireEvent.click(workout!.querySelector("summary")!);
     expect(await screen.findByText("Training diary")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open details" }).getAttribute("href")).toBe("/training/sessions/31");
+    expect(screen.getByRole("link", { name: "Open details" }).getAttribute("href")).toBe("/training/sessions/31?returnTo=%2Fdashboard");
 
-    await waitFor(() => expect(screen.getByLabelText("Match attention").getAttribute("data-priority")).toBe("empty"));
-    expect(screen.getByLabelText("Active session").getAttribute("data-priority")).toBe("present");
-    expect(screen.getByLabelText("Active session").querySelector("a")?.getAttribute("href")).toBe("/training/sessions/44");
+    await waitFor(() => expect(screen.queryByLabelText("Match attention")).toBeNull());
+    expect(screen.getByLabelText("Active session")).toBeTruthy();
+    expect(screen.getByLabelText("Active session").querySelector("a")?.getAttribute("href")).toBe("/training/sessions/44?returnTo=%2Fdashboard");
     const dailyOverview = document.querySelector("#daily-overview")!;
     expect(Boolean(screen.getByLabelText("Active session").compareDocumentPosition(dailyOverview) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
-    expect(Boolean(dailyOverview.compareDocumentPosition(screen.getByLabelText("Match attention")) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(screen.queryByText("No sessions need matching.")).toBeNull();
   });
 
   it("does not request live training sessions in local demo mode", async () => {
@@ -237,8 +237,8 @@ describe("Dashboard activity and priority cards", () => {
 
     localeState.locale = "uk";
     view.rerender(<DashboardClient />);
-    expect(await screen.findByText("Немає сесій, що потребують зіставлення.")).toBeTruthy();
-    expect(await screen.findByText("Зараз немає активного тренування.")).toBeTruthy();
+    expect(screen.queryByLabelText("Match attention")).toBeNull();
+    expect(screen.queryByLabelText("Active session")).toBeNull();
     expect(await screen.findByText("Робочі інтервали за сьогодні не записані.")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
     expect([...requestCounts.values()]).toEqual([2, 2, 2, 2]);

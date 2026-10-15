@@ -113,6 +113,8 @@
 }
 .metricGroup[data-group="nutrition"] { --group-accent: var(--health-nutrition); }
 .metricGroup[data-group="movement"] { --group-accent: var(--health-movement); }
+.metricGroup[data-group="body"],
+.metricGroup[data-group="nutrition"] { align-self: start; }
 .metricGroup h3 { margin: 0 0 0.45rem; color: var(--group-accent); font-size: 0.9rem; font-weight: 750; letter-spacing: -0.01em; }
 .metricRows { margin: 0; }
 .metricRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 0.75rem; padding: 0.7rem 0; border-top: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }

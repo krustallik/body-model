@@ -125,6 +125,8 @@ export function GoalClient() {
   const controllerRef = useRef<AbortController | null>(null);
   const requestRef = useRef({ current: 0 });
   const solvingRef = useRef(false);
+  const calculationSubmittedRef = useRef(false);
+  const inputRevisionRef = useRef(0);
   const skipSettingsWrite = useRef(false);
   const contextLoadKey = useMemo(() => Symbol(`goal-context-request:${locale}:${contextLoadAttempt}`), [locale, contextLoadAttempt]);
   const currentContextLoad = contextLoad?.key === contextLoadKey ? contextLoad : null;
@@ -136,16 +138,7 @@ export function GoalClient() {
   useEffect(() => {
     const controller = new AbortController();
     const requestKey = contextLoadKey;
-    const profileRequest = fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => response.ok ? await response.json() as { profile?: GoalProfileAttributes | null } : { profile: null })
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) throw reason;
-        return { profile: null };
-      });
-    void Promise.all([
-      fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
-      profileRequest,
-    ]).then(async ([response, profileResult]) => {
+    void fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }).then(async (response) => {
       if (controller.signal.aborted) return;
       if (!response.ok) {
         if (response.status === 404) {
@@ -162,20 +155,15 @@ export function GoalClient() {
       }
       const contextResponse = await response.json() as Context;
       if (controller.signal.aborted) return;
-      const next = {
+      const initializedInputRevision = inputRevisionRef.current;
+      calculationSubmittedRef.current = false;
+      const next: Context = {
         ...contextResponse,
-        observedWeights: await attachObservedBodyFatPercent(contextResponse.observedWeights ?? [], controller.signal),
+        observedWeights: contextResponse.observedWeights ?? [],
+        profile: null,
       };
-      if (controller.signal.aborted) return;
-      const profile = profileResult.profile
-        ? {
-          sex: profileResult.profile.sex,
-          dateOfBirth: profileResult.profile.dateOfBirth,
-          heightCm: profileResult.profile.heightCm,
-        }
-        : null;
-      setContext({ ...next, profile });
-      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, profile);
+      setContext(next);
+      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, null);
       const persisted = readBrowserSettings(GOAL_SETTINGS_KEY, isGoalBrowserSettings);
       if (persisted) {
         const restored: GoalFormValues = {
@@ -183,7 +171,7 @@ export function GoalClient() {
           ...persisted.form,
           plan: { ...initial.form.plan, ...persisted.form.plan },
         };
-        const refreshedRecommendation = recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, profile);
+        const refreshedRecommendation = recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, null);
         restored.plan = {
           ...restored.plan,
           ...refreshedRecommendation.nutrition,
@@ -197,6 +185,48 @@ export function GoalClient() {
       setFormErrors({});
       setInitialized(true);
       setContextLoad({ key: requestKey, status: "ready" });
+      void fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
+        .then(async (profileResponse) => profileResponse.ok
+          ? await profileResponse.json() as { profile?: GoalProfileAttributes | null }
+          : { profile: null })
+        .then((profileResult) => {
+          if (controller.signal.aborted || !profileResult.profile) return;
+          // Keep a submitted scenario bound to the inputs used for its request.
+          // Optional profile enrichment must not rewrite the form under a result.
+          if (calculationSubmittedRef.current) return;
+          const profile = {
+            sex: profileResult.profile.sex,
+            dateOfBirth: profileResult.profile.dateOfBirth,
+            heightCm: profileResult.profile.heightCm,
+          };
+          setContext((current) => current ? { ...current, profile } : current);
+          if (inputRevisionRef.current === initializedInputRevision && !solvingRef.current) {
+            const personalizedInitial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, profile);
+            const persisted = readBrowserSettings(GOAL_SETTINGS_KEY, isGoalBrowserSettings);
+            if (persisted) {
+              const restored: GoalFormValues = {
+                ...personalizedInitial.form,
+                ...persisted.form,
+                plan: { ...personalizedInitial.form.plan, ...persisted.form.plan },
+              };
+              restored.plan = {
+                ...restored.plan,
+                ...recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, profile).nutrition,
+              };
+              setForm(restored);
+            } else {
+              setForm(personalizedInitial.form);
+            }
+          }
+        })
+        .catch(() => undefined);
+      void attachObservedBodyFatPercent(next.observedWeights ?? [], controller.signal)
+        .then((observedWeights) => {
+          if (!controller.signal.aborted) {
+            setContext((current) => current ? { ...current, observedWeights } : current);
+          }
+        })
+        .catch(() => undefined);
     }).catch((reason) => {
       if (!controller.signal.aborted) setContextLoad({
         key: requestKey,
@@ -215,16 +245,19 @@ export function GoalClient() {
   }, [form, initialized]);
 
   function updateForm<K extends keyof GoalFormValues>(key: K, value: GoalFormValues[K]) {
+    inputRevisionRef.current += 1;
     setForm((current) => ({ ...current, [key]: value }));
     setResult(null); setError(null); setFormErrors({});
   }
   function updatePlan<K extends keyof PlanValues>(key: K, value: PlanValues[K]) {
+    inputRevisionRef.current += 1;
     setForm((current) => ({ ...current, plan: { ...current.plan, [key]: value } }));
     setResult(null); setError(null); setFormErrors({});
   }
 
   function resetSettings() {
     if (!context) return;
+    inputRevisionRef.current += 1;
     resetBrowserSettings(GOAL_SETTINGS_KEY);
     const initial = initialGoalFormWithRecommendation(context.status.latestModeledDate, context.status, context.latestCompletedLocalDate, context.profile ?? null);
     skipSettingsWrite.current = true;
@@ -251,6 +284,7 @@ export function GoalClient() {
     const controller = new AbortController();
     controllerRef.current = controller;
     const requestId = beginForecastRequest(requestRef.current);
+    calculationSubmittedRef.current = true;
     solvingRef.current = true;
     setSolving(true); setError(null); setResult(null);
     try {

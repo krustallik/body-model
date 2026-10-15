@@ -140,5 +140,66 @@ describe("ModelDiagnosticsRepository", () => {
     })));
     expect(result.experimentalEnergySummary?.latestModeledExpenditureKcalPerDay).toBe(500);
   });
+
+  it("uses the arithmetic mean for Diagnostics 28-day maintenance while retaining the daily latest estimate", async () => {
+    const dates = Array.from({ length: 28 }, (_, index) => {
+      const date = new Date(Date.UTC(2026, 8, index + 1)).toISOString().slice(0, 10);
+      return { date, status: "complete", energyExpenditureKcal: index === 0 ? 5_200 : index === 27 ? 2_775 : 2_500, dynamicRmrKcalPerDay: 1_600 };
+    });
+    const dailyCount = vi.fn().mockResolvedValue(28);
+    const weightCount = vi.fn().mockResolvedValue(10);
+    const dailyFindMany = vi.fn().mockResolvedValueOnce(dates).mockResolvedValueOnce([]);
+    const latestDay = vi.fn().mockResolvedValue(dates[27]);
+    const client = {
+      dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay },
+      dailyHealthData: { count: weightCount },
+      unifiedExperimentalPhysiologyState: { findMany: vi.fn() },
+    } as unknown as ModelDatabaseClient;
+
+    const result = await new ModelDiagnosticsRepository(client)
+      .loadEvidence(7, "2026-09-01", "2026-09-28", "2026-09-28");
+
+    expect(result.experimentalEnergySummary).toMatchObject({
+      recentTypicalMaintenanceKcalPerDay: 2_606.25,
+      typicalMaintenanceEligibleDays: 28,
+      latestModeledExpenditureKcalPerDay: 2_775,
+    });
+  });
+
+  it.each([
+    { eligibleDays: 13, expectedAverage: null, latestEstimate: 3_300 },
+    { eligibleDays: 14, expectedAverage: 2_750, latestEstimate: 3_400 },
+  ])("keeps the existing 14-day minimum for the Diagnostics arithmetic mean ($eligibleDays eligible days)", async ({ eligibleDays, expectedAverage, latestEstimate }) => {
+    const rows = Array.from({ length: 28 }, (_, index) => {
+      const day = index + 1;
+      const included = day > 28 - eligibleDays;
+      return {
+        date: `2026-09-${String(day).padStart(2, "0")}`,
+        status: "complete",
+        energyExpenditureKcal: included ? 2_000 + (day - (28 - eligibleDays)) * 100 : null,
+        dynamicRmrKcalPerDay: 1_600,
+      };
+    });
+    const dailyCount = vi.fn().mockResolvedValue(28);
+    const dailyFindMany = vi.fn().mockResolvedValueOnce(rows).mockResolvedValueOnce([]);
+    const client = {
+      dailyModelState: {
+        count: dailyCount,
+        findMany: dailyFindMany,
+        findFirst: vi.fn().mockResolvedValue(rows[27]),
+      },
+      dailyHealthData: { count: vi.fn().mockResolvedValue(10) },
+      unifiedExperimentalPhysiologyState: { findMany: vi.fn() },
+    } as unknown as ModelDatabaseClient;
+
+    const result = await new ModelDiagnosticsRepository(client)
+      .loadEvidence(7, "2026-09-01", "2026-09-28", "2026-09-28");
+
+    expect(result.experimentalEnergySummary).toMatchObject({
+      recentTypicalMaintenanceKcalPerDay: expectedAverage,
+      typicalMaintenanceEligibleDays: eligibleDays,
+      latestModeledExpenditureKcalPerDay: latestEstimate,
+    });
+  });
 });
 

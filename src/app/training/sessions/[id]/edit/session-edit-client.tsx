@@ -32,6 +32,7 @@ import {
   emptySetDraft,
   TrainingExerciseWorkspace,
 } from "../../../training-exercise-workspace";
+import { safeTrainingReturnHref } from "../../../training-url-state";
 import styles from "../../../training.module.css";
 
 type MenuPanel = "closed" | "root" | "program" | "add" | "editExercise" | "reorder";
@@ -42,6 +43,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const requestedReturnHref = searchParams.get("returnTo");
   const [session, setSession] = useState<StrengthSessionDto | null>(null);
   const [catalog, setCatalog] = useState<ExerciseCatalogDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
@@ -72,7 +74,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     setEditingSet(null);
     setAdditionalLoadDirtySetId(null);
     setDraft(emptySetDraft());
-  }, [focusedExerciseId, searchParams]);
+  }, [focusedExerciseId, searchParams, setProgramId, setFocusedExerciseId, setEditingSet, setAdditionalLoadDirtySetId, setDraft]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -102,7 +104,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     } finally {
       setLoading(false);
     }
-  }, [applySession, focusedExerciseId, sessionId, uk]);
+  }, [applySession, focusedExerciseId, sessionId, uk, setError, setSession, setCatalog, setPrograms, setLoading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +127,13 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const current = exercises.find((exercise) => exercise.id === focusedExerciseId) ?? exercises[0] ?? null;
   const previousExercise = exerciseIndex > 0 ? exercises[exerciseIndex - 1] ?? null : null;
   const nextExercise = exerciseIndex < exercises.length - 1 ? exercises[exerciseIndex + 1] ?? null : null;
+  const backfillHref = session
+    ? `/training/backfill?refresh=${session.revision}-${encodeURIComponent(session.updatedAt)}`
+    : "/training/backfill";
+  const returnHref = safeTrainingReturnHref(requestedReturnHref, backfillHref);
+  const sessionDetailHref = session
+    ? `/training/sessions/${session.id}?exercise=${exerciseIndex + 1}&returnTo=${encodeURIComponent(returnHref)}`
+    : "/training";
 
   function goToNeighbor(delta: -1 | 1) {
     const nextId = neighborExerciseId(exercises, focusedExerciseId, delta);
@@ -141,7 +150,9 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     if (!session || exercises.length === 0) return;
     const next = exerciseSearchValue(exerciseIndex);
     if (searchParams.get("exercise") === next) return;
-    router.replace(`${pathname}?exercise=${next}`, { scroll: false });
+    const query = new URLSearchParams(searchParams.toString());
+    query.set("exercise", next);
+    router.replace(`${pathname}?${query.toString()}`, { scroll: false });
   }, [exerciseIndex, exercises.length, pathname, router, searchParams, session]);
 
   async function mutate(path: string, init: RequestInit): Promise<StrengthSessionDto | null> {
@@ -479,7 +490,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       return (
         <main className={styles.workoutShell}>
           {error && <div className={styles.errorBanner} role="alert">{error}</div>}
-          <Link className={styles.liveBack} href={`/training/sessions/${session.id}`}>
+          <Link className={styles.liveBack} href={sessionDetailHref}>
             {uk ? "← До сесії" : "← Session details"}
           </Link>
         </main>
@@ -487,7 +498,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     }
     return (
       <main className={`${styles.page} ${styles.sessionDetailPage} ${styles.workoutShell}`}>
-        <div className={styles.navRow}><strong>BodyCast</strong><Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>{uk ? "До сесії" : "Session details"}</Link></div>
+        <div className={styles.navRow}><strong>BodyCast</strong><Link className={styles.linkLike} href={sessionDetailHref}>{uk ? "До сесії" : "Session details"}</Link></div>
         <header className={styles.header}>
           <div>
             <p className={styles.eyebrow}>{uk ? "Редагування вільного тренування" : "Edit free workout"}</p>
@@ -517,7 +528,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
                 <button type="button" className={styles.liveSave} disabled={busy || typeof addCatalogId !== "number"} onClick={() => void addExercise()}>
                   {uk ? "Додати вправу" : "Add exercise"}
                 </button>
-                <Link className={styles.liveSecondary} href={`/training/sessions/${session.id}`}>
+                <Link className={styles.liveSecondary} href={sessionDetailHref}>
                   {uk ? "Скасувати" : "Cancel"}
                 </Link>
               </div>
@@ -530,8 +541,6 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
 
   const canPrev = exerciseIndex > 0;
   const canNext = exerciseIndex < exercises.length - 1;
-  const backfillHref = `/training/backfill?refresh=${session.revision}-${encodeURIComponent(session.updatedAt)}`;
-
   const menuContent = (
     <>
       {menu === "root" && (
@@ -566,7 +575,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <button type="button" className={styles.editMenuItem} onClick={() => setMenu("reorder")}>
             {uk ? "Змінити порядок" : "Reorder"}
           </button>
-          <Link className={styles.editMenuItem} href={`/training/sessions/${session.id}`}>
+          <Link className={styles.editMenuItem} href={sessionDetailHref}>
             {uk ? "Деталі сесії" : "Session details"}
           </Link>
           <button
@@ -701,7 +710,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       uk={uk}
       mode="edit"
       sessionId={sessionId}
-      backHref={backfillHref}
+      backHref={returnHref}
       programName={trainingSessionTitle(session.programName, uk)}
       exercise={current}
       previousExercise={previousExercise}
@@ -751,7 +760,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <button type="button" className={styles.workoutDesktopActionBtn} onClick={() => setMenu("reorder")}>
             {uk ? "Порядок" : "Reorder"}
           </button>
-          <Link className={styles.workoutDesktopActionBtn} href={`/training/sessions/${session.id}`}>
+          <Link className={styles.workoutDesktopActionBtn} href={sessionDetailHref}>
             {uk ? "Деталі" : "Details"}
           </Link>
         </>

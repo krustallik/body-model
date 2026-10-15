@@ -273,11 +273,12 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
   const [workoutDay, setWorkoutDay] = useState<DailyMetricDto | null>(null);
   const [publicationNotice, setPublicationNotice] = useState<string | null>(null);
   const loadSequenceRef = useRef(0);
+  const rangeRef = useRef(range);
 
-  const loadDays = useCallback(async () => {
+  const loadDays = useCallback(async (requestedRange: HistoryRange = range) => {
     const sequence = ++loadSequenceRef.current;
     try {
-      const loaded = await fetchHistoryData(range, uk);
+      const loaded = await fetchHistoryData(requestedRange, uk);
       if (sequence !== loadSequenceRef.current) return;
       setDays(loaded.days);
       setWorkActivityDates(loaded.workActivityDates);
@@ -308,6 +309,8 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
 
   function selectRange(nextRange: HistoryRange) {
     if (nextRange === range) return;
+    rangeRef.current = nextRange;
+    loadSequenceRef.current += 1;
     setLoading(true);
     setError(null);
     setRange(nextRange);
@@ -315,15 +318,21 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
 
   async function deleteDay(date: string) {
     if (!window.confirm(uk ? `Видалити денні показники за ${date}?` : `Delete daily metrics for ${date}?`)) return;
+    const sequence = loadSequenceRef.current;
     setLoading(true);
     setError(null);
-    const response = await fetch(`/api/v1/days/${encodeURIComponent(date)}`, { method: "DELETE" });
-    if (!response.ok) {
-      setError(await responseError(response, uk));
-      setLoading(false);
-      return;
+    try {
+      const response = await fetch(`/api/v1/days/${encodeURIComponent(date)}`, { method: "DELETE" });
+      if (!response.ok) {
+        setError(await responseError(response, uk));
+        if (sequence === loadSequenceRef.current) setLoading(false);
+        return;
+      }
+      await loadDays(rangeRef.current);
+    } catch {
+      setError(uk ? "Не вдалося видалити запис. Перевірте з’єднання та спробуйте ще раз." : "Could not delete the record. Check your connection and try again.");
+      if (sequence === loadSequenceRef.current) setLoading(false);
     }
-    await loadDays();
   }
 
   function editDay(day: DailyMetricDto) {

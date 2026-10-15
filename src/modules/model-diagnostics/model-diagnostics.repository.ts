@@ -45,10 +45,33 @@ export class ModelDiagnosticsRepository {
           };
         })
       : [];
-    const experimentalEnergySummary = unified ? buildUnifiedEnergySummaryV1({
-      days: energyRows.map((row) => ({ date: row.date, productionTdeeKcalPerDay: row.energyExpenditureKcal, dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay })),
+    const energySummaryDays = energyRows.map((row) => ({
+      date: row.date,
+      productionTdeeKcalPerDay: row.energyExpenditureKcal,
+      dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay,
+    }));
+    const energySummary = unified ? buildUnifiedEnergySummaryV1({
+      days: energySummaryDays,
       todayDate: new Date().toISOString().slice(0, 10),
     }) : null;
+    const latestEnergyDay = [...energySummaryDays].reverse()
+      .find((day) => day.productionTdeeKcalPerDay !== null) ?? null;
+    const maintenanceWindowStart = latestEnergyDay
+      ? addCalendarDays(latestEnergyDay.date, -(energySummary?.typicalMaintenanceWindowDays ?? 28) + 1)
+      : null;
+    const eligibleMaintenanceValues = maintenanceWindowStart
+      ? energySummaryDays
+        .filter((day) => day.date >= maintenanceWindowStart && day.productionTdeeKcalPerDay !== null)
+        .map((day) => day.productionTdeeKcalPerDay!)
+      : [];
+    const recentAverageMaintenanceKcalPerDay = energySummary?.recentTypicalMaintenanceKcalPerDay !== null
+      && energySummary?.recentTypicalMaintenanceKcalPerDay !== undefined
+      && eligibleMaintenanceValues.length === energySummary.typicalMaintenanceEligibleDays
+      ? eligibleMaintenanceValues.reduce((average, value, index) => average + (value - average) / (index + 1), 0)
+      : null;
+    const experimentalEnergySummary = energySummary
+      ? { ...energySummary, recentTypicalMaintenanceKcalPerDay: recentAverageMaintenanceKcalPerDay }
+      : null;
     return {
       modeledDayCount,
       completeDayCount,

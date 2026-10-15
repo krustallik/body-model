@@ -443,6 +443,84 @@ describe("HistoryClient workout cell interaction", () => {
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes("/api/v1/days/") && init?.method === "PATCH")).toBe(true);
   });
 
+  it("restores History after a network failure while deleting a day", async () => {
+    const date = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/days" && !init?.method) {
+        return Promise.resolve(jsonResponse({ days: [day(date, { hasHealthRecord: true, weightKg: 80 })], trainingDays: [] }));
+      }
+      if (url.pathname === "/api/v1/work-intervals") return Promise.resolve(jsonResponse({ intervals: [] }));
+      if (url.pathname === `/api/v1/days/${date}` && init?.method === "DELETE") return Promise.reject(new Error("offline"));
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    render(<HistoryClient />);
+    const table = within(screen.getByTestId("desktop-history-table"));
+    await waitFor(() => expect(table.getByText(date)).toBeTruthy());
+    await user.click(table.getByRole("button", { name: "Delete" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete the record");
+    expect(within(screen.getByTestId("desktop-history-table")).getByText(date)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes(`/api/v1/days/${date}`) && init?.method === "DELETE")).toBe(true);
+  });
+
+  it("keeps a newer range read loading when a pending delete fails", async () => {
+    const oldDate = "2026-10-14";
+    const newDate = "2026-10-10";
+    let rejectDelete!: (reason: Error) => void;
+    const pendingDelete = new Promise<Response>((_resolve, reject) => { rejectDelete = reject; });
+    let resolveRangeRead!: (response: Response) => void;
+    const pendingRangeRead = new Promise<Response>((resolve) => { resolveRangeRead = resolve; });
+    let dayReads = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/days" && !init?.method) {
+        dayReads += 1;
+        if (dayReads === 1) return Promise.resolve(jsonResponse({ days: [day(oldDate, { hasHealthRecord: true, weightKg: 80 })], trainingDays: [] }));
+        return pendingRangeRead;
+      }
+      if (url.pathname === "/api/v1/work-intervals") return Promise.resolve(jsonResponse({ intervals: [] }));
+      if (url.pathname === `/api/v1/days/${oldDate}` && init?.method === "DELETE") return pendingDelete;
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    render(<HistoryClient />);
+    const panel = screen.getByRole("heading", { name: "Last 30 days" }).closest("section")!;
+    const table = within(screen.getByTestId("desktop-history-table"));
+    await waitFor(() => expect(table.getByText(oldDate)).toBeTruthy());
+    await user.click(table.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes(`/api/v1/days/${oldDate}`) && init?.method === "DELETE")).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: "7 days" }));
+    await waitFor(() => expect(dayReads).toBe(2));
+    expect(panel.getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => {
+      rejectDelete(new Error("offline"));
+      await pendingDelete.catch(() => undefined);
+    });
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete the record");
+    expect(panel.getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      resolveRangeRead(jsonResponse({ days: [day(newDate, { hasHealthRecord: true, weightKg: 81 })], trainingDays: [] }));
+      await pendingRangeRead;
+    });
+    await waitFor(() => expect(within(screen.getByTestId("desktop-history-table")).getByText(newDate)).toBeTruthy());
+    expect(within(screen.getByTestId("desktop-history-table")).queryByText(oldDate)).toBeNull();
+    expect(panel.getAttribute("aria-busy")).toBe("false");
+  });
+
   it("renders an unavailable measurement as a dash while retaining an observed value", async () => {
     const unavailableDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const measuredDate = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);

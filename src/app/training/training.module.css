@@ -2802,10 +2802,69 @@ a.editMenuItem + .editMenuDanger {
   }
 }
 
+.liveSetRow { touch-action: pan-y; }
+.liveSetActionToggle {
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--training-border);
+  border-radius: 0.45rem;
+  background: var(--training-surface);
+  color: var(--training-text);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.liveSetActionButtons { display: none; gap: 0.35rem; flex-wrap: wrap; }
+.liveSetActionButtons[data-open="true"] { display: flex; }
+.liveSetActionButtons button {
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--training-border);
+  border-radius: 0.45rem;
+  background: var(--training-surface);
+  color: var(--training-text);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.workoutHistoryActionsButton { border-radius: 0.45rem; }
+.liveSetActionButtons button:focus-visible,
+.liveSetActionToggle:focus-visible { outline: none; box-shadow: var(--training-focus-ring); }
+.liveSetActionButtons .workoutHistoryDelete { color: var(--training-danger-strong); }
+.liveSetRowEditing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+.liveSetRowEditing .liveSetNum { font-size: 0.82rem; }
+.liveSetRowEditing .liveSetInlineEditor { grid-column: 1 / -1; margin: 0; }
+.liveSetInlineEditor .liveFields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); }
+.liveSetInlineEditor .liveField input { min-height: 2.6rem; padding: 0.55rem 0.65rem; font-size: 1rem; }
+.liveSetInlineEditor .liveSaveRow { grid-template-columns: 1fr 1fr; }
+.liveSetInlineEditor .liveSaveRow > * { min-height: 2.75rem; }
+
+@media (hover: hover) and (pointer: fine) {
+  .liveSetActionToggle { display: none; }
+  .liveSetActionButtons { display: flex; }
+}
+
+.trainingHubPage .panelStartDynamic .panelBody { display: flex; align-items: center; }
+.trainingHubPage .panelStartDynamic .primaryButton { width: min(100%, 22rem); min-height: 3rem; }
+.workoutShell .liveSetRowEditing {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: none;
+  align-items: stretch;
+}
+.workoutShell .liveSetRowEditing .liveSetInlineEditor { grid-column: 1 / -1; }
+
 
 /* Training diary refinement: stronger hierarchy, denser records, same approved tokens. */
 .trainingHubPage {
-  max-width: 80rem;
+  width: 100%;
+  max-width: var(--app-page-max-width);
+  padding-inline: var(--app-page-gutter);
   padding-top: clamp(1rem, 2vw, 1.5rem);
 }
 

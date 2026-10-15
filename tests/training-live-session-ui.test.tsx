@@ -115,6 +115,7 @@ describe("Live training session mobile UI", () => {
     routerPush.mockReset();
     routerReplace.mockReset();
     searchParams.delete("exercise");
+    searchParams.delete("returnTo");
   });
 
   function stubSessionFetch(
@@ -613,6 +614,7 @@ describe("Live training session mobile UI", () => {
 
   it("creates, reads, edits, and clears additional load for a programless BODYWEIGHT set", async () => {
     const user = userEvent.setup();
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
     const bodyweightExercise = {
       id: 77,
       sourceExerciseCatalogId: 9,
@@ -708,12 +710,19 @@ describe("Live training session mobile UI", () => {
     expect(requests[0]!.body).not.toHaveProperty("additionalLoadKg");
 
     await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    const loggedSet = activePane().getByTestId("logged-set-901");
+    expect(within(loggedSet).getByRole("region", { name: "Редагування підходу 1" })).toBeTruthy();
     const editLoad = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
     expect((editLoad as HTMLInputElement).value).toBe("15");
+    await waitFor(() => expect(document.activeElement).toBe(editLoad));
+    expect(activePane().queryByLabelText("Новий підхід")).toBeNull();
+    expect(scrollTo).not.toHaveBeenCalled();
     await user.clear(editLoad);
     await user.type(editLoad, "12,5");
     await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
     await waitFor(() => expect(activePane().getByText("власна вага +12,5 кг × 10")).toBeTruthy());
+    await waitFor(() => expect(document.activeElement).toBe(activePane().getByRole("button", { name: "Дії для підходу 1" })));
+    expect(scrollTo).not.toHaveBeenCalled();
     expect(requests[1]).toMatchObject({
       method: "PATCH",
       body: { loadAccountingOverride: { additionalLoadKg: 12.5 } },
@@ -741,6 +750,61 @@ describe("Live training session mobile UI", () => {
       method: "POST",
       body: { reps: 10_000, loadAccountingOverride: { additionalLoadKg: 2_000 } },
     });
+  });
+
+  it("reveals live set actions on a short swipe and treats vertical movement as scrolling", async () => {
+    const set = {
+      id: 909, sessionExerciseId: 1, setNumber: 1, reps: 10, weightKg: 30,
+      bandNominalResistanceKg: null, rir: 2, comment: null,
+      completedAt: "2026-10-15T06:00:00.000Z", createdAt: "2026-10-15T06:00:00.000Z",
+      updatedAt: "2026-10-15T06:00:00.000Z",
+    };
+    const base = buildSession();
+    const session = buildSession({ exercises: [{ ...base.exercises[0]!, sets: [set] }, ...base.exercises.slice(1)] });
+    stubSessionFetch(session);
+    render(<SessionClient sessionId={42} />);
+    const row = await screen.findByTestId("logged-set-909");
+    vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+
+    fireEvent.pointerDown(row, { pointerId: 1, pointerType: "touch", clientX: 240, clientY: 10 });
+    fireEvent.pointerMove(row, { pointerId: 1, pointerType: "touch", clientX: 235, clientY: 65 });
+    fireEvent.pointerUp(row, { pointerId: 1, pointerType: "touch", clientX: 230, clientY: 90 });
+    expect(within(row).getByRole("button", { name: "Дії для підходу 1" }).getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.pointerDown(row, { pointerId: 2, pointerType: "touch", clientX: 240, clientY: 10 });
+    fireEvent.pointerUp(row, { pointerId: 2, pointerType: "touch", clientX: 160, clientY: 10 });
+    expect(within(row).getByRole("button", { name: "Змінити підхід" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Видалити підхід" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Дії для підходу 1" }).getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.pointerCancel(row, { pointerId: 2, pointerType: "touch" });
+    expect(within(row).getByRole("button", { name: "Дії для підходу 1" }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("requires confirmation when a long live-set swipe reaches the delete threshold", async () => {
+    const set = {
+      id: 910, sessionExerciseId: 1, setNumber: 1, reps: 10, weightKg: 30,
+      bandNominalResistanceKg: null, rir: 2, comment: null,
+      completedAt: "2026-10-15T06:00:00.000Z", createdAt: "2026-10-15T06:00:00.000Z",
+      updatedAt: "2026-10-15T06:00:00.000Z",
+    };
+    const base = buildSession();
+    const session = buildSession({ exercises: [{ ...base.exercises[0]!, sets: [set] }, ...base.exercises.slice(1)] });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    stubSessionFetch(session);
+    render(<SessionClient sessionId={42} />);
+    const row = await screen.findByTestId("logged-set-910");
+    vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+
+    fireEvent.pointerDown(row, { pointerId: 3, pointerType: "touch", clientX: 300, clientY: 10 });
+    fireEvent.pointerUp(row, { pointerId: 3, pointerType: "touch", clientX: 0, clientY: 10 });
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("підхід"));
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/sets/910") && init?.method === "DELETE")).toBe(false);
+    expect(within(row).getByText(/30 кг × 10/)).toBeTruthy();
   });
 
   it("omits unchanged historical BODYWEIGHT overrides from current-set RIR/comment PATCHes", async () => {
@@ -824,7 +888,6 @@ describe("Live training session mobile UI", () => {
         await user.type(activePane().getByLabelText("RIR"), "3");
       } else {
         await user.clear(activePane().getByLabelText("Коментар"));
-        await user.click(activePane().getByRole("button", { name: "+ Коментар" }));
         await user.type(activePane().getByLabelText("Коментар"), "after");
       }
       await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
@@ -1065,6 +1128,54 @@ describe("Live training session mobile UI", () => {
       expect(screen.getByText("#1 10×власна вага +15 кг")).toBeTruthy();
       expect(screen.getByText("#2 8×власна вага")).toBeTruthy();
     });
+  });
+
+  it("explains the BodyCast diary cascade before deleting a cancelled session from its detail page", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      if (url === "/api/v1/training/sessions/42" && !init?.method) {
+        return Response.json({ session: buildSession({ status: SESSION_STATUS.CANCELLED }) });
+      }
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await user.click(await screen.findByRole("button", { name: "Видалити" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("вправами, підходами та знімками обліку"));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Garmin та Apple Health залишаться без змін"));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+
+  it("returns to the originating Training page after deleting a cancelled session", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    searchParams.set("returnTo", "/training?recentPage=3");
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      if (url === "/api/v1/training/sessions/42" && !init?.method) {
+        return Response.json({ session: buildSession({ status: SESSION_STATUS.CANCELLED }) });
+      }
+      if (url === "/api/v1/training/sessions/42" && init?.method === "DELETE") {
+        return Response.json({ deleted: true });
+      }
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await user.click(await screen.findByRole("button", { name: "Видалити" }));
+
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/training?recentPage=3"));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/training/sessions/42", { method: "DELETE" });
   });
 
   it("omits unchanged historical BODYWEIGHT overrides from RIR/comment patches and preserves changed load fields", async () => {
@@ -1412,56 +1523,21 @@ describe("Live training session mobile UI", () => {
     expect(posted[0]).not.toHaveProperty("loadAccountingOverride");
   });
 
-  it("loads accounting from session GET, materializes missing snapshots ordinarily, and refreshes explicitly", async () => {
-    const user = userEvent.setup();
+  it("does not render accounting controls for an active session", async () => {
     const initial = buildSession({ materializationState: "missing" });
-    const current = buildSession({
-      materializationState: "current",
-      loadAccountingV1: {
-        methodVersion: "bodycast-load-accounting-v1",
-        externalLoadVolume: { value: 4667, unit: "kg-repetitions", availability: "available", coverage: { eligibleRows: 4, accountedRows: 4, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-        bandNominalIndex: {
-          perLoggedSide: { value: null, unit: "nominal-kg-repetitions-per-logged-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-          leftSide: { value: null, unit: "nominal-kg-repetitions-per-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-          rightSide: { value: null, unit: "nominal-kg-repetitions-per-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-        },
-        bodyweight: {
-          sets: { value: null, unit: "sets", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-          repetitions: { value: null, unit: "repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-          referenceVolume: { value: null, unit: "bodyweight-reference-kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-          reference: { status: "unavailable", valueKg: null, localDate: "2026-09-17", source: null, sourceId: null },
-        },
-        additionalLoad: { value: null, unit: "kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-        assistanceLoad: { value: null, unit: "kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
-        identityCoverage: { customExercises: 0, ambiguousExercises: 0, unverifiedExercises: 0 },
-      },
-    });
     const calls: Array<{ url: string; method?: string }> = [];
     stubSessionFetch(initial, (url, init) => {
       calls.push({ url, method: init?.method });
-      if (url.endsWith("/accounting/materialize") && init?.method === "POST") {
-        return Response.json({ session: current });
-      }
-      if (url.endsWith("/accounting/refresh") && init?.method === "POST") {
-        return Response.json({ session: current });
-      }
       if (url === "/api/v1/training/sessions/42" && !init?.method) {
-        return Response.json({ session: calls.some((call) => call.url.endsWith("/accounting/materialize")) ? current : initial });
+        return Response.json({ session: initial });
       }
       return null;
     });
-    const { unmount } = render(<SessionClient sessionId={42} />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Створити знімок обліку" })).toBeTruthy());
-    expect(calls.some((call) => call.method === "POST" && call.url.includes("/accounting/"))).toBe(false);
-    await user.click(screen.getByRole("button", { name: "Створити знімок обліку" }));
-    await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
-    expect(calls.some((call) => call.url.endsWith("/accounting/materialize") && call.method === "POST")).toBe(true);
-    expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(false);
-    unmount();
     render(<SessionClient sessionId={42} />);
-    await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
-    await user.click(screen.getByRole("button", { name: "Оновити облік" }));
-    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(true));
+    await screen.findByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" });
+    expect(screen.queryByRole("region", { name: "Облік навантаження" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Load accounting" })).toBeNull();
+    expect(calls.some((call) => call.method === "POST" && call.url.includes("/accounting/"))).toBe(false);
   });
 
   it("offers to finish after filling the last planned set of the last exercise", async () => {

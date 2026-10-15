@@ -147,6 +147,9 @@ function HistoricalSetRow({
   set,
   uk,
   interactive,
+  actionsOpen,
+  onOpenActions,
+  onCloseActions,
   onCopy,
   onUpdate,
   onDelete,
@@ -155,11 +158,13 @@ function HistoricalSetRow({
   set: ExerciseHistorySetDto;
   uk: boolean;
   interactive: boolean;
+  actionsOpen: boolean;
+  onOpenActions: () => void;
+  onCloseActions: () => void;
   onCopy: (set: ExerciseHistorySetDto) => void;
   onUpdate: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput) => Promise<void>;
   onDelete: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto) => Promise<void>;
 }) {
-  const [actionsOpen, setActionsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +199,7 @@ function HistoricalSetRow({
     setAdditionalLoadDirty(false);
     setError(null);
     setEditing(true);
-    setActionsOpen(false);
+    onCloseActions();
   }
 
   function cancelEdit() {
@@ -369,12 +374,15 @@ function HistoricalSetRow({
     if (Math.abs(dx) <= Math.abs(dy) * 1.15) return;
     if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 400;
     if (dx > 56) {
-      setActionsOpen(false);
+      onCloseActions();
       return;
     }
     if (dx > -56) return;
-    setActionsOpen(true);
-    if (start.width >= 140 && -dx >= start.width * 0.86 && interactive && canPreserveOverride) void remove();
+    onOpenActions();
+    if (start.width >= 140 && -dx >= start.width * 0.86 && interactive) {
+      onCloseActions();
+      void remove();
+    }
   }
 
   return (
@@ -384,7 +392,7 @@ function HistoricalSetRow({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; }}
+      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; onCloseActions(); }}
       onClickCapture={(event) => {
         if (Date.now() > suppressClickUntil.current) return;
         event.preventDefault();
@@ -428,7 +436,7 @@ function HistoricalSetRow({
             ref={actionToggleRef}
             aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}
             aria-expanded={actionsOpen}
-            onClick={() => setActionsOpen((open) => !open)}
+            onClick={() => actionsOpen ? onCloseActions() : onOpenActions()}
           >
             {uk ? "Дії" : "Actions"}
           </button>
@@ -466,6 +474,162 @@ function HistoricalSetRow({
   );
 }
 
+function LiveLoggedSetRow({
+  exercise,
+  set,
+  uk,
+  interactive,
+  editing,
+  actionsOpen,
+  busy,
+  draft,
+  onDraftChange,
+  onSave,
+  onEdit,
+  onCancel,
+  onDelete,
+  onOpenActions,
+  onCloseActions,
+}: {
+  exercise: StrengthSessionExerciseDto;
+  set: StrengthSetDto;
+  uk: boolean;
+  interactive: boolean;
+  editing: boolean;
+  actionsOpen: boolean;
+  busy: boolean;
+  draft: SetDraft;
+  onDraftChange: (next: SetDraft) => void;
+  onSave: () => void;
+  onEdit: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+  onOpenActions: () => void;
+  onCloseActions: () => void;
+}) {
+  const rowRef = useRef<HTMLLIElement | null>(null);
+  const actionsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const pointerStart = useRef<{ x: number; y: number; id: number; width: number } | null>(null);
+  const suppressClickUntil = useRef(0);
+  const wasEditing = useRef(false);
+
+  useEffect(() => {
+    if (editing) {
+      rowRef.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+    } else if (wasEditing.current) {
+      actionsToggleRef.current?.focus({ preventScroll: true });
+    }
+    wasEditing.current = editing;
+  }, [editing]);
+
+  function onPointerDown(event: ReactPointerEvent<HTMLLIElement>) {
+    event.stopPropagation();
+    suppressClickUntil.current = 0;
+    if (event.pointerType === "mouse" || busy || editing) return;
+    if (event.target instanceof Element && event.target.closest("[data-set-action]")) return;
+    pointerStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+      id: event.pointerId,
+      width: event.currentTarget.getBoundingClientRect().width,
+    };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
+  }
+
+  function onPointerMove(event: ReactPointerEvent<HTMLLIElement>) {
+    event.stopPropagation();
+    const start = pointerStart.current;
+    if (!start || start.id !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) event.preventDefault();
+  }
+
+  function onPointerUp(event: ReactPointerEvent<HTMLLIElement>) {
+    event.stopPropagation();
+    const start = pointerStart.current;
+    pointerStart.current = null;
+    if (!start || start.id !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) <= Math.abs(dy) * 1.15) return;
+    if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 400;
+    if (dx > 56) {
+      onCloseActions();
+      return;
+    }
+    if (dx > -56) return;
+    onOpenActions();
+    if (start.width >= 140 && -dx >= start.width * 0.86) {
+      onCloseActions();
+      onDelete();
+    }
+  }
+
+  const clockIso = setCompletionTimestampIso(set);
+  const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+  const asymmetricReps = parsedOverride.success ? parsedOverride.data.reps : undefined;
+
+  return (
+    <li
+      ref={rowRef}
+      className={`${styles.liveSetRow} ${editing ? styles.liveSetRowEditing : ""}`}
+      data-testid={`logged-set-${set.id}`}
+      data-set-action-area
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; onCloseActions(); }}
+      onClickCapture={(event) => {
+        if (Date.now() > suppressClickUntil.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        suppressClickUntil.current = 0;
+      }}
+    >
+      {editing ? (
+        <>
+          <span className={styles.liveSetNum}>#{set.setNumber}</span>
+          <section className={`${styles.liveEntry} ${styles.liveSetInlineEditor}`} aria-label={uk ? `Редагування підходу ${set.setNumber}` : `Edit set ${set.setNumber}`}>
+            <div className={styles.liveFields}>
+              {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label className={styles.liveField}><span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span><input inputMode="decimal" autoComplete="off" value={draft.weightKg} onChange={(event) => onDraftChange({ ...draft, weightKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.BODYWEIGHT && <label className={styles.liveField}><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => onDraftChange({ ...draft, additionalLoadKg: event.target.value })} /></label>}
+              {asymmetricReps ? <>
+                <label className={styles.liveField}><span>{uk ? "Повтори зліва" : "Left reps"}</span><input inputMode="numeric" value={draft.leftReps} onChange={(event) => onDraftChange({ ...draft, leftReps: event.target.value })} /></label>
+                <label className={styles.liveField}><span>{uk ? "Повтори справа" : "Right reps"}</span><input inputMode="numeric" value={draft.rightReps} onChange={(event) => onDraftChange({ ...draft, rightReps: event.target.value })} /></label>
+              </> : <label className={styles.liveField}><span>{uk ? "Повтори" : "Reps"}</span><input inputMode="numeric" autoComplete="off" value={draft.reps} onChange={(event) => onDraftChange({ ...draft, reps: event.target.value })} /></label>}
+              <label className={styles.liveField}><span>RIR</span><input inputMode="numeric" autoComplete="off" value={draft.rir} onChange={(event) => onDraftChange({ ...draft, rir: event.target.value })} /></label>
+              <label className={styles.liveField}><span>{uk ? "Коментар" : "Comment"}</span><input autoComplete="off" maxLength={280} value={draft.comment} onChange={(event) => onDraftChange({ ...draft, comment: event.target.value })} /></label>
+            </div>
+            {asymmetricReps && <p className={styles.workoutInfoLine}>{uk ? "Асиметричні повтори зберігаються окремо для кожної сторони." : "Asymmetric reps remain stored separately for each side."}</p>}
+            <div className={styles.liveSaveRow}>
+              <button className={styles.liveSave} type="button" disabled={busy} aria-busy={busy || undefined} onClick={onSave}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Оновити підхід" : "Update set")}</button>
+              <button className={styles.liveSecondary} type="button" disabled={busy} onClick={onCancel}>{uk ? "Скасувати" : "Cancel"}</button>
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          <span className={styles.liveSetNum}>#{set.setNumber}</span>
+          <span className={styles.liveSetLoad}>{setLoadLabel(exercise, set, uk)}{" × "}{set.reps}</span>
+          {asymmetricReps ? <span className={styles.liveSetRir}>{uk ? `Л/П ${asymmetricReps.left}/${asymmetricReps.right}` : `L/R ${asymmetricReps.left}/${asymmetricReps.right}`}</span> : null}
+          <span className={styles.liveSetRir}>{set.rir != null ? `RIR ${set.rir}` : ""}</span>
+          {clockIso ? <time className={styles.liveSetClock} dateTime={clockIso}>{formatSetCompletionClock(set, uk ? "uk-UA" : "en-US")}</time> : <span className={styles.liveSetClock}>{uk ? "час недоступний" : "time unavailable"}</span>}
+          {set.comment ? <p className={styles.liveSetComment}>{set.comment}</p> : null}
+          {interactive && <span className={styles.liveSetActions}>
+            <button ref={actionsToggleRef} type="button" data-set-action className={styles.liveSetActionToggle} aria-expanded={actionsOpen} aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`} onClick={() => actionsOpen ? onCloseActions() : onOpenActions()}>{uk ? "Дії" : "Actions"}</button>
+            <span className={styles.liveSetActionButtons} data-open={actionsOpen || undefined}>
+              <button className={styles.workoutHistoryActionsButton} type="button" data-set-action aria-label={uk ? "Змінити підхід" : "Edit set"} onClick={onEdit}>{uk ? "Редагувати" : "Edit"}</button>
+              <button className={`${styles.workoutHistoryActionsButton} ${styles.workoutHistoryDelete}`} type="button" data-set-action disabled={busy} aria-label={uk ? "Видалити підхід" : "Delete set"} onClick={onDelete}>{uk ? "Видалити" : "Delete"}</button>
+            </span>
+          </span>}
+        </>
+      )}
+    </li>
+  );
+}
+
 export function ExercisePane(props: ExercisePaneProps) {
   const {
     uk,
@@ -497,6 +661,9 @@ export function ExercisePane(props: ExercisePaneProps) {
   } = props;
 
   const sets = exercise.sets.slice().sort((a, b) => b.setNumber - a.setNumber);
+  const [openSetActionsKey, setOpenSetActionsKey] = useState<string | null>(null);
+  const openSetActions = (key: string) => setOpenSetActionsKey(key);
+  const closeSetActions = (key: string) => setOpenSetActionsKey((current) => current === key ? null : current);
   const completedSets = sets.length;
   const plannedSets = exercise.plannedSets;
   const imageSrc = resolveExerciseImageSrc({
@@ -613,7 +780,7 @@ export function ExercisePane(props: ExercisePaneProps) {
           </section>
         )}
 
-        <section className={styles.liveEntry} aria-label={uk ? "Новий підхід" : "New set"}>
+        {editingSetId === null && <section className={styles.liveEntry} aria-label={uk ? "Новий підхід" : "New set"}>
           <div className={styles.liveFields}>
             {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
               <label className={styles.liveField}>
@@ -735,7 +902,7 @@ export function ExercisePane(props: ExercisePaneProps) {
             </button>
           </div>
           {interactive ? trailingAction : null}
-        </section>
+        </section>}
 
         <section className={styles.workoutSets} aria-label={uk ? "Підходи" : "Sets"}>
           <h2 className={styles.liveSectionTitle}>
@@ -749,62 +916,26 @@ export function ExercisePane(props: ExercisePaneProps) {
           ) : (
             <ul className={styles.liveSetTable}>
               {sets.map((set) => {
-                const clockIso = setCompletionTimestampIso(set);
+                const actionKey = `live:${exercise.id}:${set.id}`;
                 return (
-                <li className={styles.liveSetRow} key={set.id}>
-                  <span className={styles.liveSetNum}>#{set.setNumber}</span>
-                  <span className={styles.liveSetLoad}>
-                    {setLoadLabel(exercise, set, uk)}
-                    {" × "}
-                    {set.reps}
-                  </span>
-                  {(() => {
-                    const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
-                    return parsedOverride.success && parsedOverride.data.reps
-                      ? <span className={styles.liveSetRir}>{uk ? `Л/П ${parsedOverride.data.reps.left}/${parsedOverride.data.reps.right}` : `L/R ${parsedOverride.data.reps.left}/${parsedOverride.data.reps.right}`}</span>
-                      : null;
-                  })()}
-                  {set.rir != null ? (
-                    <span className={styles.liveSetRir}>RIR {set.rir}</span>
-                  ) : (
-                    <span className={styles.liveSetRir} />
-                  )}
-                  {clockIso ? (
-                    <time className={styles.liveSetClock} dateTime={clockIso}>
-                      {formatSetCompletionClock(set, uk ? "uk-UA" : "en-US")}
-                    </time>
-                  ) : (
-                    <span className={styles.liveSetClock}>
-                      {uk ? "час недоступний" : "time unavailable"}
-                    </span>
-                  )}
-                  {interactive ? (
-                    <span className={styles.liveSetActions}>
-                      <button
-                        className={styles.workoutIconBtn}
-                        type="button"
-                        aria-label={uk ? "Змінити підхід" : "Edit set"}
-                        onClick={() => onBeginEditSet(set)}
-                      >
-                        ✎
-                      </button>
-                      <button
-                        className={`${styles.workoutIconBtn} ${styles.workoutIconBtnDanger}`}
-                        type="button"
-                        disabled={busy}
-                        aria-label={uk ? "Видалити підхід" : "Delete set"}
-                        onClick={() => onDeleteSet(set.id)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ) : (
-                    <span className={styles.liveSetActions} />
-                  )}
-                  {set.comment ? (
-                    <p className={styles.liveSetComment}>{set.comment}</p>
-                  ) : null}
-                </li>
+                  <LiveLoggedSetRow
+                    key={set.id}
+                    exercise={exercise}
+                    set={set}
+                    uk={uk}
+                    interactive={interactive}
+                    editing={editingSetId === set.id}
+                    actionsOpen={openSetActionsKey === actionKey}
+                    busy={busy}
+                    draft={paneDraft}
+                    onDraftChange={onDraftChange}
+                    onSave={onSaveSet}
+                    onEdit={() => { openSetActions(actionKey); onBeginEditSet(set); }}
+                    onCancel={onCancelEditSet}
+                    onDelete={() => onDeleteSet(set.id)}
+                    onOpenActions={() => openSetActions(actionKey)}
+                    onCloseActions={() => closeSetActions(actionKey)}
+                  />
                 );
               })}
             </ul>
@@ -849,6 +980,9 @@ export function ExercisePane(props: ExercisePaneProps) {
                         set={set}
                         uk={uk}
                         interactive={interactive}
+                        actionsOpen={openSetActionsKey === `history:${entry.sessionId}:${set.id}`}
+                        onOpenActions={() => openSetActions(`history:${entry.sessionId}:${set.id}`)}
+                        onCloseActions={() => closeSetActions(`history:${entry.sessionId}:${set.id}`)}
                         onCopy={onCopyHistorySet}
                         onUpdate={onUpdateHistoricalSet}
                         onDelete={onDeleteHistoricalSet}

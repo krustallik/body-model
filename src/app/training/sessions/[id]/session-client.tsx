@@ -50,6 +50,7 @@ import {
   TrainingExerciseWorkspace,
 } from "../../training-exercise-workspace";
 import { SessionAccountingPanel } from "../../session-accounting-panel";
+import { safeTrainingReturnHref } from "../../training-url-state";
 import styles from "../../training.module.css";
 
 export function SessionClient({ sessionId }: { sessionId: number }) {
@@ -58,6 +59,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const returnHref = safeTrainingReturnHref(searchParams.get("returnTo"), "/training");
+  const sessionContextHref = `${pathname}${searchParams.size > 0 ? `?${searchParams.toString()}` : ""}`;
   const [session, setSession] = useState<StrengthSessionDto | null>(null);
   const [focusedExerciseId, setFocusedExerciseId] = useState<number | null>(null);
   const [draft, setDraft] = useState(emptySetDraft());
@@ -158,7 +161,9 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     if (!session || session.status !== SESSION_STATUS.ACTIVE || exercises.length === 0) return;
     const next = exerciseSearchValue(exerciseIndex);
     if (searchParams.get("exercise") === next) return;
-    router.replace(`${pathname}?exercise=${next}`, { scroll: false });
+    const query = new URLSearchParams(searchParams.toString());
+    query.set("exercise", next);
+    router.replace(`${pathname}?${query.toString()}`, { scroll: false });
   }, [exerciseIndex, exercises.length, pathname, router, searchParams, session]);
 
   useEffect(() => {
@@ -543,7 +548,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setError(await readApiError(response, uk));
         return;
       }
-      router.push("/training");
+      router.push(returnHref);
     } catch {
       setError(uk ? "Не вдалося скасувати тренування." : "Could not cancel the workout.");
     } finally {
@@ -555,8 +560,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     if (!session || session.status !== SESSION_STATUS.CANCELLED) return;
     if (!window.confirm(
       uk
-        ? "Видалити скасований запис? Дані Garmin залишаться без змін."
-        : "Delete this cancelled diary entry? Garmin data will remain unchanged.",
+        ? "Назавжди видалити запис BodyCast разом із вправами, підходами та знімками обліку? Зіставлені записи тренувань Garmin та Apple Health залишаться без змін."
+        : "Permanently delete this BodyCast diary session, including its exercises, sets, and accounting snapshots? Matched Garmin and Apple Health workout records will remain unchanged.",
     )) return;
     setBusy(true);
     setError(null);
@@ -566,7 +571,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setError(await readApiError(response, uk));
         return;
       }
-      router.push("/training");
+      router.push(returnHref);
     } catch {
       setError(uk ? "Не вдалося видалити скасоване тренування." : "Could not delete the cancelled workout.");
     } finally {
@@ -612,7 +617,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           <AppNav active="training" />
         </div>
         {error && <div className={styles.errorBanner} role="alert">{error}</div>}
-        <Link className={styles.linkLike} href="/training">{uk ? "До тренувань" : "Back to training"}</Link>
+        <Link className={styles.linkLike} href={returnHref}>{uk ? "До тренувань" : "Back to training"}</Link>
       </main>
     );
   }
@@ -632,7 +637,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               {uk ? "Додавайте вправи з каталогу — тренування збережеться автоматично." : "Add exercises from the catalog — the workout is saved automatically."}
             </p>
           </div>
-          <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+          <Link className={styles.secondaryButton} href={returnHref}>{uk ? "Назад" : "Back"}</Link>
         </header>
         {error && <div className={styles.errorBanner} role="alert" inert={exercisePickerOpen}>{error}</div>}
         <section className={styles.panel}>
@@ -713,7 +718,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         uk={uk}
         mode="live"
         sessionId={session.id}
-        backHref="/training"
+        backHref={returnHref}
         programName={trainingSessionTitle(session.programName, uk)}
         exercise={current}
         previousExercise={previousExercise}
@@ -905,16 +910,6 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           )}
           </>
         )}
-        footerContent={(
-          <SessionAccountingPanel
-            session={session}
-            uk={uk}
-            onMaterialize={() => void runAccountingAction("materialize")}
-            onRefresh={() => void runAccountingAction("refresh")}
-            refreshing={refreshingAccounting}
-            error={accountingError}
-          />
-        )}
       />
     );
   }
@@ -952,7 +947,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         </div>
         <div className={styles.rowActions}>
           {(session.status === SESSION_STATUS.COMPLETED || session.status === SESSION_STATUS.CANCELLED) && (
-            <Link className={styles.secondaryButton} href={`/training/sessions/${session.id}/edit`}>
+            <Link className={styles.secondaryButton} href={`/training/sessions/${session.id}/edit?exercise=${exerciseIndex + 1}&returnTo=${encodeURIComponent(sessionContextHref)}`}>
               {uk ? "Редагувати" : "Edit"}
             </Link>
           )}
@@ -966,7 +961,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               {uk ? "Видалити" : "Delete"}
             </button>
           )}
-          <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+          <Link className={styles.secondaryButton} href={returnHref}>{uk ? "Назад" : "Back"}</Link>
         </div>
       </header>
 

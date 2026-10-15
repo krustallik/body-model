@@ -225,10 +225,11 @@ describe("GoalClient interaction", () => {
 
     const view = render(<GoalClient />);
     await waitFor(() => expect(contextCalls).toBe(1));
+    await waitFor(() => expect(profileCalls).toBe(1));
     mockI18n.locale = "uk";
     view.rerender(<GoalClient />);
     expect(await screen.findByText("Активної моделі ще немає")).toBeTruthy();
-    expect(profileCalls).toBe(2);
+    expect(profileCalls).toBe(1);
 
     await act(async () => {
       resolveOldProfile(jsonResponse({ profile: null }));
@@ -339,16 +340,90 @@ describe("GoalClient interaction", () => {
   it("shows the expected no-active-model state and navigation without writing saved settings", async () => {
     const saved = JSON.stringify({ version: 1, settings: { keep: true } });
     localStorage.setItem(GOAL_SETTINGS_KEY, saved);
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
-      ? jsonResponse({ error: "no_active_episode" }, 404)
-      : jsonResponse({ error: "optional profile unavailable" }, 404)));
+    let profileCalls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) return Promise.resolve(jsonResponse({ error: "no_active_episode" }, 404));
+      if (String(input).includes("/api/v1/profile")) {
+        profileCalls += 1;
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    }));
 
     render(<GoalClient />);
     expect(await screen.findByText("No active model yet")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open History" }).getAttribute("href")).toBe("/history");
     expect(screen.getByRole("link", { name: /Open Forecast/ }).getAttribute("href")).toBe("/forecast");
     expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    expect(profileCalls).toBe(0);
     expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toBe(saved);
+  });
+
+  it("shows the planner while optional profile and measurement enrichment are pending", async () => {
+    let resolveProfile!: (response: Response) => void;
+    const pendingProfile = new Promise<Response>((resolve) => { resolveProfile = resolve; });
+    const pendingMeasurements = new Promise<Response>(() => undefined);
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return Promise.resolve(jsonResponse({
+        status: modelStatus(),
+        latestCompletedLocalDate: "2026-08-24",
+        history: [],
+        observedWeights: [{ date: "2026-08-24", weightKg: 80, filteredWeightKg: 80, bodyFatPercent: null }],
+      }));
+      if (url.includes("/api/v1/profile")) return pendingProfile;
+      if (url.includes("/api/v1/days?")) return pendingMeasurements;
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<GoalClient />);
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/v1/profile"))).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/v1/days?"))).toBe(true);
+    });
+    const targetWeight = screen.getByLabelText(/Target weight/) as HTMLInputElement;
+    await user.clear(targetWeight);
+    await user.type(targetWeight, "77.5");
+
+    await act(async () => {
+      resolveProfile(jsonResponse({ profile: { sex: "female", dateOfBirth: "1990-01-01", heightCm: 170 } }));
+      await pendingProfile;
+    });
+
+    expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77.5");
+    expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+  });
+
+  it("keeps a completed result bound to its inputs when optional profile data arrives late", async () => {
+    let resolveProfile!: (response: Response) => void;
+    const pendingProfile = new Promise<Response>((resolve) => { resolveProfile = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
+        return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      }
+      if (url.includes("/api/v1/profile")) return pendingProfile;
+      if (url.includes("/api/goal") && init?.method === "POST") return Promise.resolve(jsonResponse(solvedGoal()));
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<GoalClient />);
+
+    await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
+    const nutritionResult = await screen.findByRole("region", { name: "Recommended nutrition" });
+    const resultBeforeProfile = nutritionResult.textContent;
+
+    await act(async () => {
+      resolveProfile(jsonResponse({ profile: { sex: "female", dateOfBirth: "1990-01-01", heightCm: 170 } }));
+      await pendingProfile;
+    });
+
+    expect(screen.getByRole("region", { name: "Recommended nutrition" }).textContent).toBe(resultBeforeProfile);
+    expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
   });
 
   it("shows a retryable context-load error and retries a failed server request", async () => {

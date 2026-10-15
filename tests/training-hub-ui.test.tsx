@@ -71,10 +71,14 @@ describe("Training hub UI", () => {
 
   it("styles Archive as a destructive control and confirms before archive", async () => {
     const user = userEvent.setup();
+    let archived = false;
+    let programReads = 0;
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/sessions/active")) return Response.json({ session: null });
       if (url.includes("/programs") && !url.includes("/archive") && !init?.method) {
+        programReads += 1;
+        if (archived) return Response.json({ programs: [] });
         return Response.json({
           programs: [{
             id: 7,
@@ -92,6 +96,7 @@ describe("Training hub UI", () => {
       if (url.includes("/match-attention")) return Response.json({ sessions: [] });
       if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
       if (url.includes("/archive") && init?.method === "POST") {
+        archived = true;
         return Response.json({ ok: true });
       }
       return new Response("not found", { status: 404 });
@@ -113,9 +118,60 @@ describe("Training hub UI", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+    await waitFor(() => expect(screen.queryByText("Push A")).toBeNull());
+    expect(programReads).toBeGreaterThanOrEqual(2);
   });
 
-  it("keeps empty match-attention in a compact stable status slot", async () => {
+  it("deletes a completed diary session after explaining cascaded diary data and refreshes immediately", async () => {
+    const user = userEvent.setup();
+    let deleted = false;
+    let recentReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/sessions/active")) return Response.json({ session: null });
+      if (url.includes("/programs") && !init?.method) return Response.json({ programs: [] });
+      if (url.includes("/sessions/recent")) {
+        recentReads += 1;
+        return Response.json({ sessions: deleted ? [] : [{
+          id: 12,
+          status: SESSION_STATUS.COMPLETED,
+          entryMode: "LIVE",
+          programId: null,
+          programName: null,
+          webStartedAt: "2026-09-17T15:54:00.000Z",
+          webEndedAt: "2026-09-17T15:58:00.000Z",
+          occurrenceAt: "2026-09-17T15:54:00.000Z",
+          matchStatus: MATCH_STATUS.UNMATCHED,
+          matchMethod: null,
+          matchedWorkoutId: 987,
+          planCompletionPercent: null,
+        }] });
+      }
+      if (url.includes("/match-attention")) return Response.json({ sessions: [] });
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
+      if (url.endsWith("/api/v1/training/sessions/12") && init?.method === "DELETE") {
+        deleted = true;
+        return Response.json({ deleted: true, matchedWorkoutId: 987, modelPublicationStatus: "stale" });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<TrainingClient />);
+    await screen.findByText("Free workout");
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(screen.queryByText("Free workout")).toBeNull());
+    expect(await screen.findByText("No sessions yet.")).toBeTruthy();
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("sets, and accounting snapshots"));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Garmin and Apple Health"));
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/training/sessions/12", { method: "DELETE" });
+    expect((await screen.findByRole("status")).textContent).toContain("Model publication is still updating");
+    expect(recentReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it("omits empty match-attention while retaining recent session details", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
       const url = String(input);
       if (url.includes("/sessions/active")) return Response.json({ session: null });
@@ -146,18 +202,18 @@ describe("Training hub UI", () => {
     const { container } = render(<TrainingClient />);
     await waitFor(() => {
       expect(screen.getByText(/Unmatched/i)).toBeTruthy();
-      expect(screen.getByText(/No sessions need attention/i)).toBeTruthy();
       expect(screen.getByText("100% of plan")).toBeTruthy();
     });
     expect(screen.getByText("100% of plan").className).toContain(styles.planCompletionComplete);
     const sections = Array.from(container.querySelectorAll("section"));
-    const attentionIndex = sections.findIndex((node) => (
-      node.getAttribute("aria-label") === "Match attention"
-    ));
     const recentIndex = sections.findIndex((node) => (
       node.getAttribute("aria-label") === "Recent strength sessions"
     ));
-    expect(attentionIndex).toBeLessThan(recentIndex);
+    expect(sections.some((node) => node.getAttribute("aria-label") === "Match attention")).toBe(false);
+    expect(recentIndex).toBeGreaterThanOrEqual(0);
+    expect(screen.queryByText(/No sessions need attention/i)).toBeNull();
+    expect(screen.queryByRole("region", { name: "Active session" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Start without a program" })).toBeTruthy();
   });
 
   it("surfaces match-attention above active session when items exist", async () => {

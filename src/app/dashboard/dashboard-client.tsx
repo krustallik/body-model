@@ -220,35 +220,27 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
 
   const todayTrainingDay = dashboard.recentTrainingDays.find((fact) => fact.date === localToday())
     ?? dashboard.todayTrainingDay;
-  const showMatchPriority = !demoMode && (attentionLoading || attentionError || attentionCount > 0);
-  const showActiveSessionPriority = !demoMode && (activeSessionLoading || activeSessionError || Boolean(activeSession));
+  const showMatchPriority = !demoMode && !attentionLoading && !attentionError && attentionCount > 0;
+  const showActiveSessionPriority = !demoMode && !activeSessionLoading && !activeSessionError && Boolean(activeSession);
 
   const matchAttentionCard = (
-    <section className={`${styles.priorityCard} ${styles.matchAttentionCard}`} data-priority={attentionCount > 0 ? "present" : "empty"} aria-label={uk ? "Увага до зіставлення" : "Match attention"} aria-busy={attentionLoading}>
+    <section className={`${styles.priorityCard} ${styles.matchAttentionCard}`} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
       <div className={styles.priorityCardHeader}>
         <div><p className={styles.eyebrow}>{uk ? "Потрібна увага" : "Needs attention"}</p><h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2></div>
         {!attentionLoading && !attentionError && <span className={styles.priorityCount}>{attentionCount}</span>}
       </div>
-      {attentionLoading ? <p role="status">{uk ? "Перевіряємо записи Garmin…" : "Checking Garmin matches…"}</p>
-        : attentionError ? <p role="alert">{uk ? "Не вдалося перевірити зіставлення." : "Could not check workout matches."}</p>
-          : attentionCount > 0 ? <>
-            <ul className={styles.priorityList}>{attentionSessions.map((session) => <li key={session.id}><span>{trainingSessionTitle(session.programName, uk)}</span><b>{matchStatusLabel(session.matchStatus, uk)}</b></li>)}</ul>
-            <Link className={styles.priorityLink} href="/training?attentionPage=1">{uk ? `Переглянути всі (${attentionCount})` : `Review all (${attentionCount})`}</Link>
-          </>
-            : <p>{uk ? "Немає сесій, що потребують зіставлення." : "No sessions need matching."}</p>}
+      <ul className={styles.priorityList}>{attentionSessions.map((session) => <li key={session.id}><span>{trainingSessionTitle(session.programName, uk)}</span><b>{matchStatusLabel(session.matchStatus, uk)}</b></li>)}</ul>
+      <Link className={styles.priorityLink} href="/training?attentionPage=1">{uk ? `Переглянути всі (${attentionCount})` : `Review all (${attentionCount})`}</Link>
     </section>
   );
   const activeSessionCard = (
-    <section className={`${styles.priorityCard} ${styles.activeSessionCard}`} data-priority={activeSession ? "present" : "empty"} aria-label={uk ? "Активна сесія" : "Active session"} aria-busy={activeSessionLoading}>
+    <section className={`${styles.priorityCard} ${styles.activeSessionCard}`} aria-label={uk ? "Активна сесія" : "Active session"}>
       <div className={styles.priorityCardHeader}><div><p className={styles.eyebrow}>{uk ? "Тренування" : "Training"}</p><h2>{uk ? "Активна сесія" : "Active workout"}</h2></div></div>
-      {activeSessionLoading ? <p role="status">{uk ? "Перевіряємо активне тренування…" : "Checking active workout…"}</p>
-        : activeSessionError ? <p role="alert">{uk ? "Не вдалося перевірити активну сесію." : "Could not check the active workout."}</p>
-          : activeSession ? <>
+      {activeSession ? <>
             <strong className={styles.activeSessionName}>{trainingSessionTitle(activeSession.programName, uk)}</strong>
             <p>{uk ? `${activeSession.exerciseCount} вправ · розпочато ${formatDateTime(activeSession.webStartedAt, intlLocale)}` : `${activeSession.exerciseCount} exercises · started ${formatDateTime(activeSession.webStartedAt, intlLocale)}`}</p>
-            <Link className={styles.priorityLink} href={`/training/sessions/${activeSession.id}`}>{uk ? "Продовжити тренування" : "Resume workout"}</Link>
-          </>
-            : <><p>{uk ? "Зараз немає активного тренування." : "There is no active workout right now."}</p><Link className={styles.priorityLink} href="/training">{uk ? "Перейти до тренувань" : "Go to training"}</Link></>}
+            <Link className={styles.priorityLink} href={`/training/sessions/${activeSession.id}?returnTo=${encodeURIComponent("/dashboard")}`}>{uk ? "Продовжити тренування" : "Resume workout"}</Link>
+          </> : null}
     </section>
   );
 
@@ -275,6 +267,8 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
         </div>
       </section>
 
+      {!demoMode && attentionError && <div className={styles.errorBanner} role="alert">{uk ? "Не вдалося перевірити зіставлення." : "Could not check workout matches."}</div>}
+      {!demoMode && activeSessionError && <div className={styles.errorBanner} role="alert">{uk ? "Не вдалося перевірити активну сесію." : "Could not check the active workout."}</div>}
       {showMatchPriority && matchAttentionCard}
       {showActiveSessionPriority && activeSessionCard}
 
@@ -328,7 +322,7 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
                         <div><dt>{uk ? "Джерело" : "Source"}</dt><dd>{workSourceCopy(event.source, uk)}</dd></div>
                         <div><dt>{uk ? "Тривалість" : "Duration"}</dt><dd>{event.durationMinutes === null ? (uk ? "Невідома" : "Unknown") : `${formatMetric(event.durationMinutes, intlLocale)} ${uk ? "хв" : "min"}`}</dd></div>
                         <div><dt>{uk ? "Активна енергія" : "Active energy"}</dt><dd>{event.activeEnergyKcal === null ? "—" : `${formatMetric(event.activeEnergyKcal, intlLocale)} kcal`}</dd></div>
-                        {event.diarySessionId !== null && <div><dt>{uk ? "Запис" : "Diary"}</dt><dd><Link href={`/training/sessions/${event.diarySessionId}`}>{uk ? "Відкрити деталі" : "Open details"}</Link></dd></div>}
+                        {event.diarySessionId !== null && <div><dt>{uk ? "Запис" : "Diary"}</dt><dd><Link href={`/training/sessions/${event.diarySessionId}?returnTo=${encodeURIComponent("/dashboard")}`}>{uk ? "Відкрити деталі" : "Open details"}</Link></dd></div>}
                       </dl>
                     </details>
                   )) : todayTrainingDay.hiddenEventCount > 0
@@ -450,8 +444,6 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
           )}
         </article>
       </section>
-      {!demoMode && !showMatchPriority && matchAttentionCard}
-      {!demoMode && !showActiveSessionPriority && activeSessionCard}
       {!demoMode && workDialogOpen && <WorkActivityDialog
         date={localToday()}
         onClose={() => setWorkDialogOpen(false)}

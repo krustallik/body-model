@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, ty
 import {
   EXERCISE_ORIGIN,
   RESISTANCE,
+  TRAINING_LIMITS,
 } from "@/modules/training/training.constants";
 import { externalWeightEntryLabel } from "@/modules/training/external-load-accounting";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
@@ -231,6 +232,12 @@ function HistoricalSetRow({
         setError(uk
           ? "Додаткове обтяження має бути скінченним невід’ємним числом."
           : "Additional load must be a finite non-negative number.");
+        return;
+      }
+      if (parsedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
+        setError(uk
+          ? `Максимальне додаткове обтяження — ${TRAINING_LIMITS.maxLoadKg} кг.`
+          : `Maximum additional load is ${TRAINING_LIMITS.maxLoadKg} kg.`);
         return;
       }
       if (parsedAdditionalLoadKg > 0) additionalLoadKg = parsedAdditionalLoadKg;

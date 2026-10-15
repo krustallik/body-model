@@ -259,6 +259,63 @@ describe("/api/v1/training/sessions", () => {
     });
   });
 
+  it("accepts the maximum override and rejects out-of-range or overflowing POST/PATCH inputs", async () => {
+    trainingService.createSet.mockResolvedValue(setDto);
+    const acceptedCreate = await CREATE_SET(
+      jsonRequest(`${base}/42/exercises/5/sets`, "POST", {
+        reps: 10_000,
+        weightKg: null,
+        loadAccountingOverride: { additionalLoadKg: 2_000 },
+      }),
+      exerciseCtx("42", "5"),
+    );
+    expect(acceptedCreate.status).toBe(201);
+
+    trainingService.updateSet.mockResolvedValue(setDto);
+    const acceptedUpdate = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", {
+        loadAccountingOverride: { additionalLoadKg: 2_000 },
+      }),
+      setCtx("42", "9"),
+    );
+    expect(acceptedUpdate.status).toBe(200);
+
+    for (const [method, payload] of [
+      ["POST", { reps: 10, loadAccountingOverride: { additionalLoadKg: 2_000.01 } }],
+      ["POST", { reps: 10, loadAccountingOverride: { additionalLoadKg: 1e308 } }],
+      ["POST", { reps: 10, loadAccountingOverride: { assistanceLoadKg: 2_000.01 } }],
+      ["PATCH", { loadAccountingOverride: { additionalLoadKg: -1 } }],
+      ["PATCH", { loadAccountingOverride: { additionalLoadKg: 2_000.01 } }],
+      ["PATCH", { loadAccountingOverride: { additionalLoadKg: 1e308 } }],
+      ["PATCH", { loadAccountingOverride: { assistanceLoadKg: 2_000.01 } }],
+    ] as const) {
+      const response = method === "POST"
+        ? await CREATE_SET(jsonRequest(`${base}/42/exercises/5/sets`, method, payload), exerciseCtx("42", "5"))
+        : await PATCH_SET(jsonRequest(`${base}/42/sets/9`, method, payload), setCtx("42", "9"));
+      expect(response.status).toBe(400);
+    }
+
+    const parsedInfinity = await CREATE_SET(
+      new Request(`${base}/42/exercises/5/sets`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"reps":10,"loadAccountingOverride":{"additionalLoadKg":1e400}}',
+      }),
+      exerciseCtx("42", "5"),
+    );
+    expect(parsedInfinity.status).toBe(400);
+    expect(trainingService.createSet).toHaveBeenCalledTimes(1);
+    expect(trainingService.updateSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps stored historical overrides readable without applying write bounds", async () => {
+    const historical = { ...setDto, loadAccountingOverride: { additionalLoadKg: 1e308 } };
+    trainingService.getSetForSession.mockResolvedValue(historical);
+    const response = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ set: historical });
+  });
+
   it("rejects invalid create-set payload without mutation", async () => {
     const response = await CREATE_SET(
       jsonRequest(`${base}/42/exercises/5/sets`, "POST", { reps: 0, weightKg: 30 }),

@@ -579,6 +579,15 @@ describe("Live training session mobile UI", () => {
     await waitFor(() => expect(activePane().getByText("власна вага × 8")).toBeTruthy());
     expect(requests[3]!.method).toBe("POST");
     expect(requests[3]!.body).not.toHaveProperty("loadAccountingOverride");
+
+    await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "2000");
+    await user.type(activePane().getByLabelText("Повтори"), "10000");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => expect(requests).toHaveLength(5));
+    expect(requests[4]).toMatchObject({
+      method: "POST",
+      body: { reps: 10_000, loadAccountingOverride: { additionalLoadKg: 2_000 } },
+    });
   });
 
   it("rejects invalid and conflicting additional load without sending a set mutation", async () => {
@@ -630,6 +639,22 @@ describe("Live training session mobile UI", () => {
     await user.type(activePane().getByLabelText("Повтори"), "10");
     await user.click(screen.getByRole("button", { name: "Додати підхід" }));
     expect((await screen.findByRole("alert")).textContent).toContain("скінченним невід’ємним числом");
+    expect(mutation).not.toHaveBeenCalled();
+
+    for (const invalid of ["NaN", "Infinity"]) {
+      const input = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
+      await user.clear(input);
+      await user.type(input, invalid);
+      await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("скінченним невід’ємним числом");
+      expect(mutation).not.toHaveBeenCalled();
+    }
+
+    const oversizedInput = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
+    await user.clear(oversizedInput);
+    await user.type(oversizedInput, "1e308");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("2000 кг");
     expect(mutation).not.toHaveBeenCalled();
 
     await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));

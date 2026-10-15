@@ -878,6 +878,14 @@ function calculateLoadAccountingCoreV1(
     effectiveMultiplier: number,
     additionalProvenance?: ConfigProvenanceV1,
   ): void {
+    const category = targetFor(target).category;
+    // Preserve historical raw overrides, but never label an unrepresentable
+    // additional/assistance load or aggregate as available (JSON serializes Infinity as null).
+    if ((category === "additionalLoad" || category === "assistanceLoad")
+        && (!Number.isFinite(value) || !Number.isFinite(target.total + value))) {
+      omitWithBreakdown(target, "invalid-load", row, config, provenance);
+      return;
+    }
     contribute(target, value, provenance);
     emit(row, target, {
       value, reason: null, config, effectiveMultiplier, provenance, additionalProvenance,

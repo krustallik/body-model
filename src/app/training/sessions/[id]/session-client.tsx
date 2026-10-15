@@ -9,6 +9,7 @@ import {
   MATCH_STATUS,
   RESISTANCE,
   SESSION_STATUS,
+  TRAINING_LIMITS,
   recommendedResistanceTypeForCatalogStableKey,
   type ResistanceType,
 } from "@/modules/training/training.constants";
@@ -188,6 +189,12 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setError(uk
           ? "Додаткове обтяження має бути скінченним невід’ємним числом."
           : "Additional load must be a finite non-negative number.");
+        return;
+      }
+      if (parsedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
+        setError(uk
+          ? `Максимальне додаткове обтяження — ${TRAINING_LIMITS.maxLoadKg} кг.`
+          : `Maximum additional load is ${TRAINING_LIMITS.maxLoadKg} kg.`);
         return;
       }
       if (parsedAdditionalLoadKg > 0) additionalLoadKg = parsedAdditionalLoadKg;

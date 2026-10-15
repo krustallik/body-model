@@ -4,6 +4,20 @@ import { parseNullableNumericInput } from "@/modules/days/day.schema";
 import { loadConfigV1Schema, setExecutionOverrideV1Schema } from "./load-accounting-v1";
 import { isValidTimeZone } from "@/model/time-zone";
 
+/** Write-only guard: historical overrides keep using the permissive read schema. */
+export const setExecutionOverrideWriteV1Schema = setExecutionOverrideV1Schema.superRefine((override, ctx) => {
+  for (const field of ["additionalLoadKg", "assistanceLoadKg"] as const) {
+    const value = override[field];
+    if (value !== undefined && value > TRAINING_LIMITS.maxLoadKg) {
+      ctx.addIssue({
+        code: "custom",
+        path: [field],
+        message: `${field} must not exceed ${TRAINING_LIMITS.maxLoadKg} kg`,
+      });
+    }
+  }
+});
+
 export const ResistanceTypeSchema = z.enum([
   RESISTANCE.EXTERNAL_WEIGHT,
   RESISTANCE.RESISTANCE_BAND,
@@ -95,7 +109,7 @@ export const CreateSetSchema = z.object({
   setNumber: z.preprocess(parseNullableNumericInput, z.number().int().positive().optional()),
   completedAt: z.string().datetime({ offset: true }).optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
-  loadAccountingOverride: setExecutionOverrideV1Schema.nullable().optional(),
+  loadAccountingOverride: setExecutionOverrideWriteV1Schema.nullable().optional(),
 }).strict();
 
 export const UpdateSetSchema = z.object({
@@ -105,7 +119,7 @@ export const UpdateSetSchema = z.object({
   rir: nullableRir,
   completedAt: z.string().datetime({ offset: true }).nullable().optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
-  loadAccountingOverride: setExecutionOverrideV1Schema.nullable().optional(),
+  loadAccountingOverride: setExecutionOverrideWriteV1Schema.nullable().optional(),
 }).strict().refine(
   (value) => Object.keys(value).length > 0,
   "at least one set field is required",

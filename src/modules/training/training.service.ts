@@ -59,12 +59,12 @@ import type {
   UpdateSetInput,
   UpdateCatalogLoadAccountingConfigInput,
 } from "./training.schema";
+import { setExecutionOverrideWriteV1Schema } from "./training.schema";
 import { validateSetFields } from "./training.set-validation";
 import {
   LEGACY_LOAD_INTERPRETATION_V1,
   legacyLoadConfigForIdentityV1,
   loadConfigV1Schema,
-  setExecutionOverrideV1Schema,
   type LoadConfigV1,
 } from "./load-accounting-v1";
 import { noteTrainingSourceChange } from "./training.source-revision";
@@ -1464,7 +1464,7 @@ export class TrainingService {
     if (!validated.ok) throw new SetValidationError(validated.message);
     const override = input.loadAccountingOverride === undefined || input.loadAccountingOverride === null
       ? null
-      : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+      : setExecutionOverrideWriteV1Schema.safeParse(input.loadAccountingOverride);
     if (override !== null && !override.success) throw new SetValidationError("invalid load accounting override");
 
     const nextSetNumber =
@@ -1538,7 +1538,7 @@ export class TrainingService {
       ? undefined
       : input.loadAccountingOverride === null
         ? null
-        : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+        : setExecutionOverrideWriteV1Schema.safeParse(input.loadAccountingOverride);
     if (override !== undefined && override !== null && !override.success) {
       throw new SetValidationError("invalid load accounting override");
     }

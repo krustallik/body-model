@@ -487,6 +487,16 @@ describe("Session edit exercise pager", () => {
     });
     expect(patchBody).not.toHaveProperty("weightKg");
     expect(patchBody).not.toHaveProperty("bandNominalResistanceKg");
+
+    await user.click(activePane().getByRole("button", { name: "Edit set" }));
+    const oversizedInput = activePane().getByLabelText("Additional load, kg (optional)");
+    await user.clear(oversizedInput);
+    await user.type(oversizedInput, "1e308");
+    await user.click(activePane().getByRole("button", { name: "Update set" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("2000 kg");
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
+      String(input) === "/api/v1/training/sessions/88/sets/91" && init?.method === "PATCH"
+    ))).toHaveLength(1);
   });
 
   it("edits a prior session set inline and preserves its original completion timestamp", async () => {
@@ -610,6 +620,14 @@ describe("Session edit exercise pager", () => {
       equipmentSetupId: "rings",
     });
     expect(within(historySet).queryByText(/\+0(?:\.0+)? kg/)).toBeNull();
+
+    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    const oversizedInput = within(historySet).getByLabelText("Additional load, kg (optional)");
+    await user.type(oversizedInput, "1e308");
+    await user.click(within(historySet).getByRole("button", { name: "Save" }));
+    expect((await within(historySet).findByRole("alert")).textContent).toContain("2000 kg");
+    expect(patchCalls()).toHaveLength(2);
   });
 
   it("reconciles a committed historical edit when dependent publication returns an error", async () => {

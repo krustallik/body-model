@@ -59,6 +59,43 @@ function makeExternalPayload() {
 }
 
 describe("versioned persisted load-accounting breakdown", () => {
+  it("marks overflowing legacy additional load unavailable in both the aggregate and per-set breakdown", () => {
+    const legacyOverride = { additionalLoadKg: 1e308 };
+    const calculated = calculateLoadAccountingWithBreakdownV1({
+      sessionId: 90,
+      localDate: "2026-09-24",
+      exercises: [{
+        sessionExerciseId: 100,
+        exerciseOrder: 0,
+        exerciseName: "Pull Up",
+        identity: { status: "known-legacy", stableKey: "pull_up" },
+        resistanceHint: "bodyweight",
+        configSnapshot: LEGACY_LOAD_CONFIGS_V1.pull_up,
+        sets: [{
+          strengthSetId: 200,
+          setNumber: 1,
+          reps: 10_000,
+          weightKg: null,
+          bandNominalResistanceKg: null,
+          override: legacyOverride,
+        }],
+      }],
+    });
+
+    expect(calculated.result.additionalLoad).toMatchObject({
+      value: null,
+      availability: "unavailable",
+      coverage: { omittedReasons: { "invalid-load": 1 } },
+    });
+    expect(calculated.breakdown.rows[0]?.contributions).toContainEqual(expect.objectContaining({
+      category: "additionalLoad",
+      value: null,
+      availability: "unavailable",
+      unavailableReason: "invalid-load",
+    }));
+    expect(legacyOverride).toEqual({ additionalLoadKg: 1e308 });
+  });
+
   it("captures per-set category facts and keeps legacy aggregate payloads readable", () => {
     const localDate = "2026-09-24";
     const massReference = {

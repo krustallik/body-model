@@ -812,6 +812,45 @@ describe("TrainingService live session", () => {
     expect(db.strengthSet.delete).toHaveBeenCalledWith({ where: { id: 900 } });
   });
 
+  it("rejects over-limit BODYWEIGHT overrides at the service write boundary", async () => {
+    db.strengthSessionExercise.findFirst.mockResolvedValue({
+      id: 501,
+      sessionId: 50,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      sets: [],
+    });
+    await expect(service.createSet(50, 501, {
+      reps: 10,
+      weightKg: null,
+      loadAccountingOverride: { additionalLoadKg: 1e308 },
+    })).rejects.toBeInstanceOf(SetValidationError);
+    expect(db.strengthSet.create).not.toHaveBeenCalled();
+
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 900,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:09:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+      loadAccountingOverride: null,
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      },
+    });
+    await expect(service.updateSet(50, 900, {
+      loadAccountingOverride: { assistanceLoadKg: 2_000.01 },
+    })).rejects.toBeInstanceOf(SetValidationError);
+    expect(db.strengthSet.update).not.toHaveBeenCalled();
+  });
+
   it("creates, edits, and clears optional RIR on live sets; rejects invalid RIR", async () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(sessionDetail());
     db.strengthSessionExercise.findFirst.mockResolvedValue({

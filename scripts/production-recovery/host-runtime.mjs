@@ -20,6 +20,7 @@ const ADAPTER_FUNCTIONS = Object.freeze([
   "verifyRestoreGrant", "captureMigrationExecutionState", "verifyMigrationExecutionProof",
   "verifyMigrationFinalGuards", "verifyUnifiedV4Currentness", "inspectFixedOperationState",
   "verifyRecoveryOperationFinalGuards", "withReadOnlyProductionTransaction",
+  "withRecoveryCurrentnessFence",
   "resolveLogicalProductionDatabaseIdentity", "getProgramlessSessionCapabilityRepositoryPath",
 ]);
 
@@ -94,6 +95,7 @@ export function createRecoveryHostRuntime({
     verifyUnifiedV4Currentness: trustedHostAdapter.verifyUnifiedV4Currentness,
     verifyRecoveryOperationFinalGuards: trustedHostAdapter.verifyRecoveryOperationFinalGuards,
     verifyProgramlessSessionRollbackCompatibility: verifyProgramlessSessionCompatibility,
+    withRecoveryCurrentnessFence: trustedHostAdapter.withRecoveryCurrentnessFence,
     inspectFixedOperationState: trustedHostAdapter.inspectFixedOperationState,
     loadEvidenceById: trustedHostAdapter.loadEvidenceById,
     loadAuthorizationById: trustedHostAdapter.loadAuthorizationById,

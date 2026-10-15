@@ -6,7 +6,7 @@ import path from "node:path";
 import { canonicalDigest, canonicalJson, sha256Hex, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
 import { createProductionOperationBroker, validateProductionOperationRequest } from "../scripts/production-recovery/operation-broker.mjs";
 import { parseOperationArguments } from "../scripts/production-recovery/host-operation-client.mjs";
-import { createReaderRolloutReceipt, createReaderRolloutVerifier, REQUIRED_READER_ROLLOUT_FIXTURES } from "../scripts/production-recovery/rollout.mjs";
+import { createReaderRolloutReceipt, createReaderRolloutVerifier, REQUIRED_READER_ROLLOUT_FIXTURES, REVIEWED_ENTRYPOINTS } from "../scripts/production-recovery/rollout.mjs";
 import { writeImmutableReceipt } from "../scripts/production-recovery/journal.mjs";
 import {
   compareAuthorityVersions,
@@ -53,6 +53,22 @@ const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
     programlessSessionCompatible: true,
     rollbackAppCapabilityDigest: "8".repeat(64),
     observedAt: new Date().toISOString(),
+  }),
+  withRecoveryCurrentnessFence: async (expected) => expected.execute({
+    schemaVersion: 1, purpose: expected.purpose, profileId: 1,
+    operationType: expected.operationType, operationId: expected.operationId,
+    recoveryCaseId: expected.recoveryCaseId, journalGeneration: expected.journalGeneration,
+    journalRecordDigest: expected.journalRecordDigest,
+    logicalProductionDbIdentityDigest: expected.logicalProductionDbIdentityDigest,
+    releaseSha: expected.releaseSha, imageDigest: expected.imageDigest,
+    healthRequestedGeneration: 1, healthCompletedGeneration: 1, healthLeasePresent: false,
+    healthLastErrorType: null, healthLastErrorAt: null,
+    unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+    unifiedInvalidationGeneration: 1, unifiedProductionStaleFromDate: null,
+    unifiedProductionPublishedGeneration: 1, unifiedPublishedGeneration: 1,
+    unifiedRolloutEpoch: 1, unifiedPublishedRolloutEpoch: 1, unifiedPublicationBlockedFromDate: null,
+    unifiedPublicationBlockCount: 0, unifiedPublishedSourceDigest: "d".repeat(64),
+    unifiedCurrentSourceDigest: "d".repeat(64), unifiedCurrent: true, observedAt: new Date().toISOString(),
   }),
   verifyUnifiedV4Currentness: async () => null,
   inspectFixedOperationState: async () => { throw new Error("not used"); },
@@ -234,6 +250,22 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
       rollbackAppCapabilityDigest: "8".repeat(64),
       observedAt: new Date(now()).toISOString(),
     }),
+    withRecoveryCurrentnessFence: async (expected) => expected.execute({
+      schemaVersion: 1, purpose: expected.purpose, profileId: 1,
+      operationType: expected.operationType, operationId: expected.operationId,
+      recoveryCaseId: expected.recoveryCaseId, journalGeneration: expected.journalGeneration,
+      journalRecordDigest: expected.journalRecordDigest,
+      logicalProductionDbIdentityDigest: expected.logicalProductionDbIdentityDigest,
+      releaseSha: expected.releaseSha, imageDigest: expected.imageDigest,
+      healthRequestedGeneration: 1, healthCompletedGeneration: 1, healthLeasePresent: false,
+      healthLastErrorType: null, healthLastErrorAt: null,
+      unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedInvalidationGeneration: 7, unifiedProductionStaleFromDate: null,
+      unifiedProductionPublishedGeneration: 7, unifiedPublishedGeneration: 7,
+      unifiedRolloutEpoch: 2, unifiedPublishedRolloutEpoch: 2, unifiedPublicationBlockedFromDate: null,
+      unifiedPublicationBlockCount: 0, unifiedPublishedSourceDigest: "d".repeat(64),
+      unifiedCurrentSourceDigest: "d".repeat(64), unifiedCurrent: true, observedAt: new Date(now()).toISOString(),
+    }),
     verifyUnifiedV4Currentness: async ({ releaseSha, canonicalMainSha }) => {
       if (v4Evidence === null) return null;
       if (typeof v4Evidence === "function") return v4Evidence({ releaseSha, canonicalMainSha });
@@ -319,6 +351,12 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
 }
 
 describe("production recovery install, rollout, and operation boundaries", () => {
+  it("binds Health worker lease enforcement and lifecycle mutation code into the reviewed host manifest", () => {
+    expect(REVIEWED_ENTRYPOINTS).toContain("src/modules/health/health-sync-worker-context.ts");
+    expect(REVIEWED_ENTRYPOINTS).toContain("src/modules/model-episodes/physiology-v7-persistence.repository.ts");
+    expect(new Set(REVIEWED_ENTRYPOINTS).size).toBe(REVIEWED_ENTRYPOINTS.length);
+  });
+
   it("rejects arbitrary commands, paths, extra fields, and malformed typed requests", () => {
     expect(() => validateProductionOperationRequest({ schemaVersion: 1, operation: "docker", command: "docker rm -f all" }))
       .toThrow(/allowlist/);
@@ -904,7 +942,16 @@ describe("production recovery install, rollout, and operation boundaries", () =>
         },
         loadEvidenceById: async () => evidence,
         loadRolloutReceiptById: async () => ({ receiptDigest: "7".repeat(64) }),
-        inspectFixedOperationState: async () => { inspections += 1; return observedOperation; },
+        inspectFixedOperationState: async (_type, input) => {
+          inspections += 1;
+          const postcondition = { ...observedOperation.postcondition };
+          if (operationType === "recovery-start-readonly-app") {
+            postcondition.healthSyncRefreshQueueDigest = input.bindings.healthSyncRefreshQueueDigest;
+            postcondition.unifiedV4CurrentnessDigest = input.bindings.unifiedV4CurrentnessDigest;
+          }
+          return { ...observedOperation, postcondition,
+            stateDigest: canonicalDigest({ state: definition.postState, precondition: null, postcondition }) };
+        },
         executeFixedOperation: async () => { effects += 1; throw new Error("post-state replay must not repeat a host effect"); },
       });
       return { broker, counts: () => ({ inspections, effects, guards }) };

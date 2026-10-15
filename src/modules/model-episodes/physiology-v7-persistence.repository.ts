@@ -10,6 +10,13 @@ import {
   versionsAreCurrent,
 } from "./physiology-v7-persistence";
 import { addCalendarDays } from "./model-calendar";
+import { HEALTH_SYNC_FENCE_NAMESPACE } from "@/modules/health/health-sync-fence";
+import {
+  getHealthSyncRefreshWorkerLease,
+  HealthSyncRefreshWorkerLeaseLostError,
+} from "@/modules/health/health-sync-worker-context";
+
+export const PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE = 927001;
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 type LifecycleInvalidationState = {
@@ -150,7 +157,30 @@ export class PhysiologyV7PersistenceRepository {
   }
 
   async lockProfile(profileId: number): Promise<void> {
-    await this.client.$executeRaw`SELECT pg_advisory_xact_lock(927001, CAST(${profileId} AS integer))`;
+    const workerLease = getHealthSyncRefreshWorkerLease();
+    if (workerLease && (workerLease.profileId !== profileId || isPrismaClient(this.client))) {
+      throw new HealthSyncRefreshWorkerLeaseLostError();
+    }
+    // Recovery takes these transaction-scoped locks in the same order. Shared
+    // Health fencing keeps a currentness check stable across every lifecycle
+    // writer; worker mutations additionally row-lock and validate their exact
+    // durable lease after both locks and hold that row lock through mutation.
+    await this.client.$queryRaw`WITH acquired AS MATERIALIZED (
+      SELECT pg_advisory_xact_lock_shared(CAST(${HEALTH_SYNC_FENCE_NAMESPACE} AS integer), CAST(${profileId} AS integer))
+    ) SELECT 1::integer FROM acquired`;
+    await this.client.$executeRaw`SELECT pg_advisory_xact_lock(CAST(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))`;
+    if (workerLease) {
+      const ownedJobs = await this.client.$queryRaw<Array<{ profileId: number }>>`
+        SELECT "profileId"
+        FROM "HealthSyncRefreshJob"
+        WHERE "profileId" = ${workerLease.profileId}
+          AND "requestedGeneration" = ${workerLease.requestedGeneration}
+          AND "leaseToken" = ${workerLease.leaseToken}
+          AND "leaseUntil" > ${new Date()}
+        FOR UPDATE
+      `;
+      if (ownedJobs.length !== 1) throw new HealthSyncRefreshWorkerLeaseLostError();
+    }
   }
 
   /**

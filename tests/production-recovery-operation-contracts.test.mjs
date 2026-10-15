@@ -69,6 +69,10 @@ describe("fixed host operation replay and success contract", () => {
         programlessSessionCompatible: true,
         rollbackAppCapabilityDigest: "e".repeat(64),
       };
+      if (operationType === "recovery-start-readonly-app") {
+        base.healthSyncRefreshQueueDigest = "6".repeat(64);
+        base.unifiedV4CurrentnessDigest = "7".repeat(64);
+      }
       const postcondition = operationType === "recovery-start-readonly-app"
         ? { ...base, containerId: "captured-container", healthStatus: "healthy", databaseRoleMode: "readonly" }
         : { ...base, healthStatus: "healthy", writerMode: "enabled", activeWriterCount: 0, topologyDigest: "9".repeat(64) };

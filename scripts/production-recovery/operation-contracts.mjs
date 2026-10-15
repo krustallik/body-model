@@ -30,9 +30,11 @@ const OPERATION_DEFINITIONS = Object.freeze({
     postState: "captured-app-healthy-readonly",
     replayPolicy: "inspect-exact-container-and-readonly-role-before-ensure-started",
     preconditionKeys: ["releaseSha", "imageDigest", "containerState", "databaseRoleMode", "logicalProductionDbIdentityDigest",
-      "programlessSessionCount", "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest"],
+      "programlessSessionCount", "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest",
+      "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest"],
     postconditionKeys: ["releaseSha", "imageDigest", "containerId", "healthStatus", "databaseRoleMode", "logicalProductionDbIdentityDigest",
-      "programlessSessionCount", "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest"],
+      "programlessSessionCount", "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest",
+      "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest"],
   }),
   "recovery-drain-and-enable-writers": Object.freeze({
     preState: "readonly-app-stopped-and-writers-drained",
@@ -48,16 +50,23 @@ const OPERATION_DEFINITIONS = Object.freeze({
   "recovery-verify-completion-gates": Object.freeze({
     preState: "writers-enabled",
     postState: "completion-gates-current",
-    replayPolicy: "recompute-completion-from-current-host-and-database-state",
-    preconditionKeys: ["recoveryCaseId", "journalGeneration", "logicalProductionDbIdentityDigest", "writerMode"],
-    postconditionKeys: ["recoveryCaseId", "journalGeneration", "journalRecordDigest", "logicalProductionDbIdentityDigest", "healthStatus", "integrityDigest"],
+    replayPolicy: "recompute-completion-from-current-host-database-health-queue-and-unified-v4-state",
+    boundary: "hold-health-sync-and-unified-profile-exclusive-fences-through-currentness-and-completion-effect",
+    preconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
+      "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "writerMode"],
+    postconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
+      "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "healthStatus", "integrityDigest"],
   }),
   "recovery-open-traffic": Object.freeze({
     preState: "maintenance-route-on-bound-host",
     postState: "bound-rollback-image-serving",
-    replayPolicy: "ensure-only-the-bound-rollback-target-receives-traffic",
-    preconditionKeys: ["releaseSha", "imageDigest", "routeDigest", "markerState"],
-    postconditionKeys: ["releaseSha", "imageDigest", "routeDigest", "trafficTargetImageDigest", "healthStatus", "markerState"],
+    replayPolicy: "inspect-current-health-queue-and-unified-v4-under-both-source-fences-before-ensuring-bound-rollback-target-traffic",
+    boundary: "hold-health-sync-and-unified-profile-exclusive-fences-through-currentness-and-authoritative-route-mutation",
+    preconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
+      "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "routeDigest", "markerState"],
+    postconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
+      "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest",
+      "routeDigest", "trafficTargetImageDigest", "healthStatus", "markerState"],
   }),
   "ordinary-release": Object.freeze({
     preState: "release-not-serving",
@@ -89,7 +98,7 @@ const CONFORMANCE_KEYS = Object.freeze([
   "testRunId", "testedOperationTypes", "result", "issuedAt", "expiresAt", "signerKeyId", "signature",
 ]);
 
-export const OPERATION_CONTRACT_VERSION = 5;
+export const OPERATION_CONTRACT_VERSION = 7;
 const OPERATION_EVIDENCE_SCHEMA_VERSION = 1;
 export const OPERATION_CONTRACTS = OPERATION_DEFINITIONS;
 export const OPERATION_ADAPTER_CONTRACT_DIGEST = canonicalDigest({
@@ -117,7 +126,7 @@ function assertDigestObject(value, keys, label) {
 function assertOperationCondition(operationType, condition, bindings, label) {
   for (const key of ["releaseSha", "manifestId", "logicalProductionDbIdentityDigest", "recoveryCaseId",
     "journalGeneration", "journalRecordDigest", "backupArtifactDigest", "imageDigest", "routeDigest",
-    "unifiedV4CurrentnessDigest"]) {
+    "unifiedV4CurrentnessDigest", "healthSyncRefreshQueueDigest"]) {
     if (bindings[key] !== undefined && Object.hasOwn(condition, key) && condition[key] !== bindings[key]) {
       throw new Error(label + " does not match its immutable " + key + " binding.");
     }
@@ -132,7 +141,7 @@ function assertOperationCondition(operationType, condition, bindings, label) {
   }
   const rollbackArtifact = bindings.immutableRollbackArtifact;
   if (label.includes("precondition") && rollbackArtifact
-    && ["recovery-start-readonly-app", "recovery-drain-and-enable-writers"].includes(operationType)
+    && ["recovery-start-readonly-app", "recovery-drain-and-enable-writers", "recovery-verify-completion-gates", "recovery-open-traffic"].includes(operationType)
     && condition.imageDigest !== rollbackArtifact.rollbackImageDigest) {
     throw new Error("Rollback operation precondition does not match the captured rollback image.");
   }
@@ -140,7 +149,8 @@ function assertOperationCondition(operationType, condition, bindings, label) {
     throw new Error("Forward migration postcondition must prove the durable schema-applied release marker.");
   }
   if (label.includes("postcondition")) {
-    if (["ordinary-release", "recovery-start-readonly-app", "recovery-drain-and-enable-writers", "traffic-serve"]
+    if (["ordinary-release", "recovery-start-readonly-app", "recovery-drain-and-enable-writers",
+      "recovery-verify-completion-gates", "recovery-open-traffic", "traffic-serve"]
       .includes(operationType) && condition.healthStatus !== "healthy") {
       throw new Error("Host operation postcondition does not prove a healthy exact application state.");
     }
@@ -161,7 +171,7 @@ function assertPostconditionBindings(operationType, postcondition, bindings) {
   assertOperationCondition(operationType, postcondition, bindings, "Host operation postcondition");
   const artifact = bindings.immutableRollbackArtifact;
   if (artifact) {
-    if (["recovery-start-readonly-app", "recovery-drain-and-enable-writers", "recovery-open-traffic"].includes(operationType)
+    if (["recovery-start-readonly-app", "recovery-drain-and-enable-writers", "recovery-verify-completion-gates", "recovery-open-traffic"].includes(operationType)
       && postcondition.imageDigest !== artifact.rollbackImageDigest) {
       throw new Error("Host operation postcondition does not match the captured rollback image.");
     }

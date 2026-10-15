@@ -14,6 +14,19 @@ const PROGRAMLESS_SESSION_GUARDED_OPERATIONS = new Set([
   "recovery-start-readonly-app",
   "recovery-drain-and-enable-writers",
 ]);
+const HEALTH_SYNC_GUARDED_OPERATIONS = new Set([
+  "recovery-start-readonly-app",
+  "recovery-verify-completion-gates",
+  "recovery-open-traffic",
+]);
+const HEALTH_SYNC_RECOVERY_EVIDENCE_KEYS = Object.freeze([
+  "schemaVersion", "purpose", "profileId", "operationType", "operationId", "recoveryCaseId",
+  "journalGeneration", "journalRecordDigest", "logicalProductionDbIdentityDigest", "releaseSha", "imageDigest",
+  "healthRequestedGeneration", "healthCompletedGeneration", "healthLeasePresent", "healthLastErrorType", "healthLastErrorAt",
+  "unifiedTargetRevision", "unifiedInvalidationGeneration", "unifiedProductionStaleFromDate", "unifiedProductionPublishedGeneration",
+  "unifiedPublishedGeneration", "unifiedRolloutEpoch", "unifiedPublishedRolloutEpoch", "unifiedPublicationBlockedFromDate",
+  "unifiedPublicationBlockCount", "unifiedPublishedSourceDigest", "unifiedCurrentSourceDigest", "unifiedCurrent", "observedAt",
+]);
 const ROLLBACK_COMPATIBILITY_GUARD_KEYS = Object.freeze([
   "schemaVersion", "purpose", "operationType", "recoveryCaseId", "journalRecordDigest", "rollbackAppSha",
   "rollbackImageDigest", "logicalProductionDbIdentityDigest", "programlessSessionCount",
@@ -114,6 +127,55 @@ function validateRollbackCompatibilityGuard(raw, { operationType, record, now })
   return Object.freeze(raw);
 }
 
+function validateRecoveryHealthSyncCurrentness(raw, { record, intent, now }) {
+  assertExactKeys(raw, HEALTH_SYNC_RECOVERY_EVIDENCE_KEYS, "Recovery Health queue and Unified V4 currentness evidence");
+  if (raw.schemaVersion !== 1 || raw.purpose !== "bodycast-recovery-health-sync-currentness"
+    || raw.profileId !== 1 || raw.operationType !== intent.operationType || raw.operationId !== intent.operationId
+    || raw.recoveryCaseId !== record.recoveryCaseId || raw.journalGeneration !== record.generation
+    || raw.journalRecordDigest !== record.recordDigest
+    || raw.logicalProductionDbIdentityDigest !== record.logicalProductionDbIdentityDigest
+    || raw.releaseSha !== record.rollbackAppSha
+    || raw.imageDigest !== record.immutableRollbackArtifact?.rollbackImageDigest
+    || !Number.isSafeInteger(raw.healthRequestedGeneration) || raw.healthRequestedGeneration < 1
+    || raw.healthCompletedGeneration !== raw.healthRequestedGeneration
+    || raw.healthLeasePresent !== false || raw.healthLastErrorType !== null || raw.healthLastErrorAt !== null
+    || raw.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once"
+    || !Number.isSafeInteger(raw.unifiedInvalidationGeneration) || raw.unifiedInvalidationGeneration < 1
+    || raw.unifiedProductionStaleFromDate !== null
+    || raw.unifiedProductionPublishedGeneration !== raw.unifiedInvalidationGeneration
+    || raw.unifiedPublishedGeneration !== raw.unifiedInvalidationGeneration
+    || !Number.isSafeInteger(raw.unifiedRolloutEpoch) || raw.unifiedRolloutEpoch < 1
+    || raw.unifiedPublishedRolloutEpoch !== raw.unifiedRolloutEpoch
+    || raw.unifiedPublicationBlockedFromDate !== null || raw.unifiedPublicationBlockCount !== 0
+    || raw.unifiedCurrent !== true
+    || typeof raw.unifiedPublishedSourceDigest !== "string"
+    || raw.unifiedPublishedSourceDigest !== raw.unifiedCurrentSourceDigest) {
+    throw new Error("Recovery requires an idle Health refresh queue and fresh, unblocked Unified V4 publication for the exact database, app, image, operation, and journal state.");
+  }
+  assertGitSha(raw.releaseSha, "recoveryHealthCurrentness.releaseSha");
+  assertSha256(raw.imageDigest, "recoveryHealthCurrentness.imageDigest");
+  assertSha256(raw.journalRecordDigest, "recoveryHealthCurrentness.journalRecordDigest");
+  assertSha256(raw.logicalProductionDbIdentityDigest, "recoveryHealthCurrentness.logicalProductionDbIdentityDigest");
+  assertSha256(raw.unifiedPublishedSourceDigest, "recoveryHealthCurrentness.unifiedPublishedSourceDigest");
+  assertSha256(raw.unifiedCurrentSourceDigest, "recoveryHealthCurrentness.unifiedCurrentSourceDigest");
+  assertUtcTimestamp(raw.observedAt, "recoveryHealthCurrentness.observedAt");
+  const observedAt = Date.parse(raw.observedAt);
+  if (observedAt > now() + 30_000 || now() - observedAt > 30_000) {
+    throw new Error("Recovery Health queue or Unified V4 currentness evidence is stale or future-dated.");
+  }
+  const queueDigest = canonicalDigest({
+    profileId: raw.profileId,
+    requestedGeneration: raw.healthRequestedGeneration,
+    completedGeneration: raw.healthCompletedGeneration,
+    leasePresent: raw.healthLeasePresent,
+    lastErrorType: raw.healthLastErrorType,
+    lastErrorAt: raw.healthLastErrorAt,
+  });
+  const currentnessDigest = canonicalDigest(Object.fromEntries(Object.entries(raw)
+    .filter(([key]) => key.startsWith("unified"))));
+  return Object.freeze({ ...raw, healthSyncRefreshQueueDigest: queueDigest, unifiedV4CurrentnessDigest: currentnessDigest });
+}
+
 /**
  * Root-service operation gate. It receives only closed typed requests and calls
  * host-installed callbacks; it never accepts a path, executable, shell string,
@@ -131,6 +193,7 @@ export function createProductionOperationBroker({
   verifyMigrationFinalGuards,
   verifyRecoveryOperationFinalGuards,
   verifyProgramlessSessionRollbackCompatibility,
+  withRecoveryCurrentnessFence,
   verifyUnifiedV4Currentness,
   inspectFixedOperationState,
   loadEvidenceById,
@@ -151,6 +214,7 @@ export function createProductionOperationBroker({
     verifyMigrationFinalGuards,
     verifyRecoveryOperationFinalGuards,
     verifyProgramlessSessionRollbackCompatibility,
+    withRecoveryCurrentnessFence,
     verifyUnifiedV4Currentness,
     inspectFixedOperationState,
     loadEvidenceById,
@@ -204,6 +268,37 @@ export function createProductionOperationBroker({
       throw new Error("Recovery preparation does not bind the installed adapter's current conformance receipt.");
     }
     return adapterConformance;
+  }
+
+  async function withRecoveryHealthSyncCurrentness(record, intent, execute = async (evidence) => evidence) {
+    const expected = {
+      purpose: "bodycast-recovery-health-sync-currentness",
+      profileId: 1,
+      operationType: intent.operationType,
+      operationId: intent.operationId,
+      recoveryCaseId: record.recoveryCaseId,
+      journalGeneration: record.generation,
+      journalRecordDigest: record.recordDigest,
+      logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+      releaseSha: record.rollbackAppSha,
+      imageDigest: record.immutableRollbackArtifact?.rollbackImageDigest,
+    };
+    let calls = 0;
+    let result;
+    await withRecoveryCurrentnessFence({
+      ...expected,
+      healthSyncFenceNamespace: 0x42434153,
+      unifiedLifecycleFenceNamespace: 927001,
+      execute: async (rawEvidence) => {
+        calls += 1;
+        if (calls !== 1) throw new Error("Recovery Health currentness fence must invoke its guarded operation exactly once.");
+        const currentness = validateRecoveryHealthSyncCurrentness(rawEvidence, { record, intent, now });
+        result = await execute(currentness);
+        return result;
+      },
+    });
+    if (calls !== 1) throw new Error("Recovery Health currentness fence did not return read-only state under the exclusive DB fence.");
+    return result;
   }
 
   async function requireMigrationPreparation() {
@@ -355,7 +450,19 @@ export function createProductionOperationBroker({
     if (canonicalDigest(bindings) !== intent.operationInputDigest) {
       throw new Error("Committed recovery operation intent does not match its immutable operation inputs.");
     }
-    const operationBindings = { ...bindings, releaseSha: record.rollbackAppSha };
+    let healthCurrentnessForOperation = null;
+    const operationBindings = (exactRecord, exactIntent) => ({
+      ...bindings,
+      releaseSha: exactRecord.rollbackAppSha,
+      imageDigest: exactRecord.immutableRollbackArtifact?.rollbackImageDigest,
+      recoveryCaseId: exactRecord.recoveryCaseId,
+      journalGeneration: exactRecord.generation,
+      journalRecordDigest: exactRecord.recordDigest,
+      ...(HEALTH_SYNC_GUARDED_OPERATIONS.has(exactIntent.operationType) && healthCurrentnessForOperation ? {
+        healthSyncRefreshQueueDigest: healthCurrentnessForOperation.healthSyncRefreshQueueDigest,
+        unifiedV4CurrentnessDigest: healthCurrentnessForOperation.unifiedV4CurrentnessDigest,
+      } : {}),
+    });
     await requireAdapterConformance(preparation);
     let rollbackCompatibilityGuard = null;
     const readProgramlessCompatibility = async (exactRecord) => verifyProgramlessSessionRollbackCompatibility({
@@ -389,6 +496,16 @@ export function createProductionOperationBroker({
       } else if (hostGuard !== true) {
         throw new Error("Recovery operation final host-state guard did not pass immediately before the effect.");
       }
+      if (HEALTH_SYNC_GUARDED_OPERATIONS.has(exactIntent.operationType)) {
+        if (!healthCurrentnessForOperation) {
+          healthCurrentnessForOperation = await withRecoveryHealthSyncCurrentness(exactRecord, exactIntent);
+        } else {
+          const observedAt = Date.parse(healthCurrentnessForOperation.observedAt);
+          if (!Number.isFinite(observedAt) || observedAt > now() + 30_000 || now() - observedAt > 30_000) {
+            throw new Error("Recovery Health queue or Unified V4 currentness evidence expired before the protected host operation.");
+          }
+        }
+      }
     };
     const inspectRecoveryOperationState = async (operationType, operation) => {
       const observation = await inspectFixedOperationState(operationType, operation);
@@ -407,38 +524,58 @@ export function createProductionOperationBroker({
           throw new Error("Rollback operation observation differs from the fresh read-only database and exact-SHA capability proof.");
         }
       }
+      if (HEALTH_SYNC_GUARDED_OPERATIONS.has(operationType)
+        && (observation?.state === "pre" || observation?.state === "post")) {
+        const condition = observation.state === "pre" ? observation.precondition : observation.postcondition;
+        const expected = {
+          healthSyncRefreshQueueDigest: healthCurrentnessForOperation?.healthSyncRefreshQueueDigest,
+          unifiedV4CurrentnessDigest: healthCurrentnessForOperation?.unifiedV4CurrentnessDigest,
+        };
+        if (!condition || Object.entries(expected).some(([key, value]) => value === undefined || condition[key] !== value)) {
+          throw new Error("Recovery operation observation is not bound to the current Health queue and Unified V4 evidence.");
+        }
+      }
       return observation;
     };
     // Run once before operation inspection as well as at the effect boundary.
     // This keeps an already-post/replayed app start from bypassing the current
     // read-only database count and exact rollback SHA capability check.
     await validateFinalGuards(record, intent);
-    const execute = async ({ record: exactRecord, intent: exactIntent }) => executeReconciledHostOperation({
-      operationType: exactIntent.operationType,
-      operationId: exactIntent.operationId,
-      operationInputDigest: exactIntent.operationInputDigest,
-      recoveryCaseId: exactRecord.recoveryCaseId,
-      journalGeneration: exactRecord.generation,
-      journalRecordDigest: exactRecord.recordDigest,
-      bindings: operationBindings,
-      inspectFixedOperationState: inspectRecoveryOperationState,
-      authorizeImmediatelyBeforeEffect: async () => {
-        await validateFinalGuards(exactRecord, exactIntent);
-        await requireAdapterConformance(preparation);
-      },
-      executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
-        ...operation,
+    const execute = async ({ record: exactRecord, intent: exactIntent }) => {
+      const reconcile = () => executeReconciledHostOperation({
+        operationType: exactIntent.operationType,
+        operationId: exactIntent.operationId,
+        operationInputDigest: exactIntent.operationInputDigest,
         recoveryCaseId: exactRecord.recoveryCaseId,
         journalGeneration: exactRecord.generation,
         journalRecordDigest: exactRecord.recordDigest,
-        evidenceId: replay ? exactRecord.operationEvidenceId : request.evidenceId,
-        evidence,
-        ...(rollbackCompatibilityGuard ? { rollbackCompatibilityGuard } : {}),
-        immutableRollbackArtifact: exactRecord.immutableRollbackArtifact,
-        logicalProductionDbIdentityDigest: exactRecord.logicalProductionDbIdentityDigest,
-        ...(replay ? { replayOnly: true } : {}),
-      }),
-    });
+        bindings: operationBindings(exactRecord, exactIntent),
+        inspectFixedOperationState: inspectRecoveryOperationState,
+        authorizeImmediatelyBeforeEffect: async () => {
+          await validateFinalGuards(exactRecord, exactIntent);
+          await requireAdapterConformance(preparation);
+        },
+        executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
+          ...operation,
+          recoveryCaseId: exactRecord.recoveryCaseId,
+          journalGeneration: exactRecord.generation,
+          journalRecordDigest: exactRecord.recordDigest,
+          evidenceId: replay ? exactRecord.operationEvidenceId : request.evidenceId,
+          evidence,
+          ...(rollbackCompatibilityGuard ? { rollbackCompatibilityGuard } : {}),
+          immutableRollbackArtifact: exactRecord.immutableRollbackArtifact,
+          logicalProductionDbIdentityDigest: exactRecord.logicalProductionDbIdentityDigest,
+          ...(replay ? { replayOnly: true } : {}),
+        }),
+      });
+      if (HEALTH_SYNC_GUARDED_OPERATIONS.has(exactIntent.operationType)) {
+        return withRecoveryHealthSyncCurrentness(exactRecord, exactIntent, async (currentness) => {
+          healthCurrentnessForOperation = currentness;
+          return reconcile();
+        });
+      }
+      return reconcile();
+    };
     const completion = await authority.executePendingOperation({ recoveryCaseId: record.recoveryCaseId,
       generation: record.generation, recordDigest: record.recordDigest, operationId: intent.operationId }, execute);
     if (!completion.receipt || !completion.outcome && completion.executed) {
@@ -858,7 +995,12 @@ export function createProductionOperationBroker({
           || pending.intent.operationId !== request.operationId) {
           throw new Error("Operation replay request does not match the exact pending journal generation and operation ID.");
         }
-        if (pending.receipt) return { ok: true, record: pending.record, operationReceipt: pending.receipt, replayed: false };
+        if (pending.receipt) {
+          if (HEALTH_SYNC_GUARDED_OPERATIONS.has(pending.intent.operationType)) {
+            await withRecoveryHealthSyncCurrentness(pending.record, pending.intent, async () => true);
+          }
+          return { ok: true, record: pending.record, operationReceipt: pending.receipt, replayed: false };
+        }
         const evidence = pending.operationEvidenceId ? await loadEvidenceById(pending.operationEvidenceId) : null;
         if (!evidence || canonicalDigest(evidence) !== pending.record.sourceEvidenceDigest) {
           throw new Error("Operation replay cannot load the exact evidence bound to the committed intent.");
@@ -875,11 +1017,45 @@ export function createProductionOperationBroker({
       }
       if (request.operation === "recovery-finalize") {
         const evidence = await loadEvidenceById(request.evidenceId);
-        return authority.finalizeRecovery({
-          recoveryCaseId: request.recoveryCaseId,
-          expectedGeneration: request.expectedGeneration,
-          expectedRecordDigest: request.expectedRecordDigest,
-          evidence,
+        const pending = await authority.readPendingOperation?.();
+        let record;
+        if (state.state === "recovery-finalized") {
+          if (!pending?.record || pending.record.nextState !== "recovery-finalized"
+            || pending.record.recoveryCaseId !== request.recoveryCaseId
+            || pending.record.generation !== request.expectedGeneration
+            || pending.record.recordDigest !== request.expectedRecordDigest) {
+            throw new Error("Recovery finalization retry does not match the exact finalized journal record.");
+          }
+          record = pending.record;
+          if (canonicalDigest(evidence) !== record.sourceEvidenceDigest) {
+            throw new Error("Recovery finalization retry evidence differs from the exact finalized journal record.");
+          }
+        } else {
+          if (!pending?.receipt || pending.intent?.operationType !== "recovery-open-traffic"
+            || pending.record?.nextState !== "traffic-open"
+            || pending.record.recoveryCaseId !== request.recoveryCaseId
+            || pending.record.generation !== request.expectedGeneration
+            || pending.record.recordDigest !== request.expectedRecordDigest) {
+            throw new Error("Recovery finalization requires the exact receipted traffic-open operation before its Health/V4 gate.");
+          }
+          record = pending.record;
+        }
+        const intent = {
+          operationType: "recovery-finalize",
+          operationId: canonicalDigest({ purpose: "bodycast-recovery-finalization", recoveryCaseId: request.recoveryCaseId,
+            generation: request.expectedGeneration, recordDigest: request.expectedRecordDigest,
+            evidenceDigest: canonicalDigest(evidence) }),
+        };
+        return withRecoveryHealthSyncCurrentness(record, intent, async () => {
+          const preparation = await verifyRecoveryPreparation({ allowAbsent: false });
+          if (!preparation?.ready) throw new Error("Recovery finalization requires current recovery preparation and adapter conformance.");
+          await requireAdapterConformance(preparation);
+          return authority.finalizeRecovery({
+            recoveryCaseId: request.recoveryCaseId,
+            expectedGeneration: request.expectedGeneration,
+            expectedRecordDigest: request.expectedRecordDigest,
+            evidence,
+          });
         });
       }
       throw new Error("Production operation is not implemented.");

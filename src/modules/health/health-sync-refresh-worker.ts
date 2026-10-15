@@ -7,6 +7,7 @@ import {
 } from "@/model/unified-experimental-physiology-v1/contracts";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { runWithHealthSyncRefreshWorkerLease } from "./health-sync-worker-context";
 import { pruneExpiredHealthSyncAudits } from "./health-sync-audit";
 import { APPLE_HEALTH_SHORTCUT_SOURCE, healthSyncRepository } from "./health.repository";
 import { syncHealthData } from "./health.service";
@@ -32,11 +33,25 @@ type HealthSyncRefreshJob = {
 
 type ClaimedHealthSyncRefreshJob = HealthSyncRefreshJob & { leaseToken: string };
 
+export type HealthSyncRefreshWorkerHooks = {
+  /** @internal Deterministic integration coordination after the durable claim. */
+  afterClaim?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
+  /** @internal Deterministic integration coordination after the currentness read. */
+  afterCurrentnessCheck?: (job: Readonly<ClaimedHealthSyncRefreshJob>, alreadyCurrent: boolean) => Promise<void>;
+  /** @internal Deterministic integration coordination after publication, before durable acknowledgement. */
+  afterPublicationBeforeAcknowledge?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
+  /** @internal Deterministic integration coordination after lease renewal and before the first dependent write. */
+  beforeDependentRefresh?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
+  /** @internal Deterministic integration failure injection before the persisted snapshot read. */
+  beforeSnapshotRead?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
+};
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function claimNextHealthSyncRefreshJob(): Promise<ClaimedHealthSyncRefreshJob | null> {
+/** @internal Exported so PostgreSQL integration tests can model a crash after claim. */
+export async function claimNextHealthSyncRefreshJob(): Promise<ClaimedHealthSyncRefreshJob | null> {
   const now = new Date();
   return prisma.$transaction(async (transaction) => {
     const candidates = await transaction.$queryRaw<HealthSyncRefreshJob[]>`
@@ -128,7 +143,7 @@ async function retryHealthSyncRefreshJob(
   }
   logEvent("error", "health_sync_refresh_worker_failed", {
     attempt: job.attemptCount,
-    errorType,
+    ...errorDiagnosticFields(error),
     retryDelayMs: delayMs,
   });
 }
@@ -183,13 +198,18 @@ async function isUnifiedPublicationCurrentForHealthJob(job: ClaimedHealthSyncRef
   })) === 0;
 }
 
-async function refreshPendingHealthSyncWork(job: ClaimedHealthSyncRefreshJob): Promise<void> {
+async function refreshPendingHealthSyncWork(
+  job: ClaimedHealthSyncRefreshJob,
+  beforeDependentRefresh?: HealthSyncRefreshWorkerHooks["beforeDependentRefresh"],
+  beforeSnapshotRead?: HealthSyncRefreshWorkerHooks["beforeSnapshotRead"],
+): Promise<void> {
   if (!job.fromDate || !job.toDate) throw new Error("Health sync refresh job has no date range.");
   const dates = [...new Set(job.sourceDates)]
     .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date));
   if (dates.length === 0) throw new Error("Health sync refresh job has no valid source dates.");
 
   await assertAndRenewHealthSyncRefreshLease(job);
+  await beforeDependentRefresh?.(job);
   const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
   const lifecycleRow = await prisma.physiologyV7Lifecycle.findUnique({
     where: { profileId: job.profileId },
@@ -208,6 +228,7 @@ async function refreshPendingHealthSyncWork(job: ClaimedHealthSyncRefreshJob): P
     });
   }
 
+  await beforeSnapshotRead?.(job);
   const snapshots = await prisma.healthSyncSnapshot.findMany({
     where: { date: { in: dates } },
     select: { date: true, timezone: true },
@@ -300,7 +321,7 @@ async function refreshPendingHealthSyncWork(job: ClaimedHealthSyncRefreshJob): P
 }
 
 /** Claim, execute, and acknowledge one durable Health refresh batch. */
-export async function processNextHealthSyncRefreshJob(): Promise<boolean> {
+export async function processNextHealthSyncRefreshJob(hooks: HealthSyncRefreshWorkerHooks = {}): Promise<boolean> {
   const job = await claimNextHealthSyncRefreshJob();
   if (!job) return false;
   const startedAt = performance.now();
@@ -332,8 +353,14 @@ export async function processNextHealthSyncRefreshJob(): Promise<boolean> {
     dateCount: job.sourceDates.length,
   });
   try {
+    await hooks.afterClaim?.(job);
     const alreadyCurrent = await isUnifiedPublicationCurrentForHealthJob(job);
-    if (!alreadyCurrent) await refreshPendingHealthSyncWork(job);
+    await hooks.afterCurrentnessCheck?.(job, alreadyCurrent);
+    if (!alreadyCurrent) {
+      await runWithHealthSyncRefreshWorkerLease(job,
+        () => refreshPendingHealthSyncWork(job, hooks.beforeDependentRefresh, hooks.beforeSnapshotRead));
+    }
+    await hooks.afterPublicationBeforeAcknowledge?.(job);
     if (leaseLost) throw new Error("Health sync refresh worker lost its durable lease.");
     await assertAndRenewHealthSyncRefreshLease(job);
     const completed = await completeHealthSyncRefreshJob(job);

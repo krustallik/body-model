@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFile, mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -113,29 +113,6 @@ async function createDynamicWorkoutHandoffRepository() {
   directories.push(directory);
   const repository = path.join(directory, "repo");
   execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
-  const trackedCriticalFiles = [
-    "scripts/deploy.sh",
-    "scripts/production-release-marker.sh",
-    "scripts/production-release-marker.mjs",
-    "scripts/production-migration-manifests.mjs",
-    "scripts/production-schema-deploy-handoff.mjs",
-  ];
-  for (const file of trackedCriticalFiles) {
-    const destination = path.join(repository, file);
-    await mkdir(path.dirname(destination), { recursive: true });
-    await copyFile(path.join(process.cwd(), file), destination);
-  }
-  for (const file of ["scripts/production-app-capabilities.mjs", "scripts/production-app-capabilities.json"]) {
-    const destination = path.join(repository, file);
-    await mkdir(path.dirname(destination), { recursive: true });
-    await copyFile(path.join(process.cwd(), file), destination);
-  }
-  execFileSync("git", ["-C", repository, "add", "scripts/deploy.sh", "scripts/production-release-marker.sh",
-    "scripts/production-release-marker.mjs", "scripts/production-migration-manifests.mjs",
-    "scripts/production-schema-deploy-handoff.mjs", "scripts/production-app-capabilities.mjs",
-    "scripts/production-app-capabilities.json"]);
-  execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
-    "commit", "--quiet", "-m", "reviewed dynamic workout release origin"]);
   const originSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   await writeFile(path.join(repository, "tests", "dynamic-release-compatibility.txt"), "non-runtime test evidence\n");
   execFileSync("git", ["-C", repository, "add", "tests/dynamic-release-compatibility.txt"]);

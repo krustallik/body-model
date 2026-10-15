@@ -274,6 +274,9 @@ export async function runProductionRecoveryFlowFixture({
         if (key === "databaseRoleMode") return [key, "read-only"];
         if (key === "writerMode") return [key, "enabled"];
         if (key === "activeWriterCount") return [key, 0];
+        if (key === "programlessSessionCount") return [key, 0];
+        if (key === "rollbackAppSupportsProgramlessSessions") return [key, false];
+        if (key === "programlessSessionCompatible") return [key, true];
         if (key === "containerId") return [key, artifact.rollbackContainerId];
         if (key === "topologyDigest") return [key, artifact.deployHostTopologyDigest];
         if (key.endsWith("Digest")) return [key, canonicalDigest({ key, recordDigest: record.recordDigest })];

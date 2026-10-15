@@ -15,7 +15,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
 } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { getExpectedSchemaObjectNames, renderProductionDbPreflightSql } from "../scripts/production-db-preflight.mjs";
 import {
@@ -266,6 +266,9 @@ describe("production migration preflight evaluator", () => {
       ...V4_REPUBLICATION_MANIFEST.requiredObjectsBefore,
       ...V4_REPUBLICATION_MANIFEST.postflightObjects,
       ...V4_REPUBLICATION_MANIFEST.partialObjects,
+      ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredObjectsBefore,
+      ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightObjects,
+      ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.partialObjects,
     ])].sort());
   });
 

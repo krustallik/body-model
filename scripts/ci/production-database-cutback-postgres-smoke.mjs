@@ -40,6 +40,9 @@ const promotionStagePreservedId = String(BigInt(`0x${randomBytes(5).toString("he
 const promotionLivePreserved = `bodycast_cutback_live_${randomBytes(5).toString("hex")}`;
 const promotionStagePreserved = `bodycast_cutback_${promotionStagePreservedId}`;
 const promotionFailedPreserved = `bodycast_failed_${promotionStagePreservedId}`;
+const generatedDatabases = [target, staging, failed, promotionLive, promotionStage, promotionFailed,
+  promotionLivePreserved, promotionStagePreserved, promotionFailedPreserved];
+const ownedDatabases = new Set();
 const password = decodeURIComponent(url.password);
 const user = decodeURIComponent(url.username);
 const host = url.hostname;
@@ -131,6 +134,14 @@ function expectBlocked(action, message) {
   try { action(); } catch { rejected = true; }
   assert(rejected, message);
 }
+function expectBlockedWith(action, expectedMessage, message) {
+  try { action(); }
+  catch (error) {
+    assert(String(error?.message ?? error).includes(expectedMessage), `${message} (${String(error?.message ?? error)})`);
+    return;
+  }
+  throw new Error(message);
+}
 function attemptRestore(database, bytes) {
   try {
     docker(["run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${password}`, "--entrypoint", "pg_restore", IMAGE,
@@ -139,10 +150,14 @@ function attemptRestore(database, bytes) {
   } catch { return false; }
 }
 
+let primaryFailure;
+let generatedNamesCheckedAbsent = false;
 try {
-  const existing = psql("postgres", `SELECT count(*) FROM pg_database WHERE datname IN (${sqlLiteral(target)}, ${sqlLiteral(staging)}, ${sqlLiteral(failed)});`);
-  assert(existing === "0", "Generated cutback databases unexpectedly already exist.");
+  const existing = psql("postgres", `SELECT count(*) FROM pg_database WHERE datname IN (${generatedDatabases.map(sqlLiteral).join(",")});`);
+  assert(existing === "0", "A generated cutback database name unexpectedly already exists.");
+  generatedNamesCheckedAbsent = true;
   psql("postgres", `CREATE DATABASE ${target} OWNER ${user};`);
+  ownedDatabases.add(target);
   const migrationSql = "-- trusted previous migration fixture\n";
   const migrationChecksum = createHash("sha256").update(migrationSql).digest("hex");
   psql(target, `CREATE TABLE cutback_probe(id integer PRIMARY KEY, value text NOT NULL);
@@ -153,14 +168,17 @@ try {
     CREATE TABLE "PhysiologyV7Lifecycle"(id integer PRIMARY KEY, value text NOT NULL);
     CREATE TABLE "DailyModelState"(id integer PRIMARY KEY, value text NOT NULL);
     CREATE TABLE "StrengthDiarySession"(id integer PRIMARY KEY, value text NOT NULL,
-      "programId" integer NOT NULL DEFAULT 1, "programVersionId" integer NOT NULL DEFAULT 1);
+      "programId" integer, "programVersionId" integer,
+      CHECK (("programId" IS NULL) = ("programVersionId" IS NULL)));
     CREATE TABLE "ExerciseCatalog"(id integer PRIMARY KEY, value text NOT NULL);
     INSERT INTO "Workout" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
     INSERT INTO "Profile" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
     INSERT INTO "ModelEpisode" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
     INSERT INTO "PhysiologyV7Lifecycle" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
     INSERT INTO "DailyModelState" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
-    INSERT INTO "StrengthDiarySession" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
+    INSERT INTO "StrengthDiarySession"(id, value, "programId", "programVersionId")
+      SELECT n, 'snapshot-' || n, n, n FROM generate_series(1, 4) n;
+    INSERT INTO "StrengthDiarySession"(id, value, "programId", "programVersionId") VALUES (5, 'programless-session', NULL, NULL);
     INSERT INTO "ExerciseCatalog" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
     CREATE TABLE _prisma_migrations(id text PRIMARY KEY, checksum text NOT NULL, migration_name text NOT NULL,
       started_at timestamptz NOT NULL, finished_at timestamptz, rolled_back_at timestamptz, logs text, applied_steps_count integer NOT NULL DEFAULT 1);
@@ -178,16 +196,33 @@ try {
   const previousMigrationDir = path.join(previousSourceRepo, "prisma", "migrations", "20261001_baseline");
   mkdirSync(previousMigrationDir, { recursive: true });
   writeFileSync(path.join(previousMigrationDir, "migration.sql"), migrationSql);
+  mkdirSync(path.join(previousSourceRepo, "scripts"), { recursive: true });
+  writeFileSync(path.join(previousSourceRepo, "scripts/production-app-capabilities.json"), JSON.stringify({ schemaVersion: 1, capabilities: [] }));
   execFileSync("git", ["init", "--quiet", previousSourceRepo]);
   execFileSync("git", ["-C", previousSourceRepo, "add", "."]);
   execFileSync("git", ["-C", previousSourceRepo, "-c", "user.name=BodyCast CI", "-c", "user.email=ci@bodycast.invalid", "commit", "--quiet", "-m", "previous release"]);
   const previousSha = execFileSync("git", ["-C", previousSourceRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const capableSourceRepo = path.join(scratchRoot, "capable-previous-source");
+  const capableMigrationDir = path.join(capableSourceRepo, "prisma", "migrations", "20261001_baseline");
+  mkdirSync(capableMigrationDir, { recursive: true });
+  writeFileSync(path.join(capableMigrationDir, "migration.sql"), migrationSql);
+  mkdirSync(path.join(capableSourceRepo, "scripts"), { recursive: true });
+  writeFileSync(path.join(capableSourceRepo, "scripts/production-app-capabilities.json"), JSON.stringify({
+    schemaVersion: 1, capabilities: ["programless-strength-sessions-v1"],
+  }));
+  execFileSync("git", ["init", "--quiet", capableSourceRepo]);
+  execFileSync("git", ["-C", capableSourceRepo, "add", "."]);
+  execFileSync("git", ["-C", capableSourceRepo, "-c", "user.name=BodyCast CI", "-c", "user.email=ci@bodycast.invalid", "commit", "--quiet", "-m", "compatible previous release"]);
+  const capableSha = execFileSync("git", ["-C", capableSourceRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const legacyCapture = capturePreviousAppProvenance({ container: appContainer(), databaseReport: sourceReport, targetSha });
   const labeledCapture = capturePreviousAppProvenance({ container: appContainer(previousSha), databaseReport: sourceReport, targetSha });
+  const capableCapture = capturePreviousAppProvenance({ container: appContainer(capableSha), databaseReport: sourceReport, targetSha });
   assert(legacyCapture.provenanceKind === "legacy-unlabeled-v1" && legacyCapture.previousSha === "unavailable",
     "Legacy provenance assigned or misclassified a source commit SHA.");
   assert(labeledCapture.provenanceKind === "release-sha-v1" && labeledCapture.previousSha === previousSha,
     "Labeled provenance did not preserve its exact source SHA.");
+  assert(capableCapture.provenanceKind === "release-sha-v1" && capableCapture.previousSha === capableSha,
+    "Programless-compatible provenance did not preserve its exact source SHA.");
   const legacyRecreated = structuredClone(appContainer());
   legacyRecreated.Id = "f".repeat(64);
   legacyRecreated.Config.Labels = { "org.bodycast.release-sha": "unknown" };
@@ -201,7 +236,8 @@ try {
   expectBlocked(() => verifyRecreatedPreviousAppRuntime({ recordText: serializePreviousAppProvenance(legacyCapture), container: alteredLegacyRuntime }),
     "Legacy app recreation passed with a changed runtime configuration.");
   assert(verifyPreviousAppCaptureMatchesPreflight(legacyCapture, preflightResultBase, targetSha).verified
-    && verifyPreviousAppCaptureMatchesPreflight(labeledCapture, preflightResultBase, targetSha).verified,
+    && verifyPreviousAppCaptureMatchesPreflight(labeledCapture, preflightResultBase, targetSha).verified
+    && verifyPreviousAppCaptureMatchesPreflight(capableCapture, preflightResultBase, targetSha).verified,
   "Previous-app capture did not bind to the exact PostgreSQL baseline.");
   const dump = docker(["run", "--rm", "--network", "host", "--env", `PGPASSWORD=${password}`, IMAGE, "pg_dump",
     "--host", host, "--port", port, "--username", user, "--dbname", target, "--format=custom", "--no-owner", "--no-privileges"]);
@@ -242,11 +278,14 @@ try {
 
   // A failed rehearsal restore is isolated to staging; it cannot mutate the target.
   psql("postgres", `CREATE DATABASE ${staging} OWNER ${user};`);
+  ownedDatabases.add(staging);
   psql(staging, "CREATE TABLE cutback_probe(id integer PRIMARY KEY, value text NOT NULL);");
   assert(!attemptRestore(staging, dump), "A conflicting staging schema should reject the restore transaction.");
   assert(queryRows(target).includes("partially-migrated"), "A failed staging restore changed the migration target.");
   psql("postgres", `DROP DATABASE ${staging};`);
+  ownedDatabases.delete(staging);
   psql("postgres", `CREATE DATABASE ${staging} OWNER ${user};`);
+  ownedDatabases.add(staging);
   await decryptBackupToWritable(encryptedPath, createWriteStream(plainPath, { mode: 0o600, flags: "wx" }), key);
   const archive = readFileSync(plainPath);
   assert(attemptRestore(staging, archive), "The authenticated pre-DDL archive failed to restore into isolated staging PostgreSQL.");
@@ -262,25 +301,30 @@ try {
     expectedDatabase: staging }).verified, "The real PostgreSQL restored baseline did not remain on the exact source cluster.");
   const legacyPreflightResult = { ...preflightResultBase, previousAppProvenance: previousAppProvenanceBinding(legacyCapture) };
   const labeledPreflightResult = { ...preflightResultBase, previousAppProvenance: previousAppProvenanceBinding(labeledCapture) };
+  const capablePreflightResult = { ...preflightResultBase, previousAppProvenance: previousAppProvenanceBinding(capableCapture) };
   const compatibilityArgs = {
     targetSha, contextVerified: true, preflightResultDigest: canonicalSha256(legacyPreflightResult),
     preflightResult: legacyPreflightResult, restoredReport: stagingReport,
     restoreResult, readabilityReport: stagingReadability, repositoryPath: previousSourceRepo,
   };
-  const legacyCompatibility = verifyPreviousAppMigrationCompatibility({ recordText: serializePreviousAppProvenance(legacyCapture), ...compatibilityArgs });
-  const labeledCompatibility = verifyPreviousAppMigrationCompatibility({ recordText: serializePreviousAppProvenance(labeledCapture),
-    ...compatibilityArgs, preflightResultDigest: canonicalSha256(labeledPreflightResult), preflightResult: labeledPreflightResult });
-  assert(legacyCompatibility.provenanceKind === "legacy-unlabeled-v1" && labeledCompatibility.provenanceKind === "release-sha-v1",
-    "Legacy and labeled previous-image paths did not both verify against the real restored PostgreSQL snapshot.");
+  expectBlocked(() => verifyPreviousAppMigrationCompatibility({ recordText: serializePreviousAppProvenance(legacyCapture), ...compatibilityArgs }),
+    "Unlabeled previous app was accepted despite a programless session in the restored PostgreSQL database.");
+  expectBlocked(() => verifyPreviousAppMigrationCompatibility({ recordText: serializePreviousAppProvenance(labeledCapture),
+    ...compatibilityArgs, preflightResultDigest: canonicalSha256(labeledPreflightResult), preflightResult: labeledPreflightResult }),
+  "Previous app without programless capability was accepted despite a programless session in the restored PostgreSQL database.");
+  const capableCompatibility = verifyPreviousAppMigrationCompatibility({ recordText: serializePreviousAppProvenance(capableCapture),
+    ...compatibilityArgs, preflightResultDigest: canonicalSha256(capablePreflightResult), preflightResult: capablePreflightResult,
+    repositoryPath: capableSourceRepo });
+  assert(capableCompatibility.provenanceKind === "release-sha-v1" && stagingReport.programlessSessionCount === 1,
+    "Exact-SHA capable previous app did not verify against the real restored PostgreSQL programless-session state.");
   psql(staging, "ALTER TABLE cutback_probe ADD COLUMN incompatible_schema text;");
   const incompatibleReport = queryReport(staging);
-  expectBlocked(() => verifyPreviousAppMigrationCompatibility({
-    recordText: serializePreviousAppProvenance(legacyCapture), ...compatibilityArgs, restoredReport: incompatibleReport,
-  }), "Legacy rollback passed despite a schema mismatch in the restored database.");
-  expectBlocked(() => verifyPreviousAppMigrationCompatibility({
-    recordText: serializePreviousAppProvenance(labeledCapture), ...compatibilityArgs, preflightResultDigest: canonicalSha256(labeledPreflightResult),
-    preflightResult: labeledPreflightResult, restoredReport: incompatibleReport,
-  }), "Labeled rollback passed despite a schema mismatch in the restored database.");
+  expectBlockedWith(() => verifyPreviousAppMigrationCompatibility({
+    recordText: serializePreviousAppProvenance(capableCapture), ...compatibilityArgs,
+    preflightResultDigest: canonicalSha256(capablePreflightResult), preflightResult: capablePreflightResult,
+    restoredReport: incompatibleReport, repositoryPath: capableSourceRepo,
+  }), "Restored previous-release schema or history differs",
+  "A capable exact-SHA rollback app passed despite a schema mismatch in the restored database.");
   assert(queryRows(target).includes("partially-migrated"), "Failed compatibility checks changed the migrated target.");
   psql(staging, "ALTER TABLE cutback_probe DROP COLUMN incompatible_schema;");
 
@@ -301,7 +345,9 @@ try {
     [promotionLivePreserved, promotionStagePreserved, promotionFailedPreserved],
   ]) {
     psql("postgres", `CREATE DATABASE ${liveName} WITH TEMPLATE ${target} OWNER ${user};`);
+    ownedDatabases.add(liveName);
     psql("postgres", `CREATE DATABASE ${stageName} WITH TEMPLATE ${staging} OWNER ${user};`);
+    ownedDatabases.add(stageName);
     assert(queryRows(liveName) === liveBeforeFailure && queryRows(stageName) === stageBeforeFailure,
       "The real PostgreSQL rename fixture differs from the current live/staged data before failure injection.");
     const failRestore = stageName === promotionStagePreserved;
@@ -309,6 +355,10 @@ try {
       markerPath, lifecycleCalls });
     assert(injected.status === (failRestore ? 42 : 41),
       `Production cutback rename failure returned an unexpected status (${injected.status}).`);
+    ownedDatabases.add(failedName);
+    if (failRestore) {
+      ownedDatabases.delete(liveName);
+    }
     assert(readFileSync(markerPath, "utf8") === markerBytes && readFileSync(routePath, "utf8") === routeBytes,
       "Cutback failure cleanup changed the durable marker or maintenance route.");
     assert(!existsSync(lifecycleCalls), "The failure path attempted an app/Compose restart or lifecycle mutation.");
@@ -328,15 +378,35 @@ try {
 
   // Destructive name swap is reached only after authenticated restore and exact checks above.
   psql("postgres", `ALTER DATABASE ${target} RENAME TO ${failed};`);
+  ownedDatabases.delete(target);
+  ownedDatabases.add(failed);
   psql("postgres", `ALTER DATABASE ${staging} RENAME TO ${target};`);
+  ownedDatabases.delete(staging);
+  ownedDatabases.add(target);
   assert(queryRows(target) === baselineRows && querySchema(target) === baselineSchema, "Cutback swap did not install the verified baseline database.");
   assert(queryRows(failed).includes("partially-migrated"), "Cutback did not retain the failed migrated database for review.");
   console.log("Isolated PostgreSQL cutback PASS: authenticated restore, previous-app compatibility, failure of the second DB rename, failed restoration, EXIT cleanup, maintenance/marker preservation, no app restart, and DB retention were verified against real PostgreSQL.");
+} catch (error) {
+  primaryFailure = error;
+  throw error;
 } finally {
-  const databases = [target, staging, failed, promotionLive, promotionStage, promotionFailed,
-    promotionLivePreserved, promotionStagePreserved, promotionFailedPreserved];
-  try { psql("postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (${databases.map(sqlLiteral).join(",")}) AND pid <> pg_backend_pid();`); } catch {}
-  for (const name of databases) { try { psql("postgres", `DROP DATABASE IF EXISTS ${name};`); } catch {} }
-  key.fill(0);
-  rmSync(scratchRoot, { recursive: true, force: true });
+  const cleanupFailures = [];
+  try {
+    if (generatedNamesCheckedAbsent && ownedDatabases.size) {
+      const ownedNames = [...ownedDatabases];
+      try { psql("postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (${ownedNames.map(sqlLiteral).join(",")}) AND pid <> pg_backend_pid();`); }
+      catch (error) { cleanupFailures.push(error); }
+      for (const name of ownedNames) {
+        try { psql("postgres", `DROP DATABASE IF EXISTS ${name};`); }
+        catch (error) { cleanupFailures.push(error); }
+      }
+    }
+    if (cleanupFailures.length) {
+      const errors = primaryFailure ? [primaryFailure, ...cleanupFailures] : cleanupFailures;
+      throw new AggregateError(errors, `Isolated PostgreSQL cutback smoke cleanup failed for generated databases: ${generatedDatabases.join(", ")}.`);
+    }
+  } finally {
+    key.fill(0);
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
 }

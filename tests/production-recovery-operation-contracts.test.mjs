@@ -52,6 +52,13 @@ function callOperation({ inspect, execute, beforeEffect = async () => {} } = {})
 }
 
 describe("fixed host operation replay and success contract", () => {
+  it("binds every Health-currentness guarded operation to the profile fence in its operation contract", () => {
+    for (const operationType of ["recovery-start-readonly-app", "recovery-verify-completion-gates", "recovery-open-traffic"]) {
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/profile-exclusive-fence-through-health-queue-and-currentness-check/);
+      expect(OPERATION_CONTRACTS[operationType].replayPolicy).toMatch(/health-queue-and-unified-v4-under-profile-fence/);
+    }
+  });
+
   it.each(["recovery-start-readonly-app", "recovery-drain-and-enable-writers"])(
     "requires exact app capability evidence in %s post-state observations, including replay",
     (operationType) => {

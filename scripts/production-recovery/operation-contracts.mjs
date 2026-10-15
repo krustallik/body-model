@@ -28,7 +28,8 @@ const OPERATION_DEFINITIONS = Object.freeze({
   "recovery-start-readonly-app": Object.freeze({
     preState: "captured-app-stopped",
     postState: "captured-app-healthy-readonly",
-    replayPolicy: "inspect-exact-container-and-readonly-role-before-ensure-started",
+    replayPolicy: "inspect-health-queue-and-unified-v4-under-profile-fence-before-ensuring-readonly-app-start",
+    boundary: "hold-unified-profile-exclusive-fence-through-health-queue-and-currentness-check-and-readonly-app-start-effect",
     preconditionKeys: ["releaseSha", "imageDigest", "containerState", "databaseRoleMode", "logicalProductionDbIdentityDigest",
       "programlessSessionCount", "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest",
       "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest"],
@@ -50,8 +51,8 @@ const OPERATION_DEFINITIONS = Object.freeze({
   "recovery-verify-completion-gates": Object.freeze({
     preState: "writers-enabled",
     postState: "completion-gates-current",
-    replayPolicy: "recompute-completion-from-current-host-database-health-queue-and-unified-v4-state",
-    boundary: "hold-health-sync-and-unified-profile-exclusive-fences-through-currentness-and-completion-effect",
+    replayPolicy: "recompute-completion-from-health-queue-and-unified-v4-under-profile-fence",
+    boundary: "hold-unified-profile-exclusive-fence-through-health-queue-and-currentness-check-and-completion-effect",
     preconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
       "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "writerMode"],
     postconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
@@ -60,8 +61,8 @@ const OPERATION_DEFINITIONS = Object.freeze({
   "recovery-open-traffic": Object.freeze({
     preState: "maintenance-route-on-bound-host",
     postState: "bound-rollback-image-serving",
-    replayPolicy: "inspect-current-health-queue-and-unified-v4-under-both-source-fences-before-ensuring-bound-rollback-target-traffic",
-    boundary: "hold-health-sync-and-unified-profile-exclusive-fences-through-currentness-and-authoritative-route-mutation",
+    replayPolicy: "inspect-current-health-queue-and-unified-v4-under-profile-fence-before-ensuring-bound-rollback-target-traffic",
+    boundary: "hold-unified-profile-exclusive-fence-through-health-queue-and-currentness-check-and-authoritative-route-mutation",
     preconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
       "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "routeDigest", "markerState"],
     postconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
@@ -98,7 +99,7 @@ const CONFORMANCE_KEYS = Object.freeze([
   "testRunId", "testedOperationTypes", "result", "issuedAt", "expiresAt", "signerKeyId", "signature",
 ]);
 
-export const OPERATION_CONTRACT_VERSION = 7;
+export const OPERATION_CONTRACT_VERSION = 8;
 const OPERATION_EVIDENCE_SCHEMA_VERSION = 1;
 export const OPERATION_CONTRACTS = OPERATION_DEFINITIONS;
 export const OPERATION_ADAPTER_CONTRACT_DIGEST = canonicalDigest({

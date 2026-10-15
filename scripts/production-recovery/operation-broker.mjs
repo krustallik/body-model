@@ -287,7 +287,6 @@ export function createProductionOperationBroker({
     let result;
     await withRecoveryCurrentnessFence({
       ...expected,
-      healthSyncFenceNamespace: 0x42434153,
       unifiedLifecycleFenceNamespace: 927001,
       execute: async (rawEvidence) => {
         calls += 1;
@@ -537,10 +536,6 @@ export function createProductionOperationBroker({
       }
       return observation;
     };
-    // Run once before operation inspection as well as at the effect boundary.
-    // This keeps an already-post/replayed app start from bypassing the current
-    // read-only database count and exact rollback SHA capability check.
-    await validateFinalGuards(record, intent);
     const execute = async ({ record: exactRecord, intent: exactIntent }) => {
       const reconcile = () => executeReconciledHostOperation({
         operationType: exactIntent.operationType,
@@ -578,6 +573,11 @@ export function createProductionOperationBroker({
     };
     const completion = await authority.executePendingOperation({ recoveryCaseId: record.recoveryCaseId,
       generation: record.generation, recordDigest: record.recordDigest, operationId: intent.operationId }, execute);
+    // A durable receipt skips the execution callback. Recheck the exact app,
+    // Health queue, and V4 state before acknowledging that prior completion.
+    if (!completion.executed && HEALTH_SYNC_GUARDED_OPERATIONS.has(intent.operationType)) {
+      await validateFinalGuards(record, intent);
+    }
     if (!completion.receipt || !completion.outcome && completion.executed) {
       throw new Error("Recovery operation did not produce an authenticated completion receipt.");
     }

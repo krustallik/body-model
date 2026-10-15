@@ -42,8 +42,6 @@ export type HealthSyncRefreshWorkerHooks = {
   afterPublicationBeforeAcknowledge?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
   /** @internal Deterministic integration coordination after lease renewal and before the first dependent write. */
   beforeDependentRefresh?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
-  /** @internal Deterministic integration failure injection before the persisted snapshot read. */
-  beforeSnapshotRead?: (job: Readonly<ClaimedHealthSyncRefreshJob>) => Promise<void>;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -201,7 +199,6 @@ async function isUnifiedPublicationCurrentForHealthJob(job: ClaimedHealthSyncRef
 async function refreshPendingHealthSyncWork(
   job: ClaimedHealthSyncRefreshJob,
   beforeDependentRefresh?: HealthSyncRefreshWorkerHooks["beforeDependentRefresh"],
-  beforeSnapshotRead?: HealthSyncRefreshWorkerHooks["beforeSnapshotRead"],
 ): Promise<void> {
   if (!job.fromDate || !job.toDate) throw new Error("Health sync refresh job has no date range.");
   const dates = [...new Set(job.sourceDates)]
@@ -228,7 +225,6 @@ async function refreshPendingHealthSyncWork(
     });
   }
 
-  await beforeSnapshotRead?.(job);
   const snapshots = await prisma.healthSyncSnapshot.findMany({
     where: { date: { in: dates } },
     select: { date: true, timezone: true },
@@ -325,7 +321,6 @@ export async function processNextHealthSyncRefreshJob(hooks: HealthSyncRefreshWo
   const job = await claimNextHealthSyncRefreshJob();
   if (!job) return false;
   const startedAt = performance.now();
-  let leaseLost = false;
   let heartbeatRunning = false;
   const heartbeat = setInterval(() => {
     if (heartbeatRunning) return;
@@ -333,7 +328,6 @@ export async function processNextHealthSyncRefreshJob(hooks: HealthSyncRefreshWo
     void renewHealthSyncRefreshLease(job)
       .then((renewed) => {
         if (!renewed) {
-          leaseLost = true;
           logEvent("error", "health_sync_refresh_worker_lease_lost", { attempt: job.attemptCount });
         }
       })
@@ -358,10 +352,9 @@ export async function processNextHealthSyncRefreshJob(hooks: HealthSyncRefreshWo
     await hooks.afterCurrentnessCheck?.(job, alreadyCurrent);
     if (!alreadyCurrent) {
       await runWithHealthSyncRefreshWorkerLease(job,
-        () => refreshPendingHealthSyncWork(job, hooks.beforeDependentRefresh, hooks.beforeSnapshotRead));
+        () => refreshPendingHealthSyncWork(job, hooks.beforeDependentRefresh));
     }
     await hooks.afterPublicationBeforeAcknowledge?.(job);
-    if (leaseLost) throw new Error("Health sync refresh worker lost its durable lease.");
     await assertAndRenewHealthSyncRefreshLease(job);
     const completed = await completeHealthSyncRefreshJob(job);
     logEvent("info", "health_sync_refresh_worker_completed", {

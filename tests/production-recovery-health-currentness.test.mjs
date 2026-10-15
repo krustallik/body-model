@@ -46,6 +46,7 @@ function currentness(expected, overrides = {}) {
 }
 
 function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides = {}, receipt = null, finalized = false,
+  receiptedTransition = false,
   preparationOverrides = {}, adapterConformance = ADAPTER, finalizedRecordReader = true } = {}) {
   const transition = operationType === "recovery-open-traffic" ? "open-traffic"
     : operationType === "recovery-start-readonly-app" ? "mark-rollback-app-ready" : "complete-recovery";
@@ -71,7 +72,7 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
   let effectCount = 0;
   let finalizeCount = 0;
   let committed = false;
-  let inHealthFence = false;
+  let inProfileFence = false;
   let preparationCalls = 0;
   let conformanceCalls = 0;
   let finalizedRecordReads = 0;
@@ -114,6 +115,10 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
     } } : {}),
     applyTransition: async () => { committed = true; return { record }; },
     executePendingOperation: async (identity, execute) => {
+      if (receiptedTransition) {
+        return { receipt: { operationId: identity.operationId, outcomeDigest: "7".repeat(64) },
+          outcome: null, executed: false };
+      }
       const outcome = await execute({ record, intent });
       receipt = { operationId: identity.operationId, outcomeDigest: canonicalDigest(outcome) };
       return { receipt, outcome, executed: true };
@@ -142,16 +147,15 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
     }),
     withRecoveryCurrentnessFence: async (expected) => {
       fenceCalls.push(expected);
-      expect(expected.healthSyncFenceNamespace).toBe(0x42434153);
       expect(expected.unifiedLifecycleFenceNamespace).toBe(927001);
-      inHealthFence = true;
+      inProfileFence = true;
       try {
         const raw = typeof overrides.currentness === "function"
           ? overrides.currentness(expected, fenceCalls.length)
           : currentness(expected, overrides.currentness ?? {});
         return await expected.execute(raw);
       } finally {
-        inHealthFence = false;
+        inProfileFence = false;
       }
     },
     verifyUnifiedV4Currentness: async () => null,
@@ -161,7 +165,7 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
     loadRolloutReceiptById: async () => null,
     executeFixedOperation: async (_type, input) => {
       await input.authorizeImmediatelyBeforeEffect();
-      expect(inHealthFence).toBe(true);
+      expect(inProfileFence).toBe(true);
       effectCount += 1;
       observedState = "post";
       const postcondition = conditionFor(input, "post");
@@ -196,12 +200,28 @@ describe("recovery Health queue and Unified V4 gates", () => {
       const result = await fixture.broker.dispatch(fixture.request);
       expect(result.operationCompletion).toMatchObject({ result: "executed" });
       expect(fixture.effectCount()).toBe(1);
-      expect(fixture.fenceCalls).toHaveLength(2);
+      expect(fixture.fenceCalls).toHaveLength(1);
       expect(fixture.fenceCalls.every((call) => call.operationId === fixture.intent.operationId
         && call.releaseSha === OLD_APP_SHA && call.imageDigest === IMAGE_DIGEST
         && call.logicalProductionDbIdentityDigest === DATABASE_DIGEST)).toBe(true);
     },
   );
+
+  it("rechecks a receipted transition under the currentness fence before returning success", async () => {
+    const fixture = makeRecoveryCase({ receiptedTransition: true });
+    const request = { schemaVersion: 1, operation: "recovery-transition", requestId: "already-receipted-transition",
+      recoveryCaseId: fixture.record.recoveryCaseId, transition: fixture.record.transition,
+      expectedGeneration: fixture.record.generation - 1, expectedRecordDigest: "9".repeat(64),
+      evidenceId: fixture.record.operationEvidenceId, authorizationEnvelope: null, policyAttestation: null,
+      rolloutReceiptId: "rollout-health" };
+
+    const result = await fixture.broker.dispatch(request);
+
+    expect(result.operationReceipt.operationId).toBe(fixture.intent.operationId);
+    expect(result.operationCompletion).toBeNull();
+    expect(fixture.fenceCalls).toHaveLength(1);
+    expect(fixture.effectCount()).toBe(0);
+  });
 
   it("blocks traffic when the queue is complete but V4 publication is stale", async () => {
     const fixture = makeRecoveryCase({ overrides: { currentness: { unifiedCurrent: false,
@@ -210,20 +230,22 @@ describe("recovery Health queue and Unified V4 gates", () => {
     expect(fixture.effectCount()).toBe(0);
   });
 
-  it("rechecks currentness under the effect fence and rejects a Health generation change between checks", async () => {
-    const fixture = makeRecoveryCase({ overrides: { currentness: (expected, call) => currentness(expected,
-      call === 1 ? {} : { healthRequestedGeneration: 9, healthCompletedGeneration: 8 }) } });
+  it("rejects a Health generation change visible at the fenced read", async () => {
+    const fixture = makeRecoveryCase({ overrides: { currentness: {
+      healthRequestedGeneration: 9, healthCompletedGeneration: 8,
+    } } });
     await expect(fixture.broker.dispatch(fixture.request)).rejects.toThrow(/idle Health refresh queue and fresh, unblocked Unified V4/);
-    expect(fixture.fenceCalls).toHaveLength(2);
+    expect(fixture.fenceCalls).toHaveLength(1);
     expect(fixture.effectCount()).toBe(0);
   });
 
-  it("rejects a Unified V4 invalidation between recovery preflight and effect fence", async () => {
-    const fixture = makeRecoveryCase({ overrides: { currentness: (expected, call) => currentness(expected,
-      call === 1 ? {} : { unifiedCurrent: false, unifiedInvalidationGeneration: 92,
-        unifiedProductionPublishedGeneration: 91, unifiedPublishedGeneration: 91 }) } });
+  it("rejects a Unified V4 invalidation visible at the fenced read", async () => {
+    const fixture = makeRecoveryCase({ overrides: { currentness: {
+      unifiedCurrent: false, unifiedInvalidationGeneration: 92,
+      unifiedProductionPublishedGeneration: 91, unifiedPublishedGeneration: 91,
+    } } });
     await expect(fixture.broker.dispatch(fixture.request)).rejects.toThrow(/idle Health refresh queue and fresh, unblocked Unified V4/);
-    expect(fixture.fenceCalls).toHaveLength(2);
+    expect(fixture.fenceCalls).toHaveLength(1);
     expect(fixture.effectCount()).toBe(0);
   });
 
@@ -317,7 +339,7 @@ describe("recovery Health queue and Unified V4 gates", () => {
     const replay = await fixture.broker.dispatch(replayRequest);
     expect(replay.operationCompletion).toMatchObject({ result: "executed" });
     expect(fixture.committed()).toBe(true);
-    expect(fixture.fenceCalls).toHaveLength(3);
+    expect(fixture.fenceCalls).toHaveLength(2);
     expect(fixture.effectCount()).toBe(1);
   });
 });

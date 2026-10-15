@@ -10,7 +10,6 @@ import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-id
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { logEvent } from "@/lib/logger";
-import { acquireHealthSyncPersistenceFence } from "./health-sync-fence";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
@@ -328,7 +327,6 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     let result!: SyncDateResult;
     try {
       result = await this.client.$transaction(async (transaction) => {
-      await acquireHealthSyncPersistenceFence(transaction, 1);
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
       const profileLockStartedAt = performance.now();
       await lifecycle.lockProfile(1);

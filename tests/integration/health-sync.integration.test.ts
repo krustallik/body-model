@@ -3,7 +3,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/v1/health/sync/route";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 import { claimNextHealthSyncRefreshJob, processNextHealthSyncRefreshJob } from "@/modules/health/health-sync-refresh-worker";
-import { HEALTH_SYNC_FENCE_NAMESPACE } from "@/modules/health/health-sync-fence";
 import { runWithHealthSyncRefreshWorkerLease } from "@/modules/health/health-sync-worker-context";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
@@ -20,6 +19,30 @@ function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const waiter = pid === undefined
+      ? await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
+            AND objid = 1::oid AND objsubid = 2 AND granted = false
+        ) AS waiting
+      `
+      : await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_locks
+          WHERE pid = ${pid} AND locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
+            AND objid = 1::oid AND objsubid = 2 AND granted = false
+        ) AS waiting
+      `;
+    if (waiter[0]?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Expected transaction did not wait for the profile advisory lock.");
 }
 
 async function saveHealthState() {
@@ -609,27 +632,6 @@ describe("Apple Health sync with PostgreSQL", () => {
         },
       });
 
-      // The isolated database has no published V7 generation, so recovery
-      // must retain the durable job and Health fence for a later retry.
-      await expect(processNextHealthSyncRefreshJob({
-        beforeSnapshotRead: async () => { throw new Error("synthetic persisted-snapshot read failure"); },
-      })).resolves.toBe(true);
-      const retryable = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
-      expect(retryable.completedGeneration).toBeLessThan(retryable.requestedGeneration);
-      expect(retryable.attemptCount).toBe(5);
-      expect(retryable.leaseToken).toBeNull();
-      expect(retryable.leaseUntil).toBeNull();
-      expect(retryable.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(Date.now() + 15_000);
-      expect(retryable.lastErrorType).not.toBeNull();
-      await expect(prisma.unifiedPublicationBlock.findFirst({
-        where: { profileId: 1, source: "health", sourceKey: date },
-        select: { fromDate: true },
-      })).resolves.toMatchObject({ fromDate: date });
-      expect(await prisma.healthSyncSnapshot.count({ where: { date } })).toBe(rawSnapshotCount);
-      await expect(prisma.healthSyncSnapshot.findFirstOrThrow({
-        where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
-      })).resolves.toMatchObject({ rawPayload });
-
       // Model a prior worker that completed publication and crashed before
       // acknowledging the durable queue row. Its lease is now reclaimable.
       await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1 } });
@@ -663,7 +665,7 @@ describe("Apple Health sync with PostgreSQL", () => {
       expect(recovered.leaseToken).toBeNull();
       expect(recovered.leaseUntil).toBeNull();
       expect(recovered.sourceDates).toEqual([]);
-      expect(recovered.attemptCount).toBe(6);
+      expect(recovered.attemptCount).toBe(5);
       expect(await prisma.healthSyncSnapshot.count({ where: { date } })).toBe(rawSnapshotCount);
       await expect(prisma.healthSyncSnapshot.findFirstOrThrow({
         where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
@@ -1088,7 +1090,7 @@ describe("Apple Health sync with PostgreSQL", () => {
     }
   }, 60_000);
 
-  it("rejects a stale worker mutation after recovery currentness passes under both DB fences", async () => {
+  it("rejects a stale worker mutation after recovery currentness passes under the profile fence", async () => {
     const date = "2050-02-01";
     const prior = await saveHealthState();
     const priorActiveEpisodes = await prisma.modelEpisode.findMany({ where: { active: true }, select: { id: true, deactivatedAt: true } });
@@ -1144,9 +1146,6 @@ describe("Apple Health sync with PostgreSQL", () => {
 
       recoveryFence = prisma.$transaction(async (transaction) => {
         await transaction.$queryRaw`WITH acquired AS MATERIALIZED (
-          SELECT pg_advisory_xact_lock(${HEALTH_SYNC_FENCE_NAMESPACE}::integer, 1::integer)
-        ) SELECT 1::integer FROM acquired`;
-        await transaction.$queryRaw`WITH acquired AS MATERIALIZED (
           SELECT pg_advisory_xact_lock(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::integer, 1::integer)
         ) SELECT 1::integer FROM acquired`;
         const [queue, lifecycle] = await Promise.all([
@@ -1167,8 +1166,8 @@ describe("Apple Health sync with PostgreSQL", () => {
       releaseRecoveryLock.resolve();
       await recoveryFence;
 
-      // The old worker resumes only after the recovery gate released both
-      // locks. Its exact generation/token is checked after reacquiring them,
+      // The old worker resumes only after the recovery gate released the
+      // profile lock. Its exact generation/token is checked after reacquiring it,
       // inside the same transaction that would have changed lifecycle state.
       const lifecycleBeforeStaleResume = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
       releaseStaleWorker.resolve();
@@ -1214,9 +1213,6 @@ describe("Apple Health sync with PostgreSQL", () => {
     let responseSettled = false;
     const recoveryFence = prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw`WITH acquired AS MATERIALIZED (
-        SELECT pg_advisory_xact_lock(${HEALTH_SYNC_FENCE_NAMESPACE}::integer, 1::integer)
-      ) SELECT 1::integer FROM acquired`;
-      await transaction.$queryRaw`WITH acquired AS MATERIALIZED (
         SELECT pg_advisory_xact_lock(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::integer, 1::integer)
       ) SELECT 1::integer FROM acquired`;
       lockHeld.resolve();
@@ -1228,7 +1224,7 @@ describe("Apple Health sync with PostgreSQL", () => {
         responseSettled = true;
         return response;
       });
-      await new Promise((resolve) => setTimeout(resolve, 75));
+      await waitForProfileAdvisoryLockWaiter();
       expect(responseSettled).toBe(false);
       releaseLock.resolve();
       await recoveryFence;
@@ -1251,9 +1247,6 @@ describe("Apple Health sync with PostgreSQL", () => {
     const releaseLock = deferred();
     const recoveryFence = prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw`WITH acquired AS MATERIALIZED (
-        SELECT pg_advisory_xact_lock(${HEALTH_SYNC_FENCE_NAMESPACE}::integer, 1::integer)
-      ) SELECT 1::integer FROM acquired`;
-      await transaction.$queryRaw`WITH acquired AS MATERIALIZED (
         SELECT pg_advisory_xact_lock(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::integer, 1::integer)
       ) SELECT 1::integer FROM acquired`;
       lockHeld.resolve();
@@ -1261,14 +1254,15 @@ describe("Apple Health sync with PostgreSQL", () => {
     }, { maxWait: 5_000, timeout: 10_000 });
     try {
       await lockHeld.promise;
-      const invalidationStarted = deferred();
+      const invalidationStarted = deferred<number>();
       let invalidationSettled = false;
       const invalidation = prisma.$transaction(async (transaction) => {
-        invalidationStarted.resolve();
+        const backend = await transaction.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        invalidationStarted.resolve(backend[0]!.pid);
         return new PhysiologyV7PersistenceRepository(transaction).invalidate(1, date);
       }).then((result) => { invalidationSettled = true; return result; });
-      await invalidationStarted.promise;
-      await new Promise((resolve) => setTimeout(resolve, 75));
+      const invalidationPid = await invalidationStarted.promise;
+      await waitForProfileAdvisoryLockWaiter(invalidationPid);
       expect(invalidationSettled).toBe(false);
       releaseLock.resolve();
       await recoveryFence;

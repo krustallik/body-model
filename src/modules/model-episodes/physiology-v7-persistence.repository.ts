@@ -10,7 +10,6 @@ import {
   versionsAreCurrent,
 } from "./physiology-v7-persistence";
 import { addCalendarDays } from "./model-calendar";
-import { HEALTH_SYNC_FENCE_NAMESPACE } from "@/modules/health/health-sync-fence";
 import {
   getHealthSyncRefreshWorkerLease,
   HealthSyncRefreshWorkerLeaseLostError,
@@ -161,13 +160,10 @@ export class PhysiologyV7PersistenceRepository {
     if (workerLease && (workerLease.profileId !== profileId || isPrismaClient(this.client))) {
       throw new HealthSyncRefreshWorkerLeaseLostError();
     }
-    // Recovery takes these transaction-scoped locks in the same order. Shared
-    // Health fencing keeps a currentness check stable across every lifecycle
-    // writer; worker mutations additionally row-lock and validate their exact
-    // durable lease after both locks and hold that row lock through mutation.
-    await this.client.$queryRaw`WITH acquired AS MATERIALIZED (
-      SELECT pg_advisory_xact_lock_shared(CAST(${HEALTH_SYNC_FENCE_NAMESPACE} AS integer), CAST(${profileId} AS integer))
-    ) SELECT 1::integer FROM acquired`;
+    // Recovery takes this same transaction-scoped profile lock while checking
+    // Health queue and Unified currentness, then holds it through its effect.
+    // Worker mutations additionally validate and row-lock their exact durable
+    // lease through the lifecycle mutation.
     await this.client.$executeRaw`SELECT pg_advisory_xact_lock(CAST(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))`;
     if (workerLease) {
       const ownedJobs = await this.client.$queryRaw<Array<{ profileId: number }>>`

@@ -58,7 +58,6 @@ export const REVIEWED_ENTRYPOINTS = Object.freeze([
   "scripts/production-recovery/migration-context-store.mjs",
   "scripts/production-recovery/operation-broker.mjs",
   "scripts/production-recovery/operation-contracts.mjs",
-  "src/modules/health/health-sync-fence.ts",
   "src/modules/health/health.repository.ts",
   "src/modules/health/health-sync-refresh-worker.ts",
   "src/modules/health/health-sync-worker-context.ts",

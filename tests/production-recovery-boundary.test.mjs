@@ -352,8 +352,10 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
 
 describe("production recovery install, rollout, and operation boundaries", () => {
   it("binds Health worker lease enforcement and lifecycle mutation code into the reviewed host manifest", () => {
+    expect(REVIEWED_ENTRYPOINTS).toContain("src/modules/health/health.repository.ts");
     expect(REVIEWED_ENTRYPOINTS).toContain("src/modules/health/health-sync-worker-context.ts");
     expect(REVIEWED_ENTRYPOINTS).toContain("src/modules/model-episodes/physiology-v7-persistence.repository.ts");
+    expect(REVIEWED_ENTRYPOINTS).not.toContain("src/modules/health/health-sync-fence.ts");
     expect(new Set(REVIEWED_ENTRYPOINTS).size).toBe(REVIEWED_ENTRYPOINTS.length);
   });
 
@@ -962,20 +964,20 @@ describe("production recovery install, rollout, and operation boundaries", () =>
 
     const unsafe = makeBroker(false);
     await expect(unsafe.broker.dispatch(request)).rejects.toThrow(/not certified to read existing programless strength sessions/);
-    expect(unsafe.counts()).toEqual({ inspections: 0, effects: 0, guards: 1 });
+    expect(unsafe.counts()).toEqual({ inspections: 1, effects: 0, guards: 0 });
 
     const safe = makeBroker(true);
     const result = await safe.broker.dispatch({ ...request, requestId: "rollback-compat-2" });
     expect(result.operationCompletion).toMatchObject({ result: "already-satisfied", postcondition: {
       releaseSha, programlessSessionCount: 1, rollbackAppSupportsProgramlessSessions: true,
     } });
-    expect(safe.counts()).toEqual({ inspections: 1, effects: 0, guards: 1 });
+    expect(safe.counts()).toEqual({ inspections: 1, effects: 0, guards: 0 });
 
     const mismatchedPostcondition = { ...observation, postcondition: { ...postcondition, programlessSessionCount: 2 } };
     const mismatch = makeBroker(true, mismatchedPostcondition);
     await expect(mismatch.broker.dispatch({ ...request, requestId: "rollback-compat-mismatch" }))
       .rejects.toThrow(/differs from the fresh read-only database and exact-SHA capability proof/);
-    expect(mismatch.counts()).toEqual({ inspections: 1, effects: 0, guards: 1 });
+    expect(mismatch.counts()).toEqual({ inspections: 1, effects: 0, guards: 0 });
   });
 
   it("replays only the exact pending journal operation and reuses its idempotency key", async () => {

@@ -9,6 +9,7 @@ import { useI18n } from "@/i18n/i18n-provider";
 import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
 import type { StrengthSessionDto, TrainingProgramSummaryDto } from "@/modules/training/training.types";
 import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperList } from "./training-paginated-sections";
+import { TrainingFinishPublicationNotice } from "./training-finish-publication-notice";
 import {
   formatDateTime,
   readApiError,
@@ -276,13 +277,42 @@ export function TrainingClient() {
     try {
       const response = await fetch(`/api/v1/training/programs/${programId}/archive`, { method: "POST" });
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        try {
+          const programsResponse = await fetch("/api/v1/training/programs", { cache: "no-store" });
+          if (!programsResponse.ok) throw new Error("Could not verify archived program.");
+          const body = await programsResponse.json() as { programs: TrainingProgramSummaryDto[] };
+          setPrograms(body.programs);
+          if (!body.programs.some((program) => program.id === programId)) {
+            setError(null);
+            setListsRevision((current) => current + 1);
+            setNotice(uk ? "Програму архівовано, хоча відповідь сервера повідомила про помилку." : "Program archived, although the server reported an error.");
+            return;
+          }
+        } catch {
+          // Keep the draft state visible until an authoritative list can be read.
+        }
+        setError(apiError);
         return;
       }
-      await load();
+      setPrograms((current) => current.filter((program) => program.id !== programId));
       setListsRevision((current) => current + 1);
     } catch {
-      setError(uk ? "Не вдалося архівувати програму." : "Could not archive the program.");
+      try {
+        const programsResponse = await fetch("/api/v1/training/programs", { cache: "no-store" });
+        if (!programsResponse.ok) throw new Error("Could not verify archived program.");
+        const body = await programsResponse.json() as { programs: TrainingProgramSummaryDto[] };
+        setPrograms(body.programs);
+        if (!body.programs.some((program) => program.id === programId)) {
+          setListsRevision((current) => current + 1);
+          setNotice(uk ? "Програму архівовано, але початкову відповідь не отримано." : "Program archived, but the original response was not received.");
+          setError(null);
+          return;
+        }
+      } catch {
+        // The request outcome stays visible as unresolved; it is never replayed here.
+      }
+      setError(uk ? "Не вдалося підтвердити архівування програми. Перевірте список перед повторною дією." : "Could not confirm program archival. Check the list before trying again.");
     } finally {
       setBusyId(null);
     }
@@ -298,19 +328,42 @@ export function TrainingClient() {
     setError(null);
     try {
       const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { method: "DELETE" });
+      const publicationStatus = await response.clone().json().then((body: { modelPublicationStatus?: unknown }) => body.modelPublicationStatus).catch(() => undefined);
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        try {
+          const current = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+          if (current.status === 404) {
+            setListsRevision((revision) => revision + 1);
+            setError(null);
+            setNotice(publicationStatus === "stale"
+              ? (uk ? "Тренування видалено, але публікація моделі ще не актуальна." : "Session deleted, but model publication is not current yet.")
+              : (uk ? "Запис тренування відсутній; журнал показує актуальний стан." : "The workout record is absent; the diary shows the current state."));
+            return;
+          }
+        } catch {
+          // Preserve a visible error if the authoritative check is unavailable.
+        }
+        setError(apiError);
         return;
       }
-      const body = await response.json().catch(() => null) as { modelPublicationStatus?: string } | null;
-      await load();
       setListsRevision((current) => current + 1);
-      setNotice(body?.modelPublicationStatus === "stale"
+      setNotice(publicationStatus === "stale"
         ? (uk ? "Запис видалено. Публікація моделі ще оновлюється; дані можуть тимчасово бути неактуальними." : "Session deleted. Model publication is still updating, so derived data may be temporarily stale.")
         : null);
     } catch {
       setListsRevision((current) => current + 1);
-      setError(uk ? "Не вдалося видалити тренування." : "Could not delete the workout.");
+      try {
+        const current = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+        if (current.status === 404) {
+          setError(null);
+          setNotice(uk ? "Тренування видалено, але початкову відповідь не отримано." : "Session deleted, but the original response was not received.");
+          return;
+        }
+      } catch {
+        // No retry: retain the unresolved-outcome message below.
+      }
+      setError(uk ? "Не вдалося підтвердити видалення. Перевірте журнал перед повторною дією." : "Could not confirm deletion. Check the diary before trying again.");
     } finally {
       setBusySessionId(null);
     }
@@ -322,6 +375,7 @@ export function TrainingClient() {
         <strong>BodyCast</strong>
         <AppNav active="training" />
       </div>
+      <TrainingFinishPublicationNotice />
 
       <header className={styles.header}>
         <div>

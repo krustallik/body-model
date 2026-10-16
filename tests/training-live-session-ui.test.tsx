@@ -108,9 +108,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+}
+
+const originalViewportWidth = window.innerWidth;
+
 describe("Live training session mobile UI", () => {
   afterEach(() => {
     cleanup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalViewportWidth });
     vi.restoreAllMocks();
     routerPush.mockReset();
     routerReplace.mockReset();
@@ -497,9 +504,44 @@ describe("Live training session mobile UI", () => {
     const sessionMenu = screen.getByRole("dialog", { name: "Дії" });
     await user.click(within(sessionMenu).getByRole("button", { name: "Завершити тренування" }));
 
-    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard?finishPublication=unknown"));
     expect(finishCalls).toHaveLength(1);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("returns to the safe Training Hub URL with an active-session refresh and stale-publication notice", async () => {
+    const user = userEvent.setup();
+    const active = buildSession();
+    const completed = buildSession({
+      status: SESSION_STATUS.COMPLETED,
+      webEndedAt: "2026-10-16T06:30:00.000Z",
+      updatedAt: "2026-10-16T06:30:00.000Z",
+    });
+    let persistedSession = active;
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      if (url === "/api/v1/training/sessions/42" && method === "GET") return Response.json({ session: persistedSession });
+      if (url.endsWith("/finish") && method === "POST") {
+        persistedSession = completed;
+        return Response.json({ session: completed, modelPublicationStatus: "stale" });
+      }
+      return Response.json({ session: persistedSession });
+    }));
+    searchParams.set("returnTo", "/training?recentPage=3");
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.click(screen.getByRole("button", { name: "Меню сесії" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Дії" })).getByRole("button", { name: "Завершити тренування" }));
+
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/training\?recentPage=3&programsRefresh=\d+&finishPublication=stale$/),
+    ));
+    expect(persistedSession.status).toBe(SESSION_STATUS.COMPLETED);
   });
 
   it("swipes left to advance exercise and image", async () => {
@@ -994,7 +1036,8 @@ describe("Live training session mobile UI", () => {
     expect(row.hasAttribute("data-open")).toBe(false);
   });
 
-  it("requires confirmation when a long live-set swipe reaches the delete threshold", async () => {
+  it("requires a 75% viewport-width swipe and confirmation for live-set deletion", async () => {
+    setViewportWidth(360);
     const set = {
       id: 910, sessionExerciseId: 1, setNumber: 1, reps: 10, weightKg: 30,
       bandNominalResistanceKg: null, rir: 2, comment: null,
@@ -1009,12 +1052,18 @@ describe("Live training session mobile UI", () => {
     stubSessionFetch(session);
     render(<SessionClient sessionId={42} />);
     const row = await screen.findByTestId("logged-set-910");
-    vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+    vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ width: 360 } as DOMRect);
 
-    fireEvent.pointerDown(row, { pointerId: 3, pointerType: "touch", clientX: 300, clientY: 10 });
-    fireEvent.pointerMove(row, { pointerId: 3, pointerType: "touch", clientX: 200, clientY: 10 });
+    fireEvent.pointerDown(row, { pointerId: 3, pointerType: "touch", clientX: 350, clientY: 10 });
+    fireEvent.pointerMove(row, { pointerId: 3, pointerType: "touch", clientX: 81, clientY: 10 });
+    expect(row.getAttribute("data-delete-intent")).toBeNull();
+    fireEvent.pointerUp(row, { pointerId: 3, pointerType: "touch", clientX: 81, clientY: 10 });
+    expect(confirmSpy).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(row, { pointerId: 5, pointerType: "touch", clientX: 350, clientY: 10 });
+    fireEvent.pointerMove(row, { pointerId: 5, pointerType: "touch", clientX: 80, clientY: 10 });
     expect(row.getAttribute("data-delete-intent")).toBe("true");
-    fireEvent.pointerUp(row, { pointerId: 3, pointerType: "touch", clientX: 0, clientY: 10 });
+    fireEvent.pointerUp(row, { pointerId: 5, pointerType: "touch", clientX: 80, clientY: 10 });
 
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("підхід"));
@@ -1748,6 +1797,92 @@ describe("Live training session mobile UI", () => {
     expect(screen.queryByRole("region", { name: "Облік навантаження" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Load accounting" })).toBeNull();
     expect(calls.some((call) => call.method === "POST" && call.url.includes("/accounting/"))).toBe(false);
+  });
+
+  it("refreshes the full historical row after a delayed PATCH response", async () => {
+    const user = userEvent.setup();
+    const bodyweightExercise = {
+      id: 77,
+      sourceExerciseCatalogId: 9,
+      stableKey: "pull_up_bar",
+      snapshotExerciseName: "Підтягування",
+      order: 0,
+      plannedSets: 0,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null,
+      sets: [],
+    };
+    const session = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [bodyweightExercise],
+    });
+    const initialHistorySet = {
+      id: 71,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: null,
+      completedAt: "2026-09-10T16:10:00.000Z",
+      loadAccountingOverride: { additionalLoadKg: 15 },
+    };
+    let persistedHistorySet: typeof initialHistorySet & { updatedAt?: string; sessionExerciseId?: number; createdAt?: string } = { ...initialHistorySet };
+    const requests: Array<{ url: string; method: string }> = [];
+    const historyEntry = {
+      sessionId: 40,
+      occurredAt: "2026-09-10T16:00:00.000Z",
+      programName: null,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      sets: [initialHistorySet],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({ url, method });
+      if (url.includes("/history")) return Response.json({ entries: [historyEntry] });
+      if (url === "/api/v1/training/sessions/40/sets/71" && method === "PATCH") {
+        const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const delayedResponseSet = { ...persistedHistorySet, rir: payload.rir as number };
+        persistedHistorySet = {
+          ...delayedResponseSet,
+          loadAccountingOverride: { additionalLoadKg: 20 },
+          updatedAt: "2026-09-10T16:25:00.000Z",
+        };
+        return Response.json({ set: delayedResponseSet, modelPublicationStatus: "current" });
+      }
+      if (url === "/api/v1/training/sessions/40/sets/71" && method === "GET") {
+        return Response.json({ set: {
+          ...persistedHistorySet,
+          sessionExerciseId: 400,
+          createdAt: "2026-09-10T16:10:00.000Z",
+        } });
+      }
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      return Response.json({ session });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionClient sessionId={42} />);
+    await screen.findByTestId("active-exercise-pane");
+    const historySet = await within(activePane().getByLabelText("Історія вправи")).findByTestId("history-set-40-71");
+    await user.click(within(historySet).getByRole("button", { name: "Редагувати підхід 1" }));
+    await user.clear(within(historySet).getByLabelText("RIR"));
+    await user.type(within(historySet).getByLabelText("RIR"), "3");
+    await user.click(within(historySet).getByRole("button", { name: "Зберегти" }));
+
+    await waitFor(() => expect(within(historySet).getByText(/власна вага \+20 кг × 10/)).toBeTruthy());
+    expect(await screen.findByText("Підхід збережено; модель актуальна.")).toBeTruthy();
+    expect(persistedHistorySet).toMatchObject({
+      reps: 10,
+      rir: 3,
+      completedAt: "2026-09-10T16:10:00.000Z",
+      loadAccountingOverride: { additionalLoadKg: 20 },
+    });
+    expect(requests).toContainEqual({ url: "/api/v1/training/sessions/40/sets/71", method: "GET" });
   });
 
   it("offers to finish after filling the last planned set of the last exercise", async () => {

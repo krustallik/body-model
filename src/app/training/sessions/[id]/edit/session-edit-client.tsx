@@ -31,11 +31,88 @@ import { readApiError, resistanceLabel, trainingSessionTitle } from "../../../tr
 import {
   emptySetDraft,
   TrainingExerciseWorkspace,
+  type SetDraft,
 } from "../../../training-exercise-workspace";
 import { safeTrainingReturnHref } from "../../../training-url-state";
 import styles from "../../../training.module.css";
 
 type MenuPanel = "closed" | "root" | "program" | "add" | "editExercise" | "reorder";
+
+type PendingSetVerification =
+  | { kind: "create"; exerciseId: number; setNumber: number; payload: Record<string, unknown>; draft: SetDraft }
+  | { kind: "update"; exerciseId: number; setId: number; original: StrengthSetDto; payload: Record<string, unknown>; draft: SetDraft }
+  | { kind: "delete"; exerciseId: number; setId: number };
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function setMatchesMutation(
+  set: StrengthSetDto,
+  payload: Record<string, unknown>,
+  omittedOverrideMeansNull = false,
+): boolean {
+  if (payload.setNumber !== undefined && set.setNumber !== payload.setNumber) return false;
+  if (payload.reps !== undefined && set.reps !== payload.reps) return false;
+  if (payload.weightKg !== undefined) {
+    const expected = payload.weightKg === null ? null : Math.round(Number(payload.weightKg) * 100) / 100;
+    if (set.weightKg !== expected) return false;
+  }
+  if (payload.bandNominalResistanceKg !== undefined) {
+    const expected = payload.bandNominalResistanceKg === null
+      ? null
+      : Math.round(Number(payload.bandNominalResistanceKg) * 100) / 100;
+    if (set.bandNominalResistanceKg !== expected) return false;
+  }
+  if (payload.rir !== undefined && set.rir !== payload.rir) return false;
+  if (payload.comment !== undefined && set.comment !== payload.comment) return false;
+  if (payload.loadAccountingOverride !== undefined
+      && stableJson(set.loadAccountingOverride ?? null) !== stableJson(payload.loadAccountingOverride)) return false;
+  if (omittedOverrideMeansNull && payload.loadAccountingOverride === undefined
+      && set.loadAccountingOverride !== null) return false;
+  return true;
+}
+
+function pendingCreateStorageKey(sessionId: number): string {
+  return `bodycast:pending-set-create:${sessionId}`;
+}
+
+function readPendingCreate(sessionId: number): PendingSetVerification | null {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(pendingCreateStorageKey(sessionId)) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    const candidate = value as Partial<PendingSetVerification>;
+    if (candidate.kind !== "create" || !Number.isInteger(candidate.exerciseId) || !Number.isInteger(candidate.setNumber)
+        || candidate.setNumber! < 1 || !candidate.payload || typeof candidate.payload !== "object"
+        || !candidate.draft || typeof candidate.draft !== "object") return null;
+    return candidate as PendingSetVerification;
+  } catch {
+    return null;
+  }
+}
+
+function storePendingCreate(sessionId: number, action: PendingSetVerification): boolean {
+  if (action.kind !== "create") return true;
+  try {
+    window.sessionStorage.setItem(pendingCreateStorageKey(sessionId), JSON.stringify(action));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingCreate(sessionId: number): void {
+  try {
+    window.sessionStorage.removeItem(pendingCreateStorageKey(sessionId));
+  } catch {
+    // Storage can be unavailable in private or restricted browsing contexts.
+  }
+}
 
 export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const { locale } = useI18n();
@@ -58,8 +135,13 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const [editingSet, setEditingSet] = useState<StrengthSetDto | null>(null);
   const [additionalLoadDirtySetId, setAdditionalLoadDirtySetId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pendingSetVerification, setPendingSetVerification] = useState<PendingSetVerification | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [setMutationRevision, setSetMutationRevision] = useState(0);
+  const [setMutationPersisted, setSetMutationPersisted] = useState(false);
+  const sessionActionsBlocked = busy || pendingSetVerification !== null;
 
   const applySession = useCallback((next: StrengthSessionDto, preferId: number | null = focusedExerciseId) => {
     const ordered = next.exercises.slice().sort((a, b) => a.order - b.order);
@@ -74,10 +156,11 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     setEditingSet(null);
     setAdditionalLoadDirtySetId(null);
     setDraft(emptySetDraft());
-  }, [focusedExerciseId, searchParams, setProgramId, setFocusedExerciseId, setEditingSet, setAdditionalLoadDirtySetId, setDraft]);
+  }, [focusedExerciseId, searchParams, setSession, setProgramId, setFocusedExerciseId, setEditingSet, setAdditionalLoadDirtySetId, setDraft]);
 
   const load = useCallback(async () => {
-    setError(null);
+    const pendingCreate = readPendingCreate(sessionId);
+    if (!pendingCreate) setError(null);
     try {
       const [sessionRes, catalogRes, programsRes] = await Promise.all([
         fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" }),
@@ -99,12 +182,24 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       setCatalog(catalogBody.exercises);
       setPrograms(programsBody.programs);
       applySession(sessionBody.session, focusedExerciseId);
+      if (!pendingCreate) setError(null);
     } catch {
       setError(uk ? "Не вдалося завантажити редактор." : "Could not load the editor.");
     } finally {
       setLoading(false);
     }
   }, [applySession, focusedExerciseId, sessionId, uk, setError, setSession, setCatalog, setPrograms, setLoading]);
+
+  useEffect(() => {
+    const pending = readPendingCreate(sessionId);
+    if (!pending) return;
+    // Restore the durable ambiguous-create marker before re-enabling session writes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPendingSetVerification(pending);
+    setError(uk
+      ? "Попереднє додавання підходу не підтверджене. Перевірте його стан перед новим записом."
+      : "A previous set addition is unconfirmed. Check its status before creating another set.");
+  }, [sessionId, uk]);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,7 +223,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const previousExercise = exerciseIndex > 0 ? exercises[exerciseIndex - 1] ?? null : null;
   const nextExercise = exerciseIndex < exercises.length - 1 ? exercises[exerciseIndex + 1] ?? null : null;
   const backfillHref = session
-    ? `/training/backfill?refresh=${session.revision}-${encodeURIComponent(session.updatedAt)}`
+    ? `/training/backfill?refresh=${session.revision}-${encodeURIComponent(session.updatedAt)}-${setMutationRevision}`
     : "/training/backfill";
   const returnHref = safeTrainingReturnHref(requestedReturnHref, backfillHref);
   const sessionDetailHref = session
@@ -136,6 +231,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     : "/training";
 
   function goToNeighbor(delta: -1 | 1) {
+    if (busy || pendingSetVerification) return;
     const nextId = neighborExerciseId(exercises, focusedExerciseId, delta);
     if (nextId == null) return;
     setFocusedExerciseId(nextId);
@@ -156,6 +252,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   }, [exerciseIndex, exercises.length, pathname, router, searchParams, session]);
 
   async function mutate(path: string, init: RequestInit): Promise<StrengthSessionDto | null> {
+    if (sessionActionsBlocked) return null;
     setBusy(true);
     setError(null);
     try {
@@ -188,6 +285,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   }
 
   async function deleteDiary() {
+    if (sessionActionsBlocked) return;
     const ok = window.confirm(
       uk
         ? "Видалити запис щоденника? Garmin workout залишиться без змін."
@@ -211,6 +309,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   }
 
   async function addExercise() {
+    if (sessionActionsBlocked) return;
     if (typeof addCatalogId !== "number") return;
     const next = await mutate(`/api/v1/training/sessions/${sessionId}/exercises`, {
       method: "POST",
@@ -239,6 +338,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   }
 
   async function removeExercise(exercise: StrengthSessionExerciseDto) {
+    if (sessionActionsBlocked) return;
     const hasSets = exercise.sets.length > 0;
     if (hasSets) {
       const ok = window.confirm(
@@ -256,6 +356,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   }
 
   async function saveExerciseMeta() {
+    if (sessionActionsBlocked) return;
     if (!current) return;
     const planned = Number(editPlannedSets);
     const minimumPlannedSets = session?.programId === null ? 0 : 1;
@@ -282,6 +383,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   }
 
   async function moveExercise(delta: -1 | 1) {
+    if (sessionActionsBlocked) return;
     if (!current || exercises.length < 2) return;
     const ids = exercises.map((exercise) => exercise.id);
     const index = ids.indexOf(current.id);
@@ -296,8 +398,183 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     });
   }
 
+  async function readCurrentSession(): Promise<StrengthSessionDto> {
+    const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("Could not verify the saved session.");
+    const body = await response.json() as { session?: StrengthSessionDto };
+    if (!body.session || body.session.id !== sessionId) throw new Error("The session verification response was invalid.");
+    return body.session;
+  }
+
+  function observePersistedMutation(action: PendingSetVerification): () => void {
+    if (session?.status !== SESSION_STATUS.COMPLETED) return () => undefined;
+    let cancelled = false;
+    void (async () => {
+      for (const delayMs of [180, 420, 900]) {
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        let fresh: StrengthSessionDto;
+        try {
+          fresh = await readCurrentSession();
+        } catch {
+          continue;
+        }
+        if (cancelled) return;
+        const exercise = fresh.exercises.find((candidate) => candidate.id === action.exerciseId);
+        let committed = false;
+        if (action.kind === "create") {
+          const saved = exercise?.sets.find((set) => set.setNumber === action.setNumber);
+          committed = saved !== undefined && setMatchesMutation(saved, action.payload, true);
+        } else if (action.kind === "update") {
+          const saved = exercise?.sets.find((set) => set.id === action.setId);
+          committed = saved !== undefined
+            && stableJson(saved) !== stableJson(action.original)
+            && setMatchesMutation(saved, action.payload);
+        } else {
+          committed = !exercise?.sets.some((set) => set.id === action.setId);
+        }
+        if (!committed) continue;
+        setSession(fresh);
+        setProgramId(fresh.programId);
+        setSetMutationRevision((revision) => revision + 1);
+        setSetMutationPersisted(true);
+        const verb = action.kind === "delete"
+          ? (uk ? "Підхід видалено" : "Set deleted")
+          : (uk ? "Підхід збережено" : "Set saved");
+        setNotice(uk
+          ? `${verb}. Чекаємо на підтвердження оновлення моделі.`
+          : `${verb}. Waiting for model refresh confirmation.`);
+        if (action.kind === "create" || action.kind === "update") {
+          setDraft(emptySetDraft());
+          setEditingSet(null);
+          setAdditionalLoadDirtySetId(null);
+        }
+        return;
+      }
+    })();
+    return () => { cancelled = true; };
+  }
+
+  async function responsePublicationStatus(response: Response): Promise<string | undefined> {
+    try {
+      const body = await response.clone().json() as { modelPublicationStatus?: unknown };
+      return typeof body.modelPublicationStatus === "string" ? body.modelPublicationStatus : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function showMutationNotice(status: string | undefined, requestFailed = false, action: "saved" | "deleted" | "present" = "saved") {
+    const verb = action === "deleted"
+      ? (uk ? "Підхід видалено" : "Set deleted")
+      : action === "present"
+        ? (uk ? "Підхід уже є в історії" : "The set is already present")
+        : (uk ? "Підхід збережено" : "Set saved");
+    setNotice(status === "stale" || status === "not-run"
+      ? `${verb}${uk ? ", але публікація моделі ще не актуальна." : ", but model publication is not current yet."}`
+      : requestFailed
+        ? `${verb}${uk ? ". Стан публікації моделі не вдалося підтвердити." : ". Model publication status could not be confirmed."}`
+        : null);
+  }
+
+  async function reconcileSetMutation(
+    action: PendingSetVerification,
+    publicationStatus?: string,
+    requestSucceeded = false,
+  ): Promise<"satisfied" | "not-committed" | "unknown"> {
+    let fresh: StrengthSessionDto;
+    try {
+      fresh = await readCurrentSession();
+    } catch {
+      setNotice(null);
+      if (action.kind === "update") {
+        setEditingSet(action.original);
+        setDraft(action.draft);
+      }
+      setPendingSetVerification(action);
+      setError(uk
+        ? "Не вдалося підтвердити збереження. Перевірте стан перед повторною спробою."
+        : "Could not confirm the save. Check its status before trying again.");
+      return "unknown";
+    }
+
+    setSession(fresh);
+    setProgramId(fresh.programId);
+    const exercise = fresh.exercises.find((candidate) => candidate.id === action.exerciseId);
+    let outcome: "satisfied" | "not-committed" | "unknown" = "unknown";
+    if (action.kind === "create") {
+      const existing = exercise?.sets.find((set) => set.setNumber === action.setNumber);
+      if (existing && setMatchesMutation(existing, action.payload, true)) outcome = "satisfied";
+      else if (existing) outcome = "unknown";
+      else if (exercise) outcome = "not-committed";
+    } else {
+      const saved = exercise?.sets.find((set) => set.id === action.setId);
+      if (action.kind === "update") {
+        if (saved && setMatchesMutation(saved, action.payload)) {
+          outcome = "satisfied";
+        } else if (saved && stableJson(saved) === stableJson(action.original)) {
+          outcome = "not-committed";
+        }
+      } else if (!saved) {
+        outcome = "satisfied";
+      } else {
+        outcome = "not-committed";
+      }
+    }
+
+    if (outcome === "satisfied") {
+      setSetMutationRevision((revision) => revision + 1);
+      applySession(fresh, action.exerciseId);
+      setPendingSetVerification(null);
+      if (action.kind === "create") clearPendingCreate(sessionId);
+      setError(null);
+      showMutationNotice(
+        publicationStatus,
+        publicationStatus === undefined,
+        action.kind === "delete" ? "deleted" : action.kind === "create" && !requestSucceeded ? "present" : "saved",
+      );
+      return outcome;
+    }
+    if (outcome === "not-committed") {
+      setPendingSetVerification(null);
+      if (action.kind === "create") {
+        clearPendingCreate(sessionId);
+        setDraft(action.draft);
+      } else if (action.kind === "update") {
+        setEditingSet(action.original);
+        setDraft(action.draft);
+      }
+      setNotice(null);
+      return outcome;
+    }
+    if (action.kind === "update") {
+      // Keep submitted values available if another writer changed this row
+      // after an early read observed our update.
+      setEditingSet(action.original);
+      setDraft(action.draft);
+    }
+    setPendingSetVerification(action);
+    setError(uk
+      ? "Стан підходу змінився паралельно або результат невідомий. Перевірте стан перед повторною спробою."
+      : "The set changed concurrently or its outcome is unknown. Check its status before trying again.");
+    return outcome;
+  }
+
+  async function verifyPendingSetMutation() {
+    if (!pendingSetVerification || busy) return;
+    setBusy(true);
+    try {
+      const status = await reconcileSetMutation(pendingSetVerification);
+      if (status === "not-committed") {
+        setError(uk ? "Зміни не збережено. Чернетку залишено для повторної спроби." : "The change was not saved. Your draft is ready to retry.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveSet() {
-    if (!current) return;
+    if (!current || pendingSetVerification || busy) return;
     const reps = Number(draft.reps);
     if (!Number.isFinite(reps) || reps < 1) {
       setError(uk ? "Вкажіть повторення." : "Enter reps.");
@@ -411,60 +688,99 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       }
       payload.bandNominalResistanceKg = band;
     }
+    if (!editingSet) {
+      payload.setNumber = current.sets.reduce((max, set) => Math.max(max, set.setNumber), 0) + 1;
+    }
 
+    setSetMutationPersisted(false);
     setBusy(true);
     setError(null);
+    setNotice(null);
+    const action: PendingSetVerification = editingSet
+      ? { kind: "update", exerciseId: current.id, setId: editingSet.id, original: editingSet, payload, draft: { ...draft } }
+      : { kind: "create", exerciseId: current.id, setNumber: payload.setNumber as number, payload, draft: { ...draft } };
+    if (action.kind === "create" && !storePendingCreate(sessionId, action)) {
+      setBusy(false);
+      setError(uk
+        ? "Не вдалося безпечно зберегти стан запиту в цій вкладці. Підхід не відправлено."
+        : "Could not safely retain this request state in the tab. The set was not sent.");
+      return;
+    }
+    const stopPersistedObserver = observePersistedMutation(action);
     try {
-      const response = editingSet
-        ? await fetch(`/api/v1/training/sessions/${sessionId}/sets/${editingSet.id}`, {
+      const response = await (editingSet
+        ? fetch(`/api/v1/training/sessions/${sessionId}/sets/${editingSet.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         })
-        : await fetch(`/api/v1/training/sessions/${sessionId}/exercises/${current.id}/sets`, {
+        : fetch(`/api/v1/training/sessions/${sessionId}/exercises/${current.id}/sets`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
-        });
+        }));
+      stopPersistedObserver();
+      const publicationStatus = await responsePublicationStatus(response);
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        const outcome = await reconcileSetMutation(action, publicationStatus);
+        if (outcome === "not-committed") setError(apiError);
         return;
       }
-      const detail = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
-      if (detail.ok) {
-        const body = await detail.json() as { session: StrengthSessionDto };
-        applySession(body.session, current.id);
+      const outcome = await reconcileSetMutation(action, publicationStatus, true);
+      if (outcome === "not-committed") {
+        setError(uk
+          ? "Сервер підтвердив запит, але не вдалося підтвердити збереження. Чернетку залишено."
+          : "The server accepted the request, but the saved state could not be confirmed. Your draft was kept.");
       }
-      setEditingSet(null);
-      setAdditionalLoadDirtySetId(null);
-      setDraft(emptySetDraft());
     } catch {
-      setError(uk ? "Не вдалося зберегти підхід." : "Could not save set.");
+      stopPersistedObserver();
+      const outcome = await reconcileSetMutation(action);
+      if (outcome === "not-committed") {
+        setError(uk ? "Не вдалося зберегти підхід." : "Could not save set.");
+      }
     } finally {
+      stopPersistedObserver();
       setBusy(false);
+      setSetMutationPersisted(false);
     }
   }
 
   async function deleteSet(setId: number) {
+    if (pendingSetVerification || !current || busy) return;
+    if (!window.confirm(uk ? "Видалити підхід?" : "Delete this set?")) return;
+    const action: PendingSetVerification = { kind: "delete", exerciseId: current.id, setId };
+    setSetMutationPersisted(false);
     setBusy(true);
     setError(null);
+    setNotice(null);
+    const stopPersistedObserver = observePersistedMutation(action);
     try {
       const response = await fetch(`/api/v1/training/sessions/${sessionId}/sets/${setId}`, {
         method: "DELETE",
       });
+      stopPersistedObserver();
+      const publicationStatus = await responsePublicationStatus(response);
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        const outcome = await reconcileSetMutation(action, publicationStatus);
+        if (outcome === "not-committed") setError(apiError);
         return;
       }
-      const detail = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
-      if (detail.ok) {
-        const body = await detail.json() as { session: StrengthSessionDto };
-        applySession(body.session, focusedExerciseId);
+      const outcome = await reconcileSetMutation(action, publicationStatus, true);
+      if (outcome === "not-committed") {
+        setError(uk ? "Підхід не видалено." : "The set was not deleted.");
       }
     } catch {
-      setError(uk ? "Не вдалося видалити підхід." : "Could not delete set.");
+      stopPersistedObserver();
+      const outcome = await reconcileSetMutation(action);
+      if (outcome === "not-committed") {
+        setError(uk ? "Не вдалося видалити підхід." : "Could not delete set.");
+      }
     } finally {
+      stopPersistedObserver();
       setBusy(false);
+      setSetMutationPersisted(false);
     }
   }
 
@@ -525,7 +841,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
                 </select>
               </label>
               <div className={styles.denseCardActions}>
-                <button type="button" className={styles.liveSave} disabled={busy || typeof addCatalogId !== "number"} onClick={() => void addExercise()}>
+                <button type="button" className={styles.liveSave} disabled={sessionActionsBlocked || typeof addCatalogId !== "number"} onClick={() => void addExercise()}>
                   {uk ? "Додати вправу" : "Add exercise"}
                 </button>
                 <Link className={styles.liveSecondary} href={sessionDetailHref}>
@@ -539,20 +855,22 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     );
   }
 
-  const canPrev = exerciseIndex > 0;
-  const canNext = exerciseIndex < exercises.length - 1;
+  const canNavigateExercises = !busy && pendingSetVerification === null;
+  const canPrev = exerciseIndex > 0 && canNavigateExercises;
+  const canNext = exerciseIndex < exercises.length - 1 && canNavigateExercises;
   const menuContent = (
     <>
       {menu === "root" && (
         <div className={styles.editMenuList}>
           {session.programId !== null && (
-            <button type="button" className={styles.editMenuItem} onClick={() => setMenu("program")}>
+            <button type="button" className={styles.editMenuItem} disabled={sessionActionsBlocked} onClick={() => setMenu("program")}>
               {uk ? "Змінити програму" : "Change program"}
             </button>
           )}
           <button
             type="button"
             className={styles.editMenuItem}
+            disabled={sessionActionsBlocked}
             onClick={() => {
               setAddCatalogId("");
               setAddResistance(RESISTANCE.EXTERNAL_WEIGHT);
@@ -564,6 +882,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <button
             type="button"
             className={styles.editMenuItem}
+            disabled={sessionActionsBlocked}
             onClick={() => {
               setEditPlannedSets(String(current.plannedSets));
               setEditResistance(current.resistanceType);
@@ -572,7 +891,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           >
             {uk ? "Редагувати вправу" : "Edit exercise"}
           </button>
-          <button type="button" className={styles.editMenuItem} onClick={() => setMenu("reorder")}>
+          <button type="button" className={styles.editMenuItem} disabled={sessionActionsBlocked} onClick={() => setMenu("reorder")}>
             {uk ? "Змінити порядок" : "Reorder"}
           </button>
           <Link className={styles.editMenuItem} href={sessionDetailHref}>
@@ -581,7 +900,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <button
             type="button"
             className={styles.editMenuDanger}
-            disabled={busy}
+            disabled={sessionActionsBlocked}
             onClick={() => void removeExercise(current)}
           >
             {uk ? "Видалити вправу" : "Delete exercise"}
@@ -590,7 +909,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <button
               type="button"
               className={styles.editMenuDanger}
-              disabled={busy}
+              disabled={sessionActionsBlocked}
               onClick={() => void deleteDiary()}
             >
               {uk ? "Видалити запис" : "Delete diary"}
@@ -602,7 +921,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         <div className={styles.editMenuForm}>
           <label className={styles.liveField}>
             <span>{uk ? "Програма" : "Program"}</span>
-            <select value={programId ?? ""} onChange={(event) => setProgramId(Number(event.target.value))}>
+            <select value={programId ?? ""} onChange={(event) => setProgramId(Number(event.target.value))} disabled={sessionActionsBlocked}>
               {programs.map((program) => (
                 <option key={program.id} value={program.id}>{program.name}</option>
               ))}
@@ -612,7 +931,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <button type="button" className={styles.liveSecondary} onClick={() => setMenu("root")}>
               {uk ? "Назад" : "Back"}
             </button>
-            <button type="button" className={styles.liveSave} disabled={busy} onClick={() => void changeProgram()}>
+            <button type="button" className={styles.liveSave} disabled={sessionActionsBlocked} onClick={() => void changeProgram()}>
               {uk ? "Застосувати" : "Apply"}
             </button>
           </div>
@@ -624,6 +943,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <span>{uk ? "З каталогу" : "From catalog"}</span>
             <select
               value={addCatalogId}
+              disabled={sessionActionsBlocked}
               onChange={(event) => selectCatalogExercise(
                 event.target.value === "" ? "" : Number(event.target.value),
               )}
@@ -638,6 +958,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <span>{uk ? "Опір" : "Resistance"}</span>
             <select
               value={addResistance}
+              disabled={sessionActionsBlocked}
               onChange={(event) => setAddResistance(event.target.value as ResistanceType)}
             >
               <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
@@ -652,7 +973,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <button
               type="button"
               className={styles.liveSave}
-              disabled={busy || typeof addCatalogId !== "number"}
+              disabled={sessionActionsBlocked || typeof addCatalogId !== "number"}
               onClick={() => void addExercise()}
             >
               {uk ? "Додати" : "Add"}
@@ -664,12 +985,13 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         <div className={styles.editMenuForm}>
           <label className={styles.liveField}>
             <span>{session.programId === null ? (uk ? "Підходи не плануються" : "No planned set count") : (uk ? "Заплановані підходи" : "Planned sets")}</span>
-            <input inputMode="numeric" min={session.programId === null ? 0 : 1} value={editPlannedSets} onChange={(event) => setEditPlannedSets(event.target.value)} disabled={session.programId === null} />
+            <input inputMode="numeric" min={session.programId === null ? 0 : 1} value={editPlannedSets} onChange={(event) => setEditPlannedSets(event.target.value)} disabled={session.programId === null || sessionActionsBlocked} />
           </label>
           <label className={styles.liveField}>
             <span>{uk ? "Тип опору" : "Resistance"}</span>
             <select
               value={editResistance}
+              disabled={sessionActionsBlocked}
               onChange={(event) => setEditResistance(event.target.value as ResistanceType)}
             >
               <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
@@ -681,7 +1003,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <button type="button" className={styles.liveSecondary} onClick={() => setMenu("root")}>
               {uk ? "Назад" : "Back"}
             </button>
-            <button type="button" className={styles.liveSave} disabled={busy} onClick={() => void saveExerciseMeta()}>
+            <button type="button" className={styles.liveSave} disabled={sessionActionsBlocked} onClick={() => void saveExerciseMeta()}>
               {uk ? "Зберегти" : "Save"}
             </button>
           </div>
@@ -690,10 +1012,10 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       {menu === "reorder" && (
         <div className={styles.editMenuForm}>
           <div className={styles.editMenuActions}>
-            <button type="button" className={styles.liveSecondary} disabled={!canPrev || busy} onClick={() => void moveExercise(-1)}>
+            <button type="button" className={styles.liveSecondary} disabled={!canPrev || sessionActionsBlocked} onClick={() => void moveExercise(-1)}>
               {uk ? "← Вище" : "← Earlier"}
             </button>
-            <button type="button" className={styles.liveSecondary} disabled={!canNext || busy} onClick={() => void moveExercise(1)}>
+            <button type="button" className={styles.liveSecondary} disabled={!canNext || sessionActionsBlocked} onClick={() => void moveExercise(1)}>
               {uk ? "Нижче →" : "Later →"}
             </button>
           </div>
@@ -720,24 +1042,31 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       draft={draft}
       editingSetId={editingSet?.id ?? null}
       busy={busy}
+      busyLabel={setMutationPersisted
+        ? (uk ? "Зміни збережено · чекаємо модель…" : "Change saved · waiting for model…")
+        : undefined}
       error={error}
+      notice={notice}
+      mutationUncertain={pendingSetVerification !== null}
+      onVerifyPendingMutation={() => void verifyPendingSetMutation()}
       clockStartedAt={session.webStartedAt ?? session.matchedWorkout?.startAt ?? null}
       clockEndedAt={session.webEndedAt ?? session.matchedWorkout?.endAt ?? null}
       clockTicking={false}
       menuOpen={menu !== "closed"}
-      onToggleMenu={() => setMenu((value) => (value === "closed" ? "root" : "closed"))}
+      onToggleMenu={() => { if (!sessionActionsBlocked) setMenu((value) => (value === "closed" ? "root" : "closed")); }}
       onCloseMenu={() => setMenu("closed")}
       menuContent={menuContent}
       desktopPrimaryActions={(
         <>
           {session.programId !== null && (
-            <button type="button" className={styles.workoutDesktopActionBtn} onClick={() => setMenu("program")}>
+            <button type="button" className={styles.workoutDesktopActionBtn} disabled={sessionActionsBlocked} onClick={() => setMenu("program")}>
               {uk ? "Змінити програму" : "Change program"}
             </button>
           )}
           <button
             type="button"
             className={styles.workoutDesktopActionBtn}
+              disabled={sessionActionsBlocked}
             onClick={() => {
               setAddCatalogId("");
               setAddResistance(RESISTANCE.EXTERNAL_WEIGHT);
@@ -757,7 +1086,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           >
             {uk ? "Редагувати вправу" : "Edit exercise"}
           </button>
-          <button type="button" className={styles.workoutDesktopActionBtn} onClick={() => setMenu("reorder")}>
+            <button type="button" className={styles.workoutDesktopActionBtn} disabled={sessionActionsBlocked} onClick={() => setMenu("reorder")}>
             {uk ? "Порядок" : "Reorder"}
           </button>
           <Link className={styles.workoutDesktopActionBtn} href={sessionDetailHref}>
@@ -770,7 +1099,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <button
             type="button"
             className={styles.workoutDesktopDangerBtn}
-            disabled={busy}
+            disabled={sessionActionsBlocked}
             onClick={() => void removeExercise(current)}
           >
             {uk ? "Видалити вправу" : "Delete exercise"}
@@ -779,7 +1108,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             <button
               type="button"
               className={styles.workoutDesktopDangerBtn}
-              disabled={busy}
+              disabled={sessionActionsBlocked}
               onClick={() => void deleteDiary()}
             >
               {uk ? "Видалити запис" : "Delete diary"}

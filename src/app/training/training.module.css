@@ -1855,7 +1855,7 @@ a.editMenuItem + .editMenuDanger {
   font-weight: 700;
 }
 
-.workoutHistorySets li {
+.workoutHistorySets li:not(.workoutHistorySetRow) {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1900,7 +1900,7 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutHistoryActions button {
-  min-height: 2.25rem;
+  min-height: 2.75rem;
   padding: 0.35rem 0.65rem;
   border: 1px solid var(--training-border);
   border-radius: 0.5rem;
@@ -2885,7 +2885,7 @@ a.editMenuItem + .editMenuDanger {
 .liveSetInlineEditor .liveSaveRow { grid-template-columns: 1fr 1fr; }
 .liveSetInlineEditor .liveSaveRow > * { min-height: 2.75rem; }
 
-@media (hover: hover) and (pointer: fine) {
+@media (min-width: 1024px), (hover: hover) and (pointer: fine) {
   .liveSetRow,
   .workoutShell .liveSetRow,
   .workoutHistorySetRow {
@@ -2895,16 +2895,26 @@ a.editMenuItem + .editMenuDanger {
     overflow: visible;
   }
   .liveSetSurface,
-  .workoutHistorySwipeSurface { grid-column: 1; transform: none !important; }
+  .workoutHistorySwipeSurface { grid-column: 1; grid-row: 1; }
   .workoutSetActionsRail {
     position: static;
     inset: auto;
     grid-column: 2;
+    grid-row: 1;
     width: auto;
     padding: 0 0.3rem 0 0.45rem;
     background: transparent;
   }
+  .workoutHistorySetRow .workoutSetActionsRail {
+    align-items: flex-start;
+    padding-top: 0.5rem;
+  }
   .workoutHistorySetRow[data-editing="true"] .workoutHistorySwipeSurface { grid-column: 1 / -1; }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .liveSetSurface,
+  .workoutHistorySwipeSurface { transform: none !important; }
 }
 
 .trainingHubPage .panelStartDynamic .panelBody { display: flex; align-items: center; }

@@ -23,6 +23,7 @@ import { HistoryCharts } from "./history-charts";
 import { SleepNightChart } from "./sleep-night-chart";
 import { WorkActivityDialog } from "./work-activity-dialog";
 import { WorkoutDetailsDialog } from "./workout-details-dialog";
+import { TrainingFinishPublicationNotice } from "@/app/training/training-finish-publication-notice";
 import { HistoryDayCard } from "./history-day-card";
 import styles from "./history.module.css";
 
@@ -363,6 +364,7 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
         <strong>BodyCast</strong>
         <AppNav active="history" />
       </div>
+      <TrainingFinishPublicationNotice />
       <header className={styles.header}>
         <div>
           <p className={styles.eyebrow}>{uk ? "BodyCast · Денні показники" : "BodyCast · Daily metrics"}<DemoDataBadge active={demoMode} /></p>

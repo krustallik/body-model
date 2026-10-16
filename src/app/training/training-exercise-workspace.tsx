@@ -66,7 +66,11 @@ type TrainingExerciseWorkspaceProps = {
   draft: SetDraft;
   editingSetId: number | null;
   busy: boolean;
+  busyLabel?: string;
   error: string | null;
+  notice?: string | null;
+  mutationUncertain?: boolean;
+  onVerifyPendingMutation?: () => void;
   menuOpen: boolean;
   clockStartedAt?: string | null;
   clockEndedAt?: string | null;
@@ -167,7 +171,11 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     draft,
     editingSetId,
     busy,
+    busyLabel,
     error,
+    notice = null,
+    mutationUncertain = false,
+    onVerifyPendingMutation,
     menuOpen,
     clockStartedAt = null,
     clockEndedAt = null,
@@ -227,6 +235,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   const canPrev = exerciseIndex > 0;
   const canNext = exerciseIndex < exerciseCount - 1;
+  const manualNavigationBlocked = busy || mutationUncertain;
   const clockMs = elapsedMs(clockStartedAt, clockTicking ? null : clockEndedAt, nowMs);
 
   useEffect(() => {
@@ -306,6 +315,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   }
 
   function requestNeighbor(delta: -1 | 1, mode: "manual" | "automatic" = "manual") {
+    if (mutationUncertain || (mode === "manual" && busy)) return;
     if (animatingRef.current) return;
     if (delta < 0 && !canPrev) return;
     if (delta > 0 && !canNext) return;
@@ -348,6 +358,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   function onPointerDown(event: ReactPointerEvent<HTMLElement>) {
     if (event.pointerType === "mouse") return;
+    if (manualNavigationBlocked) return;
     if (animatingRef.current) return;
     if (isEditableSwipeTarget(event.target)) return;
     pointerStart.current = {
@@ -419,6 +430,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   }
 
   function copyHistorySet(set: ExerciseHistorySetDto) {
+    if (busy || mutationUncertain) return;
     const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
     onDraftChange({
       ...draft,
@@ -484,16 +496,51 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     return true;
   }
 
+  function storeVerifiedHistorySet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: StrengthSetDto) {
+    replaceCachedHistorySet(exerciseId, entry, {
+      id: set.id,
+      setNumber: set.setNumber,
+      reps: set.reps,
+      weightKg: set.weightKg,
+      bandNominalResistanceKg: set.bandNominalResistanceKg,
+      rir: set.rir,
+      comment: set.comment,
+      completedAt: set.completedAt,
+      loadAccountingOverride: set.loadAccountingOverride ?? null,
+    });
+  }
+
+  async function reconcileHistoricalUpdate(
+    exerciseId: number,
+    entry: ExerciseHistoryEntryDto,
+    original: ExerciseHistorySetDto,
+    payload: UpdateSetInput,
+    publicationStatus?: string,
+  ): Promise<void> {
+    const refreshedSet = await readHistoricalSet(entry.sessionId, original.id);
+    if (!refreshedSet || !historySetMatchesPayload(refreshedSet, payload)) {
+      throw new Error("historical set update could not be confirmed");
+    }
+    storeVerifiedHistorySet(exerciseId, entry, refreshedSet);
+    const alreadyCurrent = historySetMatchesPayload(original, payload);
+    announceHistory(alreadyCurrent
+      ? (uk ? "Підхід уже має ці значення; показано актуальний запис." : "The set already had these values; the current record is shown.")
+      : publicationStatus === "stale"
+        ? (uk ? "Підхід збережено, але модель ще не актуальна." : "Set saved, but the model is not current.")
+        : publicationStatus === "not-run"
+          ? (uk ? "Підхід збережено; актуальність моделі не підтверджено." : "Set saved; model currentness could not be confirmed.")
+        : publicationStatus === "current"
+          ? (uk ? "Підхід збережено; модель актуальна." : "Set saved; model publication is current.")
+          : (uk ? "Підхід збережено; стан публікації моделі не вдалося підтвердити." : "Set saved; model publication status could not be confirmed."));
+  }
+
   function announceHistory(message: string, focus = false) {
     setHistoryAnnouncement(message);
     if (focus) window.requestAnimationFrame(() => historyAnnouncementRef.current?.focus());
   }
 
-  function publicationWarning(status: unknown): boolean {
-    return status === "stale" || status === "not-run";
-  }
-
   async function updateHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput): Promise<void> {
+    if (busy || mutationUncertain) throw new Error("set mutations are blocked until the pending write is verified");
     let response: Response | null = null;
     try {
       response = await fetch(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, {
@@ -504,74 +551,55 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     } catch {
       // A transport error can arrive after the server has committed the edit.
     }
-    if (!response?.ok) {
-      const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
-      if (refreshedSet && historySetMatchesPayload({ ...set, ...refreshedSet }, payload)) {
-        replaceCachedHistorySet(exerciseId, entry, {
-          ...set,
-          id: refreshedSet.id,
-          setNumber: refreshedSet.setNumber,
-          reps: refreshedSet.reps,
-          weightKg: refreshedSet.weightKg,
-          bandNominalResistanceKg: refreshedSet.bandNominalResistanceKg,
-          rir: refreshedSet.rir,
-          comment: refreshedSet.comment,
-          completedAt: refreshedSet.completedAt,
-          loadAccountingOverride: refreshedSet.loadAccountingOverride ?? null,
-        });
-        announceHistory(uk
-          ? "Підхід збережено, але оновлення моделі повідомило про помилку."
-          : "Set saved, but model refresh reported a problem.");
-        return;
-      }
-      throw new Error("historical set update failed");
+    let publicationStatus: string | undefined;
+    try {
+      const body = await response?.clone().json() as { modelPublicationStatus?: unknown };
+      if (typeof body?.modelPublicationStatus === "string") publicationStatus = body.modelPublicationStatus;
+    } catch {
+      // The authoritative set GET below determines whether the edit persisted.
     }
-    const body = await response.json() as { set?: StrengthSetDto; modelPublicationStatus?: string };
-    if (!body.set || body.set.id !== set.id) throw new Error("historical set response was invalid");
-    const updatedHistorySet: ExerciseHistorySetDto = {
-      id: body.set.id,
-      setNumber: body.set.setNumber,
-      reps: body.set.reps,
-      weightKg: body.set.weightKg,
-      bandNominalResistanceKg: body.set.bandNominalResistanceKg,
-      rir: body.set.rir,
-      comment: body.set.comment,
-      completedAt: body.set.completedAt,
-      loadAccountingOverride: body.set.loadAccountingOverride ?? null,
-    };
-    replaceCachedHistorySet(exerciseId, entry, updatedHistorySet);
-    announceHistory(publicationWarning(body.modelPublicationStatus)
-      ? (uk ? "Підхід збережено, але модель ще не актуальна." : "Set saved, but the model is not current.")
-      : (uk ? "Підхід збережено." : "Set saved."));
+    await reconcileHistoricalUpdate(exerciseId, entry, set, payload, publicationStatus);
   }
 
   async function deleteHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto): Promise<void> {
+    if (busy || mutationUncertain) throw new Error("set mutations are blocked until the pending write is verified");
     let response: Response | null = null;
     try {
       response = await fetch(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, { method: "DELETE" });
     } catch {
       // Reconcile the postcondition before telling the user to retry a timed-out mutation.
     }
-    if (!response?.ok) {
-      const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
-      if (refreshedSet === null) {
-        removeCachedHistorySet(exerciseId, entry, set.id);
-        announceHistory(uk
-          ? "Підхід видалено, але оновлення моделі повідомило про помилку."
-          : "Set deleted, but model refresh reported a problem.", true);
-        return;
+    let modelPublicationStatus: "current" | "stale" | "not-run" | undefined;
+    let responseStatusKnown = response?.status === 204;
+    if (!responseStatusKnown && response) {
+      try {
+        const body = await response.json() as { modelPublicationStatus?: unknown };
+        if (body.modelPublicationStatus === "current" || body.modelPublicationStatus === "stale" || body.modelPublicationStatus === "not-run") {
+          modelPublicationStatus = body.modelPublicationStatus;
+          responseStatusKnown = true;
+        }
+      } catch {
+        // The authoritative set GET below determines whether the delete persisted.
       }
-      throw new Error("historical set deletion failed");
     }
-    let modelPublicationStatus: string | undefined;
-    if (response.status !== 204) {
-      const body = await response.json() as { modelPublicationStatus?: string };
-      modelPublicationStatus = body.modelPublicationStatus;
-    }
+    const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
+    if (refreshedSet !== null) throw new Error("historical set deletion could not be confirmed");
     removeCachedHistorySet(exerciseId, entry, set.id);
-    announceHistory(publicationWarning(modelPublicationStatus)
-      ? (uk ? "Підхід видалено, але модель ще не актуальна." : "Set deleted, but the model is not current.")
-      : (uk ? "Підхід видалено." : "Set deleted."), true);
+    announceHistory(!response?.ok
+      ? modelPublicationStatus === "stale"
+        ? (uk ? "Підхід відсутній; історію оновлено, але модель ще не актуальна." : "The set is absent and history is refreshed, but the model is not current.")
+        : modelPublicationStatus === "not-run"
+          ? (uk ? "Підхід відсутній; історію оновлено, але актуальність моделі не підтверджено." : "The set is absent and history is refreshed; model currentness could not be confirmed.")
+        : !responseStatusKnown
+          ? (uk ? "Підхід відсутній; історію оновлено, але стан публікації моделі не вдалося підтвердити." : "The set is absent and history is refreshed; model publication status could not be confirmed.")
+          : (uk ? "Підхід відсутній; показано актуальну історію." : "The set is absent; the current history is shown.")
+      : modelPublicationStatus === "stale"
+        ? (uk ? "Підхід видалено, але модель ще не актуальна." : "Set deleted, but the model is not current.")
+        : modelPublicationStatus === "not-run"
+          ? (uk ? "Підхід видалено; актуальність моделі не підтверджено." : "Set deleted; model currentness could not be confirmed.")
+        : !responseStatusKnown
+          ? (uk ? "Підхід видалено; стан публікації моделі не вдалося підтвердити." : "Set deleted; model publication status could not be confirmed.")
+          : (uk ? "Підхід видалено." : "Set deleted."), true);
   }
 
   const exerciseCountLabel = uk
@@ -599,8 +627,11 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           draft={interactive ? draft : emptySetDraft()}
           editingSetId={interactive ? editingSetId : null}
           busy={interactive && busy}
-          canPrev={canPrev}
-          canNext={canNext}
+          busyLabel={interactive ? busyLabel : undefined}
+          mutationUncertain={interactive && mutationUncertain}
+          historyMutationBlocked={interactive && manualNavigationBlocked}
+          canPrev={canPrev && !manualNavigationBlocked}
+          canNext={canNext && !manualNavigationBlocked}
           infoOpen={interactive && infoOpen}
           showCommentField={interactive && showCommentField}
           onToggleInfo={() => setInfoOpen((value) => !value)}
@@ -644,6 +675,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
                 aria-expanded={menuOpen}
                 aria-haspopup="dialog"
                 aria-label={uk ? "Меню сесії" : "Session menu"}
+                disabled={busy || mutationUncertain}
                 onClick={onToggleMenu}
               >
                 ⋯
@@ -687,7 +719,17 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           )}
         </header>
 
-        {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+        {error && (
+          <div className={styles.errorBanner} role="alert">
+            {error}
+            {mutationUncertain && onVerifyPendingMutation && (
+              <button type="button" className={styles.liveSecondary} disabled={busy} onClick={onVerifyPendingMutation}>
+                {uk ? "Перевірити стан" : "Check status"}
+              </button>
+            )}
+          </div>
+        )}
+        {notice && <p className={styles.liveProgress} role="status" aria-live="polite">{notice}</p>}
         {historyAnnouncement && <p ref={historyAnnouncementRef} className={styles.liveProgress} role="status" aria-live="polite" tabIndex={-1}>{historyAnnouncement}</p>}
 
         <div className={styles.workoutWorkspace}>
@@ -695,7 +737,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
             className={`${styles.workoutSideNav} ${!canPrev ? styles.workoutSideNavHidden : ""}`}
             type="button"
             aria-label={uk ? "Попередня вправа" : "Previous exercise"}
-            disabled={!canPrev}
+            disabled={!canPrev || manualNavigationBlocked}
             onClick={() => requestNeighbor(-1)}
           >
             ←
@@ -729,7 +771,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
             className={`${styles.workoutSideNav} ${!canNext ? styles.workoutSideNavHidden : ""}`}
             type="button"
             aria-label={uk ? "Наступна вправа" : "Next exercise"}
-            disabled={!canNext}
+            disabled={!canNext || manualNavigationBlocked}
             onClick={() => requestNeighbor(1)}
           >
             →

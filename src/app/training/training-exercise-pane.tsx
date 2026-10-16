@@ -23,6 +23,15 @@ import { formatLoadKg, formatSetCompletionClock, resistanceLabel, setCompletionT
 import type { SetDraft } from "./training-exercise-workspace";
 import styles from "./training.module.css";
 
+const SET_DELETE_SWIPE_RATIO = 0.75;
+const SET_DELETE_SWIPE_MIN_PX = 56;
+
+function setDeleteSwipeThreshold(viewportWidth: number): number {
+  // Deletion requires a genuinely long swipe across most of the viewport,
+  // regardless of where the gesture starts within the row.
+  return Math.max(SET_DELETE_SWIPE_MIN_PX, Math.round(Math.max(0, viewportWidth) * SET_DELETE_SWIPE_RATIO));
+}
+
 function setLoadLabel(
   exercise: StrengthSessionExerciseDto,
   set: Pick<StrengthSetDto, "weightKg" | "bandNominalResistanceKg" | "loadAccountingOverride">,
@@ -106,6 +115,9 @@ export type ExercisePaneProps = {
   draft: SetDraft;
   editingSetId: number | null;
   busy: boolean;
+  busyLabel?: string;
+  mutationUncertain?: boolean;
+  historyMutationBlocked?: boolean;
   canPrev: boolean;
   canNext: boolean;
   infoOpen: boolean;
@@ -169,6 +181,7 @@ function HistoricalSetRow({
   onCopy,
   onUpdate,
   onDelete,
+  mutationBlocked,
 }: {
   entry: ExerciseHistoryEntryDto;
   set: ExerciseHistorySetDto;
@@ -180,13 +193,14 @@ function HistoricalSetRow({
   onCopy: (set: ExerciseHistorySetDto) => void;
   onUpdate: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput) => Promise<void>;
   onDelete: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto) => Promise<void>;
+  mutationBlocked: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState(() => historicalSetDraft(set));
   const [additionalLoadDirty, setAdditionalLoadDirty] = useState(false);
-  const pointerStart = useRef<{ x: number; y: number; id: number; offset: number } | null>(null);
+  const pointerStart = useRef<{ x: number; y: number; id: number; offset: number; deleteThreshold: number } | null>(null);
   const suppressClickUntil = useRef(0);
   const wasEditing = useRef(false);
   const editActionRef = useRef<HTMLButtonElement | null>(null);
@@ -213,7 +227,7 @@ function HistoricalSetRow({
   }
 
   function beginEdit() {
-    if (!canPreserveOverride) return;
+    if (mutationBlocked || !canPreserveOverride) return;
     setDraft(historicalSetDraft(set));
     setAdditionalLoadDirty(false);
     setError(null);
@@ -231,6 +245,7 @@ function HistoricalSetRow({
   }
 
   async function save() {
+    if (mutationBlocked) return;
     const reps = Number(draft.reps);
     if (!draft.asymmetric && (!Number.isInteger(reps) || reps < 1)) {
       setError(uk ? "Вкажіть цілу кількість повторень." : "Enter a whole number of reps.");
@@ -347,6 +362,7 @@ function HistoricalSetRow({
   }
 
   async function remove() {
+    if (mutationBlocked) return;
     if (!window.confirm(uk ? "Видалити цей історичний підхід?" : "Delete this historical set?")) return;
     setBusy(true);
     setError(null);
@@ -363,13 +379,14 @@ function HistoricalSetRow({
     event.stopPropagation();
     // A new gesture supersedes any click suppression left by a swipe that emitted no click.
     suppressClickUntil.current = 0;
-    if (!interactive || event.pointerType === "mouse" || busy || editing) return;
+    if (!interactive || mutationBlocked || event.pointerType === "mouse" || busy || editing) return;
     if (event.target instanceof Element && event.target.closest("[data-history-action]:not([data-history-action='copy'])")) return;
     pointerStart.current = {
       x: event.clientX,
       y: event.clientY,
       id: event.pointerId,
       offset: actionsOpen ? -104 : 0,
+      deleteThreshold: setDeleteSwipeThreshold(window.innerWidth),
     };
     setDragOffset(actionsOpen ? -104 : 0);
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
@@ -386,7 +403,7 @@ function HistoricalSetRow({
       const offset = Math.max(-104, Math.min(0, start.offset + dx));
       setDragging(true);
       setDragOffset(offset);
-      setDeleteIntent(dx <= -96);
+      setDeleteIntent(dx <= -start.deleteThreshold);
     }
   }
 
@@ -411,7 +428,7 @@ function HistoricalSetRow({
       return;
     }
     onOpenActions();
-    if (dx <= -96 && interactive) {
+    if (dx <= -start.deleteThreshold && interactive) {
       setDeleteIntent(true);
       void remove().finally(() => setDeleteIntent(false));
     }
@@ -446,10 +463,10 @@ function HistoricalSetRow({
     >
       {interactive && !editing && (
         <div className={styles.workoutSetActionsRail} role="group" aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}>
-          <button ref={editActionRef} type="button" data-history-action="edit" className={styles.workoutSetIconButton} aria-label={uk ? `Редагувати підхід ${set.setNumber}` : `Edit set ${set.setNumber}`} title={uk ? "Редагувати" : "Edit"} disabled={!canPreserveOverride || busy} onFocus={onOpenActions} onClick={beginEdit}>
+          <button ref={editActionRef} type="button" data-history-action="edit" className={styles.workoutSetIconButton} aria-label={uk ? `Редагувати підхід ${set.setNumber}` : `Edit set ${set.setNumber}`} title={uk ? "Редагувати" : "Edit"} disabled={!canPreserveOverride || busy || mutationBlocked} onFocus={onOpenActions} onClick={beginEdit}>
             <SetActionIcon kind="edit" />
           </button>
-          <button type="button" data-history-action="delete" className={`${styles.workoutSetIconButton} ${styles.workoutHistoryDelete}`} aria-label={uk ? `Видалити підхід ${set.setNumber}` : `Delete set ${set.setNumber}`} title={uk ? "Видалити" : "Delete"} disabled={busy} onFocus={onOpenActions} onClick={() => void remove()}>
+          <button type="button" data-history-action="delete" className={`${styles.workoutSetIconButton} ${styles.workoutHistoryDelete}`} aria-label={uk ? `Видалити підхід ${set.setNumber}` : `Delete set ${set.setNumber}`} title={uk ? "Видалити" : "Delete"} disabled={busy || mutationBlocked} onFocus={onOpenActions} onClick={() => void remove()}>
             <SetActionIcon kind="delete" />
           </button>
         </div>
@@ -465,6 +482,7 @@ function HistoricalSetRow({
             data-history-action="copy"
             className={styles.workoutHistorySetBtn}
             aria-label={uk ? `Підставити дані підходу ${set.setNumber}` : `Use values from set ${set.setNumber}`}
+            disabled={mutationBlocked}
             onClick={() => onCopy(set)}
           >
             <span>#{set.setNumber}</span>
@@ -490,18 +508,18 @@ function HistoricalSetRow({
         {interactive && editing && (
           <form className={styles.workoutHistoryEditForm} onSubmit={(event) => { event.preventDefault(); void save(); }}>
           {draft.asymmetric ? <>
-            <label><span>{uk ? "Повтори зліва" : "Left reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.leftReps} onChange={(event) => setDraft((current) => ({ ...current, leftReps: event.target.value }))} /></label>
-            <label><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy} inputMode="numeric" value={draft.rightReps} onChange={(event) => setDraft((current) => ({ ...current, rightReps: event.target.value }))} /></label>
-          </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
-          {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
-          {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => { setAdditionalLoadDirty(true); setDraft((current) => ({ ...current, additionalLoadKg: event.target.value })); }} /></label>}
-          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
+            <label><span>{uk ? "Повтори зліва" : "Left reps"}</span><input ref={firstEditorRef} disabled={busy || mutationBlocked} inputMode="numeric" value={draft.leftReps} onChange={(event) => setDraft((current) => ({ ...current, leftReps: event.target.value }))} /></label>
+            <label><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.rightReps} onChange={(event) => setDraft((current) => ({ ...current, rightReps: event.target.value }))} /></label>
+          </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy || mutationBlocked} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => { setAdditionalLoadDirty(true); setDraft((current) => ({ ...current, additionalLoadKg: event.target.value })); }} /></label>}
+          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
           {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
-          <label><span>RIR</span><input disabled={busy} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
-          <label className={styles.workoutHistoryComment}><span>{uk ? "Коментар" : "Comment"}</span><textarea disabled={busy} maxLength={500} value={draft.comment} onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))} /></label>
+          <label><span>RIR</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
+          <label className={styles.workoutHistoryComment}><span>{uk ? "Коментар" : "Comment"}</span><textarea disabled={busy || mutationBlocked} maxLength={500} value={draft.comment} onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))} /></label>
           {error && <p role="alert">{error}</p>}
             <div className={styles.workoutHistoryActions}>
-              <button type="submit" data-history-action="save" disabled={busy}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}</button>
+              <button type="submit" data-history-action="save" disabled={busy || mutationBlocked}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}</button>
               <button type="button" data-history-action="cancel" disabled={busy} onClick={cancelEdit}>{uk ? "Скасувати" : "Cancel"}</button>
             </div>
           </form>
@@ -521,6 +539,9 @@ function LiveLoggedSetRow({
   editing,
   actionsOpen,
   busy,
+  busyLabel,
+  saveBlocked,
+  mutationBlocked,
   draft,
   onDraftChange,
   onSave,
@@ -537,6 +558,9 @@ function LiveLoggedSetRow({
   editing: boolean;
   actionsOpen: boolean;
   busy: boolean;
+  busyLabel?: string;
+  saveBlocked: boolean;
+  mutationBlocked: boolean;
   draft: SetDraft;
   onDraftChange: (next: SetDraft) => void;
   onSave: () => void;
@@ -548,7 +572,7 @@ function LiveLoggedSetRow({
 }) {
   const rowRef = useRef<HTMLLIElement | null>(null);
   const editActionRef = useRef<HTMLButtonElement | null>(null);
-  const pointerStart = useRef<{ x: number; y: number; id: number; offset: number } | null>(null);
+  const pointerStart = useRef<{ x: number; y: number; id: number; offset: number; deleteThreshold: number } | null>(null);
   const suppressClickUntil = useRef(0);
   const wasEditing = useRef(false);
   const [dragging, setDragging] = useState(false);
@@ -574,6 +598,7 @@ function LiveLoggedSetRow({
       y: event.clientY,
       id: event.pointerId,
       offset: actionsOpen ? -104 : 0,
+      deleteThreshold: setDeleteSwipeThreshold(window.innerWidth),
     };
     setDragOffset(actionsOpen ? -104 : 0);
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
@@ -590,7 +615,7 @@ function LiveLoggedSetRow({
       const offset = Math.max(-104, Math.min(0, start.offset + dx));
       setDragging(true);
       setDragOffset(offset);
-      setDeleteIntent(dx <= -96);
+      setDeleteIntent(dx <= -start.deleteThreshold);
     }
   }
 
@@ -615,7 +640,7 @@ function LiveLoggedSetRow({
       return;
     }
     onOpenActions();
-    if (dx <= -96) {
+    if (dx <= -start.deleteThreshold) {
       setDeleteIntent(true);
       onDelete();
       setDeleteIntent(false);
@@ -656,10 +681,10 @@ function LiveLoggedSetRow({
       }}
     >
       {interactive && !editing && <div className={styles.workoutSetActionsRail} role="group" aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}>
-        <button ref={editActionRef} type="button" data-set-action className={styles.workoutSetIconButton} aria-label={uk ? `Редагувати підхід ${set.setNumber}` : `Edit set ${set.setNumber}`} title={uk ? "Редагувати" : "Edit"} onFocus={onOpenActions} onClick={onEdit}>
+        <button ref={editActionRef} type="button" data-set-action className={styles.workoutSetIconButton} aria-label={uk ? `Редагувати підхід ${set.setNumber}` : `Edit set ${set.setNumber}`} title={uk ? "Редагувати" : "Edit"} disabled={busy || mutationBlocked} onFocus={onOpenActions} onClick={onEdit}>
           <SetActionIcon kind="edit" />
         </button>
-        <button type="button" data-set-action className={`${styles.workoutSetIconButton} ${styles.workoutHistoryDelete}`} disabled={busy} aria-label={uk ? `Видалити підхід ${set.setNumber}` : `Delete set ${set.setNumber}`} title={uk ? "Видалити" : "Delete"} onFocus={onOpenActions} onClick={onDelete}>
+        <button type="button" data-set-action className={`${styles.workoutSetIconButton} ${styles.workoutHistoryDelete}`} disabled={busy || mutationBlocked} aria-label={uk ? `Видалити підхід ${set.setNumber}` : `Delete set ${set.setNumber}`} title={uk ? "Видалити" : "Delete"} onFocus={onOpenActions} onClick={onDelete}>
           <SetActionIcon kind="delete" />
         </button>
       </div>}
@@ -669,20 +694,20 @@ function LiveLoggedSetRow({
           <span className={styles.liveSetNum}>#{set.setNumber}</span>
           <section className={`${styles.liveEntry} ${styles.liveSetInlineEditor}`} aria-label={uk ? `Редагування підходу ${set.setNumber}` : `Edit set ${set.setNumber}`}>
             <div className={styles.liveFields}>
-              {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label className={styles.liveField}><span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span><input inputMode="decimal" autoComplete="off" value={draft.weightKg} onChange={(event) => onDraftChange({ ...draft, weightKg: event.target.value })} /></label>}
-              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
-              {exercise.resistanceType === RESISTANCE.BODYWEIGHT && <label className={styles.liveField}><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => onDraftChange({ ...draft, additionalLoadKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label className={styles.liveField}><span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.weightKg} onChange={(event) => onDraftChange({ ...draft, weightKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.BODYWEIGHT && <label className={styles.liveField}><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => onDraftChange({ ...draft, additionalLoadKg: event.target.value })} /></label>}
               {asymmetricReps ? <>
-                <label className={styles.liveField}><span>{uk ? "Повтори зліва" : "Left reps"}</span><input inputMode="numeric" value={draft.leftReps} onChange={(event) => onDraftChange({ ...draft, leftReps: event.target.value })} /></label>
-                <label className={styles.liveField}><span>{uk ? "Повтори справа" : "Right reps"}</span><input inputMode="numeric" value={draft.rightReps} onChange={(event) => onDraftChange({ ...draft, rightReps: event.target.value })} /></label>
-              </> : <label className={styles.liveField}><span>{uk ? "Повтори" : "Reps"}</span><input inputMode="numeric" autoComplete="off" value={draft.reps} onChange={(event) => onDraftChange({ ...draft, reps: event.target.value })} /></label>}
-              <label className={styles.liveField}><span>RIR</span><input inputMode="numeric" autoComplete="off" value={draft.rir} onChange={(event) => onDraftChange({ ...draft, rir: event.target.value })} /></label>
-              <label className={styles.liveField}><span>{uk ? "Коментар" : "Comment"}</span><input autoComplete="off" maxLength={280} value={draft.comment} onChange={(event) => onDraftChange({ ...draft, comment: event.target.value })} /></label>
+                <label className={styles.liveField}><span>{uk ? "Повтори зліва" : "Left reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" value={draft.leftReps} onChange={(event) => onDraftChange({ ...draft, leftReps: event.target.value })} /></label>
+                <label className={styles.liveField}><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" value={draft.rightReps} onChange={(event) => onDraftChange({ ...draft, rightReps: event.target.value })} /></label>
+              </> : <label className={styles.liveField}><span>{uk ? "Повтори" : "Reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" autoComplete="off" value={draft.reps} onChange={(event) => onDraftChange({ ...draft, reps: event.target.value })} /></label>}
+              <label className={styles.liveField}><span>RIR</span><input disabled={busy || saveBlocked} inputMode="numeric" autoComplete="off" value={draft.rir} onChange={(event) => onDraftChange({ ...draft, rir: event.target.value })} /></label>
+              <label className={styles.liveField}><span>{uk ? "Коментар" : "Comment"}</span><input disabled={busy || saveBlocked} autoComplete="off" maxLength={280} value={draft.comment} onChange={(event) => onDraftChange({ ...draft, comment: event.target.value })} /></label>
             </div>
             {asymmetricReps && <p className={styles.workoutInfoLine}>{uk ? "Асиметричні повтори зберігаються окремо для кожної сторони." : "Asymmetric reps remain stored separately for each side."}</p>}
             <div className={styles.liveSaveRow}>
-              <button className={styles.liveSave} type="button" disabled={busy} aria-busy={busy || undefined} onClick={onSave}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Оновити підхід" : "Update set")}</button>
-              <button className={styles.liveSecondary} type="button" disabled={busy} onClick={onCancel}>{uk ? "Скасувати" : "Cancel"}</button>
+              <button className={styles.liveSave} type="button" disabled={busy || saveBlocked} aria-busy={busy || undefined} onClick={onSave}>{busy ? (busyLabel ?? (uk ? "Збереження…" : "Saving…")) : (uk ? "Оновити підхід" : "Update set")}</button>
+              <button className={styles.liveSecondary} type="button" disabled={busy || saveBlocked} onClick={onCancel}>{uk ? "Скасувати" : "Cancel"}</button>
             </div>
           </section>
         </>
@@ -709,6 +734,9 @@ export function ExercisePane(props: ExercisePaneProps) {
     draft,
     editingSetId,
     busy,
+    busyLabel,
+    mutationUncertain = false,
+    historyMutationBlocked = false,
     canPrev,
     canNext,
     infoOpen,
@@ -860,7 +888,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                   inputMode="decimal"
                   autoComplete="off"
                   tabIndex={interactive ? 0 : -1}
-                  readOnly={!interactive}
+                  readOnly={!interactive || busy || mutationUncertain}
                   value={paneDraft.weightKg}
                   onChange={(event) => onDraftChange({ ...paneDraft, weightKg: event.target.value })}
                 />
@@ -873,7 +901,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                   inputMode="decimal"
                   autoComplete="off"
                   tabIndex={interactive ? 0 : -1}
-                  readOnly={!interactive}
+                  readOnly={!interactive || busy || mutationUncertain}
                   value={paneDraft.bandNominalResistanceKg}
                   onChange={(event) => onDraftChange({
                     ...paneDraft,
@@ -889,7 +917,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                   inputMode="decimal"
                   autoComplete="off"
                   tabIndex={interactive ? 0 : -1}
-                  readOnly={!interactive}
+                  readOnly={!interactive || busy || mutationUncertain}
                   placeholder={uk ? "опційно" : "optional"}
                   value={paneDraft.additionalLoadKg}
                   onChange={(event) => onDraftChange({
@@ -905,7 +933,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                 inputMode="numeric"
                 autoComplete="off"
                 tabIndex={interactive ? 0 : -1}
-                readOnly={!interactive}
+                readOnly={!interactive || busy || mutationUncertain}
                 value={paneDraft.reps}
                 onChange={(event) => onDraftChange({ ...paneDraft, reps: event.target.value })}
               />
@@ -916,7 +944,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                 inputMode="numeric"
                 autoComplete="off"
                 tabIndex={interactive ? 0 : -1}
-                readOnly={!interactive}
+                readOnly={!interactive || busy || mutationUncertain}
                 placeholder={uk ? "опційно" : "optional"}
                 value={paneDraft.rir}
                 onChange={(event) => onDraftChange({ ...paneDraft, rir: event.target.value })}
@@ -934,7 +962,7 @@ export function ExercisePane(props: ExercisePaneProps) {
               type="button"
               className={styles.workoutCommentToggle}
               tabIndex={interactive ? 0 : -1}
-              disabled={!interactive}
+              disabled={!interactive || busy || mutationUncertain}
               onClick={interactive ? onOpenComment : undefined}
             >
               {uk ? "+ Коментар" : "+ Comment"}
@@ -946,6 +974,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                 autoComplete="off"
                 maxLength={280}
                 placeholder={uk ? "напр. важко / читинг" : "e.g. hard / cheat reps"}
+                readOnly={busy || mutationUncertain}
                 value={paneDraft.comment}
                 onChange={(event) => onDraftChange({ ...paneDraft, comment: event.target.value })}
               />
@@ -954,19 +983,19 @@ export function ExercisePane(props: ExercisePaneProps) {
 
           <div className={styles.liveSaveRow}>
             {interactive && editingSetId != null && (
-              <button className={styles.liveSecondary} type="button" onClick={onCancelEditSet}>
+              <button className={styles.liveSecondary} type="button" disabled={busy || mutationUncertain} onClick={onCancelEditSet}>
                 {uk ? "Скасувати" : "Cancel"}
               </button>
             )}
             <button
               className={styles.liveSave}
               type="button"
-              disabled={!interactive || !canSave}
+              disabled={!interactive || !canSave || busy || mutationUncertain}
               aria-busy={interactive && busy || undefined}
               onClick={interactive ? onSaveSet : undefined}
             >
               {interactive && busy
-                ? (uk ? "Збереження…" : "Saving…")
+                ? (busyLabel ?? (uk ? "Збереження…" : "Saving…"))
                 : interactive && editingSetId != null
                   ? (uk ? "Оновити підхід" : "Update set")
                   : (uk ? "Додати підхід" : "Add set")}
@@ -998,6 +1027,9 @@ export function ExercisePane(props: ExercisePaneProps) {
                     editing={editingSetId === set.id}
                     actionsOpen={openSetActionsKey === actionKey}
                     busy={busy}
+                    busyLabel={busyLabel}
+                    saveBlocked={mutationUncertain}
+                    mutationBlocked={mutationUncertain}
                     draft={paneDraft}
                     onDraftChange={onDraftChange}
                     onSave={onSaveSet}
@@ -1057,6 +1089,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                         onCopy={onCopyHistorySet}
                         onUpdate={onUpdateHistoricalSet}
                         onDelete={onDeleteHistoricalSet}
+                        mutationBlocked={historyMutationBlocked}
                       />
                     ))}
                   </ul>

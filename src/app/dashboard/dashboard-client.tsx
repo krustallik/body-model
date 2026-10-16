@@ -19,6 +19,7 @@ import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";
 import { WorkActivityDialog } from "@/app/history/work-activity-dialog";
+import { TrainingFinishPublicationNotice } from "@/app/training/training-finish-publication-notice";
 import styles from "./dashboard.module.css";
 
 function localToday(): string {
@@ -251,6 +252,7 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
         <LinkBrand uk={uk} />
         <AppNav active="dashboard" />
       </header>
+      <TrainingFinishPublicationNotice />
 
       <section className={styles.hero}>
         <div>

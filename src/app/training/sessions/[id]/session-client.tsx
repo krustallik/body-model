@@ -600,25 +600,39 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setFinishOffer(false);
     setBusy(true);
     setError(null);
-    const routeToCompletedSession = (completed: StrengthSessionDto): boolean => {
+    const completedReturnHref = (publicationStatus?: string): string => {
+      const destination = new URL(returnHref, window.location.origin);
+      destination.searchParams.delete("finishPublication");
+      if (destination.pathname === "/training") {
+        destination.searchParams.set("programsRefresh", String(Date.now()));
+      }
+      if (publicationStatus === "stale" || publicationStatus === "not-run") {
+        destination.searchParams.set("finishPublication", "stale");
+      } else if (publicationStatus === "unknown") {
+        destination.searchParams.set("finishPublication", "unknown");
+      }
+      return `${destination.pathname}${destination.search}${destination.hash}`;
+    };
+    const routeToCompletedSession = (completed: StrengthSessionDto, publicationStatus?: string): boolean => {
       if (completed.status !== SESSION_STATUS.COMPLETED) return false;
       setSession(completed);
-      router.push(returnHref);
+      router.push(completedReturnHref(publicationStatus));
       return true;
     };
-    const readCompletedSession = async (): Promise<boolean> => {
+    const readCompletedSession = async (publicationStatus?: string): Promise<boolean> => {
       const detail = await fetch(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" });
       if (!detail.ok) return false;
-      const body = await detail.json() as { session?: StrengthSessionDto };
-      return body.session ? routeToCompletedSession(body.session) : false;
+      const body = await detail.json() as { session?: StrengthSessionDto; modelPublicationStatus?: string };
+      return body.session ? routeToCompletedSession(body.session, publicationStatus ?? body.modelPublicationStatus ?? "unknown") : false;
     };
     try {
       const response = await fetch(`/api/v1/training/sessions/${session.id}/finish`, { method: "POST" });
       if (!response.ok) {
+        const errorBody = await response.clone().json().catch(() => null) as { modelPublicationStatus?: string } | null;
         const apiError = await readApiError(response, uk);
         if (response.status === 409 || response.status >= 500) {
           try {
-            if (await readCompletedSession()) return;
+            if (await readCompletedSession(errorBody?.modelPublicationStatus)) return;
           } catch {
             // A read failure cannot establish that the finish committed.
           }
@@ -626,8 +640,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setError(apiError);
         return;
       }
-      const body = await response.json() as { session?: StrengthSessionDto };
-      if (body.session && routeToCompletedSession(body.session)) return;
+      const body = await response.json() as { session?: StrengthSessionDto; modelPublicationStatus?: string };
+      if (body.session && routeToCompletedSession(body.session, body.modelPublicationStatus ?? "unknown")) return;
       if (await readCompletedSession()) return;
       setError(uk
         ? "Не вдалося підтвердити завершення. Перевірте стан тренування перед повторною спробою."

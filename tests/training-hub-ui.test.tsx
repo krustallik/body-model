@@ -24,6 +24,7 @@ describe("Training hub UI", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    window.history.replaceState(null, "", "/");
   });
 
   it("uses wider training hub layout shell", async () => {
@@ -41,6 +42,24 @@ describe("Training hub UI", () => {
     await waitFor(() => expect(screen.getByText("Training")).toBeTruthy());
     expect(container.querySelector(`.${styles.trainingHubPage}`)).toBeTruthy();
     expect(container.querySelectorAll(`.${styles.trainingHubGrid}`).length).toBeGreaterThan(0);
+  });
+
+  it("shows stale publication status passed through a completed-workout return URL", async () => {
+    window.history.replaceState(null, "", "/training?programsRefresh=123&finishPublication=stale");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+      const url = String(input);
+      if (url.includes("/sessions/active")) return Response.json({ session: null });
+      if (url.includes("/programs")) return Response.json({ programs: [] });
+      if (url.includes("/sessions/recent")) return Response.json({ sessions: [] });
+      if (url.includes("/match-attention")) return Response.json({ sessions: [] });
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
+      return new Response("not found", { status: 404 });
+    }));
+
+    render(<TrainingClient />);
+
+    expect((await screen.findByRole("status")).textContent).toContain("Workout finished. Model publication is still updating");
+    await waitFor(() => expect(new URLSearchParams(window.location.search).has("finishPublication")).toBe(false));
   });
 
   it("starts a free workout without requiring a program", async () => {
@@ -119,7 +138,7 @@ describe("Training hub UI", () => {
       );
     });
     await waitFor(() => expect(screen.queryByText("Push A")).toBeNull());
-    expect(programReads).toBeGreaterThanOrEqual(2);
+    expect(programReads).toBe(1);
   });
 
   it("deletes a completed diary session after explaining cascaded diary data and refreshes immediately", async () => {

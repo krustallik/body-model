@@ -2159,6 +2159,7 @@ export class TrainingService {
       }));
       return this.unifiedPublicationStatus(profileId);
     } catch (error) {
+      if (error instanceof StaleStrengthEnergySourceError) throw error;
       logPhysiologyPublicationFailure(`${operation}-dependency-refresh`, error);
       return "stale";
     }

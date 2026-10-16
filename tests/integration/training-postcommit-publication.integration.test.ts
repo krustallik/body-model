@@ -8,11 +8,10 @@ process.env.DATABASE_URL = databaseUrl;
 const { prisma } = await import("@/lib/db/prisma");
 const { TrainingRepository } = await import("@/modules/training/training.repository");
 const { TrainingService } = await import("@/modules/training/training.service");
-const { StaleStrengthEnergySourceError } = await import("@/modules/training/training.errors");
 const profileId = 1;
 const repository = new TrainingRepository(prisma);
-const stalePublication = vi.fn(async () => { throw new StaleStrengthEnergySourceError(); });
-const training = new TrainingService(prisma, repository, stalePublication);
+const failedPublication = vi.fn(async () => { throw new Error("injected dependent refresh failure"); });
+const training = new TrainingService(prisma, repository, failedPublication);
 let sessionId: number | null = null;
 let profileCreated = false;
 
@@ -78,7 +77,7 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
     expect(persistedAfterFinish.completedAt).toEqual(original.completedAt);
     expect(await prisma.strengthSessionAccountingOperation.count({ where: { sessionId: session.id } })).toBeGreaterThan(0);
 
-    stalePublication.mockClear();
+    failedPublication.mockClear();
     const edited = await training.updateSet(session.id, created.id, {
       reps: 11,
       rir: 3,
@@ -96,7 +95,7 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
     expect(persistedAfterEdit).toMatchObject({ reps: 11, rir: 3, comment: "synthetic edit" });
     expect(persistedAfterEdit.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
     expect(persistedAfterEdit.completedAt).toEqual(original.completedAt);
-    expect(stalePublication).toHaveBeenCalledOnce();
+    expect(failedPublication).toHaveBeenCalledOnce();
   });
 
   it("serializes concurrent independent set edits without losing either write", async () => {

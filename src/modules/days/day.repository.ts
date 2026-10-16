@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { normalizeDailyMeasurements, prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { TrainingDayFactRepository } from "@/modules/days/training-day-fact.repository";
 import type { TrainingDayFact } from "@/modules/days/training-day-fact";
 import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
-import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
+import { MANUAL_HISTORY_SOURCE_PREFIX, workoutFingerprint } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
@@ -20,7 +21,7 @@ import {
   invalidateStepperMassDependenciesInTransactionV1,
   invalidateWorkoutEnergyInTransactionV1,
 } from "@/modules/activity/active-energy-invalidation";
-import { DuplicateDayError } from "./day.errors";
+import { DuplicateDayError, DuplicateWorkoutError } from "./day.errors";
 import {
   addCalendarDays,
   inclusiveCalendarDayCount,
@@ -57,6 +58,7 @@ const dailyMetricSelect = {
       endAt: true,
       durationMinutes: true,
       activeEnergyKcal: true,
+      syncProtected: true,
       matchedDiarySession: {
         select: {
           id: true,
@@ -188,22 +190,30 @@ const productionShadowReplayer: DailyMetricShadowReplayer = {
 };
 
 function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workouts"]>) {
-  return workouts.map((workout) => {
+  const unique = new Map<string, {
+    type: string;
+    startAt: Date;
+    endAt: Date;
+    durationMinutes: number;
+    activeEnergyKcal: number | null;
+    sourceIdentity: string;
+    syncProtected: boolean;
+  }>();
+  for (const workout of workouts) {
     const startAt = new Date(workout.startAt);
     const endAt = new Date(startAt.getTime() + workout.durationMinutes * 60_000);
-    return {
+    const fields = {
       type: workout.type,
       startAt,
       endAt,
       durationMinutes: workout.durationMinutes,
       activeEnergyKcal: workout.activeEnergyKcal ?? null,
-      sourceIdentity: workoutSourceIdentity({
-        type: workout.type,
-        startAt,
-        endAt,
-      }),
+      sourceIdentity: `${MANUAL_HISTORY_SOURCE_PREFIX}${randomUUID()}`,
+      syncProtected: true,
     };
-  });
+    unique.set(workoutFingerprint(fields), fields);
+  }
+  return [...unique.values()];
 }
 
 function decimalToNumber(value: Prisma.Decimal | null): number | null {
@@ -233,6 +243,8 @@ function rawWorkoutEvents(fact: TrainingDayFact) {
     endAt: event.endAt === null ? null : new Date(event.endAt),
     durationMinutes: event.durationMinutes,
     activeEnergyKcal: event.activeEnergyKcal,
+    syncProtected: event.syncProtected,
+    manualEditable: event.manualEditable,
     energySource: event.energySource,
     diaryOnly: event.diaryOnly,
     executionStatus: event.executionStatus,
@@ -502,23 +514,71 @@ export class DailyMetricRepository {
         await lifecycle.lockProfile(1);
         const before = await tx.dailyHealthData.findUniqueOrThrow({
           where: { date },
-          select: { weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },
+          select: { id: true, weightKg: true, workoutFeedObserved: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, externalId: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, sourceIdentity: true, syncProtected: true, matchedDiarySession: { select: { id: true } } } } },
         });
         await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "day", sourceKey: date });
         const updated = await tx.dailyHealthData.update({
           where: { date },
           data: {
             ...prepareDailyMeasurementsForWrite(metrics),
-            ...(workouts !== undefined ? {
-              workouts: { deleteMany: { hiddenFromHistory: false }, create: workoutCreateData(workouts) },
-              strengthTrainingMinutes: null,
-              activeEnergyKcal: null,
-            } : {}),
           },
           select: dailyMetricSelect,
         });
+        if (workouts !== undefined) {
+          const isHistoryManaged = (workout: typeof before.workouts[number]) => (
+            !workout.matchedDiarySession && (
+              workout.sourceIdentity.startsWith(MANUAL_HISTORY_SOURCE_PREFIX)
+            )
+          );
+          const existingManual = before.workouts.filter(isHistoryManaged);
+          const protectedFingerprints = new Set(before.workouts
+            .filter((workout) => !isHistoryManaged(workout))
+            .map((workout) => workoutFingerprint({ type: workout.type, startAt: workout.startAt, endAt: workout.endAt })));
+          const retainedManualIds = new Set<number>();
+          const seenFingerprints = new Set<string>();
+          for (const workout of workouts) {
+            const fields = workoutCreateData([workout])[0]!;
+            const fingerprint = workoutFingerprint({ type: fields.type, startAt: fields.startAt, endAt: fields.endAt });
+            if (seenFingerprints.has(fingerprint)) continue;
+            seenFingerprints.add(fingerprint);
+            const submittedId = "id" in workout ? workout.id : undefined;
+            if (submittedId !== undefined) {
+              const existing = existingManual.find((candidate) => candidate.id === submittedId);
+              if (!existing) throw new Error("workout edit id is not a manual workout for this day");
+              if (protectedFingerprints.has(fingerprint)) throw new DuplicateWorkoutError();
+              await tx.workout.update({ where: { id: submittedId }, data: { ...fields, sourceIdentity: existing.sourceIdentity } });
+              retainedManualIds.add(submittedId);
+              continue;
+            }
+            const matchingManual = existingManual.find((candidate) => !retainedManualIds.has(candidate.id)
+              && (candidate.sourceIdentity === fields.sourceIdentity
+                || workoutFingerprint({ type: candidate.type, startAt: candidate.startAt, endAt: candidate.endAt }) === fingerprint));
+            if (matchingManual) {
+              if (protectedFingerprints.has(fingerprint)) throw new DuplicateWorkoutError();
+              await tx.workout.update({ where: { id: matchingManual.id }, data: { ...fields, sourceIdentity: matchingManual.sourceIdentity } });
+              retainedManualIds.add(matchingManual.id);
+              continue;
+            }
+            // Older clients submitted every displayed workout. Preserve the synced row
+            // and do not clone it into a manual row when its exact identity is present.
+            if (protectedFingerprints.has(fingerprint)) continue;
+            await tx.workout.create({ data: { ...fields, dailyHealthDataId: before.id } });
+          }
+          const removedManualIds = existingManual.filter((workout) => !retainedManualIds.has(workout.id)).map(({ id }) => id);
+          if (removedManualIds.length > 0) {
+            await tx.workout.deleteMany({ where: { id: { in: removedManualIds }, hiddenFromHistory: false } });
+          }
+          await tx.dailyHealthData.update({
+            where: { id: before.id },
+            data: { strengthTrainingMinutes: null, activeEnergyKcal: null },
+          });
+        }
         weightSourceChanged = before.weightKg !== updated.weightKg;
-        const affected = [...before.workouts, ...updated.workouts];
+        const afterWorkouts = await tx.workout.findMany({
+          where: { dailyHealthDataId: before.id, hiddenFromHistory: false },
+          select: { id: true, startAt: true, endAt: true },
+        });
+        const affected = [...before.workouts, ...afterWorkouts];
         await invalidateWorkoutEnergyInTransactionV1({
           tx, profileId: 1,
           workoutIds: affected.map((workout) => workout.id),
@@ -530,7 +590,12 @@ export class DailyMetricRepository {
             tx, profileId: 1, measurementDates: [date],
           });
         }
-        return updated;
+        return workouts === undefined
+          ? updated
+          : tx.dailyHealthData.findUniqueOrThrow({
+            where: { id: before.id },
+            select: dailyMetricSelect,
+          });
       });
       const modelPublicationStatus = await this.replayAndReadPublicationStatus(date, { weightSourceChanged });
       return { ...(await this.dtoForRecord(record)), modelPublicationStatus };

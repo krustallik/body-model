@@ -19,7 +19,8 @@ source "$ROOT_DIR/scripts/production-release-lock.sh"
 
 fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 
-[[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" ]] \
+[[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
+  || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" ]] \
   || fail "a closed reviewed manifest id is required."
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_SHA must be a full lowercase commit SHA."
 [[ "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ \

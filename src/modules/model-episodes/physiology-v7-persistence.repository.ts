@@ -10,6 +10,12 @@ import {
   versionsAreCurrent,
 } from "./physiology-v7-persistence";
 import { addCalendarDays } from "./model-calendar";
+import {
+  getHealthSyncRefreshWorkerLease,
+  HealthSyncRefreshWorkerLeaseLostError,
+} from "@/modules/health/health-sync-worker-context";
+
+export const PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE = 927001;
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 type LifecycleInvalidationState = {
@@ -150,7 +156,27 @@ export class PhysiologyV7PersistenceRepository {
   }
 
   async lockProfile(profileId: number): Promise<void> {
-    await this.client.$executeRaw`SELECT pg_advisory_xact_lock(927001, CAST(${profileId} AS integer))`;
+    const workerLease = getHealthSyncRefreshWorkerLease();
+    if (workerLease && (workerLease.profileId !== profileId || isPrismaClient(this.client))) {
+      throw new HealthSyncRefreshWorkerLeaseLostError();
+    }
+    // Recovery takes this same transaction-scoped profile lock while checking
+    // Health queue and Unified currentness, then holds it through its effect.
+    // Worker mutations additionally validate and row-lock their exact durable
+    // lease through the lifecycle mutation.
+    await this.client.$executeRaw`SELECT pg_advisory_xact_lock(CAST(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))`;
+    if (workerLease) {
+      const ownedJobs = await this.client.$queryRaw<Array<{ profileId: number }>>`
+        SELECT "profileId"
+        FROM "HealthSyncRefreshJob"
+        WHERE "profileId" = ${workerLease.profileId}
+          AND "requestedGeneration" = ${workerLease.requestedGeneration}
+          AND "leaseToken" = ${workerLease.leaseToken}
+          AND "leaseUntil" > ${new Date()}
+        FOR UPDATE
+      `;
+      if (ownedJobs.length !== 1) throw new HealthSyncRefreshWorkerLeaseLostError();
+    }
   }
 
   /**

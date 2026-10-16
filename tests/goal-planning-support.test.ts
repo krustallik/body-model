@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
-import { buildGoalPlanningRequest, calendarDaysBetween, defaultGoalForm, goalStatusPresentation, guidedWorkCategory, probabilityDefinition, roundedPlanCalories } from "@/modules/model-goal-planning/goal-planning-ui";
+import { buildGoalPlanningRequest, calendarDaysBetween, defaultGoalForm, goalStatusPresentation, probabilityDefinition, roundedPlanCalories } from "@/modules/model-goal-planning/goal-planning-ui";
 import { serializeGoalPlanningResult } from "@/modules/model-goal-planning/goal-planning";
 import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-planning.schema";
 import type { TargetSolverBlockedResult, TargetSolverResult } from "@/modules/model-target-solver/target-solver.types";
@@ -66,14 +66,6 @@ function solved(overrides: Partial<TargetSolverResult> = {}): TargetSolverResult
 }
 
 describe("goal planning application support", () => {
-  it.each([
-    ["mostly-sitting", "standingLight"],
-    ["mostly-standing", "standingLight"],
-    ["manual-handling", "manualLight"],
-  ] as const)("maps guided work answer %s to supported category %s", (answer, expected) => {
-    expect(guidedWorkCategory(answer)).toBe(expected);
-  });
-
   it("derives editable convenience defaults without inventing a state", () => {
     expect(defaultGoalForm()).toMatchObject({ targetWeightKg: "", goalDate: "", minCaloriesKcal: "1500", maxCaloriesKcal: "3300" });
     expect(defaultGoalForm("2026-10-19", 82, "2026-10-19")).toMatchObject({ targetWeightKg: "79", goalDate: "2027-01-17" });

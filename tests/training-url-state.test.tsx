@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseTrainingPage, updateTrainingSearchParams, useTrainingSearchParam } from "@/app/training/training-url-state";
+import { parseTrainingPage, safeTrainingReturnHref, updateTrainingSearchParams, useTrainingSearchParam } from "@/app/training/training-url-state";
 
 describe("Training URL state", () => {
   afterEach(() => {
@@ -16,6 +16,14 @@ describe("Training URL state", () => {
     expect(parseTrainingPage("0")).toBe(1);
     expect(parseTrainingPage("2x")).toBe(1);
     expect(parseTrainingPage("9007199254740992")).toBe(1);
+  });
+
+  it("preserves safe in-app return context and rejects external or unknown routes", () => {
+    expect(safeTrainingReturnHref("/training?recentPage=3#recent", "/training")).toBe("/training?recentPage=3#recent");
+    expect(safeTrainingReturnHref("/dashboard?tab=activity", "/training")).toBe("/dashboard?tab=activity");
+    expect(safeTrainingReturnHref("https://evil.example/", "/training")).toBe("/training");
+    expect(safeTrainingReturnHref("//evil.example/", "/training")).toBe("/training");
+    expect(safeTrainingReturnHref("/api/v1/profile", "/training")).toBe("/training");
   });
 
   it("updates only subscribers whose URL parameter changed and preserves unrelated parameters", async () => {

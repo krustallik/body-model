@@ -11,6 +11,10 @@ export type DayWorkoutPresentation = {
   endAt: string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  /** Health-feed workouts stay visible but are not manual editor inputs. */
+  syncProtected?: boolean;
+  /** True only for a persisted History-owned workout that can be edited here. */
+  manualEditable?: boolean;
   energySource: import("./training-day-fact").TrainingDayEnergySource;
   diaryOnly: boolean;
   linkedTrainingSessionId: number | null;
@@ -33,6 +37,8 @@ export type RawWorkoutRow = {
   endAt: Date | string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  syncProtected?: boolean;
+  manualEditable?: boolean;
   energySource?: import("./training-day-fact").TrainingDayEnergySource;
   diaryOnly?: boolean;
   matchedDiarySession?: {
@@ -75,6 +81,8 @@ export function summarizeDayWorkouts(input: {
         && workout.activeEnergyKcal >= 0
         ? workout.activeEnergyKcal
         : null,
+      syncProtected: workout.syncProtected,
+      manualEditable: workout.manualEditable,
       energySource: workout.energySource
         ?? (workout.activeEnergyKcal !== null && Number.isFinite(workout.activeEnergyKcal) && workout.activeEnergyKcal >= 0
           ? "device-estimate"

@@ -142,7 +142,7 @@ describe("optional StrengthSet RIR", () => {
       heartRateSamples: null,
     });
 
-    expect(without.contractVersion).toBe("bodycast-physiology-v7-strength-input-v3");
+    expect(without.contractVersion).toBe("bodycast-physiology-v7-strength-input-v4");
     expect(without.exercises[0]!.sets[0]!.rir).toBeNull();
     expect(withRir.exercises[0]!.sets[0]!.rir).toBe(1);
     expect(canonicalStrengthTrainingInputV7Fingerprint(without))

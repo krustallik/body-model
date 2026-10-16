@@ -65,6 +65,7 @@ function workoutSource(
   row: {
     id: number;
     sourceIdentity: string;
+    externalId?: string | null;
     type: string;
     startAt: Date;
     endAt: Date;
@@ -72,8 +73,9 @@ function workoutSource(
     durationMinutes: number | null;
     activeEnergyKcal: number | null;
     hiddenFromHistory: boolean;
+    syncProtected?: boolean;
     canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
-    dailyHealthData?: { date: string; weightKg: number | null } | null;
+    dailyHealthData?: { date: string; weightKg: number | null; workoutFeedObserved?: boolean | null } | null;
     matchedDiarySession: null | {
       id: number;
       status: string;
@@ -106,6 +108,8 @@ function workoutSource(
   return {
     id: row.id,
     sourceIdentity: row.sourceIdentity,
+    externalId: row.externalId ?? null,
+    dailyHealthData: row.dailyHealthData ?? null,
     type: row.type,
     startAt: row.startAt,
     endAt: row.endAt,
@@ -113,6 +117,7 @@ function workoutSource(
     durationMinutes: row.durationMinutes,
     activeEnergyKcal: row.activeEnergyKcal,
     hiddenFromHistory: row.hiddenFromHistory,
+    syncProtected: row.syncProtected,
     canonicalEnergyResolution: row.canonicalEnergyResolution ?? null,
     matchedDiarySession: row.matchedDiarySession === null ? null : {
       id: row.matchedDiarySession.id,
@@ -217,13 +222,15 @@ export class TrainingDayFactRepository {
         select: {
           id: true,
           sourceIdentity: true,
+          externalId: true,
           type: true,
           startAt: true,
           endAt: true,
           durationMinutes: true,
           activeEnergyKcal: true,
           hiddenFromHistory: true,
-          dailyHealthData: { select: { date: true, weightKg: true } },
+          syncProtected: true,
+          dailyHealthData: { select: { date: true, weightKg: true, workoutFeedObserved: true } },
           matchedDiarySession: {
             select: {
               id: true,

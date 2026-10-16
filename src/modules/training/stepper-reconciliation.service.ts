@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { DEFAULT_TIME_ZONE, localDateTimeToInstant } from "@/model/time-zone";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
-import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
+import { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
@@ -127,6 +127,7 @@ async function writeWindow(client: QueryClient, input: {
       dailyHealthData: { select: { date: true, steps: true } },
     },
   }) as StairRow[];
+  const reconciliationRows = rows.filter((row) => !row.sourceIdentity.startsWith(MANUAL_HISTORY_SOURCE_PREFIX));
   const asWorkout = (row: StairRow): ReconciliationWorkoutV1 => ({
     id: row.id,
     origin: row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX) ? "manual" : "garmin",
@@ -134,8 +135,8 @@ async function writeWindow(client: QueryClient, input: {
     endMs: row.endAt.getTime(),
     stepCount: row.manualStepCount,
   });
-  const manual = rows.filter((row) => row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map(asWorkout);
-  const garmin = rows.filter((row) => !row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map(asWorkout);
+  const manual = reconciliationRows.filter((row) => row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map(asWorkout);
+  const garmin = reconciliationRows.filter((row) => !row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map(asWorkout);
   const evaluated = evaluateStepperReconciliationV1({
     manual,
     garmin,

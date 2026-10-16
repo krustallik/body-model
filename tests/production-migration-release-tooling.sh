@@ -157,6 +157,8 @@ cp "$ROOT/scripts/production-route-primitives.sh" "$FIXTURE_ROOT/scripts/product
 cp "$DEPLOY" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$FIXTURE_ROOT/scripts/production-release-marker.sh"
 cp "$ROOT/scripts/production-schema-deploy-handoff.mjs" "$FIXTURE_ROOT/scripts/production-schema-deploy-handoff.mjs"
+cp "$ROOT/scripts/production-app-capabilities.mjs" "$FIXTURE_ROOT/scripts/production-app-capabilities.mjs"
+cp "$ROOT/scripts/production-app-capabilities.json" "$FIXTURE_ROOT/scripts/production-app-capabilities.json"
 cp "$LOCK" "$FIXTURE_ROOT/scripts/production-release-lock.sh"
 cp "$ROOT/scripts/production-migration-manifests.mjs" "$FIXTURE_ROOT/scripts/production-migration-manifests.mjs"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/deploy-preflight-schema.sh"

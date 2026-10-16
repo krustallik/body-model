@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const tx = {
     experimentalStepperActiveEnergyShadow: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn() },
+    $queryRaw: vi.fn().mockResolvedValue([]),
     $executeRaw: vi.fn().mockResolvedValue(0),
   };
   return {

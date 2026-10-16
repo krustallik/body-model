@@ -56,6 +56,9 @@ describe("POST /api/v1/health/sync", () => {
       { days: [{ date: "2026-08-21", steps: 10000 }] },
       undefined,
       [{ date: "2026-08-21", steps: 10000 }],
+      undefined,
+      undefined,
+      { deferDependentRefresh: true },
     );
     expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "success", httpStatus: 200 }));
   });
@@ -290,7 +293,7 @@ describe("POST /api/v1/health/sync", () => {
       steps: 10234,
       averageWalkingSpeedKmh: 4.72,
       walkingDistanceKm: 7.35,
-    }] }, undefined, [originalDay]);
+    }] }, undefined, [originalDay], undefined, undefined, { deferDependentRefresh: true });
   });
 
   it.each([
@@ -309,6 +312,9 @@ describe("POST /api/v1/health/sync", () => {
       { days: [{ date: "2026-08-22", strengthTrainingMinutes: expected }] },
       undefined,
       [originalDay],
+      undefined,
+      undefined,
+      { deferDependentRefresh: true },
     );
   });
 
@@ -335,6 +341,9 @@ describe("POST /api/v1/health/sync", () => {
       { days: [{ date: "2026-08-21", strengthTrainingMinutes: 75 }] },
       undefined,
       [originalDay],
+      undefined,
+      undefined,
+      { deferDependentRefresh: true },
     );
   });
 
@@ -416,7 +425,7 @@ describe("POST /api/v1/health/sync", () => {
     expect(await response.json()).toMatchObject({ error: "validation_error" });
   });
 
-  it("logs raw day keys when validation fails", async () => {
+  it("logs validation counts without logging submitted field names", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const response = await POST(request({ Days: [{ Steps: 100, Fatg: 10 }] }));
     expect(response.status).toBe(400);
@@ -429,8 +438,10 @@ describe("POST /api/v1/health/sync", () => {
       hasDate: false,
       hasDateCapital: false,
     });
-    expect(String(record.day0Keys)).toContain("Steps");
-    expect(String(record.issueSummary)).toContain("date");
+    expect(record.day0KeyCount).toBeGreaterThan(0);
+    expect(record).not.toHaveProperty("day0Keys");
+    expect(record.issueCount).toBeGreaterThan(0);
+    expect(record).not.toHaveProperty("issueSummary");
     warn.mockRestore();
   });
 

@@ -3,6 +3,7 @@ import { createProductionOperationBroker } from "./operation-broker.mjs";
 import { createHostOperationServer, HOST_OPERATION_SOCKET_PATH } from "./host-service.mjs";
 import { assertExactKeys } from "./canonical.mjs";
 import { createAdapterConformanceVerifier } from "./operation-contracts.mjs";
+import { verifyProgramlessSessionRollbackCompatibility } from "./schema-compatibility.mjs";
 
 const AUTHORITY_CONFIG_KEYS = Object.freeze([
   "journalDirectory", "lockPath", "markerPath", "legacyMarkerPath", "receiptDirectory", "signing",
@@ -18,8 +19,32 @@ const ADAPTER_FUNCTIONS = Object.freeze([
   "loadRolloutReceiptById", "loadOperationAdapterConformanceReceipt", "executeFixedOperation", "validateEvidence", "verifyRolloutReceipt",
   "verifyRestoreGrant", "captureMigrationExecutionState", "verifyMigrationExecutionProof",
   "verifyMigrationFinalGuards", "verifyUnifiedV4Currentness", "inspectFixedOperationState",
-  "verifyRecoveryOperationFinalGuards",
+  "verifyRecoveryOperationFinalGuards", "withReadOnlyProductionTransaction",
+  "withRecoveryCurrentnessFence",
+  "resolveLogicalProductionDatabaseIdentity", "getProgramlessSessionCapabilityRepositoryPath",
 ]);
+
+export function createProgramlessSessionRollbackCompatibilityVerifier(trustedHostAdapter) {
+  if (!trustedHostAdapter
+    || typeof trustedHostAdapter.withReadOnlyProductionTransaction !== "function"
+    || typeof trustedHostAdapter.resolveLogicalProductionDatabaseIdentity !== "function"
+    || typeof trustedHostAdapter.getProgramlessSessionCapabilityRepositoryPath !== "function") {
+    throw new Error("Signed host adapter lacks the fixed read-only rollback compatibility primitives.");
+  }
+  return async ({ expectedLogicalProductionDbIdentityDigest, rollbackAppSha }) => {
+    const repositoryPath = await trustedHostAdapter.getProgramlessSessionCapabilityRepositoryPath();
+    if (typeof repositoryPath !== "string" || repositoryPath.length === 0) {
+      throw new Error("The fixed host adapter did not provide the protected rollback capability repository path.");
+    }
+    return verifyProgramlessSessionRollbackCompatibility({
+      withReadOnlyTransaction: trustedHostAdapter.withReadOnlyProductionTransaction,
+      resolveLogicalDatabaseIdentity: trustedHostAdapter.resolveLogicalProductionDatabaseIdentity,
+      expectedLogicalProductionDbIdentityDigest,
+      repositoryPath,
+      rollbackAppSha,
+    });
+  };
+}
 
 /**
  * Compose the installed root-owned authority, closed operation broker, and
@@ -56,6 +81,7 @@ export function createRecoveryHostRuntime({
     verifyRolloutReceipt: trustedHostAdapter.verifyRolloutReceipt,
     verifyRestoreGrant: trustedHostAdapter.verifyRestoreGrant,
   });
+  const verifyProgramlessSessionCompatibility = createProgramlessSessionRollbackCompatibilityVerifier(trustedHostAdapter);
   const broker = createProductionOperationBroker({
     authority,
     verifyReviewedRelease: trustedHostAdapter.verifyReviewedRelease,
@@ -68,6 +94,8 @@ export function createRecoveryHostRuntime({
     verifyMigrationFinalGuards: trustedHostAdapter.verifyMigrationFinalGuards,
     verifyUnifiedV4Currentness: trustedHostAdapter.verifyUnifiedV4Currentness,
     verifyRecoveryOperationFinalGuards: trustedHostAdapter.verifyRecoveryOperationFinalGuards,
+    verifyProgramlessSessionRollbackCompatibility: verifyProgramlessSessionCompatibility,
+    withRecoveryCurrentnessFence: trustedHostAdapter.withRecoveryCurrentnessFence,
     inspectFixedOperationState: trustedHostAdapter.inspectFixedOperationState,
     loadEvidenceById: trustedHostAdapter.loadEvidenceById,
     loadAuthorizationById: trustedHostAdapter.loadAuthorizationById,

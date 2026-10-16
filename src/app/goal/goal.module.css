@@ -10,8 +10,9 @@
 
 .recommendationNote{margin:0;padding:.8rem 1rem;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:.75rem;font-size:.78rem;line-height:1.5}
 .recommendationNote{display:grid;gap:.3rem}.recommendationNote strong{color:var(--ink)}.recommendationNote span{min-width:0}.limitedRecommendation{border-color:color-mix(in srgb,var(--warning) 48%,var(--line));background:color-mix(in srgb,var(--warning-soft) 45%,var(--surface))}
-.recommendedMacros{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem}.recommendedMacros article{min-width:0;padding:.85rem;background:var(--soft);border:1px solid var(--line);border-radius:.75rem}.recommendedMacros span,.recommendedMacros small{display:block;color:var(--muted);font-size:.7rem}.recommendedMacros strong{display:block;margin:.3rem 0;font-size:clamp(1.2rem,2vw,1.65rem);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.guidedWork{display:grid;gap:.65rem;margin-top:.8rem;padding:1rem;background:var(--soft);border-radius:.75rem}.guidedWork>p{margin:0;font-size:.82rem;font-weight:750}.guidedWork small{color:var(--muted);font-size:.72rem;line-height:1.45}.guidedControls{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:.7rem}.guidedControls button,.guidedChoices button,.backButton{min-height:2.8rem;padding:.6rem .85rem;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:.6rem;font:inherit;font-size:.78rem;font-weight:780;cursor:pointer}.guidedChoices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.6rem}.guidedChoices button{text-align:left}.backButton{justify-self:start;min-height:2.3rem;padding:.4rem .7rem}
-@media(max-width:620px){.recommendedMacros{grid-template-columns:repeat(2,minmax(0,1fr))}.guidedChoices{grid-template-columns:1fr}.guidedControls{grid-template-columns:1fr}.guidedControls button{width:100%}}
+.recommendedMacros{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem}.recommendedMacros article{min-width:0;padding:.85rem;background:var(--soft);border:1px solid var(--line);border-radius:.75rem}.recommendedMacros span,.recommendedMacros small{display:block;color:var(--muted);font-size:.7rem}.recommendedMacros strong{display:block;margin:.3rem 0;font-size:clamp(1.2rem,2vw,1.65rem);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+@media(max-width:620px){.recommendedMacros{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.workPlanGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem;align-items:start}.workCategoryField{display:grid;min-width:0;gap:.55rem}.workPlanGrid .workScheduleNote{grid-column:1/-1;margin:0;color:var(--muted);font-size:.72rem;line-height:1.45}
 
 .resetButton{flex:0 0 auto;min-height:2.5rem;padding:.55rem .9rem;color:var(--primary-strong);background:var(--primary-soft);border:1px solid color-mix(in srgb,var(--primary) 35%,var(--line));border-radius:999px;font:inherit;font-size:.75rem;font-weight:780;cursor:pointer;transition:color var(--ease),background var(--ease),border-color var(--ease),transform var(--ease)}
 .resetButton:hover{color:var(--ink);background:var(--selected);border-color:var(--accent)}
@@ -46,8 +47,7 @@
 .recommendedMacros article, .optional {
   transition: border-color var(--ease), background-color var(--ease), box-shadow var(--ease);
 }
-.modeGrid button, .guidedControls button, .guidedChoices button, .backButton,
-.actions a, .actions button { transition: color var(--ease), background-color var(--ease), border-color var(--ease), box-shadow var(--ease); }
+.modeGrid button, .actions a, .actions button { transition: color var(--ease), background-color var(--ease), border-color var(--ease), box-shadow var(--ease); }
 @media (hover: hover) and (pointer: fine) {
   .formSection:hover, .summaryGrid article:hover, .chartPanel:hover,
   .detailGrid article:hover, .statusCard:hover, .uncertaintyCard:hover,
@@ -60,7 +60,6 @@
     background-color: color-mix(in srgb, var(--surface) 94%, var(--accent));
   }
   .modeGrid button:not([aria-pressed="true"]):hover,
-  .guidedControls button:hover, .guidedChoices button:hover, .backButton:hover,
   .actions a:hover, .actions button:not(:disabled):hover {
     border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
     background-color: color-mix(in srgb, var(--surface) 88%, var(--accent));
@@ -69,8 +68,7 @@
 @media (prefers-reduced-motion: reduce) {
   .formSection, .summaryGrid article, .chartPanel, .detailGrid article,
   .statusCard, .uncertaintyCard, .loadingCard, .errorCard, .recommendationNote,
-  .recommendedMacros article, .optional, .modeGrid button, .guidedControls button,
-  .guidedChoices button, .backButton, .actions a, .actions button { transition-duration: 0s; }
+  .recommendedMacros article, .optional, .modeGrid button, .actions a, .actions button { transition-duration: 0s; }
 }
 
 /* Goal workspace: inputs stay compact while solver outcomes sit beside them. */

@@ -6,4 +6,8 @@ export async function register(): Promise<void> {
   ]);
   const environment = getEnv();
   logEvent("info", "application_startup", { environment: environment.NODE_ENV });
+  if (environment.NODE_ENV === "production") {
+    const { startHealthSyncRefreshWorker } = await import("@/modules/health/health-sync-refresh-worker");
+    startHealthSyncRefreshWorker();
+  }
 }

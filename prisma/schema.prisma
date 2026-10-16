@@ -28,6 +28,7 @@ model Profile {
   stepperEquipmentAssignments StepperEquipmentAssignment[]
   strengthDiarySessions       StrengthDiarySession[]
   unifiedPublicationBlocks    UnifiedPublicationBlock[]
+  healthSyncRefreshJob        HealthSyncRefreshJob?
 }
 
 /// Durable source-refresh work that must finish before Unified can be published current.
@@ -226,6 +227,30 @@ model HealthSyncAudit {
   @@index([outcome, receivedAt])
 }
 
+/// Durable metadata-only work queue for Health-dependent refreshes.
+/// Raw source observations remain in HealthSyncSnapshot and are never copied here.
+model HealthSyncRefreshJob {
+  profileId                Int       @id @default(1)
+  requestedGeneration      Int       @default(0)
+  completedGeneration      Int       @default(0)
+  fromDate                 String?   @db.VarChar(10)
+  toDate                   String?   @db.VarChar(10)
+  sourceDates              String[]  @default([])
+  weightSourceChangedDates String[]  @default([])
+  leaseToken               String?   @db.VarChar(36)
+  leaseUntil               DateTime? @db.Timestamptz(3)
+  nextAttemptAt            DateTime  @default(now()) @db.Timestamptz(3)
+  attemptCount             Int       @default(0)
+  lastAttemptAt            DateTime? @db.Timestamptz(3)
+  lastErrorType            String?   @db.VarChar(100)
+  lastErrorAt              DateTime? @db.Timestamptz(3)
+  createdAt                DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime  @updatedAt @db.Timestamptz(3)
+  profile                  Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([nextAttemptAt, leaseUntil])
+}
+
 /**
  * Apple Health quantity samples for one local calendar day.
  * A three-day Shortcut replay is applied per synced day, replacing that day's
@@ -399,8 +424,8 @@ model ProgramExercise {
 model StrengthDiarySession {
   id               Int                          @id @default(autoincrement())
   profileId        Int                          @default(1)
-  programId        Int
-  programVersionId Int
+  programId        Int?
+  programVersionId Int?
   /**
    * ACTIVE | COMPLETED | CANCELLED
    */
@@ -443,8 +468,8 @@ model StrengthDiarySession {
   createdAt        DateTime                     @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime                     @updatedAt @db.Timestamptz(3)
   profile          Profile?                     @relation(fields: [profileId], references: [id], onDelete: Restrict)
-  program          TrainingProgram              @relation(fields: [programId], references: [id], onDelete: Restrict)
-  programVersion   TrainingProgramVersion       @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
+  program          TrainingProgram?             @relation(fields: [programId], references: [id], onDelete: Restrict)
+  programVersion   TrainingProgramVersion?      @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
   matchedWorkout   Workout?                     @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
   exercises        StrengthSessionExercise[]
   programChanges   StrengthDiaryProgramChange[]

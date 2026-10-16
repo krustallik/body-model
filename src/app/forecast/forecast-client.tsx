@@ -201,12 +201,14 @@ export function ForecastClient() {
   const [submittedRun, setSubmittedRun] = useState<SubmittedRun | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<ForecastAction | null>(null);
+  const [actionComplete, setActionComplete] = useState<"available" | "unavailable" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [scenarioEvidenceMissing, setScenarioEvidenceMissing] = useState(false);
   const [knownDonorDayCount, setKnownDonorDayCount] = useState<number | undefined>();
   const requestRef = useRef({ current: 0 });
   const controllerRef = useRef<AbortController | null>(null);
+  const actionRef = useRef(false);
   const autoRunTimerRef = useRef<number | null>(null);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -222,6 +224,7 @@ export function ForecastClient() {
     controllerRef.current = controller;
     const requestId = beginForecastRequest(requestRef.current);
     setLoading(true);
+    setActionComplete(null);
     setError(null);
     setErrorCode(null);
     setScenarioEvidenceMissing(false);
@@ -253,7 +256,7 @@ export function ForecastClient() {
         const nextOutcome = await forecastResponse.json() as Outcome;
         return { nextOutcome, nextContext };
       })());
-      if (!isCurrentForecastRequest(requestRef.current, requestId)) return;
+      if (!isCurrentForecastRequest(requestRef.current, requestId)) return false;
       setOutcome(payload.nextOutcome);
       setContext(payload.nextContext);
       setSubmittedRun({ mode: selectedMode, horizon: selectedHorizon, plan: { ...selectedPlan } });
@@ -261,9 +264,12 @@ export function ForecastClient() {
       if ("scenarioProvenance" in payload.nextOutcome) {
         setKnownDonorDayCount(payload.nextOutcome.scenarioProvenance.donorEvidence.donorDayCount);
       }
+      return payload.nextOutcome.status === "ok"
+        || payload.nextOutcome.status === "degraded"
+        || payload.nextOutcome.status === "insufficient-scenario-evidence";
     } catch (runError) {
-      if (controller.signal.aborted) return;
-      if (!isCurrentForecastRequest(requestRef.current, requestId)) return;
+      if (controller.signal.aborted) return null;
+      if (!isCurrentForecastRequest(requestRef.current, requestId)) return null;
       const issue = runError && typeof runError === "object" && "forecastIssue" in runError
         ? (runError as { forecastIssue?: Awaited<ReturnType<typeof forecastError>>; nextContext?: Context | null }).forecastIssue
         : undefined;
@@ -277,6 +283,7 @@ export function ForecastClient() {
         if (issue.donorDayCount !== undefined) setKnownDonorDayCount(issue.donorDayCount);
       }
       setError(runError instanceof Error ? runError.message : uk ? "Не вдалося побудувати прогноз" : "Could not run forecast");
+      return null;
     } finally {
       if (isCurrentForecastRequest(requestRef.current, requestId)) setLoading(false);
     }
@@ -357,23 +364,32 @@ export function ForecastClient() {
     scheduleAutoForecast(defaultMode, defaultHorizon, defaultPlan, 200);
   }
   async function runAction(action: ForecastAction) {
+    if (actionRef.current) return;
+    actionRef.current = true;
     setActionLoading(action);
+    setActionComplete(null);
     setError(null);
     setErrorCode(null);
-    const response = await fetch("/api/forecast/action", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    if (!response.ok) {
-      const issue = await forecastError(response, locale);
-      setError(issue.message);
-      setErrorCode(issue.code);
+    try {
+      const response = await fetch("/api/forecast/action", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!response.ok) {
+        const issue = await forecastError(response, locale);
+        setError(issue.message);
+        setErrorCode(issue.code);
+        return;
+      }
+      const forecastUpdated = await runForecast();
+      if (forecastUpdated !== null) setActionComplete(forecastUpdated ? "available" : "unavailable");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : uk ? "Не вдалося перерахувати модель." : "Could not recalculate the model.");
+    } finally {
+      actionRef.current = false;
       setActionLoading(null);
-      return;
     }
-    setActionLoading(null);
-    await runForecast();
   }
 
   const result = outcome?.status === "ok" || outcome?.status === "degraded" || outcome?.status === "insufficient-scenario-evidence" ? outcome : null;
@@ -440,7 +456,7 @@ export function ForecastClient() {
       <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Прогноз фізіології" : "Physiology forecast"}</span></Link><AppNav active="forecast" /></div>
       <header className={styles.hero}>
         <div><p className={styles.eyebrow}>{uk ? "Погляд уперед · не обіцянка" : "Looking ahead · not a promise"}</p><h1>{uk ? "Дивіться на діапазон, а не лише на лінію." : "See the range, not just a line."}</h1><p>{uk ? "Подивіться, як звички можуть змінити вагу й склад тіла. Смужки навколо лінії — це «можливо так», а не гарантія." : "See how habits may change weight and body composition. The bands around the line mean “maybe around here,” not a guarantee."}</p></div>
-        <div className={styles.readiness}><span className={result ? styles.readyDot : styles.waitingDot} />{busy ? (actionLoading === "initialize" ? noActiveModelCopy.loadingAction : (uk ? "Рахуємо варіанти…" : "Calculating options…")) : quality?.title ?? (uk ? "Потрібна увага" : "Needs attention")}</div>
+        <div className={styles.readiness} role="status" aria-live="polite" aria-busy={busy}><span className={result ? styles.readyDot : styles.waitingDot} />{busy ? (actionLoading === "initialize" ? noActiveModelCopy.loadingAction : (uk ? "Рахуємо варіанти…" : "Calculating options…")) : quality?.title ?? (uk ? "Потрібна увага" : "Needs attention")}</div>
       </header>
 
       <div className={styles.forecastLayout}>
@@ -479,6 +495,9 @@ export function ForecastClient() {
         </div>
         <p className={styles.runHelp}>{uk ? "Після зміни періоду, режиму або числового поля прогноз оновиться автоматично. Ця кнопка повторює розрахунок вручну." : "The forecast updates after you change the horizon, mode, or a number. Use this button to rerun it manually."}</p>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
+          {actionComplete && <p className={styles.actionComplete} role="status" aria-live="polite">{actionComplete === "available"
+            ? (uk ? "Модель перераховано, прогноз оновлено." : "Model recalculated and forecast updated.")
+            : (uk ? "Модель перераховано, але прогноз поки недоступний." : "Model recalculated, but the forecast is still unavailable.")}</p>}
         </div>
       </section>
       {result && endpoint && <section className={styles.chartPanel}>

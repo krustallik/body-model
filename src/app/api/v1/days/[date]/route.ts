@@ -1,4 +1,5 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
+import { DuplicateWorkoutError } from "@/modules/days/day.errors";
 import { dailyMetricRepository } from "@/modules/days/day.repository";
 import { DailyMetricDateParamsSchema, UpdateDailyMetricSchema } from "@/modules/days/day.schema";
 import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
@@ -26,7 +27,10 @@ export async function PATCH(request: Request, { params }: RouteContext<"/api/v1/
     return day
       ? Response.json({ day })
       : Response.json({ error: "not_found" }, { status: 404 });
-  } catch {
+  } catch (error) {
+    if (error instanceof DuplicateWorkoutError) {
+      return Response.json({ error: "workout_conflict" }, { status: 409 });
+    }
     return Response.json({ error: "internal_error" }, { status: 500 });
   }
 }

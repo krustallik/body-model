@@ -26,20 +26,18 @@ export function summarizeTrainingField(value: unknown): {
   present: boolean;
   kind: string;
   lineCount: number;
-  preview: string;
 } {
   if (value === undefined) {
-    return { present: false, kind: "absent", lineCount: 0, preview: "" };
+    return { present: false, kind: "absent", lineCount: 0 };
   }
   if (value === null) {
-    return { present: true, kind: "null", lineCount: 0, preview: "" };
+    return { present: true, kind: "null", lineCount: 0 };
   }
   if (typeof value === "number") {
     return {
       present: true,
       kind: "number",
       lineCount: 1,
-      preview: String(value).slice(0, 40),
     };
   }
   if (typeof value !== "string") {
@@ -47,7 +45,6 @@ export function summarizeTrainingField(value: unknown): {
       present: true,
       kind: Array.isArray(value) ? "array" : typeof value,
       lineCount: 0,
-      preview: "",
     };
   }
 
@@ -56,7 +53,6 @@ export function summarizeTrainingField(value: unknown): {
     present: true,
     kind: "string",
     lineCount: lines.length,
-    preview: value.slice(0, 160),
   };
 }
 
@@ -75,10 +71,9 @@ export function serializeRawSyncBody(body: unknown): string {
 /** Compact, secret-free sync body summary for request diagnostics. */
 export function summarizeSyncBody(body: unknown): {
   bodyType: string;
-  rootKeys: string;
+  rootKeyCount: number;
   daysCount: number;
   day0KeyCount: number;
-  day0Keys: string;
   hasDate: boolean;
   hasDateCapital: boolean;
   hasTrainingType: boolean;
@@ -88,18 +83,14 @@ export function summarizeSyncBody(body: unknown): {
   trainingTypeLineCount: number;
   trainingActiveKcalLineCount: number;
   strengthTrainingMinutesLineCount: number;
-  trainingTypePreview: string;
-  trainingActiveKcalPreview: string;
-  strengthTrainingMinutesPreview: string;
   structuredWorkoutCount: number;
 } {
   if (!isObject(body)) {
     return {
       bodyType: Array.isArray(body) ? "array" : typeof body,
-      rootKeys: "",
+      rootKeyCount: 0,
       daysCount: -1,
       day0KeyCount: 0,
-      day0Keys: "",
       hasDate: false,
       hasDateCapital: false,
       hasTrainingType: false,
@@ -109,9 +100,6 @@ export function summarizeSyncBody(body: unknown): {
       trainingTypeLineCount: 0,
       trainingActiveKcalLineCount: 0,
       strengthTrainingMinutesLineCount: 0,
-      trainingTypePreview: "",
-      trainingActiveKcalPreview: "",
-      strengthTrainingMinutesPreview: "",
       structuredWorkoutCount: -1,
     };
   }
@@ -133,10 +121,9 @@ export function summarizeSyncBody(body: unknown): {
 
   return {
     bodyType: "object",
-    rootKeys: Object.keys(body).join(",").slice(0, 200),
+    rootKeyCount: Object.keys(body).length,
     daysCount,
     day0KeyCount: day0KeysList.length,
-    day0Keys: day0KeysList.join(",").slice(0, 500),
     hasDate: lower.has("date"),
     hasDateCapital: day0KeysList.includes("Date"),
     hasTrainingType: day0 ? hasDayField(day0, "trainingType") : false,
@@ -146,35 +133,29 @@ export function summarizeSyncBody(body: unknown): {
     trainingTypeLineCount: trainingType.lineCount,
     trainingActiveKcalLineCount: trainingActiveKcal.lineCount,
     strengthTrainingMinutesLineCount: strengthTrainingMinutes.lineCount,
-    trainingTypePreview: trainingType.preview,
-    trainingActiveKcalPreview: trainingActiveKcal.preview,
-    strengthTrainingMinutesPreview: strengthTrainingMinutes.preview,
     structuredWorkoutCount: Array.isArray(workouts) ? workouts.length : workouts === undefined ? -1 : -2,
   };
 }
 
 export function summarizeNormalizedDay(payload: unknown): {
   normalizedDaysCount: number;
-  normalizedDay0Keys: string;
+  normalizedDay0KeyCount: number;
   normalizedHasDate: boolean;
   derivedWorkoutCount: number;
-  strengthTrainingMinutes: number | null;
   trainingExpansionReasons: string;
 } {
   if (!isObject(payload) || !Array.isArray(payload.days)) {
     return {
       normalizedDaysCount: -1,
-      normalizedDay0Keys: "",
+      normalizedDay0KeyCount: 0,
       normalizedHasDate: false,
       derivedWorkoutCount: -1,
-      strengthTrainingMinutes: null,
       trainingExpansionReasons: "",
     };
   }
   const day0 = isObject(payload.days[0]) ? payload.days[0] : null;
   const keys = day0 ? Object.keys(day0) : [];
   const workouts = day0 && Array.isArray(day0.workouts) ? day0.workouts : [];
-  const strength = day0?.strengthTrainingMinutes;
 
   let trainingExpansionReasons = "";
   if (day0 && typeof day0.date === "string") {
@@ -196,10 +177,9 @@ export function summarizeNormalizedDay(payload: unknown): {
 
   return {
     normalizedDaysCount: payload.days.length,
-    normalizedDay0Keys: keys.join(",").slice(0, 500),
+    normalizedDay0KeyCount: keys.length,
     normalizedHasDate: typeof day0?.date === "string",
     derivedWorkoutCount: workouts.length,
-    strengthTrainingMinutes: typeof strength === "number" ? strength : null,
     trainingExpansionReasons,
   };
 }

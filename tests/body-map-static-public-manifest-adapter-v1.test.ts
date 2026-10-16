@@ -15,7 +15,8 @@ const validManifest = (): StaticPublicBodyMapManifestV1 => ({
 describe("static public Body Map delivery adapter v1", () => {
   it("keeps all production training exposure explicitly unavailable rather than zero", () => {
     const result = normalizeStaticPublicBodyMapManifestV1(validManifest());
-    expect(result.runtimeAssets[0].path).toBe("/body-map/bodyparts3d-v3/bodyparts3d-v4.0-full-body-v3.glb");
+    expect(result.runtimeAssets[0].path).toBe(`/body-map/bodyparts3d-v3/bodyparts3d-v4.0-full-body-v3.glb?v=${"a".repeat(64)}`);
+    expect(result.viewerAsset.path).toBe(result.runtimeAssets[0].path);
     expect(result.dataNotice).toBe("TRAINING DATA NOT CONNECTED");
     expect(result.trainingExposure.groups).toHaveLength(20);
     expect(result.trainingExposure.groups.every((group) => group.status === "unavailable" && group.totalUniqueSetCount === null)).toBe(true);
@@ -31,5 +32,20 @@ describe("static public Body Map delivery adapter v1", () => {
     const manifest = validManifest();
     manifest.asset.contextMeshCount = 9;
     expect(() => normalizeStaticPublicBodyMapManifestV1(manifest)).toThrow("mesh counts");
+  });
+
+  it("changes the runtime cache key when the verified asset digest changes", () => {
+    const manifest = validManifest();
+    const first = normalizeStaticPublicBodyMapManifestV1(manifest).runtimeAssets[0].path;
+    manifest.asset.sha256 = "b".repeat(64);
+    const updated = normalizeStaticPublicBodyMapManifestV1(manifest).runtimeAssets[0].path;
+    expect(updated).not.toBe(first);
+    expect(updated).toContain(`?v=${"b".repeat(64)}`);
+  });
+
+  it.each(["?download=1", "#asset"])("rejects asset paths containing URL suffixes that break versioned cache keys (%s)", (suffix) => {
+    const manifest = validManifest();
+    manifest.asset.url += suffix;
+    expect(() => normalizeStaticPublicBodyMapManifestV1(manifest)).toThrow("versioned public GLB path");
   });
 });

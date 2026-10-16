@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import type {
@@ -11,20 +11,26 @@ import type {
   TrainingProgramSummaryDto,
 } from "@/modules/training/training.types";
 import { formatClock, formatDateTime, formatTrainingKcal, readApiError } from "../../../training-labels";
+import { safeTrainingReturnHref } from "../../../training-url-state";
 import styles from "../../../training.module.css";
 
 export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnHref = safeTrainingReturnHref(searchParams.get("returnTo"), "/training/backfill");
   const [workout, setWorkout] = useState<HistoricalStrengthWorkoutDto | null>(null);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
   const [programId, setProgramId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const requestId = ++requestSequence.current;
+    setLoading(true);
     setError(null);
     try {
       const [workoutsRes, programsRes] = await Promise.all([
@@ -32,27 +38,28 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
         fetch("/api/v1/training/programs", { cache: "no-store" }),
       ]);
       if (!workoutsRes.ok || !programsRes.ok) {
-        setError(uk ? "Не вдалося завантажити дані." : "Could not load data.");
+        if (requestId === requestSequence.current) setError(uk ? "Не вдалося завантажити дані." : "Could not load data.");
         return;
       }
       const workoutsBody = await workoutsRes.json() as { workouts: HistoricalStrengthWorkoutDto[] };
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
+      if (requestId !== requestSequence.current) return;
       const found = workoutsBody.workouts.find((row) => row.workoutId === workoutId) ?? null;
       setWorkout(found);
       setPrograms(programsBody.programs);
       if (found?.linkedSessionId) {
-        router.replace(`/training/sessions/${found.linkedSessionId}/edit`);
+        router.replace(`/training/sessions/${found.linkedSessionId}/edit?returnTo=${encodeURIComponent(returnHref)}`);
         return;
       }
       if (programsBody.programs[0] && programId === "") {
         setProgramId(programsBody.programs[0].id);
       }
     } catch {
-      setError(uk ? "Не вдалося завантажити дані." : "Could not load data.");
+      if (requestId === requestSequence.current) setError(uk ? "Не вдалося завантажити дані." : "Could not load data.");
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
     }
-  }, [programId, router, uk, workoutId]);
+  }, [programId, returnHref, router, uk, workoutId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +70,7 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
     })();
     return () => {
       cancelled = true;
+      requestSequence.current += 1;
     };
   }, [load]);
 
@@ -81,7 +89,7 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
         return;
       }
       const body = await response.json() as { session: StrengthSessionDto };
-      router.push(`/training/sessions/${body.session.id}/edit`);
+      router.push(`/training/sessions/${body.session.id}/edit?returnTo=${encodeURIComponent(returnHref)}`);
     } catch {
       setError(uk ? "Не вдалося створити запис." : "Could not create diary entry.");
     } finally {
@@ -93,7 +101,7 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
     return (
       <main className={styles.page}>
         <p className={styles.errorBanner}>{uk ? "Невірний workout." : "Invalid workout."}</p>
-        <Link href="/training/backfill">{uk ? "Назад" : "Back"}</Link>
+        <Link href={returnHref}>{uk ? "Назад" : "Back"}</Link>
       </main>
     );
   }
@@ -115,7 +123,7 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
               : "Pick the current program. Garmin time and kcal stay authoritative."}
           </p>
         </div>
-        <Link className={styles.secondaryButton} href="/training/backfill">{uk ? "Назад" : "Back"}</Link>
+        <Link className={styles.secondaryButton} href={returnHref}>{uk ? "Назад" : "Back"}</Link>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}

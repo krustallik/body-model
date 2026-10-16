@@ -59,12 +59,12 @@ import type {
   UpdateSetInput,
   UpdateCatalogLoadAccountingConfigInput,
 } from "./training.schema";
+import { setExecutionOverrideWriteV1Schema } from "./training.schema";
 import { validateSetFields } from "./training.set-validation";
 import {
   LEGACY_LOAD_INTERPRETATION_V1,
   legacyLoadConfigForIdentityV1,
   loadConfigV1Schema,
-  setExecutionOverrideV1Schema,
   type LoadConfigV1,
 } from "./load-accounting-v1";
 import { noteTrainingSourceChange } from "./training.source-revision";
@@ -775,6 +775,25 @@ export class TrainingService {
     return this.repo.getSession(sessionId, profileId);
   }
 
+  async getSetForSession(sessionId: number, setId: number, profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<StrengthSetDto | null> {
+    const set = await this.repo.findSetForSession(setId, sessionId, profileId);
+    if (!set) return null;
+    return {
+      id: set.id,
+      sessionExerciseId: set.sessionExercise.id,
+      setNumber: set.setNumber,
+      reps: set.reps,
+      weightKg: set.weightKg?.toNumber() ?? null,
+      bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
+      rir: set.rir,
+      comment: set.comment ?? null,
+      completedAt: set.completedAt?.toISOString() ?? null,
+      createdAt: set.createdAt.toISOString(),
+      updatedAt: set.updatedAt.toISOString(),
+      loadAccountingOverride: set.loadAccountingOverride ?? null,
+    };
+  }
+
   async materializeSessionAccounting(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
@@ -970,6 +989,33 @@ export class TrainingService {
     }
   }
 
+  async startDynamicSession(
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    accountingTimeZone?: string,
+  ): Promise<StrengthSessionDto> {
+    await this.finalizeInactiveSessions(profileId);
+    const active = await this.repo.getActiveSession(profileId);
+    if (active) throw new ActiveSessionExistsError(active.id);
+
+    try {
+      return await this.repo.createSessionSnapshot({
+        profileId,
+        programId: null,
+        programVersionId: null,
+        entryMode: ENTRY_MODE.LIVE,
+        accountingTimeZone,
+        accountingTimeZoneProvenance: accountingTimeZone ? "client-session" : "legacy-default",
+        exercises: [],
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const again = await this.repo.getActiveSession(profileId);
+        if (again) throw new ActiveSessionExistsError(again.id);
+      }
+      throw error;
+    }
+  }
+
   listHistoricalStrengthWorkouts(
     query: Partial<HistoricalWorkoutsQuery> = {},
   ): Promise<HistoricalStrengthWorkoutDto[]> {
@@ -1143,6 +1189,9 @@ export class TrainingService {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+    if (session.programId === null || session.programVersionId === null) {
+      throw new SetValidationError("dynamic sessions cannot be reassigned to a program");
+    }
 
     const program = await this.repo.loadProgramVersion({
       programId: input.programId,
@@ -1222,6 +1271,14 @@ export class TrainingService {
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
 
+    if (session.programId === null ? input.plannedSets !== 0 : input.plannedSets === 0) {
+      throw new SetValidationError(
+        session.programId === null
+          ? "dynamic session exercises do not have planned set counts"
+          : "programmed session exercises require a positive planned set count",
+      );
+    }
+
     const [catalog] = await this.repo.findCatalogByIds([input.catalogId], profileId);
     if (!catalog) throw new CatalogExerciseNotFoundError();
 
@@ -1266,6 +1323,14 @@ export class TrainingService {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+    if (input.plannedSets !== undefined
+      && (session.programId === null ? input.plannedSets !== 0 : input.plannedSets === 0)) {
+      throw new SetValidationError(
+        session.programId === null
+          ? "dynamic session exercises do not have planned set counts"
+          : "programmed session exercises require a positive planned set count",
+      );
+    }
 
     const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
     if (!exercise) throw new SessionExerciseNotFoundError();
@@ -1399,7 +1464,7 @@ export class TrainingService {
     if (!validated.ok) throw new SetValidationError(validated.message);
     const override = input.loadAccountingOverride === undefined || input.loadAccountingOverride === null
       ? null
-      : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+      : setExecutionOverrideWriteV1Schema.safeParse(input.loadAccountingOverride);
     if (override !== null && !override.success) throw new SetValidationError("invalid load accounting override");
 
     const nextSetNumber =
@@ -1473,7 +1538,7 @@ export class TrainingService {
       ? undefined
       : input.loadAccountingOverride === null
         ? null
-        : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+        : setExecutionOverrideWriteV1Schema.safeParse(input.loadAccountingOverride);
     if (override !== undefined && override !== null && !override.success) {
       throw new SetValidationError("invalid load accounting override");
     }
@@ -1482,10 +1547,12 @@ export class TrainingService {
       setId,
       sessionId,
       profileId,
-      reps: validated.reps,
-      weightKg: validated.weightKg,
-      bandNominalResistanceKg: validated.bandNominalResistanceKg,
-      rir: validated.rir,
+      ...(input.reps === undefined ? {} : { reps: validated.reps }),
+      ...(input.weightKg === undefined ? {} : { weightKg: validated.weightKg }),
+      ...(input.bandNominalResistanceKg === undefined
+        ? {}
+        : { bandNominalResistanceKg: validated.bandNominalResistanceKg }),
+      ...(input.rir === undefined ? {} : { rir: validated.rir }),
       comment: input.comment,
       completedAt:
         input.completedAt === undefined
@@ -1584,7 +1651,6 @@ export class TrainingService {
           session: refreshed, profileId, deferUnifiedPublication: true,
         });
       } catch (error) {
-        if (error instanceof StaleStrengthEnergySourceError) throw error;
         publicationDependenciesReady = false;
         logPhysiologyPublicationFailure("completed-session-republish", error);
       }
@@ -1632,7 +1698,6 @@ export class TrainingService {
       await this.recordExperimentalShadow({ session: refreshed, profileId });
       modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
     } catch (error) {
-      if (error instanceof StaleStrengthEnergySourceError) throw error;
       logPhysiologyPublicationFailure("completed-session-republish", error);
       modelPublicationStatus = this.db === prisma ? "stale" : undefined;
     }

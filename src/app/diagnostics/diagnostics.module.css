@@ -49,6 +49,37 @@
   .actions a, .actions button { transition-duration: 0s; }
 }
 
+.actionProgress {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  background: color-mix(in srgb, var(--info) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line));
+  border-radius: 0.8rem;
+}
+.actionProgressMarker {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--info);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 45%, transparent);
+  animation: action-pulse 1.5s ease-out infinite;
+}
+.actionProgress div { display: grid; gap: 0.2rem; }
+.actionProgress strong { color: var(--ink); font-size: 0.86rem; }
+.actionProgress span:not(.actionProgressMarker) { color: var(--muted); font-size: 0.75rem; line-height: 1.45; }
+.actionComplete { margin: 0 0 1rem; padding: 0.75rem 0.9rem; color: var(--success-strong); background: var(--success-soft); border: 1px solid color-mix(in srgb, var(--success) 28%, var(--line)); border-radius: 0.7rem; font-size: 0.8rem; }
+@keyframes action-pulse {
+  70% { box-shadow: 0 0 0 0.55rem color-mix(in srgb, var(--info) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0.55rem transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .actionProgressMarker { animation: none; }
+}
+
 /* Diagnostics separates estimate, evidence, calibration, and forecast readiness. */
 .overview article { --category-accent: var(--info); border-top-color: var(--category-accent); }
 .overview article[data-kind="personalization"] { --category-accent: var(--primary); }
@@ -80,6 +111,15 @@
 .energyMetrics > div { min-width: 0; padding: .65rem .7rem; background: var(--surface-2); border-radius: .65rem; }
 .energyMetrics dt { color: var(--muted); font-size: .68rem; }
 .energyMetrics dd { margin: .25rem 0 0; color: var(--ink); font-size: .9rem; font-weight: 820; font-variant-numeric: tabular-nums; }
+.energyMetrics small { color: var(--muted); font-size: .65rem; }
+.energyHistory { display: grid; gap: .4rem; margin-top: .35rem; }
+.energyHistory h3 { margin: 0; color: var(--muted); font-size: .72rem; font-weight: 800; }
+.energyHistory ul { display: grid; gap: .3rem; margin: 0; padding: 0; list-style: none; }
+.energyHistory li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(7rem, .7fr) auto; align-items: center; gap: .5rem; padding: .5rem .6rem; background: var(--surface-2); border-radius: .55rem; font-size: .7rem; }
+.energyHistory time { color: var(--ink); font-variant-numeric: tabular-nums; }
+.energyHistory li span, .energyHistory > p { color: var(--muted); }
+.energyHistory li strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.energyHistory .note { margin-top: .1rem; }
 .coveragePanel { border-top: 2px solid var(--info); }
 .coveragePanel .eyebrow { color: var(--info-strong); }
 .coverageSummary { margin: 1rem 0 0; color: var(--ink); font-size: clamp(1.2rem, 2vw, 1.65rem); font-weight: 850; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
@@ -142,6 +182,9 @@
   .limitations li { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
   .readinessTitle { flex-direction: column; }
   .actions > * { flex: 1 1 auto; }
+  .energyHistory li { grid-template-columns: minmax(0, 1fr) auto; }
+  .energyHistory li span { grid-column: 1; grid-row: 2; }
+  .energyHistory li strong { grid-column: 2; grid-row: 1 / span 2; }
 }
 @media (max-width: 390px) {
   .gates { grid-template-columns: minmax(0, 1fr); }

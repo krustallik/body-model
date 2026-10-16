@@ -30,6 +30,8 @@ on:
       - "scripts/production-database-cutback-promotion.sh"
       - "scripts/production-database-cutback-lifecycle.sh"
       - "scripts/production-database-cutback.mjs"
+      - "scripts/production-app-capabilities.mjs"
+      - "scripts/production-app-capabilities.json"
       - "scripts/production-app-runtime-digest.mjs"
       - "scripts/production-previous-app-provenance.mjs"
       - "scripts/production-preflight-resume.mjs"
@@ -56,6 +58,7 @@ on:
       - "scripts/deploy-migrate.sh"
       - "scripts/run-prisma-migrate-with-lock-timeout.mjs"
       - "scripts/ci/production-migration-prisma-checksum.integration.mjs"
+      - "scripts/ci/programless-session-migration-postgres-smoke.mjs"
       - "docs/development/production-migration-v5-runbook.md"
       - "docs/architecture/unified-glycogen-v4-rollout.md"
       - "src/modules/model-episodes/unified-rollout-v4.service.ts"
@@ -81,6 +84,7 @@ on:
       - "tests/production-safety-tooling.test.mjs"
       - "tests/github-owner-identity.test.mjs"
       - "tests/production-migration-v5.test.mjs"
+      - "tests/production-app-capabilities.test.mjs"
       - "tests/production-no-app-preflight.test.mjs"
       - "tests/production-no-app-workflow.test.mjs"
       - "tests/production-forward-resume.test.mjs"
@@ -289,6 +293,11 @@ jobs:
         env:
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: node scripts/ci/production-migration-prisma-checksum.integration.mjs
+
+      - name: Verify programless-session migrations and exact PostgreSQL signatures
+        env:
+          BODYCAST_DYNAMIC_MIGRATION_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+        run: node scripts/ci/programless-session-migration-postgres-smoke.mjs
 
       - name: Run production migration release-tooling shell regressions
         env:

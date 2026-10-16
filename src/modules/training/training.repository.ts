@@ -620,9 +620,9 @@ export function toSessionDto(
     entryMode: asEntryMode(record.entryMode),
     revision: record.revision,
     programId: record.programId,
-    programName: record.program.name,
+    programName: record.program?.name ?? null,
     programVersionId: record.programVersionId,
-    programVersionNumber: record.programVersion.versionNumber,
+    programVersionNumber: record.programVersion?.versionNumber ?? null,
     webStartedAt: record.webStartedAt?.toISOString() ?? null,
     webEndedAt: record.webEndedAt?.toISOString() ?? null,
     effectiveAccountingAt: effectiveAccountingInstant(record).toISOString(),
@@ -765,7 +765,7 @@ function toSessionSummaryDto(record: SessionSummaryRecord): StrengthSessionSumma
     status: record.status as SessionStatus,
     entryMode: asEntryMode(record.entryMode),
     programId: record.programId,
-    programName: record.program.name,
+    programName: record.program?.name ?? null,
     webStartedAt: record.webStartedAt?.toISOString() ?? null,
     webEndedAt: record.webEndedAt?.toISOString() ?? null,
     matchStatus: record.matchStatus as MatchStatus,
@@ -1252,7 +1252,7 @@ export class TrainingRepository {
           matchedWorkoutId: record.matchedWorkoutId,
           matchStatus: record.matchStatus,
           programVersionId: record.programVersionId,
-          programVersionNumber: record.programVersion.versionNumber,
+          programVersionNumber: record.programVersion?.versionNumber ?? null,
           exercises: record.exercises.map((exercise) => ({
             id: exercise.id,
             order: exercise.sortOrder,
@@ -1695,8 +1695,8 @@ export class TrainingRepository {
 
   async createSessionSnapshot(input: {
     profileId?: number;
-    programId: number;
-    programVersionId: number;
+    programId: number | null;
+    programVersionId: number | null;
     status?: SessionStatus;
     entryMode?: EntryMode;
     /** Explicit null keeps a RETROSPECTIVE session free of faked live times. */
@@ -2305,6 +2305,7 @@ export class TrainingRepository {
         sets: {
           orderBy: { setNumber: "desc" },
           select: {
+            id: true,
             setNumber: true,
             reps: true,
             weightKg: true,
@@ -2312,6 +2313,7 @@ export class TrainingRepository {
             rir: true,
             comment: true,
             completedAt: true,
+            loadAccountingOverride: true,
           },
         },
       },
@@ -2326,9 +2328,10 @@ export class TrainingRepository {
       return {
         sessionId: row.sessionId,
         occurredAt,
-        programName: row.session.program.name,
+        programName: row.session.program?.name ?? null,
         resistanceType: row.resistanceType as ResistanceType,
         sets: row.sets.map((set) => ({
+          id: set.id,
           setNumber: set.setNumber,
           reps: set.reps,
           weightKg: decimalToNumber(set.weightKg),
@@ -2336,6 +2339,7 @@ export class TrainingRepository {
           rir: set.rir,
           comment: set.comment ?? null,
           completedAt: set.completedAt?.toISOString() ?? null,
+          loadAccountingOverride: set.loadAccountingOverride,
         })),
       };
     }).sort((left, right) => {
@@ -2357,11 +2361,16 @@ export class TrainingRepository {
       },
       select: {
         id: true,
+        setNumber: true,
         reps: true,
         weightKg: true,
         bandNominalResistanceKg: true,
         rir: true,
+        comment: true,
         completedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        loadAccountingOverride: true,
         sessionExercise: {
           select: {
             id: true,
@@ -2838,7 +2847,7 @@ export class TrainingRepository {
           durationMinutes: row.durationMinutes,
           activeEnergyKcal: row.activeEnergyKcal,
           linkedSessionId: linked?.id ?? null,
-          linkedProgramName: linked?.program.name ?? null,
+          linkedProgramName: linked?.program?.name ?? null,
           diaryCompleteness: diaryCompletenessOf(
             linked
               ? {

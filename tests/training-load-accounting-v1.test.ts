@@ -297,4 +297,78 @@ describe("versioned config and execution semantics", () => {
     expect(weighted.bodyweight.referenceVolume.coverage.omittedReasons)
       .toEqual({ "missing-bodyweight-reference": 2 });
   });
+
+  it("keeps maximum supported BODYWEIGHT loads finite at the maximum repetitions", () => {
+    const result = calculateLoadAccountingV1({
+      localDate: "2026-09-24",
+      exercises: [{ identity: identity("pull_up"), sets: [
+        { reps: 10_000, weightKg: null, bandNominalResistanceKg: null,
+          override: { additionalLoadKg: 2_000 } },
+        { reps: 10_000, weightKg: null, bandNominalResistanceKg: null,
+          override: { assistanceLoadKg: 2_000 } },
+      ] }],
+    });
+
+    expect(result.additionalLoad).toMatchObject({ value: 20_000_000, availability: "available" });
+    expect(result.assistanceLoad).toMatchObject({ value: 20_000_000, availability: "available" });
+    const serialized = JSON.parse(JSON.stringify(result)) as typeof result;
+    expect(serialized.additionalLoad.value).toBe(20_000_000);
+    expect(serialized.assistanceLoad.value).toBe(20_000_000);
+    expect(Number.isFinite(serialized.additionalLoad.value)).toBe(true);
+  });
+
+  it("keeps legacy overflowing BODYWEIGHT overrides readable but marks the derived metric unavailable", () => {
+    expect(setExecutionOverrideV1Schema.safeParse({ additionalLoadKg: 1e308 }).success).toBe(true);
+    expect(setExecutionOverrideV1Schema.safeParse({ assistanceLoadKg: 1e308 }).success).toBe(true);
+    const calculateLegacyMetric = (override: { additionalLoadKg?: number; assistanceLoadKg?: number }) =>
+      calculateLoadAccountingV1({
+        localDate: "2026-09-24",
+        exercises: [{ identity: identity("pull_up"), sets: [{
+          reps: 10_000,
+          weightKg: null,
+          bandNominalResistanceKg: null,
+          override,
+        }] }],
+      });
+    const additionalResult = calculateLegacyMetric({ additionalLoadKg: 1e308 });
+    const assistanceResult = calculateLegacyMetric({ assistanceLoadKg: 1e308 });
+
+    expect(additionalResult.additionalLoad).toMatchObject({
+      value: null,
+      availability: "unavailable",
+      coverage: { omittedRows: 1, omittedReasons: { "invalid-load": 1 } },
+    });
+    expect(assistanceResult.assistanceLoad).toMatchObject({
+      value: null,
+      availability: "unavailable",
+      coverage: { omittedRows: 1, omittedReasons: { "invalid-load": 1 } },
+    });
+    const serializedAdditional = JSON.parse(JSON.stringify(additionalResult)) as typeof additionalResult;
+    const serializedAssistance = JSON.parse(JSON.stringify(assistanceResult)) as typeof assistanceResult;
+    expect(serializedAdditional.additionalLoad.value).toBeNull();
+    expect(serializedAdditional.additionalLoad.availability).toBe("unavailable");
+    expect(serializedAssistance.assistanceLoad.value).toBeNull();
+    expect(serializedAssistance.assistanceLoad.availability).toBe("unavailable");
+  });
+
+  it("keeps a legacy aggregate finite when individually finite rows would overflow their sum", () => {
+    const result = calculateLoadAccountingV1({
+      localDate: "2026-09-24",
+      exercises: [{ identity: identity("pull_up"), sets: [1, 2].map(() => ({
+        reps: 1,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        override: { additionalLoadKg: 1e308 },
+      })) }],
+    });
+
+    expect(result.additionalLoad).toMatchObject({
+      value: 1e308,
+      availability: "partial",
+      coverage: { eligibleRows: 2, accountedRows: 1, omittedReasons: { "invalid-load": 1 } },
+    });
+    const serialized = JSON.parse(JSON.stringify(result)) as typeof result;
+    expect(serialized.additionalLoad.value).toBe(1e308);
+    expect(serialized.additionalLoad.availability).toBe("partial");
+  });
 });

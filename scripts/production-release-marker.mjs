@@ -5,7 +5,7 @@ import path from "node:path";
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[1-9][0-9]*$/;
-const MANIFEST_IDS = new Set(["active-energy-unified-v2", "unified-v4-republication-v1"]);
+const MANIFEST_IDS = new Set(["active-energy-unified-v2", "unified-v4-republication-v1", "programless-workouts-health-sync-v1"]);
 const MARKER_NAME = "marker";
 const STATES = new Set([
   "ddl-starting", "ddl-started", "schema-applied", "app-ready", "v4-ready",

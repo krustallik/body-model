@@ -9,10 +9,13 @@ import { useI18n } from "@/i18n/i18n-provider";
 import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
 import type { StrengthSessionDto, TrainingProgramSummaryDto } from "@/modules/training/training.types";
 import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperList } from "./training-paginated-sections";
+import { TrainingFinishPublicationNotice } from "./training-finish-publication-notice";
 import {
   formatDateTime,
   readApiError,
+  trainingSessionTitle,
 } from "./training-labels";
+import { currentTrainingHref, useTrainingSearchParam } from "./training-url-state";
 import styles from "./training.module.css";
 
 function nowLocalDateTime(): string {
@@ -41,9 +44,12 @@ export function TrainingClient() {
   const [stepperBusy, setStepperBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [busySessionId, setBusySessionId] = useState<number | null>(null);
   const [reconBusyId, setReconBusyId] = useState<number | null>(null);
+  const { value: programsRefresh, ready: programsRefreshReady } = useTrainingSearchParam("programsRefresh");
+  const hubReturnHref = programsRefreshReady ? currentTrainingHref() : "/training";
 
   const load = useCallback(async () => {
     try {
@@ -195,10 +201,16 @@ export function TrainingClient() {
   }
 
   useEffect(() => {
-    // Start an async refresh; state changes happen after the network response.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
-  }, [load]);
+    if (!programsRefreshReady) return;
+    let cancelled = false;
+    void (async () => {
+      await Promise.resolve();
+      if (!cancelled) await load();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [load, programsRefresh, programsRefreshReady]);
 
   async function startProgram(programId: number) {
     setBusyId(programId);
@@ -212,7 +224,7 @@ export function TrainingClient() {
       if (response.status === 409) {
         const body = await response.json() as { activeSessionId?: number };
         if (body.activeSessionId) {
-          router.push(`/training/sessions/${body.activeSessionId}`);
+          router.push(`/training/sessions/${body.activeSessionId}?returnTo=${encodeURIComponent(hubReturnHref)}`);
           return;
         }
       }
@@ -221,9 +233,38 @@ export function TrainingClient() {
         return;
       }
       const body = await response.json() as { session: StrengthSessionDto };
-      router.push(`/training/sessions/${body.session.id}`);
+      router.push(`/training/sessions/${body.session.id}?returnTo=${encodeURIComponent(hubReturnHref)}`);
     } catch {
       setError(uk ? "Не вдалося почати тренування." : "Could not start the session.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function startDynamicSession() {
+    setBusyId(-1);
+    setError(null);
+    try {
+      const response = await fetch("/api/v1/training/sessions/start-dynamic", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIME_ZONE }),
+      });
+      if (response.status === 409) {
+        const body = await response.json() as { activeSessionId?: number };
+        if (body.activeSessionId) {
+          router.push(`/training/sessions/${body.activeSessionId}?returnTo=${encodeURIComponent(hubReturnHref)}`);
+          return;
+        }
+      }
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      const body = await response.json() as { session: StrengthSessionDto };
+      router.push(`/training/sessions/${body.session.id}?returnTo=${encodeURIComponent(hubReturnHref)}`);
+    } catch {
+      setError(uk ? "Не вдалося почати вільне тренування." : "Could not start a free workout.");
     } finally {
       setBusyId(null);
     }
@@ -236,34 +277,93 @@ export function TrainingClient() {
     try {
       const response = await fetch(`/api/v1/training/programs/${programId}/archive`, { method: "POST" });
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        try {
+          const programsResponse = await fetch("/api/v1/training/programs", { cache: "no-store" });
+          if (!programsResponse.ok) throw new Error("Could not verify archived program.");
+          const body = await programsResponse.json() as { programs: TrainingProgramSummaryDto[] };
+          setPrograms(body.programs);
+          if (!body.programs.some((program) => program.id === programId)) {
+            setError(null);
+            setListsRevision((current) => current + 1);
+            setNotice(uk ? "Програму архівовано, хоча відповідь сервера повідомила про помилку." : "Program archived, although the server reported an error.");
+            return;
+          }
+        } catch {
+          // Keep the draft state visible until an authoritative list can be read.
+        }
+        setError(apiError);
         return;
       }
-      await load();
+      setPrograms((current) => current.filter((program) => program.id !== programId));
+      setListsRevision((current) => current + 1);
     } catch {
-      setError(uk ? "Не вдалося архівувати програму." : "Could not archive the program.");
+      try {
+        const programsResponse = await fetch("/api/v1/training/programs", { cache: "no-store" });
+        if (!programsResponse.ok) throw new Error("Could not verify archived program.");
+        const body = await programsResponse.json() as { programs: TrainingProgramSummaryDto[] };
+        setPrograms(body.programs);
+        if (!body.programs.some((program) => program.id === programId)) {
+          setListsRevision((current) => current + 1);
+          setNotice(uk ? "Програму архівовано, але початкову відповідь не отримано." : "Program archived, but the original response was not received.");
+          setError(null);
+          return;
+        }
+      } catch {
+        // The request outcome stays visible as unresolved; it is never replayed here.
+      }
+      setError(uk ? "Не вдалося підтвердити архівування програми. Перевірте список перед повторною дією." : "Could not confirm program archival. Check the list before trying again.");
     } finally {
       setBusyId(null);
     }
   }
 
-  async function deleteCancelledSession(sessionId: number) {
+  async function deleteSession(sessionId: number) {
     if (!window.confirm(
       uk
-        ? "Видалити скасований запис? Дані Garmin залишаться без змін."
-        : "Delete this cancelled diary entry? Garmin data will remain unchanged.",
+        ? "Назавжди видалити запис BodyCast разом із вправами, підходами та знімками обліку? Зіставлені записи тренувань Garmin та Apple Health залишаться без змін."
+        : "Permanently delete this BodyCast diary session, including its exercises, sets, and accounting snapshots? Matched Garmin and Apple Health workout records will remain unchanged.",
     )) return;
     setBusySessionId(sessionId);
     setError(null);
     try {
       const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { method: "DELETE" });
+      const publicationStatus = await response.clone().json().then((body: { modelPublicationStatus?: unknown }) => body.modelPublicationStatus).catch(() => undefined);
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        try {
+          const current = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+          if (current.status === 404) {
+            setListsRevision((revision) => revision + 1);
+            setError(null);
+            setNotice(publicationStatus === "stale"
+              ? (uk ? "Тренування видалено, але публікація моделі ще не актуальна." : "Session deleted, but model publication is not current yet.")
+              : (uk ? "Запис тренування відсутній; журнал показує актуальний стан." : "The workout record is absent; the diary shows the current state."));
+            return;
+          }
+        } catch {
+          // Preserve a visible error if the authoritative check is unavailable.
+        }
+        setError(apiError);
         return;
       }
-      await load();
+      setListsRevision((current) => current + 1);
+      setNotice(publicationStatus === "stale"
+        ? (uk ? "Запис видалено. Публікація моделі ще оновлюється; дані можуть тимчасово бути неактуальними." : "Session deleted. Model publication is still updating, so derived data may be temporarily stale.")
+        : null);
     } catch {
-      setError(uk ? "Не вдалося видалити скасоване тренування." : "Could not delete the cancelled workout.");
+      setListsRevision((current) => current + 1);
+      try {
+        const current = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+        if (current.status === 404) {
+          setError(null);
+          setNotice(uk ? "Тренування видалено, але початкову відповідь не отримано." : "Session deleted, but the original response was not received.");
+          return;
+        }
+      } catch {
+        // No retry: retain the unresolved-outcome message below.
+      }
+      setError(uk ? "Не вдалося підтвердити видалення. Перевірте журнал перед повторною дією." : "Could not confirm deletion. Check the diary before trying again.");
     } finally {
       setBusySessionId(null);
     }
@@ -275,6 +375,7 @@ export function TrainingClient() {
         <strong>BodyCast</strong>
         <AppNav active="training" />
       </div>
+      <TrainingFinishPublicationNotice />
 
       <header className={styles.header}>
         <div>
@@ -287,23 +388,22 @@ export function TrainingClient() {
           </p>
         </div>
         <div className={styles.rowActions}>
-          <Link className={styles.infoButton} href="/training/backfill">
+          <Link className={styles.infoButton} href={`/training/backfill?returnTo=${encodeURIComponent(hubReturnHref)}`}>
             {uk ? "Історія Garmin" : "Garmin history"}
           </Link>
-          <Link className={styles.primaryButton} href="/training/programs/new">
+          <Link className={styles.primaryButton} href={`/training/programs/new?returnTo=${encodeURIComponent(hubReturnHref)}`}>
             {uk ? "Нова програма" : "New program"}
           </Link>
         </div>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+      {notice && <p className={styles.emptyCompact} role="status">{notice}</p>}
 
       <div className={styles.stack}>
         <TrainingAttentionPanel uk={uk} intlLocale={intlLocale} refreshVersion={listsRevision} />
-
-
         <div className={`${styles.trainingHubGrid} ${styles.trainingPrimaryGrid}`}>
-        <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>
+        {active ? <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Активна сесія" : "Active session"}</h2>
@@ -311,13 +411,10 @@ export function TrainingClient() {
             </div>
           </div>
           <div className={styles.panelBody}>
-            {loading ? (
-              <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
-            ) : active ? (
-              <article className={styles.card}>
+            <article className={styles.card}>
                 <div className={styles.cardTop}>
                   <div>
-                    <strong>{active.programName}</strong>
+                    <strong>{trainingSessionTitle(active.programName, uk)}</strong>
                     <p className={styles.cardMeta}>
                       {uk ? "Почато" : "Started"} {formatDateTime(active.webStartedAt, intlLocale)}
                     </p>
@@ -325,19 +422,31 @@ export function TrainingClient() {
                   <span className={styles.badgePrimary}>{uk ? "Активна" : "Active"}</span>
                 </div>
                 <div className={styles.denseCardActions}>
-                  <Link className={styles.primaryButton} href={`/training/sessions/${active.id}`}>
+                  <Link className={styles.primaryButton} href={`/training/sessions/${active.id}?returnTo=${encodeURIComponent(hubReturnHref)}`}>
                     {uk ? "Продовжити" : "Resume"}
                   </Link>
                 </div>
               </article>
-            ) : (
-              <div className={styles.empty}>
-                <strong>{uk ? "Немає активної сесії" : "No active session"}</strong>
-                <span>{uk ? "Оберіть програму нижче, щоб почати." : "Pick a program below to start."}</span>
-              </div>
-            )}
           </div>
-        </section>
+        </section> : !loading && !error && <section className={`${styles.panel} ${styles.panelActive} ${styles.panelStartDynamic}`} aria-label={uk ? "Почати тренування" : "Start a workout"}>
+          <div className={styles.panelHeader}>
+            <div>
+              <h2>{uk ? "Почати без програми" : "Start without a program"}</h2>
+              <p>{uk ? "Додай вправи під час тренування — запис збережеться як вільна сесія." : "Choose exercises as you go; the workout is saved as a free session."}</p>
+            </div>
+          </div>
+          <div className={styles.panelBody}>
+            <button
+              className={styles.primaryButton}
+              type="button"
+              disabled={busyId !== null}
+              aria-busy={busyId === -1 || undefined}
+              onClick={() => void startDynamicSession()}
+            >
+              {uk ? "Почати без програми" : "Start without a program"}
+            </button>
+          </div>
+        </section>}
 
         <section className={`${styles.panel} ${styles.panelPrograms}`} aria-label={uk ? "Програми" : "Programs"}>
           <div className={styles.panelHeader}>
@@ -350,7 +459,7 @@ export function TrainingClient() {
             {programs.length === 0 ? (
               <div className={styles.empty}>
                 <strong>{uk ? "Поки немає програм" : "No programs yet"}</strong>
-                <Link className={styles.linkLike} href="/training/programs/new">
+                <Link className={styles.linkLike} href={`/training/programs/new?returnTo=${encodeURIComponent(hubReturnHref)}`}>
                   {uk ? "Створити першу" : "Create the first one"}
                 </Link>
               </div>
@@ -378,7 +487,7 @@ export function TrainingClient() {
                       >
                         {uk ? "Почати" : "Start"}
                       </button>
-                      <Link className={styles.secondaryButton} href={`/training/programs/${program.id}`}>
+                      <Link className={styles.secondaryButton} href={`/training/programs/${program.id}?returnTo=${encodeURIComponent(hubReturnHref)}`}>
                         {uk ? "Редагувати" : "Edit"}
                       </Link>
                       <button
@@ -404,7 +513,7 @@ export function TrainingClient() {
           intlLocale={intlLocale}
           refreshVersion={listsRevision}
           busySessionId={busySessionId}
-          onDeleteCancelledSession={deleteCancelledSession}
+          onDeleteSession={deleteSession}
         />
 
         <section className={`${styles.panel} ${styles.panelInfo}`} aria-label={uk ? "Тренування на степері" : "Stepper workouts"}>

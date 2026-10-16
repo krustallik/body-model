@@ -55,14 +55,16 @@ async function clearIsolatedQaDatabase() {
     FROM information_schema.tables
     WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
   `;
-  // Keep Prisma migration history and the migration-seeded exercise catalog.
+  // Keep migration history and exercise catalog/config rows used by the picker.
   const tables = rows.map(({ tableName }) => tableName)
-    .filter((tableName) => tableName !== "_prisma_migrations" && tableName !== "ExerciseCatalog");
+    .filter((tableName) => tableName !== "_prisma_migrations"
+      && tableName !== "ExerciseCatalog"
+      && tableName !== "ExerciseLoadConfiguration");
   if (!tables.includes("Profile") || !tables.includes("DailyHealthData")) {
     throw new Error("Expected BodyCast application tables were not found; refusing to clear the database");
   }
   const quotedTables = tables.map((tableName) => `"${tableName.replaceAll('"', '""')}"`).join(", ");
-  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${quotedTables} RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${quotedTables} RESTART IDENTITY`);
 }
 
 async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: Date) {

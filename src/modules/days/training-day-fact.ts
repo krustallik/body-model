@@ -11,6 +11,7 @@ import {
 } from "@/modules/training/strength-publication-v1";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { ENTRY_MODE, MATCH_STATUS, RESISTANCE, SESSION_STATUS, EXERCISE_ORIGIN } from "@/modules/training/training.constants";
+import { MANUAL_HISTORY_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 
 // Preserve the original import path for callers while keeping client components
 // on the dedicated client-safe empty-fact module.
@@ -36,6 +37,9 @@ export type TrainingDayEventFact = {
   energySource: TrainingDayEnergySource;
   executionStatus: TrainingEventExecutionStatus;
   workoutId: number | null;
+  /** True when a health feed maintains this workout row. */
+  syncProtected?: boolean;
+  manualEditable?: boolean;
   diarySessionId: number | null;
   diaryProgramName: string | null;
   diaryOnly: boolean;
@@ -105,6 +109,9 @@ export type WorkoutFactSource = {
   mechanicalStepperKcal?: number | null;
   canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
   hiddenFromHistory: boolean;
+  syncProtected?: boolean;
+  externalId?: string | null;
+  dailyHealthData?: { date: string; weightKg: number | null; workoutFeedObserved?: boolean | null } | null;
   matchedDiarySession: {
     id: number;
     status: string | null;
@@ -485,6 +492,9 @@ export function resolveTrainingDayFacts(input: {
       energySource: selected.energySource,
       executionStatus: matched ? executionStatus(matched.status, matched.loggedSetCount) : "unknown",
       workoutId: workout.id,
+      syncProtected: workout.syncProtected === true,
+      manualEditable: matched === null
+        && workout.sourceIdentity.startsWith(MANUAL_HISTORY_SOURCE_PREFIX),
       diarySessionId: matched?.id ?? null,
       diaryProgramName: matched?.programName ?? null,
       diaryOnly: false,

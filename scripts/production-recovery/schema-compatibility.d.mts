@@ -46,3 +46,21 @@ export function verifyReadOnlySchemaCompatibility(options: {
   requiredRelationsChecked: number;
   migrationCount: number;
 }>;
+
+export function verifyProgramlessSessionRollbackCompatibility(options: {
+  withReadOnlyTransaction: <T>(work: (query: ReadOnlyQuery) => Promise<T>) => Promise<T>;
+  resolveLogicalDatabaseIdentity: (query: ReadOnlyQuery) => Promise<{ identityDigest: string; observationsDigest: string }>;
+  expectedLogicalProductionDbIdentityDigest: string;
+  repositoryPath: string;
+  rollbackAppSha: string;
+}): Promise<{
+  schemaVersion: 1;
+  purpose: "bodycast-programless-session-rollback-compatibility";
+  rollbackAppSha: string;
+  logicalProductionDbIdentityDigest: string;
+  programlessSessionCount: number;
+  rollbackAppSupportsProgramlessSessions: boolean;
+  programlessSessionCompatible: true;
+  rollbackAppCapabilityDigest: string;
+  observedAt: string;
+}>;

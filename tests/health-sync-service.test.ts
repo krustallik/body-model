@@ -168,6 +168,40 @@ describe("health synchronization service", () => {
     expect(repository.snapshots).toHaveLength(2);
   });
 
+  it("returns after durable persistence while dependent refresh is still slow", async () => {
+    const repository = new MemoryRepository();
+    const pendingRefresh = new Promise<boolean>(() => undefined);
+    afterHealthSyncMatch.mockReturnValue(pendingRefresh);
+
+    const response = await Promise.race([
+      syncHealthData({ days: [{ date: "2026-08-21", steps: 100 }] }, repository, undefined, undefined, undefined, {
+        deferDependentRefresh: true,
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("response waited for dependent refresh")), 100)),
+    ]);
+
+    expect(response).toMatchObject({ status: "ok", modelPublicationStatus: "stale", received: 1, created: 1 });
+    expect(repository.days.get("2026-08-21")?.steps).toBe(100);
+    expect(repository.snapshots).toHaveLength(1);
+    expect(repository.snapshots[0]?.metadata.deferDependentRefresh).toBe(true);
+    expect(afterHealthSyncMatch).not.toHaveBeenCalled();
+    expect(repository.prunedCutoffs).toHaveLength(0);
+    afterHealthSyncMatch.mockReset().mockResolvedValue(true);
+  });
+
+  it("refreshes already persisted dates without replaying raw writes", async () => {
+    const repository = new MemoryRepository();
+    afterHealthSyncMatch.mockClear();
+    const result = await syncHealthData({ days: [{ date: "2026-08-21" }] }, repository, undefined, undefined, undefined, {
+      persistedDates: [{ date: "2026-08-21", action: "updated" }],
+    });
+
+    expect(result).toMatchObject({ status: "ok", received: 1 });
+    expect(repository.days.size).toBe(0);
+    expect(repository.snapshots).toHaveLength(0);
+    expect(afterHealthSyncMatch).toHaveBeenCalledWith("2026-08-21", { timezone: "Europe/Bratislava" });
+  });
+
   it("passes explicit sync metadata and preserves the raw snapshot", async () => {
     const repository = new MemoryRepository();
     const receivedAt = new Date("2026-08-23T08:00:00Z");

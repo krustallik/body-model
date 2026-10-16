@@ -8,6 +8,23 @@ import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
 
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string; setId: string }> },
+): Promise<Response> {
+  const routeParams = SessionSetParamsSchema.safeParse(await params);
+  if (!routeParams.success) return validationResponse(routeParams.error);
+
+  try {
+    const set = await trainingService.getSetForSession(routeParams.data.id, routeParams.data.setId);
+    return set
+      ? Response.json({ set })
+      : Response.json({ error: "not_found" }, { status: 404 });
+  } catch {
+    return trainingInternalError();
+  }
+}
+
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string; setId: string }> },

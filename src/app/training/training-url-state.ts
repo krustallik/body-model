@@ -67,6 +67,19 @@ export function currentTrainingHref(fallbackPath = "/training"): string {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
 
+export function safeTrainingReturnHref(value: string | null, fallbackPath: string): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return fallbackPath;
+  try {
+    const url = new URL(value, "https://bodycast.invalid");
+    if (url.origin !== "https://bodycast.invalid") return fallbackPath;
+    const allowed = ["/training", "/dashboard", "/history"];
+    if (!allowed.some((path) => url.pathname === path || url.pathname.startsWith(`${path}/`))) return fallbackPath;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return fallbackPath;
+  }
+}
+
 export function handleTrainingPaginationNavigate(event: MouseEvent<HTMLAnchorElement>): void {
   if (
     event.defaultPrevented

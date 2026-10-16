@@ -51,6 +51,8 @@ function fixture() {
   };
   const workout = {
     findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({ id: 100 }),
+    update: vi.fn().mockResolvedValue({ id: 100 }),
     deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
   };
   const strengthDiarySession = {
@@ -85,6 +87,7 @@ function fixture() {
       activeEnergyEventAlias,
       physiologyV7Lifecycle,
       unifiedPublicationBlock,
+      $queryRaw: vi.fn().mockResolvedValue([]),
       $executeRaw: vi.fn().mockResolvedValue(0),
     })),
   } as unknown as PrismaClient;
@@ -440,7 +443,7 @@ describe("DailyMetricRepository", () => {
   });
 
   it("replaces explicit workouts while clearing legacy daily workout aggregates", async () => {
-    const { repository, dailyHealthData } = fixture();
+    const { repository, dailyHealthData, workout } = fixture();
     await repository.update(record.date, {
       workouts: [{
         type: "Strength training",
@@ -450,21 +453,23 @@ describe("DailyMetricRepository", () => {
       }],
     });
     expect(dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        strengthTrainingMinutes: null,
-        activeEnergyKcal: null,
-        workouts: {
-          deleteMany: { hiddenFromHistory: false },
-          create: [expect.objectContaining({
-            type: "Strength training",
-            durationMinutes: 45,
-            activeEnergyKcal: 280,
-            startAt: new Date("2026-08-22T10:00:00.000Z"),
-            endAt: new Date("2026-08-22T10:45:00.000Z"),
-          })],
-        },
-      }),
+      data: expect.objectContaining({ strengthTrainingMinutes: null, activeEnergyKcal: null }),
     }));
+    expect(dailyHealthData.update.mock.calls[0]?.[0]).not.toMatchObject({
+      data: expect.objectContaining({ workouts: expect.anything() }),
+    });
+    expect(workout.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        dailyHealthDataId: 42,
+        type: "Strength training",
+        durationMinutes: 45,
+        activeEnergyKcal: 280,
+        startAt: new Date("2026-08-22T10:00:00.000Z"),
+        endAt: new Date("2026-08-22T10:45:00.000Z"),
+        syncProtected: true,
+        sourceIdentity: expect.stringMatching(/^manual:history:/),
+      }),
+    });
   });
 
   it("returns null for a missing update and false for a missing delete", async () => {

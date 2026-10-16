@@ -20,6 +20,7 @@ import {
   matchStatusBadgeTone,
   matchStatusLabel,
   planCompletionPillClass,
+  trainingSessionTitle,
 } from "./training-labels";
 import styles from "./training.module.css";
 
@@ -64,15 +65,16 @@ export function TrainingRecentSessionsPanel({
   intlLocale,
   refreshVersion,
   busySessionId,
-  onDeleteCancelledSession,
+  onDeleteSession,
 }: {
   uk: boolean;
   intlLocale: string;
   refreshVersion: number;
   busySessionId: number | null;
-  onDeleteCancelledSession: (sessionId: number) => void;
+  onDeleteSession: (sessionId: number) => void;
 }) {
   const { page, value, ready, pageFromUrlMatches, hrefForPage } = usePageUrl("recentPage");
+  const returnHref = ready ? currentTrainingHref() : "/training";
   const [sessions, setSessions] = useState<StrengthSessionSummaryDto[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loadedRequestKey, setLoadedRequestKey] = useState<string | null>(null);
@@ -138,7 +140,7 @@ export function TrainingRecentSessionsPanel({
               <article className={styles.card} key={session.id}>
                 <div className={styles.cardTop}>
                   <div>
-                    <strong>{session.programName}</strong>
+                    <strong>{trainingSessionTitle(session.programName, uk)}</strong>
                     <p className={styles.cardMeta}>
                       <span>
                         {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
@@ -155,20 +157,20 @@ export function TrainingRecentSessionsPanel({
                   <span className={matchBadgeClass(session.matchStatus)}>{matchStatusLabel(session.matchStatus, uk)}</span>
                 </div>
                 <div className={styles.denseCardActions}>
-                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
+                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}?returnTo=${encodeURIComponent(returnHref)}`}>
                     {uk ? "Деталі" : "Details"}
                   </Link>
                   {(session.status === "COMPLETED" || session.status === "CANCELLED") && (
-                    <Link className={styles.linkLike} href={`/training/sessions/${session.id}/edit`}>
+                    <Link className={styles.linkLike} href={`/training/sessions/${session.id}/edit?returnTo=${encodeURIComponent(returnHref)}`}>
                       {uk ? "Редагувати" : "Edit"}
                     </Link>
                   )}
-                  {session.status === "CANCELLED" && (
+                  {(session.status === "COMPLETED" || session.status === "CANCELLED") && (
                     <button
                       className={styles.dangerButton}
                       type="button"
                       disabled={busySessionId === session.id}
-                      onClick={() => onDeleteCancelledSession(session.id)}
+                      onClick={() => onDeleteSession(session.id)}
                     >
                       {busySessionId === session.id ? (uk ? "Видалення…" : "Deleting…") : (uk ? "Видалити" : "Delete")}
                     </button>
@@ -203,6 +205,7 @@ export function TrainingAttentionPanel({
   refreshVersion: number;
 }) {
   const { page, value, ready, pageFromUrlMatches, hrefForPage } = usePageUrl("attentionPage");
+  const returnHref = ready ? currentTrainingHref() : "/training";
   const [sessions, setSessions] = useState<StrengthSessionSummaryDto[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loadedRequestKey, setLoadedRequestKey] = useState<string | null>(null);
@@ -247,6 +250,9 @@ export function TrainingAttentionPanel({
   }, [page, pageFromUrlMatches, ready, requestKey, uk, value]);
 
   const hasItems = sessions.length > 0;
+  if (!hasItems && !loading && !error && page === 1) return null;
+  if (!hasItems && loading && page === 1) return null;
+  if (!hasItems && error && page === 1) return <p className={styles.errorBanner} role="alert">{error}</p>;
   return (
     <section className={`${styles.panel} ${hasItems ? styles.panelAttention : `${styles.panelCompact} ${styles.panelAttention}`}`} aria-label={uk ? "Увага до зіставлення" : "Match attention"} aria-busy={loading}>
       <div className={styles.panelHeader}>
@@ -264,7 +270,7 @@ export function TrainingAttentionPanel({
                 <article className={styles.card} key={session.id}>
                   <div className={styles.cardTop}>
                     <div>
-                      <strong>{session.programName}</strong>
+                      <strong>{trainingSessionTitle(session.programName, uk)}</strong>
                       <p className={styles.cardMeta}>
                         {formatDateTime(session.webStartedAt, intlLocale)}
                         {" · "}
@@ -273,7 +279,7 @@ export function TrainingAttentionPanel({
                     </div>
                     <span className={matchBadgeClass(session.matchStatus)}>{matchStatusLabel(session.matchStatus, uk)}</span>
                   </div>
-                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
+                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}?returnTo=${encodeURIComponent(returnHref)}`}>
                     {uk ? "Відкрити" : "Open"}
                   </Link>
                 </article>

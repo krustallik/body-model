@@ -70,6 +70,22 @@ function historyLoadLabel(
     : bodyweightLabel;
 }
 
+function SetActionIcon({ kind }: { kind: "edit" | "delete" }) {
+  return kind === "edit" ? (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  ) : (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="m19 6-1 14H6L5 6" />
+      <path d="M10 11v5M14 11v5" />
+    </svg>
+  );
+}
+
 function formatHistoryDate(iso: string, uk: boolean): string {
   try {
     return new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", {
@@ -170,11 +186,14 @@ function HistoricalSetRow({
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState(() => historicalSetDraft(set));
   const [additionalLoadDirty, setAdditionalLoadDirty] = useState(false);
-  const pointerStart = useRef<{ x: number; y: number; id: number; width: number } | null>(null);
+  const pointerStart = useRef<{ x: number; y: number; id: number; offset: number } | null>(null);
   const suppressClickUntil = useRef(0);
   const wasEditing = useRef(false);
-  const actionToggleRef = useRef<HTMLButtonElement | null>(null);
+  const editActionRef = useRef<HTMLButtonElement | null>(null);
   const firstEditorRef = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [deleteIntent, setDeleteIntent] = useState(false);
   const override = set.loadAccountingOverride == null
     ? null
     : setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
@@ -183,7 +202,7 @@ function HistoricalSetRow({
 
   useEffect(() => {
     if (editing) firstEditorRef.current?.focus();
-    else if (wasEditing.current) actionToggleRef.current?.focus();
+    else if (wasEditing.current) editActionRef.current?.focus();
     wasEditing.current = editing;
   }, [editing]);
 
@@ -350,8 +369,9 @@ function HistoricalSetRow({
       x: event.clientX,
       y: event.clientY,
       id: event.pointerId,
-      width: event.currentTarget.getBoundingClientRect().width,
+      offset: actionsOpen ? -104 : 0,
     };
+    setDragOffset(actionsOpen ? -104 : 0);
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
   }
 
@@ -361,7 +381,13 @@ function HistoricalSetRow({
     if (!start || start.id !== event.pointerId) return;
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
-    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) event.preventDefault();
+    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+      event.preventDefault();
+      const offset = Math.max(-104, Math.min(0, start.offset + dx));
+      setDragging(true);
+      setDragOffset(offset);
+      setDeleteIntent(dx <= -96);
+    }
   }
 
   function onPointerUp(event: ReactPointerEvent<HTMLLIElement>) {
@@ -371,17 +397,23 @@ function HistoricalSetRow({
     if (!start || start.id !== event.pointerId) return;
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
-    if (Math.abs(dx) <= Math.abs(dy) * 1.15) return;
-    if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 400;
-    if (dx > 56) {
-      onCloseActions();
+    const offset = Math.max(-104, Math.min(0, start.offset + dx));
+    setDragging(false);
+    if (Math.abs(dx) <= Math.abs(dy) * 1.15) {
+      setDeleteIntent(false);
+      setDragOffset(actionsOpen ? -104 : 0);
       return;
     }
-    if (dx > -56) return;
-    onOpenActions();
-    if (start.width >= 140 && -dx >= start.width * 0.86 && interactive) {
+    if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 120;
+    if (dx > 56 || offset > -52) {
       onCloseActions();
-      void remove();
+      setDeleteIntent(false);
+      return;
+    }
+    onOpenActions();
+    if (dx <= -96 && interactive) {
+      setDeleteIntent(true);
+      void remove().finally(() => setDeleteIntent(false));
     }
   }
 
@@ -389,69 +421,74 @@ function HistoricalSetRow({
     <li
       className={styles.workoutHistorySetRow}
       data-testid={`history-set-${entry.sessionId}-${set.id}`}
+      data-open={actionsOpen || undefined}
+      data-editing={editing || undefined}
+      data-dragging={dragging || undefined}
+      data-delete-intent={deleteIntent || undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; onCloseActions(); }}
+      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; setDragging(false); setDeleteIntent(false); setDragOffset(0); onCloseActions(); }}
       onClickCapture={(event) => {
-        if (Date.now() > suppressClickUntil.current) return;
-        event.preventDefault();
-        event.stopPropagation();
-        suppressClickUntil.current = 0;
+        if (Date.now() <= suppressClickUntil.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          suppressClickUntil.current = 0;
+          return;
+        }
+        if (actionsOpen && event.target instanceof Element && event.target.closest(`.${styles.workoutHistorySwipeSurface}`)) {
+          event.preventDefault();
+          event.stopPropagation();
+          setDragOffset(0);
+          onCloseActions();
+        }
       }}
     >
-      {interactive ? (
-        <button
-          type="button"
-          data-history-action="copy"
-          className={styles.workoutHistorySetBtn}
-          aria-label={uk ? `Підставити дані підходу ${set.setNumber}` : `Use values from set ${set.setNumber}`}
-          onClick={() => onCopy(set)}
-        >
-          <span>#{set.setNumber}</span>
-          <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
-          <time dateTime={set.completedAt ?? undefined}>
-            {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
-              ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
-              : (uk ? "час не записано" : "time not recorded")}
-          </time>
-        </button>
-      ) : (
-        <div className={styles.workoutHistorySetBtn}>
-          <span>#{set.setNumber}</span>
-          <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
-          <time dateTime={set.completedAt ?? undefined}>
-            {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
-              ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
-              : (uk ? "час не записано" : "time not recorded")}
-          </time>
+      {interactive && !editing && (
+        <div className={styles.workoutSetActionsRail} role="group" aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}>
+          <button ref={editActionRef} type="button" data-history-action="edit" className={styles.workoutSetIconButton} aria-label={uk ? `Редагувати підхід ${set.setNumber}` : `Edit set ${set.setNumber}`} title={uk ? "Редагувати" : "Edit"} disabled={!canPreserveOverride || busy} onFocus={onOpenActions} onClick={beginEdit}>
+            <SetActionIcon kind="edit" />
+          </button>
+          <button type="button" data-history-action="delete" className={`${styles.workoutSetIconButton} ${styles.workoutHistoryDelete}`} aria-label={uk ? `Видалити підхід ${set.setNumber}` : `Delete set ${set.setNumber}`} title={uk ? "Видалити" : "Delete"} disabled={busy} onFocus={onOpenActions} onClick={() => void remove()}>
+            <SetActionIcon kind="delete" />
+          </button>
         </div>
       )}
-      {set.comment ? <em>{set.comment}</em> : null}
-      {interactive && !editing && (
-        <div className={styles.workoutHistoryActions}>
+      <div
+        className={styles.workoutHistorySwipeSurface}
+        data-editing={editing || undefined}
+        style={{ transform: `translateX(${dragging ? dragOffset : actionsOpen ? -104 : 0}px)` }}
+      >
+        {interactive ? (
           <button
             type="button"
-            data-history-action="toggle"
-            ref={actionToggleRef}
-            aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}
-            aria-expanded={actionsOpen}
-            onClick={() => actionsOpen ? onCloseActions() : onOpenActions()}
+            data-history-action="copy"
+            className={styles.workoutHistorySetBtn}
+            aria-label={uk ? `Підставити дані підходу ${set.setNumber}` : `Use values from set ${set.setNumber}`}
+            onClick={() => onCopy(set)}
           >
-            {uk ? "Дії" : "Actions"}
+            <span>#{set.setNumber}</span>
+            <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
+            <time dateTime={set.completedAt ?? undefined}>
+              {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
+                ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
+                : (uk ? "час не записано" : "time not recorded")}
+            </time>
           </button>
-          {actionsOpen && <>
-            <button type="button" data-history-action="edit" disabled={!canPreserveOverride || busy} onClick={beginEdit}>
-              {uk ? "Редагувати" : "Edit"}
-            </button>
-            <button type="button" data-history-action="delete" className={styles.workoutHistoryDelete} disabled={busy} onClick={() => void remove()}>
-              {uk ? "Видалити" : "Delete"}
-            </button>
-          </>}
-        </div>
-      )}
-      {interactive && editing && (
-        <form className={styles.workoutHistoryEditForm} onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        ) : (
+          <div className={styles.workoutHistorySetBtn}>
+            <span>#{set.setNumber}</span>
+            <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
+            <time dateTime={set.completedAt ?? undefined}>
+              {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
+                ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
+                : (uk ? "час не записано" : "time not recorded")}
+            </time>
+          </div>
+        )}
+        {set.comment ? <em>{set.comment}</em> : null}
+        {interactive && editing && (
+          <form className={styles.workoutHistoryEditForm} onSubmit={(event) => { event.preventDefault(); void save(); }}>
           {draft.asymmetric ? <>
             <label><span>{uk ? "Повтори зліва" : "Left reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.leftReps} onChange={(event) => setDraft((current) => ({ ...current, leftReps: event.target.value }))} /></label>
             <label><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy} inputMode="numeric" value={draft.rightReps} onChange={(event) => setDraft((current) => ({ ...current, rightReps: event.target.value }))} /></label>
@@ -463,13 +500,15 @@ function HistoricalSetRow({
           <label><span>RIR</span><input disabled={busy} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
           <label className={styles.workoutHistoryComment}><span>{uk ? "Коментар" : "Comment"}</span><textarea disabled={busy} maxLength={500} value={draft.comment} onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))} /></label>
           {error && <p role="alert">{error}</p>}
-          <div className={styles.workoutHistoryActions}>
-            <button type="submit" data-history-action="save" disabled={busy}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}</button>
-            <button type="button" data-history-action="cancel" disabled={busy} onClick={cancelEdit}>{uk ? "Скасувати" : "Cancel"}</button>
-          </div>
-        </form>
-      )}
-      {error && !editing && <p role="alert">{error}</p>}
+            <div className={styles.workoutHistoryActions}>
+              <button type="submit" data-history-action="save" disabled={busy}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}</button>
+              <button type="button" data-history-action="cancel" disabled={busy} onClick={cancelEdit}>{uk ? "Скасувати" : "Cancel"}</button>
+            </div>
+          </form>
+        )}
+        {error && !editing && <p role="alert">{error}</p>}
+      </div>
+      {error && !editing && !interactive ? <p role="alert">{error}</p> : null}
     </li>
   );
 }
@@ -508,16 +547,19 @@ function LiveLoggedSetRow({
   onCloseActions: () => void;
 }) {
   const rowRef = useRef<HTMLLIElement | null>(null);
-  const actionsToggleRef = useRef<HTMLButtonElement | null>(null);
-  const pointerStart = useRef<{ x: number; y: number; id: number; width: number } | null>(null);
+  const editActionRef = useRef<HTMLButtonElement | null>(null);
+  const pointerStart = useRef<{ x: number; y: number; id: number; offset: number } | null>(null);
   const suppressClickUntil = useRef(0);
   const wasEditing = useRef(false);
+  const [dragging, setDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [deleteIntent, setDeleteIntent] = useState(false);
 
   useEffect(() => {
     if (editing) {
       rowRef.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
     } else if (wasEditing.current) {
-      actionsToggleRef.current?.focus({ preventScroll: true });
+      editActionRef.current?.focus({ preventScroll: true });
     }
     wasEditing.current = editing;
   }, [editing]);
@@ -531,8 +573,9 @@ function LiveLoggedSetRow({
       x: event.clientX,
       y: event.clientY,
       id: event.pointerId,
-      width: event.currentTarget.getBoundingClientRect().width,
+      offset: actionsOpen ? -104 : 0,
     };
+    setDragOffset(actionsOpen ? -104 : 0);
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
   }
 
@@ -542,7 +585,13 @@ function LiveLoggedSetRow({
     if (!start || start.id !== event.pointerId) return;
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
-    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) event.preventDefault();
+    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+      event.preventDefault();
+      const offset = Math.max(-104, Math.min(0, start.offset + dx));
+      setDragging(true);
+      setDragOffset(offset);
+      setDeleteIntent(dx <= -96);
+    }
   }
 
   function onPointerUp(event: ReactPointerEvent<HTMLLIElement>) {
@@ -552,17 +601,24 @@ function LiveLoggedSetRow({
     if (!start || start.id !== event.pointerId) return;
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
-    if (Math.abs(dx) <= Math.abs(dy) * 1.15) return;
-    if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 400;
-    if (dx > 56) {
-      onCloseActions();
+    const offset = Math.max(-104, Math.min(0, start.offset + dx));
+    setDragging(false);
+    if (Math.abs(dx) <= Math.abs(dy) * 1.15) {
+      setDragOffset(actionsOpen ? -104 : 0);
+      setDeleteIntent(false);
       return;
     }
-    if (dx > -56) return;
-    onOpenActions();
-    if (start.width >= 140 && -dx >= start.width * 0.86) {
+    if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 120;
+    if (dx > 56 || offset > -52) {
       onCloseActions();
+      setDeleteIntent(false);
+      return;
+    }
+    onOpenActions();
+    if (dx <= -96) {
+      setDeleteIntent(true);
       onDelete();
+      setDeleteIntent(false);
     }
   }
 
@@ -576,17 +632,38 @@ function LiveLoggedSetRow({
       className={`${styles.liveSetRow} ${editing ? styles.liveSetRowEditing : ""}`}
       data-testid={`logged-set-${set.id}`}
       data-set-action-area
+      data-open={actionsOpen || undefined}
+      data-editing={editing || undefined}
+      data-dragging={dragging || undefined}
+      data-delete-intent={deleteIntent || undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; onCloseActions(); }}
+      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; setDragging(false); setDragOffset(0); setDeleteIntent(false); onCloseActions(); }}
       onClickCapture={(event) => {
-        if (Date.now() > suppressClickUntil.current) return;
-        event.preventDefault();
-        event.stopPropagation();
-        suppressClickUntil.current = 0;
+        if (Date.now() <= suppressClickUntil.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          suppressClickUntil.current = 0;
+          return;
+        }
+        if (actionsOpen && event.target instanceof Element && event.target.closest(`.${styles.liveSetSurface}`)) {
+          event.preventDefault();
+          event.stopPropagation();
+          setDragOffset(0);
+          onCloseActions();
+        }
       }}
     >
+      {interactive && !editing && <div className={styles.workoutSetActionsRail} role="group" aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}>
+        <button ref={editActionRef} type="button" data-set-action className={styles.workoutSetIconButton} aria-label={uk ? `Редагувати підхід ${set.setNumber}` : `Edit set ${set.setNumber}`} title={uk ? "Редагувати" : "Edit"} onFocus={onOpenActions} onClick={onEdit}>
+          <SetActionIcon kind="edit" />
+        </button>
+        <button type="button" data-set-action className={`${styles.workoutSetIconButton} ${styles.workoutHistoryDelete}`} disabled={busy} aria-label={uk ? `Видалити підхід ${set.setNumber}` : `Delete set ${set.setNumber}`} title={uk ? "Видалити" : "Delete"} onFocus={onOpenActions} onClick={onDelete}>
+          <SetActionIcon kind="delete" />
+        </button>
+      </div>}
+      <div className={styles.liveSetSurface} style={{ transform: `translateX(${dragging ? dragOffset : actionsOpen ? -104 : 0}px)` }}>
       {editing ? (
         <>
           <span className={styles.liveSetNum}>#{set.setNumber}</span>
@@ -617,15 +694,9 @@ function LiveLoggedSetRow({
           <span className={styles.liveSetRir}>{set.rir != null ? `RIR ${set.rir}` : ""}</span>
           {clockIso ? <time className={styles.liveSetClock} dateTime={clockIso}>{formatSetCompletionClock(set, uk ? "uk-UA" : "en-US")}</time> : <span className={styles.liveSetClock}>{uk ? "час недоступний" : "time unavailable"}</span>}
           {set.comment ? <p className={styles.liveSetComment}>{set.comment}</p> : null}
-          {interactive && <span className={styles.liveSetActions}>
-            <button ref={actionsToggleRef} type="button" data-set-action className={styles.liveSetActionToggle} aria-expanded={actionsOpen} aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`} onClick={() => actionsOpen ? onCloseActions() : onOpenActions()}>{uk ? "Дії" : "Actions"}</button>
-            <span className={styles.liveSetActionButtons} data-open={actionsOpen || undefined}>
-              <button className={styles.workoutHistoryActionsButton} type="button" data-set-action aria-label={uk ? "Змінити підхід" : "Edit set"} onClick={onEdit}>{uk ? "Редагувати" : "Edit"}</button>
-              <button className={`${styles.workoutHistoryActionsButton} ${styles.workoutHistoryDelete}`} type="button" data-set-action disabled={busy} aria-label={uk ? "Видалити підхід" : "Delete set"} onClick={onDelete}>{uk ? "Видалити" : "Delete"}</button>
-            </span>
-          </span>}
         </>
       )}
+      </div>
     </li>
   );
 }
@@ -930,7 +1001,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                     draft={paneDraft}
                     onDraftChange={onDraftChange}
                     onSave={onSaveSet}
-                    onEdit={() => { openSetActions(actionKey); onBeginEditSet(set); }}
+                    onEdit={() => { closeSetActions(actionKey); onBeginEditSet(set); }}
                     onCancel={onCancelEditSet}
                     onDelete={() => onDeleteSet(set.id)}
                     onOpenActions={() => openSetActions(actionKey)}

@@ -13,7 +13,7 @@ vi.mock("@/components/app-nav", () => ({
 
 const routerPush = vi.fn();
 const routerReplace = vi.fn();
-const searchParams = new URLSearchParams();
+let searchParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: routerReplace }),
@@ -114,8 +114,7 @@ describe("Live training session mobile UI", () => {
     vi.restoreAllMocks();
     routerPush.mockReset();
     routerReplace.mockReset();
-    searchParams.delete("exercise");
-    searchParams.delete("returnTo");
+    searchParams = new URLSearchParams();
   });
 
   function stubSessionFetch(
@@ -139,6 +138,7 @@ describe("Live training session mobile UI", () => {
           }],
         });
       }
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
       const extra = extras?.(url, init);
       if (extra) return extra;
       return Response.json({ session });
@@ -302,6 +302,204 @@ describe("Live training session mobile UI", () => {
         name: "Розведення гантелей на горизонтальній лаві",
       })).toBeTruthy();
     });
+  });
+
+  it("reconciles a committed set from authoritative GET after a stale-fence response without retrying", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const createdSet = {
+      id: 301,
+      sessionExerciseId: 1,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+    };
+    let persistedSession = initial;
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method });
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/42" && method === "GET") return Response.json({ session: persistedSession });
+      if (url.endsWith("/exercises/1/sets") && method === "POST") {
+        persistedSession = {
+          ...initial,
+          exercises: initial.exercises.map((exercise) => exercise.id === 1
+            ? { ...exercise, sets: [createdSet] }
+            : exercise),
+        };
+        return Response.json({ error: "strength_energy_source_stale" }, { status: 409 });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+    expect(activePane().queryByRole("alert")).toBeNull();
+    expect(calls.filter(({ method, url }) => method === "POST" && url.endsWith("/exercises/1/sets")).length).toBe(1);
+    expect(calls.some(({ method, url }) => method === "POST" && url.endsWith("/finish"))).toBe(false);
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  it.each([200, 404, 500])("does not let an older detail GET (%i) replace a successfully saved set", async (staleStatus) => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const staleDetail = deferred<Response>();
+    const savedSet = {
+      id: 302,
+      sessionExerciseId: 1,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+    };
+    let detailReads = 0;
+    let setPosts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/42" && method === "GET") {
+        detailReads += 1;
+        return detailReads === 1 ? Response.json({ session: initial }) : staleDetail.promise;
+      }
+      if (url.endsWith("/exercises/1/sets") && method === "POST") {
+        setPosts += 1;
+        return Response.json({ set: savedSet, modelPublicationStatus: "current" }, { status: 201 });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    searchParams = new URLSearchParams("exercise=1");
+    rerender(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(detailReads).toBe(2));
+
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+
+    staleDetail.resolve(staleStatus === 200
+      ? Response.json({ session: initial })
+      : Response.json({ error: "delayed detail failure" }, { status: staleStatus }));
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+    expect(setPosts).toBe(1);
+    expect(activePane().queryByRole("alert")).toBeNull();
+  });
+
+  it("does not let a pending stale detail error body clear a successful set save", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const staleErrorBody = deferred<{ error: string }>();
+    let detailReads = 0;
+    let errorBodyRead = false;
+    const savedSet = {
+      id: 303,
+      sessionExerciseId: 1,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+    };
+    const delayedError = {
+      ok: false,
+      status: 500,
+      json: () => { errorBodyRead = true; return staleErrorBody.promise; },
+    } as unknown as Response;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/42" && method === "GET") {
+        detailReads += 1;
+        return detailReads === 1 ? Response.json({ session: initial }) : delayedError;
+      }
+      if (url.endsWith("/exercises/1/sets") && method === "POST") {
+        return Response.json({ set: savedSet, modelPublicationStatus: "current" }, { status: 201 });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    searchParams = new URLSearchParams("exercise=1");
+    rerender(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(detailReads).toBe(2));
+    await waitFor(() => expect(errorBodyRead).toBe(true));
+
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+
+    staleErrorBody.resolve({ error: "delayed detail failure" });
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+    expect(activePane().queryByRole("alert")).toBeNull();
+    expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/exercises/1/sets") && init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("returns after finish only when the response or authoritative GET confirms completion", async () => {
+    const user = userEvent.setup();
+    const active = buildSession();
+    const completed = buildSession({
+      status: SESSION_STATUS.COMPLETED,
+      webEndedAt: "2026-10-16T06:30:00.000Z",
+      updatedAt: "2026-10-16T06:30:00.000Z",
+    });
+    let persistedSession = active;
+    const finishCalls: string[] = [];
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      if (url === "/api/v1/training/sessions/42" && method === "GET") return Response.json({ session: persistedSession });
+      if (url.endsWith("/finish") && method === "POST") {
+        finishCalls.push(url);
+        persistedSession = completed;
+        return Response.json({ error: "strength_energy_source_stale" }, { status: 409 });
+      }
+      return Response.json({ session: persistedSession });
+    }));
+    searchParams.set("returnTo", "/dashboard");
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.click(screen.getByRole("button", { name: "Меню сесії" }));
+    const sessionMenu = screen.getByRole("dialog", { name: "Дії" });
+    await user.click(within(sessionMenu).getByRole("button", { name: "Завершити тренування" }));
+
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
+    expect(finishCalls).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("swipes left to advance exercise and image", async () => {
@@ -709,9 +907,11 @@ describe("Live training session mobile UI", () => {
     });
     expect(requests[0]!.body).not.toHaveProperty("additionalLoadKg");
 
-    await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
     const loggedSet = activePane().getByTestId("logged-set-901");
+    await user.click(within(loggedSet).getByRole("button", { name: "Редагувати підхід 1" }));
     expect(within(loggedSet).getByRole("region", { name: "Редагування підходу 1" })).toBeTruthy();
+    expect(loggedSet.getAttribute("data-editing")).toBe("true");
+    expect(loggedSet.querySelector(`.${styles.liveSetSurface}`)?.getAttribute("style")).toContain("translateX(0px)");
     const editLoad = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
     expect((editLoad as HTMLInputElement).value).toBe("15");
     await waitFor(() => expect(document.activeElement).toBe(editLoad));
@@ -719,18 +919,21 @@ describe("Live training session mobile UI", () => {
     expect(scrollTo).not.toHaveBeenCalled();
     await user.clear(editLoad);
     await user.type(editLoad, "12,5");
-    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    await user.click(within(loggedSet).getByRole("button", { name: "Оновити підхід" }));
     await waitFor(() => expect(activePane().getByText("власна вага +12,5 кг × 10")).toBeTruthy());
-    await waitFor(() => expect(document.activeElement).toBe(activePane().getByRole("button", { name: "Дії для підходу 1" })));
+    await waitFor(() => expect(document.activeElement).toBe(activePane().getByRole("button", { name: "Редагувати підхід 1" })));
+    expect(loggedSet.getAttribute("data-open")).toBe("true");
+    expect(loggedSet.querySelector(`.${styles.liveSetSurface}`)?.getAttribute("style")).toContain("translateX(-104px)");
     expect(scrollTo).not.toHaveBeenCalled();
     expect(requests[1]).toMatchObject({
       method: "PATCH",
       body: { loadAccountingOverride: { additionalLoadKg: 12.5 } },
     });
 
-    await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    await user.click(within(loggedSet).getByRole("button", { name: "Редагувати підхід 1" }));
     await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));
-    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    await user.click(within(loggedSet).getByRole("button", { name: "Оновити підхід" }));
+    await waitFor(() => expect(requests).toHaveLength(3));
     await waitFor(() => expect(activePane().getByText("власна вага × 10")).toBeTruthy());
     expect(activePane().queryByText(/\+0(?:\.0+)? кг/)).toBeNull();
     expect(requests[2]).toMatchObject({ method: "PATCH", body: { loadAccountingOverride: null } });
@@ -761,6 +964,7 @@ describe("Live training session mobile UI", () => {
     };
     const base = buildSession();
     const session = buildSession({ exercises: [{ ...base.exercises[0]!, sets: [set] }, ...base.exercises.slice(1)] });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     stubSessionFetch(session);
     render(<SessionClient sessionId={42} />);
     const row = await screen.findByTestId("logged-set-909");
@@ -769,16 +973,25 @@ describe("Live training session mobile UI", () => {
     fireEvent.pointerDown(row, { pointerId: 1, pointerType: "touch", clientX: 240, clientY: 10 });
     fireEvent.pointerMove(row, { pointerId: 1, pointerType: "touch", clientX: 235, clientY: 65 });
     fireEvent.pointerUp(row, { pointerId: 1, pointerType: "touch", clientX: 230, clientY: 90 });
-    expect(within(row).getByRole("button", { name: "Дії для підходу 1" }).getAttribute("aria-expanded")).toBe("false");
+    expect(row.hasAttribute("data-open")).toBe(false);
 
     fireEvent.pointerDown(row, { pointerId: 2, pointerType: "touch", clientX: 240, clientY: 10 });
+    fireEvent.pointerMove(row, { pointerId: 2, pointerType: "touch", clientX: 160, clientY: 10 });
+    expect(row.querySelector(`.${styles.liveSetSurface}`)?.getAttribute("style")).toContain("translateX(-80px)");
     fireEvent.pointerUp(row, { pointerId: 2, pointerType: "touch", clientX: 160, clientY: 10 });
-    expect(within(row).getByRole("button", { name: "Змінити підхід" })).toBeTruthy();
-    expect(within(row).getByRole("button", { name: "Видалити підхід" })).toBeTruthy();
-    expect(within(row).getByRole("button", { name: "Дії для підходу 1" }).getAttribute("aria-expanded")).toBe("true");
+    expect(within(row).getByRole("button", { name: "Редагувати підхід 1" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Видалити підхід 1" })).toBeTruthy();
+    expect(row.getAttribute("data-open")).toBe("true");
+
+    fireEvent.pointerDown(row, { pointerId: 4, pointerType: "touch", clientX: 160, clientY: 10 });
+    fireEvent.pointerMove(row, { pointerId: 4, pointerType: "touch", clientX: 150, clientY: 10 });
+    expect(row.hasAttribute("data-delete-intent")).toBe(false);
+    fireEvent.pointerUp(row, { pointerId: 4, pointerType: "touch", clientX: 150, clientY: 10 });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(row.getAttribute("data-open")).toBe("true");
 
     fireEvent.pointerCancel(row, { pointerId: 2, pointerType: "touch" });
-    expect(within(row).getByRole("button", { name: "Дії для підходу 1" }).getAttribute("aria-expanded")).toBe("false");
+    expect(row.hasAttribute("data-open")).toBe(false);
   });
 
   it("requires confirmation when a long live-set swipe reaches the delete threshold", async () => {
@@ -799,6 +1012,8 @@ describe("Live training session mobile UI", () => {
     vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
 
     fireEvent.pointerDown(row, { pointerId: 3, pointerType: "touch", clientX: 300, clientY: 10 });
+    fireEvent.pointerMove(row, { pointerId: 3, pointerType: "touch", clientX: 200, clientY: 10 });
+    expect(row.getAttribute("data-delete-intent")).toBe("true");
     fireEvent.pointerUp(row, { pointerId: 3, pointerType: "touch", clientX: 0, clientY: 10 });
 
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
@@ -882,7 +1097,7 @@ describe("Live training session mobile UI", () => {
 
       render(<SessionClient sessionId={42} />);
       await waitFor(() => expect(activePane().getByText(/власна вага/)).toBeTruthy());
-      await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+      await user.click(activePane().getByRole("button", { name: "Редагувати підхід 1" }));
       if (scenario.field === "rir") {
         await user.clear(activePane().getByLabelText("RIR"));
         await user.type(activePane().getByLabelText("RIR"), "3");
@@ -970,11 +1185,11 @@ describe("Live training session mobile UI", () => {
       return within(row!);
     };
 
-    await user.click(setRow(1).getByRole("button", { name: "Змінити підхід" }));
+    await user.click(setRow(1).getByRole("button", { name: "Редагувати підхід 1" }));
     await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "0");
     await user.click(activePane().getByRole("button", { name: "Скасувати" }));
 
-    await user.click(setRow(2).getByRole("button", { name: "Змінити підхід" }));
+    await user.click(setRow(2).getByRole("button", { name: "Редагувати підхід 2" }));
     await user.clear(activePane().getByLabelText("RIR"));
     await user.type(activePane().getByLabelText("RIR"), "3");
     await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
@@ -983,7 +1198,7 @@ describe("Live training session mobile UI", () => {
     expect(patchPayloads[0]?.body).not.toHaveProperty("loadAccountingOverride");
     expect(persistedSets[1]?.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
 
-    await user.click(setRow(1).getByRole("button", { name: "Змінити підхід" }));
+    await user.click(setRow(1).getByRole("button", { name: "Редагувати підхід 1" }));
     const zeroInput = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
     expect((zeroInput as HTMLInputElement).value).toBe("");
     await user.type(zeroInput, "0");
@@ -1061,7 +1276,7 @@ describe("Live training session mobile UI", () => {
     expect(mutation).not.toHaveBeenCalled();
 
     await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));
-    await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    await user.click(activePane().getByRole("button", { name: "Редагувати підхід 1" }));
     await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "2001");
     await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
     expect((await screen.findByRole("alert")).textContent).toContain("2000 кг");
@@ -1281,15 +1496,13 @@ describe("Live training session mobile UI", () => {
       await screen.findByTestId("active-exercise-pane");
       const historySet = await within(activePane().getByLabelText("Історія вправи"))
         .findByTestId("history-set-40-71");
-      await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
-      await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
       if (scenario.cancelReopen) {
+        await user.click(within(historySet).getByRole("button", { name: "Редагувати підхід 1" }));
         const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
         await user.type(load, "0");
         await user.click(within(historySet).getByRole("button", { name: "Скасувати" }));
-        await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
-        await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
       }
+      await user.click(within(historySet).getByRole("button", { name: "Редагувати підхід 1" }));
       if (scenario.changeLoad) {
         const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
         await user.clear(load);
@@ -1367,8 +1580,7 @@ describe("Live training session mobile UI", () => {
     await screen.findByTestId("active-exercise-pane");
     const historySet = await within(activePane().getByLabelText("Історія вправи"))
       .findByTestId("history-set-40-71");
-    await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
+    await user.click(within(historySet).getByRole("button", { name: "Редагувати підхід 1" }));
     const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
     await user.clear(load);
     await user.type(load, "2001");
@@ -1434,13 +1646,11 @@ describe("Live training session mobile UI", () => {
     const history = activePane().getByLabelText("Історія вправи");
     const firstRow = await within(history).findByTestId("history-set-40-71");
     const secondRow = await within(history).findByTestId("history-set-40-72");
-    await user.click(within(firstRow).getByRole("button", { name: "Дії для підходу 1" }));
-    await user.click(within(firstRow).getByRole("button", { name: "Редагувати" }));
+    await user.click(within(firstRow).getByRole("button", { name: "Редагувати підхід 1" }));
     await user.type(within(firstRow).getByLabelText("Додаткове обтяження, кг (необов’язково)"), "0");
     await user.click(within(firstRow).getByRole("button", { name: "Скасувати" }));
 
-    await user.click(within(secondRow).getByRole("button", { name: "Дії для підходу 2" }));
-    await user.click(within(secondRow).getByRole("button", { name: "Редагувати" }));
+    await user.click(within(secondRow).getByRole("button", { name: "Редагувати підхід 2" }));
     await user.clear(within(secondRow).getByLabelText("RIR"));
     await user.type(within(secondRow).getByLabelText("RIR"), "3");
     await user.click(within(secondRow).getByRole("button", { name: "Зберегти" }));

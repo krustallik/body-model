@@ -1547,10 +1547,12 @@ export class TrainingService {
       setId,
       sessionId,
       profileId,
-      reps: validated.reps,
-      weightKg: validated.weightKg,
-      bandNominalResistanceKg: validated.bandNominalResistanceKg,
-      rir: validated.rir,
+      ...(input.reps === undefined ? {} : { reps: validated.reps }),
+      ...(input.weightKg === undefined ? {} : { weightKg: validated.weightKg }),
+      ...(input.bandNominalResistanceKg === undefined
+        ? {}
+        : { bandNominalResistanceKg: validated.bandNominalResistanceKg }),
+      ...(input.rir === undefined ? {} : { rir: validated.rir }),
       comment: input.comment,
       completedAt:
         input.completedAt === undefined
@@ -1649,7 +1651,6 @@ export class TrainingService {
           session: refreshed, profileId, deferUnifiedPublication: true,
         });
       } catch (error) {
-        if (error instanceof StaleStrengthEnergySourceError) throw error;
         publicationDependenciesReady = false;
         logPhysiologyPublicationFailure("completed-session-republish", error);
       }
@@ -1697,7 +1698,6 @@ export class TrainingService {
       await this.recordExperimentalShadow({ session: refreshed, profileId });
       modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
     } catch (error) {
-      if (error instanceof StaleStrengthEnergySourceError) throw error;
       logPhysiologyPublicationFailure("completed-session-republish", error);
       modelPublicationStatus = this.db === prisma ? "stale" : undefined;
     }
@@ -2159,7 +2159,6 @@ export class TrainingService {
       }));
       return this.unifiedPublicationStatus(profileId);
     } catch (error) {
-      if (error instanceof StaleStrengthEnergySourceError) throw error;
       logPhysiologyPublicationFailure(`${operation}-dependency-refresh`, error);
       return "stale";
     }

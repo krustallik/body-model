@@ -12,6 +12,7 @@ import {
 import {
   ActiveSessionExistsError,
   SetValidationError,
+  StaleStrengthEnergySourceError,
   WorkoutAlreadyMatchedError,
 } from "@/modules/training/training.errors";
 import { TrainingRepository } from "@/modules/training/training.repository";
@@ -895,7 +896,15 @@ describe("TrainingService live session", () => {
       createdAt: "2026-09-17T16:09:00.000Z",
       loadAccountingOverride: rawOverride,
     });
-    expect(repositoryUpdate).toHaveBeenCalledWith(expect.objectContaining({ loadAccountingOverride: undefined }));
+    expect(repositoryUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      rir: 3,
+      comment: "after",
+    }));
+    expect(repositoryUpdate).not.toHaveBeenCalledWith(expect.objectContaining({
+      reps: expect.anything(),
+      weightKg: expect.anything(),
+      bandNominalResistanceKg: expect.anything(),
+    }));
     const persistedMutation = db.strengthSet.update.mock.calls[0]?.[0] as { data: Record<string, unknown> };
     expect(Object.hasOwn(persistedMutation.data, "loadAccountingOverride")).toBe(false);
     expect(db.strengthSet.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -1011,6 +1020,35 @@ describe("TrainingService live session", () => {
     expect(db.strengthDiarySession.update).not.toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: SESSION_STATUS.COMPLETED }),
     }));
+  });
+
+  it("returns the committed completed session when dependent publication loses its source fence", async () => {
+    const active = sessionDetail({ matchMethod: MATCH_METHOD.MANUAL });
+    const completed = sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      webEndedAt: new Date("2026-09-17T17:18:00Z"),
+      matchMethod: MATCH_METHOD.MANUAL,
+    });
+    const repository = {
+      getSession: vi.fn()
+        .mockResolvedValueOnce(active)
+        .mockResolvedValueOnce(completed)
+        .mockResolvedValueOnce(completed),
+      materializeAccounting: vi.fn().mockResolvedValue(1),
+    };
+    const stalePublication = vi.fn().mockRejectedValue(new StaleStrengthEnergySourceError());
+    const serviceWithStalePublication = new TrainingService(
+      prisma,
+      repository as never,
+      stalePublication,
+    );
+
+    const result = await serviceWithStalePublication.finishSession(50);
+
+    expect(result.status).toBe(SESSION_STATUS.COMPLETED);
+    expect(result.modelPublicationStatus).toBe("stale");
+    expect(repository.materializeAccounting).toHaveBeenCalledTimes(2);
+    expect(stalePublication).toHaveBeenCalledOnce();
   });
 });
 

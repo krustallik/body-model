@@ -868,15 +868,27 @@
 }
 
 .liveSetRow {
+  position: relative;
+  overflow: hidden;
+  display: block;
+  padding: 0;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  touch-action: pan-y;
+}
+
+.liveSetSurface {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: 1.6rem minmax(0, 1fr) auto auto;
   gap: 0.45rem;
   align-items: center;
   padding: 0.55rem 0.6rem;
   background: var(--soft);
-  border: 1px solid var(--line);
-  border-radius: 0.65rem;
   font-size: 0.95rem;
+  transition: transform 140ms ease;
 }
 
 .liveSetNum {
@@ -888,17 +900,6 @@
 .liveSetReps {
   font-weight: 700;
   color: var(--ink);
-}
-
-.liveSetActions {
-  display: flex;
-  gap: 0.1rem;
-  justify-content: flex-end;
-}
-
-.liveSetActions .textButton {
-  font-size: 0.8rem;
-  padding: 0.25rem 0.35rem;
 }
 
 .liveEntry {
@@ -1715,6 +1716,17 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutShell .liveSetRow {
+  display: block;
+  grid-template-columns: none;
+  grid-template-areas: none;
+  gap: 0;
+  padding: 0;
+  border-radius: 0.5rem;
+  font-size: inherit;
+  min-height: 0;
+}
+
+.workoutShell .liveSetSurface {
   display: grid;
   grid-template-columns: 2rem minmax(0, 1fr) auto auto;
   grid-template-areas:
@@ -1722,7 +1734,6 @@ a.editMenuItem + .editMenuDanger {
     "comment comment comment comment";
   gap: 0.2rem 0.45rem;
   padding: 0.4rem 0.45rem;
-  border-radius: 0.5rem;
   font-size: 0.9rem;
   min-height: 0;
   align-items: baseline;
@@ -1741,7 +1752,6 @@ a.editMenuItem + .editMenuDanger {
   font-weight: 750;
   white-space: nowrap;
 }
-.workoutShell .liveSetActions { grid-area: actions; }
 
 .liveSetComment {
   grid-area: comment;
@@ -1856,9 +1866,31 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutHistorySetRow {
+  position: relative;
+  display: block;
+  overflow: hidden;
   min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--training-border) 55%, transparent);
+  border-radius: 0.65rem;
+  background: var(--training-surface-2);
   touch-action: pan-y;
 }
+
+.workoutHistorySwipeSurface {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 0.15rem;
+  background: var(--training-surface-2);
+  transition: transform 140ms ease;
+}
+.workoutHistorySetRow[data-dragging="true"] .workoutHistorySwipeSurface,
+.liveSetRow[data-dragging="true"] .liveSetSurface { transition: none; }
+.workoutHistorySetRow:not([data-editing="true"]):focus-within .workoutHistorySwipeSurface,
+.liveSetRow:not(.liveSetRowEditing):focus-within .liveSetSurface { transform: translateX(-104px); }
 
 .workoutHistoryActions {
   display: flex;
@@ -1955,6 +1987,13 @@ a.editMenuItem + .editMenuDanger {
   font-weight: 700;
   text-align: left;
   cursor: pointer;
+}
+
+.workoutHistorySetRow .workoutHistorySetBtn {
+  min-height: 2.75rem;
+  padding: 0.35rem 0.45rem;
+  border: 0;
+  background: transparent;
 }
 
 .workoutHistorySetBtn:hover {
@@ -2802,42 +2841,43 @@ a.editMenuItem + .editMenuDanger {
   }
 }
 
-.liveSetRow { touch-action: pan-y; }
-.liveSetActionToggle {
-  min-height: 2rem;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--training-border);
-  border-radius: 0.45rem;
-  background: var(--training-surface);
-  color: var(--training-text);
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 700;
-  cursor: pointer;
+.workoutSetActionsRail {
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 0 auto;
+  display: flex;
+  width: 6.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.25rem;
+  background: var(--training-surface-2);
 }
-.liveSetActionButtons { display: none; gap: 0.35rem; flex-wrap: wrap; }
-.liveSetActionButtons[data-open="true"] { display: flex; }
-.liveSetActionButtons button {
-  min-height: 2rem;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--training-border);
-  border-radius: 0.45rem;
-  background: var(--training-surface);
-  color: var(--training-text);
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-.workoutHistoryActionsButton { border-radius: 0.45rem; }
-.liveSetActionButtons button:focus-visible,
-.liveSetActionToggle:focus-visible { outline: none; box-shadow: var(--training-focus-ring); }
-.liveSetActionButtons .workoutHistoryDelete { color: var(--training-danger-strong); }
-.liveSetRowEditing {
+.workoutSetIconButton {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  width: 2.75rem;
+  min-width: 2.75rem;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--training-border);
+  border-radius: 0.55rem;
+  background: var(--training-surface);
+  color: var(--training-text);
+  cursor: pointer;
+}
+.workoutSetIconButton svg { width: 1.15rem; height: 1.15rem; }
+.workoutSetIconButton:focus-visible { outline: none; box-shadow: var(--training-focus-ring); }
+.workoutSetIconButton:hover:not(:disabled) { border-color: var(--training-border-strong); background: var(--training-elevated); }
+.workoutSetIconButton:disabled { opacity: 0.55; cursor: not-allowed; }
+.workoutSetIconButton.workoutHistoryDelete { color: var(--training-danger-strong); }
+.workoutHistorySetRow[data-delete-intent="true"] .workoutHistoryDelete,
+.liveSetRow[data-delete-intent="true"] .workoutHistoryDelete { background: var(--training-danger-soft); border-color: var(--training-danger); }
+.liveSetRowEditing {
   align-items: stretch;
 }
+.liveSetRowEditing .liveSetSurface { grid-template-columns: minmax(0, 1fr); }
 .liveSetRowEditing .liveSetNum { font-size: 0.82rem; }
 .liveSetRowEditing .liveSetInlineEditor { grid-column: 1 / -1; margin: 0; }
 .liveSetInlineEditor .liveFields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); }
@@ -2846,17 +2886,34 @@ a.editMenuItem + .editMenuDanger {
 .liveSetInlineEditor .liveSaveRow > * { min-height: 2.75rem; }
 
 @media (hover: hover) and (pointer: fine) {
-  .liveSetActionToggle { display: none; }
-  .liveSetActionButtons { display: flex; }
+  .liveSetRow,
+  .workoutShell .liveSetRow,
+  .workoutHistorySetRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+    overflow: visible;
+  }
+  .liveSetSurface,
+  .workoutHistorySwipeSurface { grid-column: 1; transform: none !important; }
+  .workoutSetActionsRail {
+    position: static;
+    inset: auto;
+    grid-column: 2;
+    width: auto;
+    padding: 0 0.3rem 0 0.45rem;
+    background: transparent;
+  }
+  .workoutHistorySetRow[data-editing="true"] .workoutHistorySwipeSurface { grid-column: 1 / -1; }
 }
 
 .trainingHubPage .panelStartDynamic .panelBody { display: flex; align-items: center; }
 .trainingHubPage .panelStartDynamic .primaryButton { width: min(100%, 22rem); min-height: 3rem; }
 .workoutShell .liveSetRowEditing {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: none;
+  display: block;
   align-items: stretch;
 }
+.workoutShell .liveSetRowEditing .liveSetSurface { grid-template-columns: minmax(0, 1fr); grid-template-areas: none; }
 .workoutShell .liveSetRowEditing .liveSetInlineEditor { grid-column: 1 / -1; }
 
 

@@ -53,6 +53,21 @@ import { SessionAccountingPanel } from "../../session-accounting-panel";
 import { safeTrainingReturnHref } from "../../training-url-state";
 import styles from "../../training.module.css";
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return "{" + entries.map(([key, item]) => JSON.stringify(key) + ":" + stableJson(item)).join(",") + "}";
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function setMatchesSavePayload(set: StrengthSetDto, payload: Record<string, unknown>): boolean {
+  const persisted = set as unknown as Record<string, unknown>;
+  return Object.entries(payload).every(([key, value]) => stableJson(persisted[key]) === stableJson(value));
+}
+
 export function SessionClient({ sessionId }: { sessionId: number }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
@@ -81,6 +96,9 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [loadingExerciseCatalog, setLoadingExerciseCatalog] = useState(false);
   const [finishOffer, setFinishOffer] = useState(false);
   const [autoAdvanceNonce, setAutoAdvanceNonce] = useState(0);
+  const saveInFlightRef = useRef(false);
+  const detailRequestIdRef = useRef(0);
+  const finishInFlightRef = useRef(false);
   const finishOfferedRef = useRef(false);
   const exercisePickerRequestIdRef = useRef(0);
   const exercisePickerOpenerRef = useRef<HTMLButtonElement | null>(null);
@@ -89,15 +107,21 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const restoreExercisePickerFocusRef = useRef(false);
 
   const load = useCallback(async () => {
+    if (saveInFlightRef.current) return;
+    const requestId = ++detailRequestIdRef.current;
     setError(null);
     try {
       const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        if (requestId !== detailRequestIdRef.current || saveInFlightRef.current) return;
+        const apiError = await readApiError(response, uk);
+        if (requestId !== detailRequestIdRef.current || saveInFlightRef.current) return;
+        setError(apiError);
         setSession(null);
         return;
       }
       const body = await response.json() as { session: StrengthSessionDto };
+      if (requestId !== detailRequestIdRef.current || saveInFlightRef.current) return;
       const ordered = body.session.exercises.slice().sort((a, b) => a.order - b.order);
       const urlIndex = parseExerciseSearchParam(searchParams.get("exercise"), ordered.length);
       setSession(body.session);
@@ -106,9 +130,11 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         current ?? ordered[urlIndex]?.id ?? null,
       ));
     } catch {
-      setError(uk ? "Не вдалося завантажити сесію." : "Could not load the session.");
+      if (requestId === detailRequestIdRef.current && !saveInFlightRef.current) {
+        setError(uk ? "Не вдалося завантажити сесію." : "Could not load the session.");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === detailRequestIdRef.current && !saveInFlightRef.current) setLoading(false);
     }
   }, [searchParams, sessionId, uk]);
 
@@ -186,7 +212,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }, [session, sessionId]);
 
   async function saveSet() {
-    if (!session || !current) return;
+    if (!session || !current || saveInFlightRef.current) return;
     const reps = Number(draft.reps);
     if (!Number.isFinite(reps) || reps < 1) {
       setError(uk ? "Вкажіть кількість повторень." : "Enter reps.");
@@ -305,7 +331,20 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       payload.weightKg = null;
       payload.bandNominalResistanceKg = null;
     }
+    const adding = editingSetId === null;
+    const nextSetNumber = adding
+      ? Math.max(0, ...current.sets.map((set) => set.setNumber)) + 1
+      : undefined;
+    if (nextSetNumber !== undefined) payload.setNumber = nextSetNumber;
+    const lastExercise = exerciseIndex >= exercises.length - 1;
+    const completedPlannedExercise = adding
+      && current.origin === "PLANNED"
+      && current.plannedSets > 0
+      && current.sets.length + 1 >= current.plannedSets
+      && current.sets.length < current.plannedSets;
 
+    saveInFlightRef.current = true;
+    detailRequestIdRef.current += 1;
     setBusy(true);
     setError(null);
     try {
@@ -321,17 +360,51 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           body: JSON.stringify(payload),
         });
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        if (response.status === 409 || response.status >= 500) {
+          const detail = await fetch("/api/v1/training/sessions/" + session.id, { cache: "no-store" });
+          if (detail.ok) {
+            const body = await detail.json() as { session: StrengthSessionDto };
+            setSession(body.session);
+            const refreshedExercise = body.session.exercises.find((exercise) => exercise.id === current.id);
+            const candidates = refreshedExercise?.sets ?? [];
+            const persisted = adding
+              ? candidates.find((set) => !current.sets.some((prior) => prior.id === set.id)
+                && set.setNumber === nextSetNumber
+                && setMatchesSavePayload(set, payload)) ?? null
+              : candidates.find((set) => set.id === editingSetId
+                && set.updatedAt !== editingSet?.updatedAt
+                && setMatchesSavePayload(set, payload)) ?? null;
+            if (persisted) {
+              setDraft(emptySetDraft());
+              setEditingSetId(null);
+              setAdditionalLoadDirtySetId(null);
+              if (shouldAutoAdvanceAfterSet({ enabled: session.autoAdvanceExercises === true, adding, exerciseOrigin: current.origin, plannedSets: current.plannedSets, previousSetCount: current.sets.length, isLastExercise: lastExercise })) {
+                setAutoAdvanceNonce((value) => value + 1);
+              } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
+                finishOfferedRef.current = true;
+                setFinishOffer(true);
+              }
+              return;
+            }
+          }
+        }
+        setError(apiError);
         return;
       }
-      const adding = editingSetId === null;
-      const lastExercise = exerciseIndex >= exercises.length - 1;
-      const completedPlannedExercise = adding
-        && current.origin === "PLANNED"
-        && current.plannedSets > 0
-        && current.sets.length + 1 >= current.plannedSets
-        && current.sets.length < current.plannedSets;
-      await load();
+      const body = await response.json() as {
+        set: StrengthSetDto;
+      };
+      if (!body.set || !Number.isSafeInteger(body.set.id)) throw new Error("training_set_response_missing");
+      setSession((previous) => previous ? {
+        ...previous,
+        exercises: previous.exercises.map((exercise) => exercise.id !== current.id ? exercise : {
+          ...exercise,
+          sets: adding
+            ? [...exercise.sets.filter((set) => set.id !== body.set.id), body.set]
+            : exercise.sets.map((set) => set.id === body.set.id ? body.set : set),
+        }),
+      } : previous);
       setDraft(emptySetDraft());
       setEditingSetId(null);
       setAdditionalLoadDirtySetId(null);
@@ -342,9 +415,42 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setFinishOffer(true);
       }
     } catch {
-      setError(uk ? "Не вдалося зберегти підхід." : "Could not save the set.");
+      try {
+        const detail = await fetch("/api/v1/training/sessions/" + session.id, { cache: "no-store" });
+        if (detail.ok) {
+          const body = await detail.json() as { session: StrengthSessionDto };
+          setSession(body.session);
+          const refreshedExercise = body.session.exercises.find((exercise) => exercise.id === current.id);
+          const candidates = refreshedExercise?.sets ?? [];
+          const persisted = adding
+            ? candidates.find((set) => !current.sets.some((prior) => prior.id === set.id)
+              && set.setNumber === nextSetNumber
+              && setMatchesSavePayload(set, payload)) ?? null
+            : candidates.find((set) => set.id === editingSetId
+              && set.updatedAt !== editingSet?.updatedAt
+              && setMatchesSavePayload(set, payload)) ?? null;
+          if (persisted) {
+            setDraft(emptySetDraft());
+            setEditingSetId(null);
+            setAdditionalLoadDirtySetId(null);
+            if (shouldAutoAdvanceAfterSet({ enabled: session.autoAdvanceExercises === true, adding, exerciseOrigin: current.origin, plannedSets: current.plannedSets, previousSetCount: current.sets.length, isLastExercise: lastExercise })) {
+              setAutoAdvanceNonce((value) => value + 1);
+            } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
+              finishOfferedRef.current = true;
+              setFinishOffer(true);
+            }
+            return;
+          }
+        }
+      } catch {
+        // Keep the draft and never repeat the mutation automatically.
+      }
+      setError(uk
+        ? "Не вдалося підтвердити збереження підходу. Перевірте сесію перед повторною спробою."
+        : "Could not confirm the set save. Check the session before trying again.");
     } finally {
       setBusy(false);
+      saveInFlightRef.current = false;
     }
   }
 
@@ -488,22 +594,56 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }
 
   async function finishSession(skipConfirm = false) {
-    if (!session) return;
+    if (!session || finishInFlightRef.current) return;
     if (!skipConfirm && !window.confirm(uk ? "Завершити тренування?" : "Finish this workout?")) return;
+    finishInFlightRef.current = true;
     setFinishOffer(false);
     setBusy(true);
     setError(null);
+    const routeToCompletedSession = (completed: StrengthSessionDto): boolean => {
+      if (completed.status !== SESSION_STATUS.COMPLETED) return false;
+      setSession(completed);
+      router.push(returnHref);
+      return true;
+    };
+    const readCompletedSession = async (): Promise<boolean> => {
+      const detail = await fetch(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" });
+      if (!detail.ok) return false;
+      const body = await detail.json() as { session?: StrengthSessionDto };
+      return body.session ? routeToCompletedSession(body.session) : false;
+    };
     try {
       const response = await fetch(`/api/v1/training/sessions/${session.id}/finish`, { method: "POST" });
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        const apiError = await readApiError(response, uk);
+        if (response.status === 409 || response.status >= 500) {
+          try {
+            if (await readCompletedSession()) return;
+          } catch {
+            // A read failure cannot establish that the finish committed.
+          }
+        }
+        setError(apiError);
         return;
       }
-      await load();
+      const body = await response.json() as { session?: StrengthSessionDto };
+      if (body.session && routeToCompletedSession(body.session)) return;
+      if (await readCompletedSession()) return;
+      setError(uk
+        ? "Не вдалося підтвердити завершення. Перевірте стан тренування перед повторною спробою."
+        : "Could not confirm that the workout finished. Check its status before trying again.");
     } catch {
-      setError(uk ? "Не вдалося завершити сесію." : "Could not finish the session.");
+      try {
+        if (await readCompletedSession()) return;
+      } catch {
+        // Keep the outcome unknown and never repeat the finish mutation.
+      }
+      setError(uk
+        ? "Не вдалося підтвердити завершення. Перевірте стан тренування перед повторною спробою."
+        : "Could not confirm that the workout finished. Check its status before trying again.");
     } finally {
       setBusy(false);
+      finishInFlightRef.current = false;
     }
   }
 

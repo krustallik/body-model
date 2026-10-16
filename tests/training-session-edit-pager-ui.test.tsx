@@ -408,7 +408,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Жим гантелей на похилій лаві вгору (30°)")).toBeTruthy();
     });
 
-    await user.click(activePane().getByRole("button", { name: /Edit set/i }));
+    await user.click(activePane().getAllByRole("button", { name: /Edit set/i })[0]!);
     expect((activePane().getByLabelText(/Weight, kg/i) as HTMLInputElement).value).toBe("30");
     expect((activePane().getByLabelText(/Reps/i) as HTMLInputElement).value).toBe("10");
     expect(screen.getByRole("button", { name: /Update set/i })).toBeTruthy();
@@ -471,12 +471,13 @@ describe("Session edit exercise pager", () => {
     searchParams.set("exercise", "3");
 
     render(<SessionEditClient sessionId={88} />);
-    await user.click(await screen.findByRole("button", { name: /Edit set/i }));
+    const loggedSet = await screen.findByTestId("logged-set-91");
+    await user.click(within(loggedSet).getByRole("button", { name: "Edit set 1" }));
     const loadInput = activePane().getByLabelText("Additional load, kg (optional)");
     expect((loadInput as HTMLInputElement).value).toBe("2");
     await user.clear(loadInput);
     await user.type(loadInput, "15");
-    await user.click(activePane().getByRole("button", { name: "Update set" }));
+    await user.click(within(loggedSet).getByRole("button", { name: "Update set" }));
 
     await waitFor(() => expect(activePane().getByText(/bodyweight \+15 kg/)).toBeTruthy());
     expect(patchBody).toMatchObject({
@@ -489,11 +490,17 @@ describe("Session edit exercise pager", () => {
     expect(patchBody).not.toHaveProperty("weightKg");
     expect(patchBody).not.toHaveProperty("bandNominalResistanceKg");
 
-    await user.click(activePane().getByRole("button", { name: "Edit set" }));
+    await user.click(activePane().getAllByRole("button", { name: "Edit set 1" })[0]!);
     const clearInput = activePane().getByLabelText("Additional load, kg (optional)");
     expect((clearInput as HTMLInputElement).value).toBe("15");
     await user.clear(clearInput);
-    await user.click(activePane().getByRole("button", { name: "Update set" }));
+    await user.click(within(loggedSet).getByRole("button", { name: "Update set" }));
+    await waitFor(() => expect(patchBody).toMatchObject({
+      loadAccountingOverride: {
+        reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+        equipmentSetupId: "rings",
+      },
+    }));
     await waitFor(() => expect(activePane().getByText(/bodyweight × 10/)).toBeTruthy());
     expect(patchBody).toMatchObject({
       loadAccountingOverride: {
@@ -502,11 +509,11 @@ describe("Session edit exercise pager", () => {
       },
     });
 
-    await user.click(activePane().getByRole("button", { name: "Edit set" }));
+    await user.click(activePane().getAllByRole("button", { name: "Edit set 1" })[0]!);
     const oversizedInput = activePane().getByLabelText("Additional load, kg (optional)");
     await user.clear(oversizedInput);
     await user.type(oversizedInput, "1e308");
-    await user.click(activePane().getByRole("button", { name: "Update set" }));
+    await user.click(within(loggedSet).getByRole("button", { name: "Update set" }));
     expect((await screen.findByRole("alert")).textContent).toContain("2000 kg");
     expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/sets/91" && init?.method === "PATCH"
@@ -567,12 +574,12 @@ describe("Session edit exercise pager", () => {
       }));
       searchParams.set("exercise", "3");
       render(<SessionEditClient sessionId={88} />);
-      await user.click(await screen.findByRole("button", { name: /Edit set/i }));
+      await user.click((await screen.findAllByRole("button", { name: /Edit set/i }))[0]!);
       if (field === "rir") {
         const load = activePane().getByLabelText("Additional load, kg (optional)");
         await user.type(load, "0");
         await user.click(activePane().getByRole("button", { name: "Cancel" }));
-        await user.click(activePane().getByRole("button", { name: /Edit set/i }));
+        await user.click(activePane().getAllByRole("button", { name: /Edit set/i })[0]!);
         await user.clear(activePane().getByLabelText("RIR"));
         await user.type(activePane().getByLabelText("RIR"), "3");
       } else {
@@ -588,7 +595,7 @@ describe("Session edit exercise pager", () => {
         loadAccountingOverride: { additionalLoadKg: 0 },
       });
 
-      await user.click(activePane().getByRole("button", { name: "Edit set" }));
+      await user.click(activePane().getAllByRole("button", { name: "Edit set 1" })[0]!);
       const zeroInput = activePane().getByLabelText("Additional load, kg (optional)");
       expect((zeroInput as HTMLInputElement).value).toBe("");
       await user.type(zeroInput, "0");
@@ -668,15 +675,17 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" })).findByTestId("history-set-40-71");
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     expect(document.activeElement).toBe(within(historySet).getByLabelText("Reps"));
+    expect(historySet.getAttribute("data-editing")).toBe("true");
+    expect(historySet.querySelector("[class*='workoutHistorySwipeSurface']")?.getAttribute("style")).toContain("translateX(0px)");
     await user.click(within(historySet).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(document.activeElement).toBe(within(historySet).getByRole("button", { name: "Actions for set 1" })));
+    await waitFor(() => expect(document.activeElement).toBe(within(historySet).getByRole("button", { name: "Edit set 1" })));
+    expect(historySet.getAttribute("data-open")).toBe("true");
+    expect(historySet.querySelector("[class*='workoutHistorySwipeSurface']")?.getAttribute("style")).toContain("translateX(-104px)");
     await waitFor(() => expect(scrollTo).toHaveBeenCalled());
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     await user.clear(within(historySet).getByLabelText("Reps"));
     await user.type(within(historySet).getByLabelText("Reps"), "11");
     await user.clear(within(historySet).getByLabelText("Weight, kg"));
@@ -708,8 +717,7 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" })).findByTestId("history-set-40-71");
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     await user.clear(within(historySet).getByLabelText("Left reps"));
     await user.type(within(historySet).getByLabelText("Left reps"), "7");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
@@ -746,8 +754,7 @@ describe("Session edit exercise pager", () => {
       .findByTestId("history-set-40-71");
     expect(within(historySet).getByText(/bodyweight \+15 kg/)).toBeTruthy();
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     const loadInput = within(historySet).getByLabelText("Additional load, kg (optional)");
     expect((loadInput as HTMLInputElement).value).toBe("15");
     await user.clear(loadInput);
@@ -768,8 +775,7 @@ describe("Session edit exercise pager", () => {
       },
     });
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     await user.clear(within(historySet).getByLabelText("Additional load, kg (optional)"));
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
@@ -781,8 +787,7 @@ describe("Session edit exercise pager", () => {
     });
     expect(within(historySet).queryByText(/\+0(?:\.0+)? kg/)).toBeNull();
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     const oversizedInput = within(historySet).getByLabelText("Additional load, kg (optional)");
     await user.type(oversizedInput, "1e308");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
@@ -801,8 +806,7 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
       .findByTestId("history-set-40-71");
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     const load = within(historySet).getByLabelText("Additional load, kg (optional)");
     await user.clear(load);
     await user.type(load, "2001");
@@ -825,14 +829,12 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
       .findByTestId("history-set-40-71");
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     const load = within(historySet).getByLabelText("Additional load, kg (optional)");
     expect((load as HTMLInputElement).value).toBe("");
     await user.type(load, "0");
     await user.click(within(historySet).getByRole("button", { name: "Cancel" }));
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     await user.clear(within(historySet).getByLabelText("RIR"));
     await user.type(within(historySet).getByLabelText("RIR"), "3");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
@@ -856,8 +858,7 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
       .findByTestId("history-set-40-71");
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     const load = within(historySet).getByLabelText("Additional load, kg (optional)");
     expect((load as HTMLInputElement).value).toBe("");
     await user.type(load, "0");
@@ -889,8 +890,7 @@ describe("Session edit exercise pager", () => {
       await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
       const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
         .findByTestId("history-set-40-71");
-      await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-      await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+      await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
       await user.clear(within(historySet).getByLabelText("RIR"));
       await user.type(within(historySet).getByLabelText("RIR"), "3");
       await user.type(within(historySet).getByLabelText("Comment"), "after");
@@ -918,8 +918,7 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" })).findByTestId("history-set-40-71");
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     await user.clear(within(historySet).getByLabelText("Reps"));
     await user.type(within(historySet).getByLabelText("Reps"), "11");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
@@ -937,8 +936,7 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" })).findByTestId("history-set-40-71");
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit set 1" }));
     await user.clear(within(historySet).getByLabelText("Weight, kg"));
     await user.type(within(historySet).getByLabelText("Weight, kg"), "28.126");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
@@ -951,21 +949,35 @@ describe("Session edit exercise pager", () => {
   });
 
   it("reveals explicit history actions on a short left swipe", async () => {
-    const user = userEvent.setup();
     vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
     stubFetch();
     render(<SessionEditClient sessionId={88} />);
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" })).findByTestId("history-set-40-71");
 
     fireEvent.pointerDown(historySet, { pointerId: 1, pointerType: "touch", clientX: 220, clientY: 20 });
-    fireEvent.pointerUp(historySet, { pointerId: 1, pointerType: "touch", clientX: 120, clientY: 20 });
+    fireEvent.pointerMove(historySet, { pointerId: 1, pointerType: "touch", clientX: 140, clientY: 20 });
+    expect(historySet.querySelector("[class*='workoutHistorySwipeSurface']")?.getAttribute("style")).toContain("translateX(-80px)");
+    fireEvent.pointerUp(historySet, { pointerId: 1, pointerType: "touch", clientX: 140, clientY: 20 });
 
-    expect(within(historySet).getByRole("button", { name: "Edit" })).toBeTruthy();
-    expect(within(historySet).getByRole("button", { name: "Delete" })).toBeTruthy();
+    expect(within(historySet).getByRole("button", { name: "Edit set 1" })).toBeTruthy();
+    expect(within(historySet).getByRole("button", { name: "Delete set 1" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
 
-    await user.click(within(historySet).getByRole("button", { name: "Use values from set 1" }));
+    fireEvent.pointerDown(historySet, { pointerId: 4, pointerType: "touch", clientX: 140, clientY: 20 });
+    fireEvent.pointerMove(historySet, { pointerId: 4, pointerType: "touch", clientX: 130, clientY: 20 });
+    expect(historySet.hasAttribute("data-delete-intent")).toBe(false);
+    fireEvent.pointerUp(historySet, { pointerId: 4, pointerType: "touch", clientX: 130, clientY: 20 });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(historySet.getAttribute("data-open")).toBe("true");
+
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    fireEvent.click(within(historySet).getByRole("button", { name: "Use values from set 1" }));
+    expect(historySet.hasAttribute("data-open")).toBe(false);
+    expect(screen.queryByText("Fields filled — add the set when ready.")).toBeNull();
+    fireEvent.click(within(historySet).getByRole("button", { name: "Use values from set 1" }));
     expect(screen.getByText("Fields filled — add the set when ready.").getAttribute("role")).toBe("status");
   });
 
@@ -981,6 +993,8 @@ describe("Session edit exercise pager", () => {
     });
 
     fireEvent.pointerDown(historySet, { pointerId: 2, pointerType: "touch", clientX: 280, clientY: 20 });
+    fireEvent.pointerMove(historySet, { pointerId: 2, pointerType: "touch", clientX: 100, clientY: 20 });
+    expect(historySet.getAttribute("data-delete-intent")).toBe("true");
     fireEvent.pointerUp(historySet, { pointerId: 2, pointerType: "touch", clientX: 5, clientY: 20 });
 
     expect(confirm).toHaveBeenCalledOnce();
@@ -997,8 +1011,7 @@ describe("Session edit exercise pager", () => {
     const historyRegion = activePane().getByRole("region", { name: "Exercise history" });
     const historySet = await within(historyRegion).findByTestId("history-set-40-71");
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Delete" }));
+    await user.click(within(historySet).getByRole("button", { name: "Delete set 1" }));
 
     await waitFor(() => expect(within(historyRegion).queryByTestId("history-set-40-71")).toBeNull());
     expect(screen.getByText("Set deleted, but model refresh reported a problem.").getAttribute("role")).toBe("status");
@@ -1017,8 +1030,7 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" })).findByTestId("history-set-40-71");
 
-    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
-    await user.click(within(historySet).getByRole("button", { name: "Delete" }));
+    await user.click(within(historySet).getByRole("button", { name: "Delete set 1" }));
 
     expect(confirm).toHaveBeenCalledOnce();
     await waitFor(() => expect(within(activePane().getByRole("region", { name: "Exercise history" })).queryByTestId("history-set-40-71")).toBeNull());

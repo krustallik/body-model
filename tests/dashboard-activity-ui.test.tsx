@@ -103,6 +103,14 @@ describe("Dashboard activity and priority cards", () => {
     expect(screen.getByLabelText("Active session").querySelector("a")?.getAttribute("href")).toBe("/training/sessions/44?returnTo=%2Fdashboard");
     const dailyOverview = document.querySelector("#daily-overview")!;
     expect(Boolean(screen.getByLabelText("Active session").compareDocumentPosition(dailyOverview) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    const metricsGrid = dailyOverview.querySelector("[role='group'][aria-label='Daily measurements']")!;
+    expect(Array.from(metricsGrid.children).map((card) => card.getAttribute("aria-label"))).toEqual([
+      "Body",
+      "Nutrition",
+      "Movement & training",
+      "Sleep",
+      "Resting Heart Rate",
+    ]);
     expect(screen.queryByText("No sessions need matching.")).toBeNull();
   });
 

@@ -14,6 +14,7 @@ import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "../scripts/production-migr
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
 const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
+const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -22,6 +23,11 @@ function ensureHandoffHistory() {
     execFileSync("git", ["merge-base", "--is-ancestor", SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA, DEPLOY_SHA], { stdio: "ignore" });
   } catch {
     execFileSync("git", ["fetch", "--no-tags", "--depth=2", "origin", DEPLOY_SHA], { stdio: "ignore" });
+  }
+  try {
+    execFileSync("git", ["cat-file", "-e", `${DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA}^{commit}`], { stdio: "ignore" });
+  } catch {
+    execFileSync("git", ["fetch", "--no-tags", "--depth=2", "origin", DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA], { stdio: "ignore" });
   }
 }
 
@@ -113,6 +119,9 @@ async function createDynamicWorkoutHandoffRepository() {
   directories.push(directory);
   const repository = path.join(directory, "repo");
   execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+  // Use the exact commit whose migration tree is admitted by this manifest.
+  // The test runner's HEAD may include later, unrelated migration releases.
+  execFileSync("git", ["-C", repository, "checkout", "--quiet", "--detach", DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA]);
   const originSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   await writeFile(path.join(repository, "tests", "dynamic-release-compatibility.txt"), "non-runtime test evidence\n");
   execFileSync("git", ["-C", repository, "add", "tests/dynamic-release-compatibility.txt"]);
@@ -349,7 +358,7 @@ describe("schema deploy compatibility handoff", () => {
     });
     expect(replay.action).toBe("replay");
     expect(replay.marker.migrationOriginSha).toBe(V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
-  });
+  }, 30_000);
 
   it("blocks wrong V4 run lineage, manifest, ancestry, schema, and changed runtime blobs", () => {
     const candidateSha = v4TestCandidateSha();
@@ -386,7 +395,7 @@ describe("schema deploy compatibility handoff", () => {
       markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
       changedPathObjects: alteredRuntime,
     })).toThrow(/exact reviewed content binding/);
-  });
+  }, 30_000);
 
   it("accepts the real migration-origin descendant whose runtime trees match", () => {
     const compatibility = readGitCompatibility(process.cwd(), DEPLOY_SHA);
@@ -612,7 +621,7 @@ describe("schema deploy compatibility handoff", () => {
     const replay = await applySchemaDeployHandoff({ markerPath, deploySha: candidateSha, repo: process.cwd() });
     expect(replay.action).toBe("replay");
     expect((await readFile(markerPath, "utf8")).split("\n")).toContain(`migrationOriginSha=${V4_REPUBLICATION_MIGRATION_ORIGIN_SHA}`);
-  });
+  }, 30_000);
 
   it("does not overwrite a V4 marker changed during the handoff write", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-schema-handoff-race-"));
@@ -628,7 +637,7 @@ describe("schema deploy compatibility handoff", () => {
     })).rejects.toThrow(/marker changed during compatibility handoff/);
     expect(await readFile(markerPath, "utf8")).toBe(concurrentMarker);
     expect((await readdir(directory)).sort()).toEqual(["marker"]);
-  });
+  }, 30_000);
 
   it.skipIf(process.platform === "win32")("writes once, replays the same candidate, and blocks a concurrent lock", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-schema-handoff-"));

@@ -85,6 +85,8 @@ function deferred() {
 let migratorArtifactRoot: string;
 let originalProfile: Awaited<ReturnType<typeof prisma.profile.findUnique>>;
 let originalLifecycle: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle.findUnique>>;
+let originalTrainingRefreshCompletedGeneration: number | null = null;
+let originalTrainingRefreshUpdatedAt: Date | null = null;
 
 function runRolloutTool(script: string, args: string[]): Record<string, unknown> {
   const output = execFileSync(process.execPath, [
@@ -207,6 +209,19 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
     await prisma.$executeRawUnsafe(`INSERT INTO "${schema}"."LockSource" ("id", "value") VALUES (1, 0)`);
     originalProfile = await prisma.profile.findUnique({ where: { id: profileId } });
     originalLifecycle = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+    const originalTrainingRefreshJob = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
+    if (originalTrainingRefreshJob
+        && originalTrainingRefreshJob.requestedGeneration > originalTrainingRefreshJob.completedGeneration) {
+      // This fixture uses the singleton Profile. Keep unrelated pending work
+      // out of the V4 currentness scenario, then restore its exact generation
+      // fence and timestamp during teardown.
+      originalTrainingRefreshCompletedGeneration = originalTrainingRefreshJob.completedGeneration;
+      originalTrainingRefreshUpdatedAt = originalTrainingRefreshJob.updatedAt;
+      await prisma.trainingRefreshJob.update({
+        where: { profileId },
+        data: { completedGeneration: originalTrainingRefreshJob.requestedGeneration },
+      });
+    }
     await prisma.profile.upsert({
       where: { id: profileId },
       create: { id: profileId, sex: "male", dateOfBirth: new Date("1990-01-01T00:00:00.000Z"), heightCm: 180 },
@@ -272,6 +287,15 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
         });
       } else {
         await prisma.profile.deleteMany({ where: { id: profileId } });
+      }
+      if (originalTrainingRefreshCompletedGeneration !== null && originalTrainingRefreshUpdatedAt) {
+        await prisma.trainingRefreshJob.update({
+          where: { profileId },
+          data: {
+            completedGeneration: originalTrainingRefreshCompletedGeneration,
+            updatedAt: originalTrainingRefreshUpdatedAt,
+          },
+        });
       }
       await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     } finally {

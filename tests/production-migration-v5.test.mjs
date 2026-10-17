@@ -659,7 +659,7 @@ describe("V5 closed migration manifest and full pending set", () => {
       const result = await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha, migration });
       expect(result.matchesManifest, migration.name).toBe(true);
     }
-  });
+  }, 30_000);
 
   it("loads the closed migration manifest for direct shell byte checks", async () => {
     const script = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");

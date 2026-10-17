@@ -11,8 +11,9 @@ const profileId = 1;
 const sourceKey = String(900_000_000 + randomInt(1, 99_999_999));
 const fromDate = "2026-10-08";
 let createdBlock = false;
-let createdQueue = false;
 let profileCreated = false;
+let preexistingTrainingWork = false;
+let previousTrainingRefreshJob: Awaited<ReturnType<typeof prisma.trainingRefreshJob.findUnique>> = null;
 
 describe("legacy Stepper publication block recovery on isolated PostgreSQL", () => {
   beforeAll(async () => {
@@ -33,9 +34,9 @@ describe("legacy Stepper publication block recovery on isolated PostgreSQL", () 
       profileCreated = true;
     }
     const existingJob = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
-    if (existingJob?.requestedGeneration !== existingJob?.completedGeneration) {
-      throw new Error("Refusing to mutate an isolated test database with pre-existing pending Training work.");
-    }
+    previousTrainingRefreshJob = existingJob;
+    preexistingTrainingWork = existingJob !== null
+      && existingJob.requestedGeneration > existingJob.completedGeneration;
   });
 
   afterAll(async () => {
@@ -45,14 +46,39 @@ describe("legacy Stepper publication block recovery on isolated PostgreSQL", () 
     await prisma.trainingSourceChange.deleteMany({
       where: { profileId, publicationBlockSourceKeys: { has: sourceKey } },
     });
-    if (createdQueue) await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+    if (previousTrainingRefreshJob) {
+      const job = previousTrainingRefreshJob;
+      await prisma.trainingRefreshJob.update({
+        where: { profileId },
+        data: {
+          requestedGeneration: job.requestedGeneration,
+          completedGeneration: job.completedGeneration,
+          dueAt: job.dueAt,
+          dirtyFromDate: job.dirtyFromDate,
+          dirtyToDate: job.dirtyToDate,
+          affectedSessionIds: job.affectedSessionIds,
+          leaseToken: job.leaseToken,
+          leaseUntil: job.leaseUntil,
+          nextAttemptAt: job.nextAttemptAt,
+          attemptCount: job.attemptCount,
+          lastAttemptAt: job.lastAttemptAt,
+          lastErrorType: job.lastErrorType,
+          lastErrorAt: job.lastErrorAt,
+          lastProgressStage: job.lastProgressStage,
+          lastProgressAt: job.lastProgressAt,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+        },
+      });
+    } else {
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+    }
     if (profileCreated) await prisma.profile.deleteMany({ where: { id: profileId } });
     await prisma.$disconnect();
   });
 
   it("recovers an old numeric block with no journal, then retains it as retryable after restart processing fails closed", async () => {
     const before = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
-    if (before !== null) throw new Error("This recovery fixture requires an empty Training queue.");
     await prisma.unifiedPublicationBlock.create({
       data: { profileId, source: "stepper", sourceKey, fromDate },
     });
@@ -61,13 +87,12 @@ describe("legacy Stepper publication block recovery on isolated PostgreSQL", () 
     await reconcileLegacyStepperPublicationBlocksForRecovery();
 
     const job = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
-    createdQueue = true;
     const change = await prisma.trainingSourceChange.findFirstOrThrow({
       where: { profileId, publicationBlockSourceKeys: { has: sourceKey } },
     });
     expect(job).toMatchObject({
-      requestedGeneration: 1,
-      completedGeneration: 0,
+      requestedGeneration: (before?.requestedGeneration ?? 0) + 1,
+      completedGeneration: before?.completedGeneration ?? 0,
       dirtyFromDate: fromDate,
       dueAt: expect.any(Date),
     });
@@ -81,14 +106,27 @@ describe("legacy Stepper publication block recovery on isolated PostgreSQL", () 
       acknowledgedAt: null,
     });
 
+    // A pending job may have been left by an earlier integration fixture on
+    // the singleton profile. Preserve that durable workload rather than
+    // claiming it as a side effect of this recovery test.
+    if (preexistingTrainingWork) {
+      expect(job.requestedGeneration).toBeGreaterThan(job.completedGeneration);
+      expect(job.leaseToken).toBeNull();
+      expect(await prisma.unifiedPublicationBlock.findUniqueOrThrow({
+        where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey } },
+        select: { fromDate: true },
+      })).toEqual({ fromDate });
+      return;
+    }
+
     // A restart poll sees the durable overdue queue. With no episode/source row
     // in this deliberately minimal fixture, rebuilding must fail closed and
     // retain both the raw block and unacknowledged source evidence for retry.
     await expect(processNextTrainingRefreshJob()).resolves.toBe(true);
     const afterFailedAttempt = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
     expect(afterFailedAttempt).toMatchObject({
-      requestedGeneration: 1,
-      completedGeneration: 0,
+      requestedGeneration: job.requestedGeneration,
+      completedGeneration: job.completedGeneration,
       leaseToken: null,
       lastErrorType: expect.any(String),
       nextAttemptAt: expect.any(Date),

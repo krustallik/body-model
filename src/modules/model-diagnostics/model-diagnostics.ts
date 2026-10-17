@@ -155,8 +155,9 @@ export function buildDiagnosticsDto(input: {
   });
   const initializationConfidence = episode.initializationStatus ?? "insufficient";
   return {
-    episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: episode.latestModeledDate, updatedAt: episode.updatedAt },
+    episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: status.latestModeledDate, updatedAt: episode.updatedAt },
     ...(evidence.experimentalEnergySummary !== undefined ? { experimentalEnergySummary: evidence.experimentalEnergySummary } : {}),
+    energyHistory: evidence.energyHistory ?? { latestModeledDay: null, previousCompletedDays: [] },
     currentState: {
       level: currentStatus === "available" ? (source === "degraded" ? "limited" : "good") : "blocked",
       status: currentStatus, source,
@@ -170,7 +171,7 @@ export function buildDiagnosticsDto(input: {
     },
     dataContinuity: {
       level: status.unknownIntervalCount > 0 || evidence.unresolvedNutritionDayCount > 0 || evidence.incompleteDayCount > 0 ? "limited" : "good",
-      recentWindowDays: MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS, windowStartDate: input.windowStartDate, windowEndDate: episode.latestModeledDate,
+      recentWindowDays: MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS, windowStartDate: input.windowStartDate, windowEndDate: status.latestModeledDate,
       modeledDayCount: evidence.modeledDayCount, completeDayCount: evidence.completeDayCount, incompleteDayCount: evidence.incompleteDayCount,
       nutrition: { observedDayCount: evidence.observedNutritionDayCount, imputedDayCount: evidence.imputedNutritionDayCount, unresolvedDayCount: evidence.unresolvedNutritionDayCount },
       weightObservationCount: evidence.weightObservationCount,

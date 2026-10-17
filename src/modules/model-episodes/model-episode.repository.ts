@@ -29,6 +29,14 @@ import {
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
 import { persistedPayloadFromUnknown } from "@/modules/training/persisted-load-accounting-v1";
 import { episodeTimeContextForInstantV1 } from "./episode-time-context-v1";
+import {
+  activeEnergyConvergenceFenceChanged,
+  isTrainingRefreshPending,
+  readActiveEnergyConvergenceVisibilityFence,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+  trainingRefreshWorkerOwnsGeneration,
+} from "@/modules/training/training-refresh-queue";
 
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
 
@@ -1067,6 +1075,9 @@ export class ModelEpisodeRepository {
   async status(id?: number): Promise<ModelStatusDto | null> {
     const episode = id === undefined ? await this.getActive() : await this.getById(id);
     if (!episode) return null;
+    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, episode.profileId);
+    const trainingPending = isTrainingRefreshPending(trainingFence)
+      && !await trainingRefreshWorkerOwnsGeneration(this.client, episode.profileId, trainingFence?.requestedGeneration);
     const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
       where: { profileId: episode.profileId },
       select: {
@@ -1075,9 +1086,16 @@ export class ModelEpisodeRepository {
         productionStaleFromDate: true,
       },
     });
-    const productionCurrent = isProductionGenerationCurrentV1(lifecycle);
+    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, episode.profileId);
+    const productionCurrent = isProductionGenerationCurrentV1(lifecycle) && !trainingPending && convergenceFence?.active !== true;
+    const dirtyFromCandidates = [
+      lifecycle?.productionStaleFromDate ?? null,
+      trainingPending ? trainingFence?.dirtyFromDate ?? null : null,
+      convergenceFence?.active ? convergenceFence.fromDate : null,
+    ].filter((date): date is string => date !== null).sort();
+    const productionDirtyFromDate = dirtyFromCandidates[0] ?? null;
     const currentPrefixWhere = !productionCurrent
-      ? { date: { lt: lifecycle?.productionStaleFromDate ?? episode.startDate } }
+      ? { date: { lt: productionDirtyFromDate ?? episode.startDate } }
       : {};
     const modeledWhere = { episodeId: episode.id, ...currentPrefixWhere };
     const [
@@ -1119,32 +1137,40 @@ export class ModelEpisodeRepository {
         select: unknownIntervalSelect,
       }),
     ]);
-    const intervalDtos = unknownIntervals.map(toUnknownInterval);
+    const trainingFenceChanged = await trainingRefreshFenceChanged(this.client, episode.profileId, trainingFence);
+    const workerStillOwnsGeneration = await trainingRefreshWorkerOwnsGeneration(
+      this.client, episode.profileId, trainingFence?.requestedGeneration,
+    );
+    const fenceUnstable = trainingFenceChanged
+      || (isTrainingRefreshPending(trainingFence) && !workerStillOwnsGeneration)
+      || convergenceFence?.active === true
+      || await activeEnergyConvergenceFenceChanged(this.client, episode.profileId, convergenceFence);
+    const intervalDtos = fenceUnstable ? [] : unknownIntervals.map(toUnknownInterval);
     return {
       episodeId: episode.id,
       episodeStartDate: episode.startDate,
       timezone: episode.timezone,
-      productionCurrent,
-      productionDirtyFromDate: lifecycle?.productionStaleFromDate ?? null,
-      latestModeledDate: productionCurrent ? episode.latestModeledDate : latest?.date ?? null,
+      productionCurrent: productionCurrent && !fenceUnstable,
+      productionDirtyFromDate,
+      latestModeledDate: productionCurrent && !fenceUnstable ? episode.latestModeledDate : fenceUnstable ? null : latest?.date ?? null,
       modelVersion: episode.modelVersion,
-      calibrationStatus: episode.calibrationStatus,
-      personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
-      activityCalibration: episode.activityCalibration,
-      daysModeled,
-      incompleteDays,
-      observedNutritionDays,
-      imputedNutritionDays,
-      unbridgeableNutritionDays,
-      currentPredictedWeightKg: productionCurrent ? latest?.endWeightKg ?? null : null,
-      currentFilteredWeightKg: productionCurrent ? latest?.filteredWeightKg ?? null : null,
-      currentFatMassKg: productionCurrent ? latest?.fatMassKg ?? null : null,
-      currentLeanTissueKg: productionCurrent ? latest?.leanTissueKg ?? null : null,
-      currentDynamicRmrKcalPerDay: productionCurrent ? latest?.dynamicRmrKcalPerDay ?? null : null,
-      currentModeledTdeeKcalPerDay: productionCurrent ? latest?.energyExpenditureKcal ?? null : null,
-      continuityStatus: intervalDtos.length === 0 ? "resolved" : "awaiting-recovery",
-      lastResolvedDate: episode.latestModeledDate,
-      recoveryRequired: intervalDtos.length > 0,
+      calibrationStatus: fenceUnstable ? null : episode.calibrationStatus,
+      personalOffsetKcalPerDay: fenceUnstable ? null : episode.personalOffsetKcalPerDay,
+      activityCalibration: fenceUnstable ? null : episode.activityCalibration,
+      daysModeled: fenceUnstable ? 0 : daysModeled,
+      incompleteDays: fenceUnstable ? 0 : incompleteDays,
+      observedNutritionDays: fenceUnstable ? 0 : observedNutritionDays,
+      imputedNutritionDays: fenceUnstable ? 0 : imputedNutritionDays,
+      unbridgeableNutritionDays: fenceUnstable ? 0 : unbridgeableNutritionDays,
+      currentPredictedWeightKg: productionCurrent && !fenceUnstable ? latest?.endWeightKg ?? null : null,
+      currentFilteredWeightKg: productionCurrent && !fenceUnstable ? latest?.filteredWeightKg ?? null : null,
+      currentFatMassKg: productionCurrent && !fenceUnstable ? latest?.fatMassKg ?? null : null,
+      currentLeanTissueKg: productionCurrent && !fenceUnstable ? latest?.leanTissueKg ?? null : null,
+      currentDynamicRmrKcalPerDay: productionCurrent && !fenceUnstable ? latest?.dynamicRmrKcalPerDay ?? null : null,
+      currentModeledTdeeKcalPerDay: productionCurrent && !fenceUnstable ? latest?.energyExpenditureKcal ?? null : null,
+      continuityStatus: fenceUnstable || intervalDtos.length > 0 ? "awaiting-recovery" : "resolved",
+      lastResolvedDate: fenceUnstable ? null : episode.latestModeledDate,
+      recoveryRequired: fenceUnstable || intervalDtos.length > 0,
       unknownIntervalCount: intervalDtos.length,
       unresolvedDayCount: intervalDtos.reduce((sum, interval) => sum + interval.durationDays, 0),
       postGapObservedDayCount: intervalDtos.reduce(
@@ -1168,16 +1194,26 @@ export class ModelEpisodeRepository {
       ? await this.getActive()
       : await this.getById(query.episodeId);
     if (!episode) return null;
+    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, episode.profileId);
+    const trainingPending = isTrainingRefreshPending(trainingFence)
+      && !await trainingRefreshWorkerOwnsGeneration(this.client, episode.profileId, trainingFence?.requestedGeneration);
     const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
       where: { profileId: episode.profileId },
       select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
     });
-    const productionCurrent = isProductionGenerationCurrentV1(lifecycle);
+    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, episode.profileId);
+    const productionCurrent = isProductionGenerationCurrentV1(lifecycle) && !trainingPending && convergenceFence?.active !== true;
+    const dirtyFromCandidates = [
+      lifecycle?.productionStaleFromDate ?? null,
+      trainingPending ? trainingFence?.dirtyFromDate ?? null : null,
+      convergenceFence?.active ? convergenceFence.fromDate : null,
+    ].filter((date): date is string => date !== null).sort();
+    const productionDirtyFromDate = dirtyFromCandidates[0] ?? null;
     const dateFilter: { gte?: string; lte?: string; lt?: string } = {
       ...(query.from ? { gte: query.from } : {}),
       ...(query.to ? { lte: query.to } : {}),
     };
-    if (!productionCurrent) dateFilter.lt = lifecycle?.productionStaleFromDate ?? episode.startDate;
+    if (!productionCurrent) dateFilter.lt = productionDirtyFromDate ?? episode.startDate;
     const [rows, intervals] = await Promise.all([
       this.client.dailyModelState.findMany({
       where: {
@@ -1225,7 +1261,10 @@ export class ModelEpisodeRepository {
         select: unknownIntervalSelect,
       }),
     ]);
-    const intervalDtos = intervals.map(toUnknownInterval).filter((interval) => {
+    const trainingFenceChanged = await trainingRefreshFenceChanged(this.client, episode.profileId, trainingFence);
+    const historyFenceUnstable = trainingFenceChanged || trainingPending || convergenceFence?.active === true
+      || await activeEnergyConvergenceFenceChanged(this.client, episode.profileId, convergenceFence);
+    const intervalDtos = historyFenceUnstable ? [] : intervals.map(toUnknownInterval).filter((interval) => {
       const unknownOverlap = interval.startDate <= (query.to ?? "9999-12-31")
         && interval.lastUnknownDate >= (query.from ?? "0000-01-01");
       const observationOverlap = interval.postGapObservationDates.some(
@@ -1239,7 +1278,9 @@ export class ModelEpisodeRepository {
       .sort();
     return {
       episodeId: episode.id,
-      days: rows.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() })),
+      days: historyFenceUnstable
+        ? []
+        : rows.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() })),
       unknownIntervals: intervalDtos,
       observationsAwaitingRecovery: observationDates.map((date) => ({
         date,

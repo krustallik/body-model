@@ -13,8 +13,22 @@ import {
 } from "./training-day-fact";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { emptyTrainingDayFact } from "./training-day-fact-empty";
+import {
+  activeEnergyConvergenceFenceChanged,
+  isTrainingRefreshPending,
+  readActiveEnergyConvergenceVisibilityFence,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+} from "@/modules/training/training-refresh-queue";
 
 export type TrainingDayFactRange = { from?: string; to?: string };
+
+const DERIVED_TRAINING_ENERGY_FIELDS = [
+  "canonicalEnergyResolution",
+  "energyShadow",
+  "activeEnergyMassReference",
+  "estimatorVersion",
+] as const;
 
 type SetRow = {
   id: number;
@@ -65,6 +79,7 @@ function workoutSource(
   row: {
     id: number;
     sourceIdentity: string;
+    externalId?: string | null;
     type: string;
     startAt: Date;
     endAt: Date;
@@ -72,8 +87,9 @@ function workoutSource(
     durationMinutes: number | null;
     activeEnergyKcal: number | null;
     hiddenFromHistory: boolean;
+    syncProtected?: boolean;
     canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
-    dailyHealthData?: { date: string; weightKg: number | null } | null;
+    dailyHealthData?: { date: string; weightKg: number | null; workoutFeedObserved?: boolean | null } | null;
     matchedDiarySession: null | {
       id: number;
       status: string;
@@ -106,6 +122,8 @@ function workoutSource(
   return {
     id: row.id,
     sourceIdentity: row.sourceIdentity,
+    externalId: row.externalId ?? null,
+    dailyHealthData: row.dailyHealthData ?? null,
     type: row.type,
     startAt: row.startAt,
     endAt: row.endAt,
@@ -113,6 +131,7 @@ function workoutSource(
     durationMinutes: row.durationMinutes,
     activeEnergyKcal: row.activeEnergyKcal,
     hiddenFromHistory: row.hiddenFromHistory,
+    syncProtected: row.syncProtected,
     canonicalEnergyResolution: row.canonicalEnergyResolution ?? null,
     matchedDiarySession: row.matchedDiarySession === null ? null : {
       id: row.matchedDiarySession.id,
@@ -191,6 +210,8 @@ export class TrainingDayFactRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
   async list(range: TrainingDayFactRange = {}): Promise<TrainingDayFact[]> {
+    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, 1);
+    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, 1);
     // Episode timezone can differ from the browser/default timezone. Query a
     // UTC envelope wide enough to include every event whose episode-local
     // date may fall in the requested date-only range, then filter by that
@@ -217,13 +238,15 @@ export class TrainingDayFactRepository {
         select: {
           id: true,
           sourceIdentity: true,
+          externalId: true,
           type: true,
           startAt: true,
           endAt: true,
           durationMinutes: true,
           activeEnergyKcal: true,
           hiddenFromHistory: true,
-          dailyHealthData: { select: { date: true, weightKg: true } },
+          syncProtected: true,
+          dailyHealthData: { select: { date: true, weightKg: true, workoutFeedObserved: true } },
           matchedDiarySession: {
             select: {
               id: true,
@@ -398,7 +421,21 @@ export class TrainingDayFactRepository {
         diaryModelDates.get(row.id)?.timeZone ?? DEFAULT_TIME_ZONE,
       )),
     });
-    return facts.filter(({ date }) => (!range.from || date >= range.from) && (!range.to || date <= range.to));
+    const visibleFacts = facts.filter(({ date }) => (!range.from || date >= range.from) && (!range.to || date <= range.to));
+    const refreshPending = convergenceFence?.active === true
+      || isTrainingRefreshPending(trainingFence)
+      || await trainingRefreshFenceChanged(this.client, 1, trainingFence)
+      || await activeEnergyConvergenceFenceChanged(this.client, 1, convergenceFence);
+    if (!refreshPending) return visibleFacts;
+    return visibleFacts.map((fact) => ({
+      ...fact,
+      events: fact.events.map((event) => {
+        const masked = { ...event, activeEnergyKcal: null, energySource: "unavailable" as const };
+        const extensible = masked as typeof masked & Record<string, unknown>;
+        for (const field of DERIVED_TRAINING_ENERGY_FIELDS) delete extensible[field];
+        return masked;
+      }),
+    }));
   }
 
   async forDate(date: string): Promise<TrainingDayFact> {

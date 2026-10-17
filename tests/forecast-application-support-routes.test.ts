@@ -11,6 +11,12 @@ const v7Persistence = vi.hoisted(() => ({
   readDay: vi.fn(),
 }));
 const unifiedState = vi.hoisted(() => ({ rebuild: vi.fn() }));
+const trainingRefresh = vi.hoisted(() => ({
+  isTrainingRefreshPending: vi.fn(),
+  readTrainingRefreshVisibilityFence: vi.fn(),
+  trainingRefreshFenceChanged: vi.fn(),
+  trainingRefreshWorkerOwnsGeneration: vi.fn(),
+}));
 vi.mock("@/modules/model-episodes/model-episode.service", () => modelServices);
 vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
@@ -21,6 +27,7 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => (
     readDay = v7Persistence.readDay;
   },
 }));
+vi.mock("@/modules/training/training-refresh-queue", () => trainingRefresh);
 
 import { GET } from "@/app/api/forecast/context/route";
 import { POST } from "@/app/api/forecast/action/route";
@@ -37,6 +44,10 @@ function actionRequest(action: string) {
 describe("forecast context route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    trainingRefresh.readTrainingRefreshVisibilityFence.mockResolvedValue(null);
+    trainingRefresh.isTrainingRefreshPending.mockReturnValue(false);
+    trainingRefresh.trainingRefreshWorkerOwnsGeneration.mockResolvedValue(false);
+    trainingRefresh.trainingRefreshFenceChanged.mockResolvedValue(false);
     modelServices.getModelStatus.mockResolvedValue({ productionCurrent: false, latestModeledDate: null });
     v7Persistence.readDay.mockResolvedValue({
       status: "missing",
@@ -94,6 +105,34 @@ describe("forecast context route", () => {
     const localizedBody = await localized.json();
     expect(localizedBody.provenance.latestDay.dataQuality.label).toBe("Спостережено");
     expect(localizedBody.provenance.latestDay.nutrition.label).toBe("Харчування спостережене");
+  });
+
+  it("fails closed when a Training generation changes during the composed V7 read", async () => {
+    modelServices.getModelStatus.mockResolvedValue({ productionCurrent: true, latestModeledDate: "2026-08-24" });
+    modelServices.getModelHistory.mockResolvedValue({ days: [], unknownIntervals: [] });
+    trainingRefresh.trainingRefreshFenceChanged.mockResolvedValue(true);
+
+    const response = await GET();
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "training_refresh_pending" });
+    expect(v7Persistence.readDay).toHaveBeenCalledWith(1, "2026-08-24");
+  });
+
+  it("fails closed when a Training generation is already pending", async () => {
+    modelServices.getModelHistory.mockResolvedValue({ days: [], unknownIntervals: [] });
+    trainingRefresh.readTrainingRefreshVisibilityFence.mockResolvedValue({
+      requestedGeneration: 5,
+      completedGeneration: 4,
+      dirtyFromDate: "2026-08-24",
+      dirtyToDate: "2026-08-24",
+    });
+    trainingRefresh.isTrainingRefreshPending.mockReturnValue(true);
+
+    const response = await GET();
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "training_refresh_pending" });
   });
 
   it("exposes the goal-date boundary using the model timezone's completed local day", async () => {

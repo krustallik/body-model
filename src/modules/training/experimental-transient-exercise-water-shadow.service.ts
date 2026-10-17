@@ -115,7 +115,10 @@ export async function readTransientExerciseWaterSourceTokenV2(
   return (await readSourceSnapshot(db, profileId)).token;
 }
 
-function candidateImpulses(snapshot: SourceSnapshot): TransientExerciseWaterImpulseV2[] {
+async function candidateImpulses(
+  snapshot: SourceSnapshot,
+  onProgress?: () => Promise<void>,
+): Promise<TransientExerciseWaterImpulseV2[]> {
   const resolvedSources = snapshot.sources.map((source) => {
     const time = transientEpisodeTimeForInstantV2(snapshot.partitions, source.canonicalEventInstant);
     if (time === null) throw new TransientExerciseWaterSourceUnavailableError(`session ${source.session.id} lost its episode mapping`);
@@ -126,9 +129,13 @@ function candidateImpulses(snapshot: SourceSnapshot): TransientExerciseWaterImpu
     eventInstant: source.canonicalEventInstant,
     sourceFingerprint: source.sourceDependencyFingerprint,
   }));
-  return resolvedSources.map((source) => {
+  const eventBySessionId = new Map(sessionEvents.map((event) => [event.strengthDiarySessionId, event]));
+  const impulses: TransientExerciseWaterImpulseV2[] = [];
+  for (const source of resolvedSources) {
+    const event = eventBySessionId.get(source.session.id);
+    if (!event) throw new TransientExerciseWaterSourceUnavailableError(`session ${source.session.id} lost its event identity`);
     const exposure = resolveTransientWaterV2Exposure({
-      event: sessionEvents.find((event) => event.strengthDiarySessionId === source.session.id)!,
+      event,
       completedEvents: sessionEvents,
     });
     const { exposureClass } = exposure;
@@ -154,7 +161,7 @@ function candidateImpulses(snapshot: SourceSnapshot): TransientExerciseWaterImpu
       dependencyFingerprint,
       exposureClass,
     });
-    return buildTransientExerciseWaterImpulseV2({
+    impulses.push(buildTransientExerciseWaterImpulseV2({
       strengthDiarySessionId: source.session.id,
       canonicalEventInstant: source.canonicalEventInstant,
       modelEpisodeId: source.episode.id,
@@ -174,8 +181,10 @@ function candidateImpulses(snapshot: SourceSnapshot): TransientExerciseWaterImpu
         sourceFingerprint: dependency.sourceFingerprint,
       })),
       sourceFingerprint,
-    });
-  });
+    }));
+    await onProgress?.();
+  }
+  return impulses;
 }
 
 function json(value: unknown): Prisma.InputJsonValue {
@@ -204,11 +213,12 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
   profileId?: number;
   client?: PrismaClient;
   onCandidateComputed?: () => Promise<void>;
+  onProgress?: () => Promise<void>;
 } = {}): Promise<{ earliestModelDate: string | null; sourceToken: string; impulseCount: number }> {
   const profileId = input.profileId ?? 1;
   const client = input.client ?? prisma;
   const before = await readSourceSnapshot(client, profileId);
-  const impulses = candidateImpulses(before);
+  const impulses = await candidateImpulses(before, input.onProgress);
   await input.onCandidateComputed?.();
 
   let affectedDates: string[] = [];

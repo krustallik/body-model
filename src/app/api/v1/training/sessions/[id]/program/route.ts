@@ -22,8 +22,7 @@ export async function POST(request: Request, context: Ctx): Promise<Response> {
 
   try {
     const session = await trainingService.changeSessionProgram(params.data.id, parsed.data);
-    const { modelPublicationStatus, ...sessionDto } = session;
-    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
+    return Response.json({ session });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

@@ -11,6 +11,7 @@ import { buildSimulationDays, eligibleHistoricalDonors } from "@/modules/model-e
 import { analyzeStateContinuity } from "@/modules/model-episodes/unknown-intervals";
 import { ModelRecoveryEvidenceError } from "./model-recovery.errors";
 import { ModelRecoveryRepository } from "./model-recovery.repository";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import type { RecoverModelRequest } from "./model-recovery.schema";
 import {
   recoveryConfigFingerprint,
@@ -18,6 +19,25 @@ import {
   resolvedRecoveryConfig,
 } from "./recovery-fingerprint";
 import { recoverHistoricalTrajectories } from "./trajectory-recovery";
+import {
+  isTrainingRefreshPending,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+} from "@/modules/training/training-refresh-queue";
+
+export class TrainingRefreshVisibilityPendingError extends Error {
+  constructor() {
+    super("Training-derived model data is not current while its durable refresh is pending.");
+    this.name = "TrainingRefreshVisibilityPendingError";
+  }
+}
+
+export class ModelRefreshVisibilityPendingError extends Error {
+  constructor() {
+    super("Model-source publication changed during the recovery status read.");
+    this.name = "ModelRefreshVisibilityPendingError";
+  }
+}
 
 const RECOVERY_TRANSACTION_OPTIONS = {
   isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -145,6 +165,13 @@ export async function getModelRecoveryStatus(
     if (episodeId === undefined) throw new NoActiveModelEpisodeError();
     throw new ModelEpisodeNotFoundError();
   }
+  const trainingFence = await readTrainingRefreshVisibilityFence(client, episode.profileId);
+  if (isTrainingRefreshPending(trainingFence)) throw new TrainingRefreshVisibilityPendingError();
+  const lifecycle = new PhysiologyV7PersistenceRepository(client);
+  const modelSourceFence = await lifecycle.readUnifiedPublicationFence(episode.profileId);
+  if (modelSourceFence === null || await lifecycle.hasUnifiedPublicationBlocks(episode.profileId)) {
+    throw new ModelRefreshVisibilityPendingError();
+  }
   let recovery = await recoveryRepository.latestStatus(episode.id);
   if (recovery && !recovery.stale) {
     const latestCompletedDate = latestCompletedLocalDate(now, episode.timezone);
@@ -180,6 +207,16 @@ export async function getModelRecoveryStatus(
         recovery = await recoveryRepository.latestStatus(episode.id);
       }
     }
+  }
+  if (await trainingRefreshFenceChanged(client, episode.profileId, trainingFence)) {
+    throw new TrainingRefreshVisibilityPendingError();
+  }
+  const currentModelSourceFence = await lifecycle.readUnifiedPublicationFence(episode.profileId);
+  if (currentModelSourceFence === null
+      || currentModelSourceFence.invalidationGeneration !== modelSourceFence.invalidationGeneration
+      || currentModelSourceFence.updatedAt !== modelSourceFence.updatedAt
+      || await lifecycle.hasUnifiedPublicationBlocks(episode.profileId)) {
+    throw new ModelRefreshVisibilityPendingError();
   }
   return {
     episodeId: episode.id,

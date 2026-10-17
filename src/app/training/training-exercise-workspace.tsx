@@ -14,6 +14,9 @@ import type {
   StrengthSessionExerciseDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
+import type { UpdateSetInput } from "@/modules/training/training.schema";
+import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
+import { RESISTANCE } from "@/modules/training/training.constants";
 import { ExercisePane } from "./training-exercise-pane";
 import {
   classifyCarouselRelease,
@@ -29,6 +32,7 @@ export type SetDraft = {
   leftReps: string;
   rightReps: string;
   weightKg: string;
+  additionalLoadKg: string;
   bandNominalResistanceKg: string;
   rir: string;
   comment: string;
@@ -36,6 +40,32 @@ export type SetDraft = {
 
 export const CAROUSEL_MANUAL_MS = 220;
 export const CAROUSEL_AUTOMATIC_MS = 440;
+const TRAINING_HISTORY_REQUEST_TIMEOUT_MS = 8_000;
+
+async function fetchWithHistoryTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  let rejectDeadline!: (reason: Error) => void;
+  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  const timeout = window.setTimeout(() => {
+    controller.abort();
+    rejectDeadline(new Error("Training history request timed out"));
+  }, TRAINING_HISTORY_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      deadline,
+    ]);
+    const readJson = response.json.bind(response);
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: () => Promise.race([readJson(), deadline]).finally(() => window.clearTimeout(timeout)),
+    });
+    return response;
+  } catch (error) {
+    window.clearTimeout(timeout);
+    throw error;
+  }
+}
 
 /** Manual=220ms, automatic=440ms; reduced-motion disables movement (0ms). */
 export function carouselDurationMs(
@@ -62,7 +92,12 @@ type TrainingExerciseWorkspaceProps = {
   draft: SetDraft;
   editingSetId: number | null;
   busy: boolean;
+  busyLabel?: string;
   error: string | null;
+  notice?: string | null;
+  mutationUncertain?: boolean;
+  mutationActionLabel?: string;
+  onVerifyPendingMutation?: () => void;
   menuOpen: boolean;
   clockStartedAt?: string | null;
   clockEndedAt?: string | null;
@@ -86,6 +121,7 @@ type TrainingExerciseWorkspaceProps = {
   onDeleteSet: (setId: number) => void;
   trailingAction?: ReactNode;
   finishDialog?: ReactNode;
+  inertBackground?: boolean;
   autoAdvanceNonce?: number;
 };
 
@@ -96,6 +132,7 @@ export function emptySetDraft(): SetDraft {
     leftReps: "",
     rightReps: "",
     weightKg: "",
+    additionalLoadKg: "",
     bandNominalResistanceKg: "",
     rir: "",
     comment: "",
@@ -109,6 +146,42 @@ function elapsedMs(startedAt: string | null | undefined, endedAt: string | null 
   const end = endedAt ? new Date(endedAt).getTime() : now;
   if (!Number.isFinite(end)) return null;
   return end - start;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function roundLoadToDatabasePrecision(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  const [mantissa, rawExponent] = Math.abs(value).toString().toLowerCase().split("e");
+  const exponent = Number(rawExponent ?? 0);
+  const [integerPart, fractionalPart = ""] = mantissa!.split(".");
+  const digits = `${integerPart}${fractionalPart}`;
+  const centsIndex = integerPart.length + exponent + 2;
+  let cents = centsIndex <= 0
+    ? "0"
+    : centsIndex >= digits.length
+      ? `${digits}${"0".repeat(centsIndex - digits.length)}`
+      : digits.slice(0, centsIndex);
+  const roundUp = centsIndex === 0
+    ? (digits[0] ?? "0") >= "5"
+    : centsIndex > 0 && centsIndex < digits.length && digits[centsIndex]! >= "5";
+  if (roundUp) {
+    const chars = cents.split("");
+    let index = chars.length - 1;
+    while (index >= 0 && chars[index] === "9") chars[index--] = "0";
+    if (index >= 0) chars[index] = String(Number(chars[index]) + 1);
+    else chars.unshift("1");
+    cents = chars.join("");
+  }
+  const rounded = Number(cents) / 100;
+  return value < 0 ? -rounded : rounded;
 }
 
 export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps) {
@@ -125,7 +198,12 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     draft,
     editingSetId,
     busy,
+    busyLabel,
     error,
+    notice = null,
+    mutationUncertain = false,
+    mutationActionLabel,
+    onVerifyPendingMutation,
     menuOpen,
     clockStartedAt = null,
     clockEndedAt = null,
@@ -145,6 +223,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     onDeleteSet,
     trailingAction,
     finishDialog,
+    inertBackground = false,
     autoAdvanceNonce = 0,
   } = props;
 
@@ -158,11 +237,13 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   const menuButtonRef = useRef<HTMLDivElement | null>(null);
   const menuPanelRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const historyAnnouncementRef = useRef<HTMLParagraphElement | null>(null);
   const animatingRef = useRef(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [commentOpen, setCommentOpen] = useState(false);
   const [historyById, setHistoryById] = useState<Record<number, ExerciseHistoryEntryDto[]>>({});
   const historyByIdRef = useRef<Record<number, ExerciseHistoryEntryDto[]>>({});
+  const [historyAnnouncement, setHistoryAnnouncement] = useState("");
   const [infoExerciseId, setInfoExerciseId] = useState(exercise.id);
   const [dragPx, setDragPx] = useState(0);
   const [animating, setAnimating] = useState(false);
@@ -182,6 +263,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   const canPrev = exerciseIndex > 0;
   const canNext = exerciseIndex < exerciseCount - 1;
+  const manualNavigationBlocked = busy || mutationUncertain;
   const clockMs = elapsedMs(clockStartedAt, clockTicking ? null : clockEndedAt, nowMs);
 
   useEffect(() => {
@@ -261,6 +343,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   }
 
   function requestNeighbor(delta: -1 | 1, mode: "manual" | "automatic" = "manual") {
+    if (mutationUncertain || (mode === "manual" && busy)) return;
     if (animatingRef.current) return;
     if (delta < 0 && !canPrev) return;
     if (delta > 0 && !canNext) return;
@@ -303,6 +386,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   function onPointerDown(event: ReactPointerEvent<HTMLElement>) {
     if (event.pointerType === "mouse") return;
+    if (manualNavigationBlocked) return;
     if (animatingRef.current) return;
     if (isEditableSwipeTarget(event.target)) return;
     pointerStart.current = {
@@ -374,9 +458,16 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   }
 
   function copyHistorySet(set: ExerciseHistorySetDto) {
+    if (busy || mutationUncertain) return;
+    const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
     onDraftChange({
       ...draft,
       reps: String(set.reps),
+      additionalLoadKg: exercise.resistanceType === RESISTANCE.BODYWEIGHT
+        && parsedOverride.success
+        && (parsedOverride.data.additionalLoadKg ?? 0) > 0
+        ? String(parsedOverride.data.additionalLoadKg)
+        : "",
       weightKg: set.weightKg == null ? draft.weightKg : String(set.weightKg),
       bandNominalResistanceKg: set.bandNominalResistanceKg == null
         ? draft.bandNominalResistanceKg
@@ -387,6 +478,116 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
       rir: set.rir == null ? "" : String(set.rir),
     });
     setCopiedHint(true);
+  }
+
+  function replaceCachedHistorySet(exerciseId: number, entry: ExerciseHistoryEntryDto, nextSet: ExerciseHistorySetDto) {
+    const cached = historyByIdRef.current[exerciseId] ?? [];
+    const next = cached.flatMap((candidate) => {
+      if (candidate.sessionId !== entry.sessionId) return [candidate];
+      const sets = candidate.sets.map((set) => set.id === nextSet.id ? nextSet : set);
+      return sets.length > 0 ? [{ ...candidate, sets }] : [];
+    });
+    historyByIdRef.current = { ...historyByIdRef.current, [exerciseId]: next };
+    setHistoryById((current) => ({ ...current, [exerciseId]: next }));
+  }
+
+  function removeCachedHistorySet(exerciseId: number, entry: ExerciseHistoryEntryDto, setId: number) {
+    const cached = historyByIdRef.current[exerciseId] ?? [];
+    const next = cached.flatMap((candidate) => {
+      if (candidate.sessionId !== entry.sessionId) return [candidate];
+      const sets = candidate.sets.filter((set) => set.id !== setId);
+      return sets.length > 0 ? [{ ...candidate, sets }] : [];
+    });
+    historyByIdRef.current = { ...historyByIdRef.current, [exerciseId]: next };
+    setHistoryById((current) => ({ ...current, [exerciseId]: next }));
+  }
+
+  async function readHistoricalSet(sessionId: number, setId: number): Promise<StrengthSetDto | null> {
+    const response = await fetchWithHistoryTimeout(`/api/v1/training/sessions/${sessionId}/sets/${setId}`, { cache: "no-store" });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error("historical session verification failed");
+    const body = await response.json() as { set?: StrengthSetDto };
+    if (!body.set || body.set.id !== setId) throw new Error("historical set verification response was invalid");
+    return body.set;
+  }
+
+  function historySetMatchesPayload(set: ExerciseHistorySetDto, payload: UpdateSetInput): boolean {
+    if (payload.reps !== undefined && set.reps !== payload.reps) return false;
+    if (payload.weightKg !== undefined
+        && set.weightKg !== (payload.weightKg === null ? null : roundLoadToDatabasePrecision(payload.weightKg))) return false;
+    if (payload.bandNominalResistanceKg !== undefined
+        && set.bandNominalResistanceKg !== (payload.bandNominalResistanceKg === null ? null : roundLoadToDatabasePrecision(payload.bandNominalResistanceKg))) return false;
+    if (payload.rir !== undefined && set.rir !== payload.rir) return false;
+    if (payload.comment !== undefined && set.comment !== payload.comment) return false;
+    if (payload.loadAccountingOverride !== undefined
+        && stableJson(set.loadAccountingOverride ?? null) !== stableJson(payload.loadAccountingOverride)) return false;
+    return true;
+  }
+
+  function storeVerifiedHistorySet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: StrengthSetDto) {
+    replaceCachedHistorySet(exerciseId, entry, {
+      id: set.id,
+      setNumber: set.setNumber,
+      reps: set.reps,
+      weightKg: set.weightKg,
+      bandNominalResistanceKg: set.bandNominalResistanceKg,
+      rir: set.rir,
+      comment: set.comment,
+      completedAt: set.completedAt,
+      loadAccountingOverride: set.loadAccountingOverride ?? null,
+    });
+  }
+
+  async function reconcileHistoricalUpdate(
+    exerciseId: number,
+    entry: ExerciseHistoryEntryDto,
+    original: ExerciseHistorySetDto,
+    payload: UpdateSetInput,
+  ): Promise<void> {
+    const refreshedSet = await readHistoricalSet(entry.sessionId, original.id);
+    if (!refreshedSet || !historySetMatchesPayload(refreshedSet, payload)) {
+      throw new Error("historical set update could not be confirmed");
+    }
+    storeVerifiedHistorySet(exerciseId, entry, refreshedSet);
+    const alreadyCurrent = historySetMatchesPayload(original, payload);
+    announceHistory(alreadyCurrent
+      ? (uk ? "Підхід уже має ці значення; показано актуальний запис." : "The set already had these values; the current record is shown.")
+      : (uk ? "Підхід збережено." : "Set saved."));
+  }
+
+  function announceHistory(message: string, focus = false) {
+    setHistoryAnnouncement(message);
+    if (focus) window.requestAnimationFrame(() => historyAnnouncementRef.current?.focus());
+  }
+
+  async function updateHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput): Promise<void> {
+    if (busy || mutationUncertain) throw new Error("set mutations are blocked until the pending write is verified");
+    try {
+      await fetchWithHistoryTimeout(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // A transport error can arrive after the server has committed the edit.
+    }
+    await reconcileHistoricalUpdate(exerciseId, entry, set, payload);
+  }
+
+  async function deleteHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto): Promise<void> {
+    if (busy || mutationUncertain) throw new Error("set mutations are blocked until the pending write is verified");
+    let response: Response | null = null;
+    try {
+      response = await fetchWithHistoryTimeout(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, { method: "DELETE" });
+    } catch {
+      // Reconcile the postcondition before telling the user to retry a timed-out mutation.
+    }
+    const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
+    if (refreshedSet !== null) throw new Error("historical set deletion could not be confirmed");
+    removeCachedHistorySet(exerciseId, entry, set.id);
+    announceHistory(response?.ok
+      ? (uk ? "Підхід видалено." : "Set deleted.")
+      : (uk ? "Підхід відсутній; показано актуальну історію." : "The set is absent; the current history is shown."), true);
   }
 
   const exerciseCountLabel = uk
@@ -414,8 +615,11 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           draft={interactive ? draft : emptySetDraft()}
           editingSetId={interactive ? editingSetId : null}
           busy={interactive && busy}
-          canPrev={canPrev}
-          canNext={canNext}
+          busyLabel={interactive ? busyLabel : undefined}
+          mutationUncertain={interactive && mutationUncertain}
+          historyMutationBlocked={interactive && manualNavigationBlocked}
+          canPrev={canPrev && !manualNavigationBlocked}
+          canNext={canNext && !manualNavigationBlocked}
           infoOpen={interactive && infoOpen}
           showCommentField={interactive && showCommentField}
           onToggleInfo={() => setInfoOpen((value) => !value)}
@@ -432,6 +636,8 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           historyLoading={historyById[target.id] === undefined}
           copiedHint={interactive && copiedHint}
           onCopyHistorySet={copyHistorySet}
+          onUpdateHistoricalSet={(entry, set, payload) => updateHistoricalSet(target.id, entry, set, payload)}
+          onDeleteHistoricalSet={(entry, set) => deleteHistoricalSet(target.id, entry, set)}
         />
       </div>
     );
@@ -439,7 +645,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   return (
     <main className={styles.workoutShell}>
-      <div className={styles.workoutFrame}>
+      <div className={styles.workoutFrame} inert={inertBackground}>
         <header className={styles.workoutTop}>
           <div className={styles.workoutChrome}>
             <Link className={`${styles.liveBack} ${styles.workoutChromeBack}`} href={backHref}>
@@ -457,6 +663,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
                 aria-expanded={menuOpen}
                 aria-haspopup="dialog"
                 aria-label={uk ? "Меню сесії" : "Session menu"}
+                disabled={busy || mutationUncertain}
                 onClick={onToggleMenu}
               >
                 ⋯
@@ -500,14 +707,25 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           )}
         </header>
 
-        {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+        {error && (
+          <div className={styles.errorBanner} role="alert">
+            {error}
+            {mutationUncertain && onVerifyPendingMutation && (
+              <button type="button" className={styles.liveSecondary} disabled={busy} onClick={onVerifyPendingMutation}>
+                {mutationActionLabel ?? (uk ? "Перевірити стан" : "Check status")}
+              </button>
+            )}
+          </div>
+        )}
+        {notice && <p className={styles.liveProgress} role="status" aria-live="polite">{notice}</p>}
+        {historyAnnouncement && <p ref={historyAnnouncementRef} className={styles.liveProgress} role="status" aria-live="polite" tabIndex={-1}>{historyAnnouncement}</p>}
 
         <div className={styles.workoutWorkspace}>
           <button
             className={`${styles.workoutSideNav} ${!canPrev ? styles.workoutSideNavHidden : ""}`}
             type="button"
             aria-label={uk ? "Попередня вправа" : "Previous exercise"}
-            disabled={!canPrev}
+            disabled={!canPrev || manualNavigationBlocked}
             onClick={() => requestNeighbor(-1)}
           >
             ←
@@ -541,14 +759,18 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
             className={`${styles.workoutSideNav} ${!canNext ? styles.workoutSideNavHidden : ""}`}
             type="button"
             aria-label={uk ? "Наступна вправа" : "Next exercise"}
-            disabled={!canNext}
+            disabled={!canNext || manualNavigationBlocked}
             onClick={() => requestNeighbor(1)}
           >
             →
           </button>
         </div>
       </div>
-      {footerContent}
+      {footerContent && (
+        <div inert={inertBackground} style={{ display: "contents" }}>
+          {footerContent}
+        </div>
+      )}
       {finishDialog}
     </main>
   );

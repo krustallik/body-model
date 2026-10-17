@@ -8,7 +8,7 @@ import type { ResistanceType } from "@/modules/training/training.constants";
 import type { StrengthSessionDto, StrengthSetDto } from "@/modules/training/training.types";
 
 export const CANONICAL_STRENGTH_TRAINING_INPUT_V7_VERSION =
-  "bodycast-physiology-v7-strength-input-v3" as const;
+  "bodycast-physiology-v7-strength-input-v4" as const;
 
 export type CanonicalStrengthTrainingHeartRateSampleV7 = {
   timestamp: string;
@@ -60,7 +60,8 @@ export type CanonicalStrengthTrainingInputV7 = {
   contractVersion: typeof CANONICAL_STRENGTH_TRAINING_INPUT_V7_VERSION;
   strengthDiarySessionId: number;
   sessionRevision: number;
-  program: { programId: number; programVersionId: number; programVersionNumber: number };
+  /** Null for a dynamic live diary session without a program template. */
+  program: { programId: number; programVersionId: number; programVersionNumber: number } | null;
   exercises: CanonicalStrengthTrainingExerciseV7[];
   /** Garmin is the occurrence source only when a diary session is linked to it. */
   workout: {
@@ -110,16 +111,23 @@ export function buildCanonicalStrengthTrainingInputV7(input: {
   heartRateSamples: readonly CanonicalStrengthTrainingHeartRateSampleV7[] | null;
 }): CanonicalStrengthTrainingInputV7 {
   const { session } = input;
+  let program: CanonicalStrengthTrainingInputV7["program"] = null;
+  if (session.programId !== null || session.programVersionId !== null || session.programVersionNumber !== null) {
+    if (session.programId === null || session.programVersionId === null || session.programVersionNumber === null) {
+      throw new Error("strength session has incomplete program provenance");
+    }
+    program = {
+      programId: session.programId,
+      programVersionId: session.programVersionId,
+      programVersionNumber: session.programVersionNumber,
+    };
+  }
   return {
     contractVersion: CANONICAL_STRENGTH_TRAINING_INPUT_V7_VERSION,
     strengthDiarySessionId: session.id,
     sessionRevision: session.revision,
     // Deliberately excludes mutable program template metadata such as its name.
-    program: {
-      programId: session.programId,
-      programVersionId: session.programVersionId,
-      programVersionNumber: session.programVersionNumber,
-    },
+    program,
     exercises: [...session.exercises]
       .sort((left, right) => left.order - right.order)
       .map((exercise) => {

@@ -36,10 +36,16 @@ export type DiagnosticsDto = {
   experimentalEnergySummary?: {
     restingRmrKcalPerDay: number | null;
     recentTypicalMaintenanceKcalPerDay: number | null;
+    /** @deprecated Legacy UTC-day API field; the Diagnostics UI intentionally does not present it. */
     todayEstimatedExpenditureKcalPerDay: number | null;
     latestModeledExpenditureKcalPerDay: number | null;
     typicalMaintenanceEligibleDays: number;
+    typicalMaintenanceWindowDays: 28;
   } | null;
+  energyHistory: {
+    latestModeledDay: { date: string; status: "complete" | "incomplete"; expenditureKcalPerDay: number | null } | null;
+    previousCompletedDays: Array<{ date: string; expenditureKcalPerDay: number | null }>;
+  };
   dataContinuity: {
     level: DiagnosticLevel;
     recentWindowDays: 28;
@@ -113,4 +119,5 @@ export type DiagnosticsEvidence = {
   unresolvedNutritionDayCount: number;
   weightObservationCount: number;
   experimentalEnergySummary?: DiagnosticsDto["experimentalEnergySummary"];
+  energyHistory?: DiagnosticsDto["energyHistory"];
 };

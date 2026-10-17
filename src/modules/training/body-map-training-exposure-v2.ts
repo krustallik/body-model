@@ -6,9 +6,14 @@ import {
 } from "@/modules/training/body-map-catalog-v2";
 import {
   EXERCISE_ANATOMY_MAPPING_REGISTRY_V1,
+  resolveStoredExerciseAnatomySnapshotV1,
   type ExerciseAnatomyMappingV1,
   type ExerciseAnatomyRoleV1,
 } from "@/modules/training/exercise-anatomy-mapping-v1";
+import {
+  EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY,
+  parseExerciseAnatomySnapshotV2,
+} from "@/modules/training/exercise-anatomy-mapping-v2";
 
 export const BODY_MAP_EXPOSURE_CONTRACT_V2 = "bodycast-body-map-training-exposure-v2" as const;
 export const BODY_MAP_EXPOSURE_VERSION_V2 = "bodycast-body-map-training-exposure-v2.0.0" as const;
@@ -91,6 +96,32 @@ export function projectExerciseMappingToBodyMapV2(
   mapping: ExerciseAnatomyMappingV1,
 ): BodyMapProjectedTargetV2[] {
   return projectExerciseAnatomyToBodyMapV2(physicalSetId, mapping);
+}
+
+/** Project a persisted snapshot; malformed versioned data fails closed without catalog fallback. */
+export function projectStoredExerciseMappingToBodyMapV2(
+  physicalSetId: string,
+  snapshotValue: unknown,
+): BodyMapProjectedTargetV2[] {
+  if (!snapshotValue || typeof snapshotValue !== "object" || Array.isArray(snapshotValue)) return [];
+  const record = snapshotValue as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY)
+    && record[EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY] !== null) {
+    const snapshot = parseExerciseAnatomySnapshotV2(record[EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY]);
+    if (!snapshot) return [];
+    return projectExerciseAnatomyToBodyMapV2(physicalSetId, {
+      stableKey: snapshot.stableKey,
+      mappingVersion: snapshot.mappingVersion,
+      targets: snapshot.targets,
+    });
+  }
+  const legacySnapshot = resolveStoredExerciseAnatomySnapshotV1(snapshotValue);
+  if (legacySnapshot.availability !== "available") return [];
+  return projectExerciseAnatomyToBodyMapV2(physicalSetId, {
+    stableKey: legacySnapshot.stableKey,
+    mappingVersion: legacySnapshot.mappingVersion,
+    targets: legacySnapshot.targets,
+  });
 }
 
 export function deriveBodyMapExposureV2(input: BodyMapExposureInputV2): readonly BodyMapGroupExposureV2[] {

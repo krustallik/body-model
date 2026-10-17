@@ -42,6 +42,7 @@ function legacyDefaultFor(stableKey: string | null | undefined): LoadConfigV1 | 
 function modeFor(config: LoadConfigV1 | null, resistanceType: ResistanceType): ConfigMode {
   if (config && matchesResistance(config, resistanceType)) {
     if (config.accountingKind === "external-per-implement-per-side"
+        || config.accountingKind === "external-per-implement-pair-per-side"
         || config.accountingKind === "external-per-implement-per-movement") return "external-per-side";
     if (config.accountingKind === "external-complete-setup-per-movement") return "external-whole-setup";
     if (config.accountingKind === "band-nominal-per-logged-side") return "band-logged-side";
@@ -234,7 +235,8 @@ export function ExerciseLoadConfigEditor({
       && displayedConfig?.accountingKind === "external-per-implement-per-movement"
       && loadedSides === initialLoadedSides(displayedConfig, resistanceType);
     const preserveLegacySideConfig = mode === "external-per-side"
-      && displayedConfig?.accountingKind === "external-per-implement-per-side"
+      && (displayedConfig?.accountingKind === "external-per-implement-per-side"
+        || displayedConfig?.accountingKind === "external-per-implement-pair-per-side")
       && loadedSides === displayedConfig.loadedSides;
     const candidate = preserveMovementConfig || preserveLegacySideConfig
       ? { ...displayedConfig, configVersion }
@@ -260,16 +262,21 @@ export function ExerciseLoadConfigEditor({
   const pairLabel = previewConfig?.equipment.equipmentId === "dumbbell"
     ? uk ? "2 гантелі по 20 кг" : "2 dumbbells at 20 kg"
     : uk ? "Пара снарядів по 20 кг" : "Pair of implements at 20 kg";
+  const unilateralPair = previewConfig?.accountingKind === "external-per-implement-pair-per-side";
   const previewLine = preview && previewConfig
     ? preview.kind === "external"
       ? uk
         ? mode === "external-per-side"
-          ? loadedSides === 2 && execution === "simultaneous"
+          ? unilateralPair
+            ? pairLabel + " × 12 повторів на кожну сторону (2 сторони) → " + number(preview.value) + " кг·повторів"
+            : loadedSides === 2 && execution === "simultaneous"
             ? pairLabel + " × 12 повторів → " + number(preview.value) + " кг·повторів"
             : "20 кг за снаряд × 12 повторів → " + number(preview.value) + " кг·повторів"
           : `20 кг сумарної ваги × 12 повторів → ${number(preview.value)} кг·повторів`
         : mode === "external-per-side"
-          ? loadedSides === 2 && execution === "simultaneous"
+          ? unilateralPair
+            ? pairLabel + " × 12 reps per side (both sides) → " + number(preview.value) + " kg·reps"
+            : loadedSides === 2 && execution === "simultaneous"
             ? pairLabel + " × 12 reps → " + number(preview.value) + " kg·reps"
             : "20 kg per implement × 12 reps → " + number(preview.value) + " kg·reps"
           : `20 kg combined load × 12 reps → ${number(preview.value)} kg·reps`
@@ -288,10 +295,14 @@ export function ExerciseLoadConfigEditor({
       : "Enter the combined implement weight for one rep. For example, two 20 kg dumbbells = 40 kg. Enter reps once for the whole set."
     : mode === "external-per-side"
       ? uk
-        ? loadedSides === 2 && execution === "simultaneous"
+        ? unilateralPair
+          ? "Введіть вагу однієї гантелі та повтори на кожну сторону. Приклад враховує обидві гантелі й обидві сторони."
+          : loadedSides === 2 && execution === "simultaneous"
           ? "Введіть вагу одного снаряда з пари. Облік автоматично врахує обидва снаряди; повтори вводяться один раз за весь підхід."
           : "Введіть вагу одного снаряда. Повтори вводяться один раз за весь підхід; правило вправи врахує її налаштування."
-        : loadedSides === 2 && execution === "simultaneous"
+        : unilateralPair
+          ? "Enter the weight of one dumbbell and reps per side. The example counts both dumbbells and both sides."
+          : loadedSides === 2 && execution === "simultaneous"
           ? "Enter the weight of one implement from a pair. Both implements are counted automatically; enter reps once for the whole set."
           : "Enter the weight of one implement. Enter reps once for the whole set; the exercise rule accounts for its setup."
       : mode === "band-logged-side"

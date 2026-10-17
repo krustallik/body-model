@@ -19,6 +19,9 @@ type ShadowRequest = {
   productionModelVersion?: string;
   /** Diagnostic test/read mode; production shadow always rebuilds first. */
   rebuild?: boolean;
+  /** Worker callers require the failure diagnostic to be followed by a retryable error. */
+  throwAfterDiagnostic?: boolean;
+  onProgress?: () => Promise<void> | void;
 };
 
 type Rebuild = Pick<PhysiologyV7PersistedRebuildService, "rebuild">;
@@ -85,10 +88,11 @@ export class PhysiologyV7ShadowService {
           profileId: input.profileId, fromDate: input.fromDate, toDate: input.toDate,
           historyFromDate: input.fromDate, timeZone: input.timeZone,
           initialState: createUnavailablePhysiologyRuntimeStateV7(),
+          onProgress: input.onProgress,
         });
       }
       const v7Rows = new Map((await this.persistence.readRange(input.profileId, input.fromDate, input.toDate)).map((row) => [row.date, row]));
-      await Promise.all(rangeDates.map(async (date) => {
+      for (const date of rangeDates) {
         const v7 = v7Rows.get(date) ?? { status: "missing" as const, date, resultFingerprint: null, result: null };
         const projection = v7Projection(v7.result);
         const reasons: string[] = [];
@@ -126,20 +130,25 @@ export class PhysiologyV7ShadowService {
             executionStatus: "success", errorCode: null,
           },
         });
-      }));
+        await input.onProgress?.();
+      }
     } catch (error) {
       const errorCode = error instanceof Error ? error.name : "shadow-unknown-failure";
-      await Promise.all(rangeDates.map((date) => this.client.physiologyV7ShadowDiagnostic.upsert({
-        where: { profileId_date: { profileId: input.profileId, date } },
-        create: { profileId: input.profileId, date, productionEpisodeId: input.productionEpisodeId ?? null,
-          productionModelVersion: input.productionModelVersion ?? null, productionOutput: { availability: "not-read-after-shadow-failure" },
-          v7Status: "failure", v7ResultFingerprint: null, v7Versions: currentPhysiologyV7Versions as Prisma.InputJsonValue,
-          v7Projection: { availability: "unavailable" }, comparison: { availability: "unavailable", reason: "shadow-rebuild-failure" },
-          reasonCodes: ["v7-rebuild-failure"], runtimeDurationMs: Date.now() - startedAt, executionStatus: "failure", errorCode },
-        update: { v7Status: "failure", v7ResultFingerprint: null, v7Versions: currentPhysiologyV7Versions as Prisma.InputJsonValue,
-          v7Projection: { availability: "unavailable" }, comparison: { availability: "unavailable", reason: "shadow-rebuild-failure" },
-          reasonCodes: ["v7-rebuild-failure"], runtimeDurationMs: Date.now() - startedAt, executionStatus: "failure", errorCode },
-      })));
+      for (const date of rangeDates) {
+        await input.onProgress?.();
+        await this.client.physiologyV7ShadowDiagnostic.upsert({
+          where: { profileId_date: { profileId: input.profileId, date } },
+          create: { profileId: input.profileId, date, productionEpisodeId: input.productionEpisodeId ?? null,
+            productionModelVersion: input.productionModelVersion ?? null, productionOutput: { availability: "not-read-after-shadow-failure" },
+            v7Status: "failure", v7ResultFingerprint: null, v7Versions: currentPhysiologyV7Versions as Prisma.InputJsonValue,
+            v7Projection: { availability: "unavailable" }, comparison: { availability: "unavailable", reason: "shadow-rebuild-failure" },
+            reasonCodes: ["v7-rebuild-failure"], runtimeDurationMs: Date.now() - startedAt, executionStatus: "failure", errorCode },
+          update: { v7Status: "failure", v7ResultFingerprint: null, v7Versions: currentPhysiologyV7Versions as Prisma.InputJsonValue,
+            v7Projection: { availability: "unavailable" }, comparison: { availability: "unavailable", reason: "shadow-rebuild-failure" },
+            reasonCodes: ["v7-rebuild-failure"], runtimeDurationMs: Date.now() - startedAt, executionStatus: "failure", errorCode },
+        });
+      }
+      if (input.throwAfterDiagnostic) throw error;
     }
   }
 }

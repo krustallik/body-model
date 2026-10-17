@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const services = vi.hoisted(() => ({
   recoverModelEpisode: vi.fn(),
   getModelRecoveryStatus: vi.fn(),
+  TrainingRefreshVisibilityPendingError: class TrainingRefreshVisibilityPendingError extends Error {},
+  ModelRefreshVisibilityPendingError: class ModelRefreshVisibilityPendingError extends Error {},
 }));
 vi.mock("@/modules/model-recovery/model-recovery.service", () => services);
 
@@ -13,6 +15,10 @@ import {
   NoActiveModelEpisodeError,
 } from "@/modules/model-episodes/model-episode.errors";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
+import {
+  ModelRefreshVisibilityPendingError,
+  TrainingRefreshVisibilityPendingError,
+} from "@/modules/model-recovery/model-recovery.service";
 
 const apiKey = "a-long-model-test-secret";
 
@@ -102,6 +108,8 @@ describe("historical recovery API", () => {
   it.each([
     [new NoActiveModelEpisodeError(), 404, "no_active_episode"],
     [new ModelEpisodeNotFoundError(), 404, "episode_not_found"],
+    [new TrainingRefreshVisibilityPendingError(), 503, "training_refresh_pending"],
+    [new ModelRefreshVisibilityPendingError(), 503, "model_refresh_pending"],
     [new Error("private"), 500, "internal_error"],
   ])("maps recovery-status failures", async (error, status, code) => {
     services.getModelRecoveryStatus.mockRejectedValue(error);

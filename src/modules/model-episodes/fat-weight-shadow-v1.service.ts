@@ -12,7 +12,12 @@ function stateFromStored(result: unknown): FatWeightShadowStateV1 | null {
 }
 
 /** Isolated operational shadow; never read by legacy TDEE, forecast, or v7 runtime. */
-export async function rebuildFatWeightShadowV1(input: { profileId: number; fromDate: string; toDate: string }): Promise<void> {
+export async function rebuildFatWeightShadowV1(input: {
+  profileId: number;
+  fromDate: string;
+  toDate: string;
+  onProgress?: () => Promise<void> | void;
+}): Promise<void> {
   const sourceFence = await readUnifiedSourceFenceV1(prisma, input.profileId);
   const source = await prisma.dailyModelState.findFirst({ where: { date: { gte: input.fromDate, lte: input.toDate }, episode: { profileId: input.profileId } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { episodeId: true, episode: { select: { initialFatMassKg: true, initialLeanTissueKg: true, startDate: true } } } });
   if (source === null) return;
@@ -37,6 +42,7 @@ export async function rebuildFatWeightShadowV1(input: { profileId: number; fromD
     const result = transitionFatWeightShadowV1({ prior, energyBalanceKcal: row.energyBalanceKcal, observedWeightKg: observed?.weightKg ?? null, observedBodyFatPercent: observed?.bodyFatPercent?.toNumber() ?? null });
     candidates.push({ date: row.date, sourceFingerprint: result.fingerprint, modelVersion: result.modelVersion, result });
     prior = result.state;
+    await input.onProgress?.();
   }
   await persistUnifiedShadowCandidateV1({
     client: prisma,
@@ -57,6 +63,7 @@ export async function rebuildFatWeightShadowV1(input: { profileId: number; fromD
           update: { sourceFingerprint: candidate.sourceFingerprint, modelVersion: candidate.modelVersion, result: candidate.result },
         });
         changed = true;
+        await input.onProgress?.();
       }
       return changed;
     },

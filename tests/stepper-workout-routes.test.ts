@@ -20,14 +20,24 @@ describe("stepper workout CRUD routes", () => {
     await expect(listed.json()).resolves.toEqual({ workouts: [workout], totalCount: 23 });
     expect(stepperWorkoutRepository.list).toHaveBeenCalledWith({ limit: 5, offset: 10 });
 
-    stepperWorkoutRepository.create.mockResolvedValue({ ...workout, modelPublicationStatus: "stale" });
-    const created = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {
+    const missingKey = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 }),
     }));
+    expect(missingKey.status).toBe(428);
+    expect(stepperWorkoutRepository.create).not.toHaveBeenCalled();
+
+    const operationId = "08a2c74a-9ff7-4aa2-8b6e-23a826938442";
+    stepperWorkoutRepository.create.mockResolvedValue({ ...workout, modelPublicationStatus: "stale" });
+    const created = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {
+      method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": operationId },
+      body: JSON.stringify({ startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 }),
+    }));
     expect(created.status).toBe(201);
-    await expect(created.json()).resolves.toEqual({ workout: { ...workout, modelPublicationStatus: "stale" } });
-    expect(stepperWorkoutRepository.create).toHaveBeenCalledWith({ startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 });
+    await expect(created.json()).resolves.toEqual({ operationId, state: "COMMITTED", workout: { ...workout, modelPublicationStatus: "stale" } });
+    expect(stepperWorkoutRepository.create).toHaveBeenCalledWith(
+      { startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 }, operationId,
+    );
   });
 
   it("updates and deletes manual events and refuses other workout sources", async () => {

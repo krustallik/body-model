@@ -12,6 +12,8 @@ export type HealthSyncMetadata = {
   timezone: string;
   receivedAt: Date;
   syncedAt: string | null;
+  /** Enqueue dependent refresh work in the same transaction as each raw write. */
+  deferDependentRefresh?: boolean;
 };
 
 export interface SyncDateResult {

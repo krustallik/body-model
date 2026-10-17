@@ -27,7 +27,6 @@ export async function recordHealthSyncAudit(input: {
   receivedAt?: Date;
 }): Promise<void> {
   const receivedAt = input.receivedAt ?? new Date();
-  const cutoff = new Date(receivedAt.getTime() - HEALTH_SYNC_AUDIT_RETENTION_DAYS * 86_400_000);
   try {
     await prisma.healthSyncAudit.create({
       data: {
@@ -39,12 +38,25 @@ export async function recordHealthSyncAudit(input: {
         receivedAt,
       },
     });
-    await prisma.healthSyncAudit.deleteMany({ where: { receivedAt: { lt: cutoff } } });
   } catch (error) {
     logEvent("error", "health_sync_audit_write_failed", {
       outcome: input.outcome,
       httpStatus: input.httpStatus,
       errorType: errorKind(error),
     });
+  }
+}
+
+/** Retention is periodic maintenance; keep its table sweep off the sync response path. */
+export async function pruneExpiredHealthSyncAudits(referenceDate = new Date()): Promise<boolean> {
+  const cutoff = new Date(referenceDate.getTime() - HEALTH_SYNC_AUDIT_RETENTION_DAYS * 86_400_000);
+  try {
+    await prisma.healthSyncAudit.deleteMany({ where: { receivedAt: { lt: cutoff } } });
+    return true;
+  } catch (error) {
+    logEvent("error", "health_sync_audit_retention_prune_failed", {
+      errorType: errorKind(error),
+    });
+    return false;
   }
 }

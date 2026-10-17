@@ -11,6 +11,7 @@ describe("sleep segment persistence", () => {
   it("creates sleep segments with skipDuplicates and ignores outer sync date for attribution", async () => {
     const createMany = vi.fn(async () => ({ count: 2 }));
     const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       $executeRaw: vi.fn(async () => 0),
       physiologyV7Lifecycle: {
         upsert: vi.fn(async () => ({

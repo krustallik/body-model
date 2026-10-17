@@ -20,6 +20,11 @@ export type ExternalLoadAccountingV1 =
       ordinaryTonnageFactor: 2;
     }
   | {
+      entryBasis: "per-implement";
+      setExecution: "unilateral-pair-both-sides";
+      ordinaryTonnageFactor: 4;
+    }
+  | {
       entryBasis: "total-external-load";
       setExecution: "single-total-load";
       ordinaryTonnageFactor: 1;
@@ -47,6 +52,12 @@ const unilateralBothSides: ExternalLoadAccountingV1 = {
   ordinaryTonnageFactor: 2,
 };
 
+const unilateralDumbbellPairBothSides: ExternalLoadAccountingV1 = {
+  entryBasis: "per-implement",
+  setExecution: "unilateral-pair-both-sides",
+  ordinaryTonnageFactor: 4,
+};
+
 const notApplicable: ExternalLoadAccountingV1 = {
   entryBasis: "not-applicable",
   setExecution: "n/a",
@@ -70,6 +81,11 @@ const REGISTRY_ENTRIES: readonly RegistryEntry[] = [
   { stableKey: "one_arm_concentration_curl", accounting: unilateralBothSides },
   { stableKey: "incline_seated_rotating_dumbbell_curl", accounting: bilateralPerImplement },
   { stableKey: "supported_dumbbell_wrist_curl", accounting: unilateralBothSides },
+  { stableKey: "bulgarian_split_squat", accounting: unilateralDumbbellPairBothSides },
+  { stableKey: "forward_dumbbell_lunge", accounting: unilateralDumbbellPairBothSides },
+  { stableKey: "goblet_squat", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
+  { stableKey: "dumbbell_crunch", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
+  { stableKey: "dumbbell_russian_twist", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
 ] as const;
 
 export const EXTERNAL_LOAD_ACCOUNTING_REGISTRY_V1: ReadonlyMap<

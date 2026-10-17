@@ -103,7 +103,7 @@ describe("external load accounting + ordinary tonnage", () => {
 
   it("covers every canonical stableKey with explicit load-accounting semantics", () => {
     const coverage = approvedExternalLoadAccountingCoverageV1();
-    expect(coverage).toEqual({ expected: 13, mapped: 13, missingStableKeys: [] });
+    expect(coverage).toEqual({ expected: 18, mapped: 18, missingStableKeys: [] });
     for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
       expect(lookupExternalLoadAccountingV1(identity.stableKey)).not.toBeNull();
     }
@@ -146,6 +146,22 @@ describe("external load accounting + ordinary tonnage", () => {
       weightKg: 12,
       reps: 10,
     }])).toBe(240);
+    for (const stableKey of ["goblet_squat", "dumbbell_crunch", "dumbbell_russian_twist"] as const) {
+      expect(ordinaryExternalWeightTonnageKg([{
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        stableKey,
+        weightKg: 10,
+        reps: 5,
+      }])).toBe(50);
+    }
+    for (const stableKey of ["bulgarian_split_squat", "forward_dumbbell_lunge"] as const) {
+      expect(ordinaryExternalWeightTonnageKg([{
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        stableKey,
+        weightKg: 10,
+        reps: 5,
+      }])).toBe(200);
+    }
   });
 
   it("excludes bodyweight, band, unknown custom, and not-applicable entries", () => {

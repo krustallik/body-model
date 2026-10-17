@@ -10,6 +10,8 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+const mockI18n = vi.hoisted(() => ({ locale: "en" }));
+
 vi.mock("next/link", () => ({
   default: ({
     href,
@@ -43,7 +45,7 @@ vi.mock("@/app/forecast/forecast-chart", () => ({
 }));
 
 vi.mock("@/i18n/i18n-provider", () => ({
-  useI18n: () => ({ locale: "en", intlLocale: "en-US", setLocale: () => undefined }),
+  useI18n: () => ({ locale: mockI18n.locale, intlLocale: mockI18n.locale === "uk" ? "uk-UA" : "en-US", setLocale: () => undefined }),
 }));
 
 import { GoalClient } from "@/app/goal/goal-client";
@@ -182,12 +184,61 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("GoalClient interaction", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    mockI18n.locale = "en";
+    localStorage.clear();
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function showModal(this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    } });
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function close(this: HTMLDialogElement) {
+      this.removeAttribute("open");
+    } });
+  });
   afterEach(() => {
     cleanup();
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
     localStorage.clear();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("does not apply an old context when its profile request resolves after a locale change", async () => {
+    let resolveOldProfile!: (response: Response) => void;
+    const oldProfile = new Promise<Response>((resolve) => { resolveOldProfile = resolve; });
+    let profileCalls = 0;
+    let contextCalls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/v1/profile")) {
+        profileCalls += 1;
+        return profileCalls === 1 ? oldProfile : Promise.resolve(jsonResponse({ profile: null }));
+      }
+      if (url.includes("/api/forecast/context")) {
+        contextCalls += 1;
+        return Promise.resolve(mockI18n.locale === "uk"
+          ? jsonResponse({ error: "no_active_episode" }, 404)
+          : jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      }
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    }));
+
+    const view = render(<GoalClient />);
+    await waitFor(() => expect(contextCalls).toBe(1));
+    await waitFor(() => expect(profileCalls).toBe(1));
+    mockI18n.locale = "uk";
+    view.rerender(<GoalClient />);
+    expect(await screen.findByText("Активної моделі ще немає")).toBeTruthy();
+    expect(profileCalls).toBe(1);
+
+    await act(async () => {
+      resolveOldProfile(jsonResponse({ profile: null }));
+      await oldProfile;
+    });
+
+    expect(screen.getByText("Активної моделі ще немає")).toBeTruthy();
+    expect(screen.queryByText(/Latest modeled day:/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
   });
 
   it("restores scenario inputs but ignores legacy manual nutrition and keeps its template internal", async () => {
@@ -233,7 +284,7 @@ describe("GoalClient interaction", () => {
     expect((screen.getByLabelText(/Strength sessions/) as HTMLInputElement).value).toBe("4");
     expect((screen.getByLabelText(/Other training.*per week/) as HTMLInputElement).value).toBe("2");
     expect((screen.getByLabelText("I have work days") as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("manualModerate");
+    expect((screen.getByLabelText(/Work type/) as HTMLSelectElement).value).toBe("manualModerate");
     expect(screen.queryByText("Recommended nutrition")).toBeNull();
     expect(screen.queryByText("Adjust nutrition manually")).toBeNull();
     expect(screen.queryByLabelText(/Starting calories/)).toBeNull();
@@ -286,6 +337,190 @@ describe("GoalClient interaction", () => {
     expect(screen.getByText(/latest modeled day is not available/i)).toBeTruthy();
   });
 
+  it("shows the expected no-active-model state and navigation without writing saved settings", async () => {
+    const saved = JSON.stringify({ version: 1, settings: { keep: true } });
+    localStorage.setItem(GOAL_SETTINGS_KEY, saved);
+    let profileCalls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) return Promise.resolve(jsonResponse({ error: "no_active_episode" }, 404));
+      if (String(input).includes("/api/v1/profile")) {
+        profileCalls += 1;
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    }));
+
+    render(<GoalClient />);
+    expect(await screen.findByText("No active model yet")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open History" }).getAttribute("href")).toBe("/history");
+    expect(screen.getByRole("link", { name: /Open Forecast/ }).getAttribute("href")).toBe("/forecast");
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    expect(profileCalls).toBe(0);
+    expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toBe(saved);
+  });
+
+  it("shows the planner while optional profile and measurement enrichment are pending", async () => {
+    let resolveProfile!: (response: Response) => void;
+    const pendingProfile = new Promise<Response>((resolve) => { resolveProfile = resolve; });
+    const pendingMeasurements = new Promise<Response>(() => undefined);
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return Promise.resolve(jsonResponse({
+        status: modelStatus(),
+        latestCompletedLocalDate: "2026-08-24",
+        history: [],
+        observedWeights: [{ date: "2026-08-24", weightKg: 80, filteredWeightKg: 80, bodyFatPercent: null }],
+      }));
+      if (url.includes("/api/v1/profile")) return pendingProfile;
+      if (url.includes("/api/v1/days?")) return pendingMeasurements;
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<GoalClient />);
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/v1/profile"))).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/v1/days?"))).toBe(true);
+    });
+    const targetWeight = screen.getByLabelText(/Target weight/) as HTMLInputElement;
+    await user.clear(targetWeight);
+    await user.type(targetWeight, "77.5");
+
+    await act(async () => {
+      resolveProfile(jsonResponse({ profile: { sex: "female", dateOfBirth: "1990-01-01", heightCm: 170 } }));
+      await pendingProfile;
+    });
+
+    expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77.5");
+    expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+  });
+
+  it("keeps a completed result bound to its inputs when optional profile data arrives late", async () => {
+    let resolveProfile!: (response: Response) => void;
+    const pendingProfile = new Promise<Response>((resolve) => { resolveProfile = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
+        return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      }
+      if (url.includes("/api/v1/profile")) return pendingProfile;
+      if (url.includes("/api/goal") && init?.method === "POST") return Promise.resolve(jsonResponse(solvedGoal()));
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<GoalClient />);
+
+    await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
+    const nutritionResult = await screen.findByRole("region", { name: "Recommended nutrition" });
+    const resultBeforeProfile = nutritionResult.textContent;
+
+    await act(async () => {
+      resolveProfile(jsonResponse({ profile: { sex: "female", dateOfBirth: "1990-01-01", heightCm: 170 } }));
+      await pendingProfile;
+    });
+
+    expect(screen.getByRole("region", { name: "Recommended nutrition" }).textContent).toBe(resultBeforeProfile);
+    expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+  });
+
+  it("shows a retryable context-load error and retries a failed server request", async () => {
+    let contextRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        contextRequests += 1;
+        return contextRequests === 1
+          ? jsonResponse({ error: "internal_error" }, 500)
+          : jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    const user = userEvent.setup();
+
+    render(<GoalClient />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByText("Could not load model state. Check your connection and try again.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    expect(contextRequests).toBe(2);
+  });
+
+  it("hides the previously loaded planner after a later request reports no active episode", async () => {
+    let contextRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        contextRequests += 1;
+        return contextRequests === 1
+          ? jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] })
+          : jsonResponse({ error: "no_active_episode" }, 404);
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    const { rerender } = render(<GoalClient />);
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+
+    mockI18n.locale = "uk";
+    rerender(<GoalClient />);
+    expect(await screen.findByText("Активної моделі ще немає")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    expect(contextRequests).toBe(2);
+  });
+
+  it("does not reuse an earlier locale's ready context when switching back during a pending request", async () => {
+    let resolveSecondContext!: (response: Response) => void;
+    let resolveThirdContext!: (response: Response) => void;
+    const secondContext = new Promise<Response>((resolve) => { resolveSecondContext = resolve; });
+    const thirdContext = new Promise<Response>((resolve) => { resolveThirdContext = resolve; });
+    let contextRequests = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        contextRequests += 1;
+        if (contextRequests === 1) return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+        return contextRequests === 2 ? secondContext : thirdContext;
+      }
+      return Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404));
+    }));
+
+    const view = render(<GoalClient />);
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    mockI18n.locale = "uk";
+    view.rerender(<GoalClient />);
+    await waitFor(() => expect(contextRequests).toBe(2));
+    mockI18n.locale = "en";
+    view.rerender(<GoalClient />);
+    await waitFor(() => expect(contextRequests).toBe(3));
+
+    expect(screen.getByText("Loading current model state")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    await act(async () => {
+      resolveThirdContext(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      await thirdContext;
+    });
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    await act(async () => {
+      resolveSecondContext(jsonResponse({ error: "no_active_episode" }, 404));
+      await secondContext;
+    });
+    expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+  });
+
+  it("ignores a pending context response after unmount", async () => {
+    let resolveContext!: (response: Response) => void;
+    const pendingContext = new Promise<Response>((resolve) => { resolveContext = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
+      ? pendingContext
+      : Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404))));
+    const { unmount } = render(<GoalClient />);
+    unmount();
+    await act(async () => {
+      resolveContext(jsonResponse({ error: "internal_error" }, 500));
+      await pendingContext;
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("opens the planner for a valid modeled date and renders solver success", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -319,52 +554,40 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByText("target-centered")).toBeNull();
   });
 
-  it("shows only the latest goal solve when the cancelled request resolves afterward", async () => {
+  it("prevents a second goal solve while the first request is still pending", async () => {
     let resolveFirst!: (response: Response) => void;
-    let resolveSecond!: (response: Response) => void;
     const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
-    const secondResponse = new Promise<Response>((resolve) => { resolveSecond = resolve; });
-    const postSignals: AbortSignal[] = [];
+    const posts: RequestInit[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) {
         return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
       }
       if (url.includes("/api/goal") && init?.method === "POST") {
-        postSignals.push(init.signal as AbortSignal);
-        return postSignals.length === 1 ? firstResponse : secondResponse;
+        posts.push(init);
+        return firstResponse;
       }
       return Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404));
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const staleResult = solvedGoal();
-    staleResult.control.solvedCaloriesKcal = 2_500;
     const user = userEvent.setup();
     render(<GoalClient />);
     await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
-    await waitFor(() => expect(postSignals).toHaveLength(1));
+    await waitFor(() => expect(posts).toHaveLength(1));
 
-    await user.click(screen.getByRole("button", { name: "Cancel previous and recalculate" }));
-    await waitFor(() => expect(postSignals).toHaveLength(2));
-    expect(postSignals[0]?.aborted).toBe(true);
+    expect((screen.getByRole("button", { name: "Calculating scenario…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Wait for this calculation to finish/i)).toBeTruthy();
+    expect(posts).toHaveLength(1);
 
     await act(async () => {
-      resolveSecond(jsonResponse(solvedGoal()));
-      await secondResponse;
+      resolveFirst(jsonResponse(solvedGoal()));
+      await firstResponse;
       await Promise.resolve();
     });
     expect(await screen.findByText("Recommended nutrition")).toBeTruthy();
     expect(screen.getByText("2,100")).toBeTruthy();
-
-    await act(async () => {
-      resolveFirst(jsonResponse(staleResult));
-      await firstResponse;
-      await Promise.resolve();
-    });
-    expect(screen.getByText("2,100")).toBeTruthy();
-    expect(screen.queryByText("2,500")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(posts).toHaveLength(1);
   });
 
   it("uses the completed-local-day boundary for defaults and rejects early dates before POST", async () => {
@@ -599,7 +822,7 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByText("solved")).toBeNull();
   });
 
-  it("guides work setup into the same canonical schedule used by the solver", async () => {
+  it("uses the shared work helper without coupling its recommendation to the work schedule", async () => {
     let posted: Record<string, unknown> | null = null;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -614,17 +837,23 @@ describe("GoalClient interaction", () => {
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
     await user.click(screen.getByLabelText("I have work days"));
-    await user.click(screen.getByRole("button", { name: /Not sure — help me choose/ }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Mostly sitting or waiting" }));
-    expect(screen.getByLabelText(/Breaks per shift/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Help me choose a level" }));
+    for (const answer of [
+      "Mostly in one place",
+      "Mostly stable standing or light hand tasks",
+      "Little effort beyond standing and light movement",
+      "None or occasional light items",
+    ]) {
+      await user.click(screen.getByRole("radio", { name: answer }));
+      await user.click(screen.getByRole("button", { name: "Next" }));
+    }
+    await user.click(screen.getByRole("button", { name: "Use recommendation" }));
+    expect((screen.getByLabelText(/Work type/) as HTMLSelectElement).value).toBe("standingLight");
+    expect((screen.getByLabelText(/Work days/) as HTMLInputElement).value).toBe("5");
+    expect((screen.getByLabelText(/Shift duration/) as HTMLInputElement).value).toBe("8");
     const breakInput = screen.getByLabelText(/Breaks per shift/);
     await user.clear(breakInput);
     await user.type(breakInput, "1");
-    await user.click(screen.getByRole("button", { name: /I know my work type/ }));
-    expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("standingLight");
-    expect((screen.getByLabelText(/Work days/) as HTMLInputElement).value).toBe("5");
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => expect(posted).toBeTruthy());
     const submitted = posted as unknown as { scenarioTemplate: { schedule: { byDate: Record<string, { occupation?: Array<{ category: string; durationHours: number; breakDurationHours: number }> }> } } };

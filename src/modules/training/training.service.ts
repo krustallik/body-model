@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
@@ -26,9 +27,12 @@ import {
   SessionNotEditableError,
   SessionNotFoundError,
   SetNotFoundError,
+  SetCreateOperationTombstonedError,
+  SetCreateOperationUnresolvedError,
   SetValidationError,
   StaleStrengthEnergySourceError,
   TrainingError,
+  TrainingConcurrentMutationError,
   WorkoutAlreadyMatchedError,
   WorkoutNotEligibleError,
   WorkoutNotFoundError,
@@ -39,7 +43,6 @@ import { trainingExerciseMappingSnapshotJsonV1 } from "./exercise-mapping-snapsh
 import {
   TrainingRepository,
   StaleAccountingCandidateError,
-  trainingChildDeletionPublicationSourceKey,
   trainingRepository,
   type OrderedProgramExerciseWrite,
 } from "./training.repository";
@@ -59,12 +62,12 @@ import type {
   UpdateSetInput,
   UpdateCatalogLoadAccountingConfigInput,
 } from "./training.schema";
+import { setExecutionOverrideWriteV1Schema } from "./training.schema";
 import { validateSetFields } from "./training.set-validation";
 import {
   LEGACY_LOAD_INTERPRETATION_V1,
   legacyLoadConfigForIdentityV1,
   loadConfigV1Schema,
-  setExecutionOverrideV1Schema,
   type LoadConfigV1,
 } from "./load-accounting-v1";
 import { noteTrainingSourceChange } from "./training.source-revision";
@@ -95,6 +98,8 @@ import { recalculateActiveEnergyChangesV1, type ActiveEnergyPublicationStatusV1 
 import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { strengthSessionSourceFingerprintV1 } from "./strength-publication-v1";
+import type { TrainingRefreshDeadlineMode } from "./training-refresh-queue";
+import { sha256Canonical } from "./persisted-load-accounting-v1";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -308,6 +313,8 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   sessionId: number;
   profileId: number;
   refreshAccounting?: boolean;
+  accountingRefreshDeadlineMode?: TrainingRefreshDeadlineMode;
+  accountingRefreshHealthDate?: string;
   deferUnifiedPublication?: boolean;
   clearTrainingFenceAfterDependencyRefresh?: boolean;
 }): Promise<TrainingShadowRefreshResultV1> {
@@ -317,6 +324,10 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
       sessionId: input.sessionId,
       profileId: input.profileId,
       ...(input.refreshAccounting === undefined ? {} : { refreshAccounting: input.refreshAccounting }),
+      ...(input.accountingRefreshDeadlineMode === undefined
+        ? {} : { accountingRefreshDeadlineMode: input.accountingRefreshDeadlineMode }),
+      ...(input.accountingRefreshHealthDate === undefined
+        ? {} : { accountingRefreshHealthDate: input.accountingRefreshHealthDate }),
     }));
   const session = refresh.session;
   if (session === null) throw new Error("training source disappeared before dependent-shadow refresh");
@@ -424,6 +435,10 @@ export async function recordExperimentalStrengthShadowsForWeightDate(input: {
       profileId,
       ...(input.refreshHistoricalAsOfFallback === undefined
         ? {} : { refreshAccounting: input.refreshHistoricalAsOfFallback }),
+      ...(input.refreshHistoricalAsOfFallback === true
+        ? { accountingRefreshDeadlineMode: "health-fast" as const } : {}),
+      ...(input.refreshHistoricalAsOfFallback === true
+        ? { accountingRefreshHealthDate: input.date } : {}),
       deferUnifiedPublication: true,
       clearTrainingFenceAfterDependencyRefresh: true,
     });
@@ -606,6 +621,14 @@ export class TrainingService {
     }) => Promise<TrainingShadowRefreshResultV1 | void> = recordExperimentalStrengthShadowsBySessionId,
   ) {}
 
+  async getSetCreateOperation(
+    operationId: string,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    payloadDigest?: string,
+  ) {
+    return this.repo.resolveSetCreateOperation({ profileId, operationId, payloadDigest });
+  }
+
   private async unifiedPublicationStatus(profileId: number): Promise<ActiveEnergyPublicationStatusV1> {
     const current = await this.db.physiologyV7Lifecycle.findUnique({
       where: { profileId },
@@ -775,26 +798,35 @@ export class TrainingService {
     return this.repo.getSession(sessionId, profileId);
   }
 
+  async getSetForSession(sessionId: number, setId: number, profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<StrengthSetDto | null> {
+    const set = await this.repo.findSetForSession(setId, sessionId, profileId);
+    if (!set) return null;
+    return {
+      id: set.id,
+      sessionExerciseId: set.sessionExercise.id,
+      setNumber: set.setNumber,
+      reps: set.reps,
+      weightKg: set.weightKg?.toNumber() ?? null,
+      bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
+      rir: set.rir,
+      comment: set.comment ?? null,
+      completedAt: set.completedAt?.toISOString() ?? null,
+      createdAt: set.createdAt.toISOString(),
+      updatedAt: set.updatedAt.toISOString(),
+      loadAccountingOverride: set.loadAccountingOverride ?? null,
+    };
+  }
+
   async materializeSessionAccounting(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
     idempotencyKey?: string,
   ) {
-    const before = await this.repo.getSession(sessionId, profileId);
-    if (!before) throw new SessionNotFoundError();
     const revision = await this.repo.materializeAccounting({
       sessionId, profileId, mode: "ordinary", idempotencyKey,
     });
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
-    await this.refreshCompletedAccountingPublication(
-      session,
-      before.materializationState === "current"
-        ? before.activeEnergyMassReference?.snapshotRevision ?? null
-        : null,
-      revision,
-      profileId,
-    );
     return { ...session, snapshotRevision: revision };
   }
 
@@ -803,54 +835,12 @@ export class TrainingService {
     profileId = DEFAULT_TRAINING_PROFILE_ID,
     idempotencyKey?: string,
   ) {
-    const before = await this.repo.getSession(sessionId, profileId);
-    if (!before) throw new SessionNotFoundError();
     const revision = await this.repo.materializeAccounting({
       sessionId, profileId, mode: "refresh", idempotencyKey,
     });
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
-    await this.refreshCompletedAccountingPublication(
-      session,
-      before.materializationState === "current"
-        ? before.activeEnergyMassReference?.snapshotRevision ?? null
-        : null,
-      revision,
-      profileId,
-    );
     return { ...session, snapshotRevision: revision };
-  }
-
-  private async refreshCompletedAccountingPublication(
-    session: StrengthSessionDto,
-    previousSnapshotRevision: number | null,
-    snapshotRevision: number,
-    profileId: number,
-  ): Promise<void> {
-    if (this.db !== prisma || session.status !== SESSION_STATUS.COMPLETED) return;
-    if (previousSnapshotRevision !== null && snapshotRevision === previousSnapshotRevision) {
-      const lifecycle = await this.db.physiologyV7Lifecycle.findUnique({
-        where: { profileId },
-        select: {
-          invalidationGeneration: true,
-          productionStaleFromDate: true,
-          productionPublishedGeneration: true,
-          unifiedPublishedGeneration: true,
-          unifiedPublicationBlockedFromDate: true,
-          unifiedPublishedRolloutEpoch: true,
-          unifiedRolloutEpoch: true,
-        },
-      });
-      if (
-        isUnifiedGenerationCurrentV1(lifecycle)
-        && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch
-      ) return;
-    }
-    // Materializing a completed session changes a source consumed by
-    // production Active Energy and Unified. The repository has already
-    // invalidated currentness transactionally; refresh the dependent chain
-    // before reporting the new accounting snapshot as ready.
-    await this.recordExperimentalShadow({ session, profileId });
   }
 
   async updateSessionAccountingContext(
@@ -861,12 +851,6 @@ export class TrainingService {
     if (input.timeZone !== undefined && !isValidTimeZone(input.timeZone)) {
       throw new SetValidationError("invalid session accounting timezone");
     }
-    const before = await this.repo.getSession(sessionId, profileId);
-    if (!before) throw new SessionNotFoundError();
-    const previousEventAt = before.matchedWorkout?.startAt
-      ?? before.effectiveAccountingAt
-      ?? before.webStartedAt
-      ?? before.createdAt;
     await this.repo.updateAccountingContext({
       sessionId,
       profileId,
@@ -875,23 +859,6 @@ export class TrainingService {
     });
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
-    if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
-      try {
-        const shadowRefresh = await this.recordExperimentalShadowsBySessionId({
-          sessionId,
-          profileId,
-          deferUnifiedPublication: true,
-        });
-        await this.refreshRelativeMuscleAfterEventChange(sessionId, profileId, previousEventAt, {
-          blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
-          blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
-          publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
-        });
-      } catch (error) {
-        logPhysiologyPublicationFailure("training-accounting-context-republish", error);
-        throw error;
-      }
-    }
     return session;
   }
 
@@ -900,9 +867,8 @@ export class TrainingService {
     if (typeof this.repo.finishInactiveSessions !== "function") return;
     const expired = await this.repo.finishInactiveSessions({ profileId, now });
     for (const candidate of expired) {
-      let snapshotRevision: number | null = null;
       try {
-        snapshotRevision = await this.repo.materializeAccounting({
+        await this.repo.materializeAccounting({
           sessionId: candidate.id,
           profileId,
           mode: "ordinary",
@@ -914,12 +880,9 @@ export class TrainingService {
         // snapshot is authoritative; otherwise preserve the active session.
         if (!(error instanceof StaleAccountingCandidateError)) throw error;
       }
-      if (snapshotRevision !== null && this.db === prisma) {
-        const session = await this.repo.getSession(candidate.id, profileId);
-        if (session?.status === SESSION_STATUS.COMPLETED) {
-          await this.recordExperimentalShadow({ session, profileId });
-        }
-      }
+      // materializeAccounting() invalidates and enqueues this completed source
+      // in the same transaction. The durable Training worker owns the model
+      // refresh; inactivity finalization must not run physiology inline.
     }
   }
 
@@ -970,6 +933,33 @@ export class TrainingService {
     }
   }
 
+  async startDynamicSession(
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    accountingTimeZone?: string,
+  ): Promise<StrengthSessionDto> {
+    await this.finalizeInactiveSessions(profileId);
+    const active = await this.repo.getActiveSession(profileId);
+    if (active) throw new ActiveSessionExistsError(active.id);
+
+    try {
+      return await this.repo.createSessionSnapshot({
+        profileId,
+        programId: null,
+        programVersionId: null,
+        entryMode: ENTRY_MODE.LIVE,
+        accountingTimeZone,
+        accountingTimeZoneProvenance: accountingTimeZone ? "client-session" : "legacy-default",
+        exercises: [],
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const again = await this.repo.getActiveSession(profileId);
+        if (again) throw new ActiveSessionExistsError(again.id);
+      }
+      throw error;
+    }
+  }
+
   listHistoricalStrengthWorkouts(
     query: Partial<HistoricalWorkoutsQuery> = {},
   ): Promise<HistoricalStrengthWorkoutDto[]> {
@@ -1003,7 +993,7 @@ export class TrainingService {
   async createSessionFromWorkout(
     input: CreateFromWorkoutInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const { session } = await this.createOrGetSessionFromWorkout(input, profileId);
     return session;
   }
@@ -1047,7 +1037,7 @@ export class TrainingService {
   private async createOrGetSessionFromWorkout(
     input: CreateFromWorkoutInput,
     profileId: number,
-  ): Promise<{ session: StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }; created: boolean }> {
+  ): Promise<{ session: StrengthSessionDto; created: boolean }> {
     const workout = await this.repo.findWorkoutById(input.workoutId);
     if (!workout) throw new WorkoutNotFoundError();
     if (!isStrengthWorkout(workout.type)) throw new WorkoutNotEligibleError();
@@ -1056,16 +1046,7 @@ export class TrainingService {
     if (workout.matchedDiarySession) {
       const existing = await this.repo.getSession(workout.matchedDiarySession.id, profileId);
       if (!existing) throw new WorkoutAlreadyMatchedError();
-      let modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
-      if (existing.status === SESSION_STATUS.COMPLETED && modelPublicationStatus === "stale") {
-        modelPublicationStatus = await this.refreshUnifiedAfterCompletedSessionMutation(
-          existing.id, profileId, "retry-existing-retrospective-session-publication",
-        );
-      }
-      return {
-        session: { ...existing, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) },
-        created: false,
-      };
+      return { session: existing, created: false };
     }
 
     const program = await this.repo.loadProgramVersion({
@@ -1105,25 +1086,7 @@ export class TrainingService {
       await this.repo.materializeAccounting({ sessionId: created.id, profileId, mode: "ordinary" });
       const materialized = await this.repo.getSession(created.id, profileId);
       if (!materialized) throw new SessionNotFoundError();
-      noteTrainingSourceChange({
-        sessionId: created.id,
-        revision: created.revision,
-        workoutLocalDate: workoutLocalDate(workout.startAt),
-        reason: "retrospective_create",
-      });
-      let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
-      try {
-        await this.recordExperimentalShadow({ session: materialized, profileId });
-        modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
-      } catch (error) {
-        if (error instanceof StaleStrengthEnergySourceError) throw error;
-        logPhysiologyPublicationFailure("retrospective-session-create", error);
-        modelPublicationStatus = this.db === prisma ? "stale" : undefined;
-      }
-      return {
-        session: { ...materialized, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) },
-        created: true,
-      };
+      return { session: materialized, created: true };
     } catch (error) {
       if (isUniqueViolation(error)) throw new WorkoutAlreadyMatchedError();
       throw error;
@@ -1139,10 +1102,13 @@ export class TrainingService {
     sessionId: number,
     input: ChangeSessionProgramInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+    if (session.programId === null || session.programVersionId === null) {
+      throw new SetValidationError("dynamic sessions cannot be reassigned to a program");
+    }
 
     const program = await this.repo.loadProgramVersion({
       programId: input.programId,
@@ -1181,8 +1147,9 @@ export class TrainingService {
       })),
     );
 
-    const revision = await this.repo.changeSessionProgram({
+    await this.repo.changeSessionProgram({
       sessionId,
+      profileId,
       fromProgramId: session.programId,
       fromProgramVersionId: session.programVersionId,
       toProgramId: program.id,
@@ -1190,37 +1157,25 @@ export class TrainingService {
       plan,
     });
 
-    noteTrainingSourceChange({
-      sessionId,
-      revision,
-      workoutLocalDate: workoutLocalDate(
-        session.matchedWorkout?.startAt ? new Date(session.matchedWorkout.startAt) : undefined,
-      ),
-      reason: "program_change",
-    });
-    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
-    if (session.status === SESSION_STATUS.COMPLETED) {
-      modelPublicationStatus = await this.refreshUnifiedAfterCompletedSessionMutation(
-        sessionId, profileId, "completed-session-program-change",
-      );
-    } else {
-      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
-    }
-
-    return {
-      ...await this.requireSession(sessionId, profileId),
-      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
-    };
+    return this.requireSession(sessionId, profileId);
   }
 
   async addSessionExercise(
     sessionId: number,
     input: CreateSessionExerciseInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+
+    if (session.programId === null ? input.plannedSets !== 0 : input.plannedSets === 0) {
+      throw new SetValidationError(
+        session.programId === null
+          ? "dynamic session exercises do not have planned set counts"
+          : "programmed session exercises require a positive planned set count",
+      );
+    }
 
     const [catalog] = await this.repo.findCatalogByIds([input.catalogId], profileId);
     if (!catalog) throw new CatalogExerciseNotFoundError();
@@ -1237,7 +1192,7 @@ export class TrainingService {
       config = legacyConfigForStableKey(catalog.stableKey);
     }
 
-    const { revision } = await this.repo.addSessionExercise({
+    await this.repo.addSessionExercise({
       sessionId,
       sourceExerciseCatalogId: catalog.id,
       snapshotExerciseName: catalog.name,
@@ -1250,11 +1205,7 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
     });
 
-    const modelPublicationStatus = await this.noteExerciseMutation(sessionId, revision, profileId);
-    return {
-      ...await this.requireSession(sessionId, profileId),
-      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
-    };
+    return this.requireSession(sessionId, profileId);
   }
 
   async updateSessionExercise(
@@ -1262,10 +1213,18 @@ export class TrainingService {
     exerciseId: number,
     input: UpdateSessionExerciseInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+    if (input.plannedSets !== undefined
+      && (session.programId === null ? input.plannedSets !== 0 : input.plannedSets === 0)) {
+      throw new SetValidationError(
+        session.programId === null
+          ? "dynamic session exercises do not have planned set counts"
+          : "programmed session exercises require a positive planned set count",
+      );
+    }
 
     const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
     if (!exercise) throw new SessionExerciseNotFoundError();
@@ -1281,22 +1240,19 @@ export class TrainingService {
       }
     }
 
-    const revision = await this.repo.updateSessionExercise({
+    await this.repo.updateSessionExercise({
       sessionId,
       exerciseId,
       plannedSets: input.plannedSets,
       resistanceType: input.resistanceType,
+      expectedAccountingInputRevision: session.accountingInputRevision,
       clearWeightKg: clear.clearWeightKg,
       clearBandNominalResistanceKg: clear.clearBandNominalResistanceKg,
       order: input.order,
       orderedExerciseIds: session.exercises.map((item) => item.id),
     });
 
-    const modelPublicationStatus = await this.noteExerciseMutation(sessionId, revision, profileId);
-    return {
-      ...await this.requireSession(sessionId, profileId),
-      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
-    };
+    return this.requireSession(sessionId, profileId);
   }
 
   async deleteSessionExercise(
@@ -1304,52 +1260,32 @@ export class TrainingService {
     exerciseId: number,
     input: DeleteSessionExerciseInput = {},
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
 
     const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
     if (!exercise) {
-      const publicationBlockSourceKey = trainingChildDeletionPublicationSourceKey("exercise", sessionId, exerciseId);
-      const retryStatus = await this.retryDeletedChildPublication({
-        sessionId,
-        profileId,
-        publicationBlockSourceKey,
-        operation: "completed-session-exercise-delete-retry",
-      });
-      if (retryStatus === undefined) throw new SessionExerciseNotFoundError();
-      return {
-        ...await this.requireSession(sessionId, profileId),
-        modelPublicationStatus: retryStatus,
-      };
+      throw new SessionExerciseNotFoundError();
     }
     // Recorded sets are user-entered history: never drop them without consent.
     if (exercise.sets.length > 0 && !input.confirm) throw new ExerciseHasSetsError();
 
-    const revision = await this.repo.deleteSessionExercise({
+    await this.repo.deleteSessionExercise({
       sessionId,
       exerciseId,
       orderedExerciseIds: session.exercises.map((item) => item.id),
     });
 
-    const modelPublicationStatus = await this.noteExerciseMutation(
-      sessionId,
-      revision,
-      profileId,
-      trainingChildDeletionPublicationSourceKey("exercise", sessionId, exerciseId),
-    );
-    return {
-      ...await this.requireSession(sessionId, profileId),
-      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
-    };
+    return this.requireSession(sessionId, profileId);
   }
 
   async reorderSessionExercises(
     sessionId: number,
     input: ReorderSessionExercisesInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
@@ -1362,16 +1298,12 @@ export class TrainingService {
       && requested.every((id) => existing.includes(id));
     if (!isCompletePermutation) throw new SessionExerciseNotFoundError();
 
-    const revision = await this.repo.reorderSessionExercises({
+    await this.repo.reorderSessionExercises({
       sessionId,
       orderedExerciseIds: requested,
     });
 
-    const modelPublicationStatus = await this.noteExerciseMutation(sessionId, revision, profileId);
-    return {
-      ...await this.requireSession(sessionId, profileId),
-      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
-    };
+    return this.requireSession(sessionId, profileId);
   }
 
   async createSet(
@@ -1379,7 +1311,31 @@ export class TrainingService {
     exerciseId: number,
     input: CreateSetInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSetDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+    operationId?: string,
+  ): Promise<StrengthSetDto> {
+    const resolvedOperationId = operationId ?? randomUUID();
+    const explicitOperationId = operationId !== undefined;
+    const payloadDigest = sha256Canonical({
+      version: 1,
+      sessionId,
+      exerciseId,
+      requestedSetNumber: input.setNumber ?? null,
+      reps: input.reps,
+      weightKg: input.weightKg ?? null,
+      bandNominalResistanceKg: input.bandNominalResistanceKg ?? null,
+      rir: input.rir ?? null,
+      comment: input.comment?.trim() || null,
+      completedAt: input.completedAt ?? null,
+      loadAccountingOverride: input.loadAccountingOverride ?? null,
+    });
+    const prior = await this.repo.resolveSetCreateOperation({
+      profileId, operationId: resolvedOperationId, payloadDigest, sessionId, exerciseId,
+    });
+    if (prior.state === "COMMITTED") return prior.set;
+    if (prior.state === "TOMBSTONED") throw new SetCreateOperationTombstonedError();
+    if (prior.state === "REJECTED") throw new TrainingConcurrentMutationError();
+    if (prior.state === "PENDING") throw new SetCreateOperationUnresolvedError();
+
     const exercise = await this.repo.findSessionExercise(sessionId, exerciseId, profileId);
     if (!exercise) throw new SessionExerciseNotFoundError();
     if (
@@ -1396,20 +1352,34 @@ export class TrainingService {
       bandNominalResistanceKg: input.bandNominalResistanceKg ?? null,
       rir: input.rir === undefined ? null : input.rir,
     });
-    if (!validated.ok) throw new SetValidationError(validated.message);
+    if (!validated.ok) {
+      if (explicitOperationId) {
+        const rejection = await this.repo.rejectSetCreateOperation({
+          profileId,
+          operationId: resolvedOperationId,
+          payloadDigest,
+          sessionId,
+          exerciseId,
+        });
+        if (rejection.state === "COMMITTED") return rejection.set;
+        if (rejection.state === "TOMBSTONED") throw new SetCreateOperationTombstonedError();
+        if (rejection.state === "PENDING") throw new SetCreateOperationUnresolvedError();
+      }
+      throw new SetValidationError(validated.message);
+    }
     const override = input.loadAccountingOverride === undefined || input.loadAccountingOverride === null
       ? null
-      : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+      : setExecutionOverrideWriteV1Schema.safeParse(input.loadAccountingOverride);
     if (override !== null && !override.success) throw new SetValidationError("invalid load accounting override");
-
-    const nextSetNumber =
-      input.setNumber
-      ?? ((exercise.sets[0]?.setNumber ?? 0) + 1);
 
     try {
       const created = await this.repo.createSet({
+        profileId,
+        operationId: resolvedOperationId,
+        payloadDigest,
+        sessionId,
         sessionExerciseId: exercise.id,
-        setNumber: nextSetNumber,
+        expectedResistanceType: exercise.resistanceType as ResistanceType,
         reps: validated.reps,
         weightKg: validated.weightKg,
         bandNominalResistanceKg: validated.bandNominalResistanceKg,
@@ -1418,10 +1388,18 @@ export class TrainingService {
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
         loadAccountingOverride: override === null ? null : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
       });
-      const modelPublicationStatus = await this.noteSetMutation(sessionId, profileId);
-      return { ...created, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+      if (created === null) throw new SetCreateOperationTombstonedError();
+      if ("state" in created) throw new TrainingConcurrentMutationError();
+      return created;
     } catch (error) {
       if (isUniqueViolation(error)) {
+        const resolved = await this.repo.resolveSetCreateOperation({
+          profileId, operationId: resolvedOperationId, payloadDigest, sessionId, exerciseId,
+        });
+        if (resolved.state === "COMMITTED") return resolved.set;
+        if (resolved.state === "TOMBSTONED") throw new SetCreateOperationTombstonedError();
+        if (resolved.state === "REJECTED") throw new TrainingConcurrentMutationError();
+        if (resolved.state === "PENDING") throw new SetCreateOperationUnresolvedError();
         throw new SetValidationError("setNumber already exists for this exercise");
       }
       throw error;
@@ -1433,7 +1411,7 @@ export class TrainingService {
     setId: number,
     input: UpdateSetInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSetDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSetDto> {
     const existing = await this.repo.findSetForSession(setId, sessionId, profileId);
     if (!existing) throw new SetNotFoundError();
     if (
@@ -1473,7 +1451,7 @@ export class TrainingService {
       ? undefined
       : input.loadAccountingOverride === null
         ? null
-        : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+        : setExecutionOverrideWriteV1Schema.safeParse(input.loadAccountingOverride);
     if (override !== undefined && override !== null && !override.success) {
       throw new SetValidationError("invalid load accounting override");
     }
@@ -1482,10 +1460,12 @@ export class TrainingService {
       setId,
       sessionId,
       profileId,
-      reps: validated.reps,
-      weightKg: validated.weightKg,
-      bandNominalResistanceKg: validated.bandNominalResistanceKg,
-      rir: validated.rir,
+      ...(input.reps === undefined ? {} : { reps: validated.reps }),
+      ...(input.weightKg === undefined ? {} : { weightKg: validated.weightKg }),
+      ...(input.bandNominalResistanceKg === undefined
+        ? {}
+        : { bandNominalResistanceKg: validated.bandNominalResistanceKg }),
+      ...(input.rir === undefined ? {} : { rir: validated.rir }),
       comment: input.comment,
       completedAt:
         input.completedAt === undefined
@@ -1498,28 +1478,20 @@ export class TrainingService {
         : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
     });
     if (!updated) throw new SetNotFoundError();
-    const modelPublicationStatus = await this.noteSetMutation(sessionId, profileId);
-    return { ...updated, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+    return updated;
   }
 
   async deleteSet(
     sessionId: number,
     setId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<{ modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<{ deleted: true }> {
     const existing = await this.repo.findSetForSession(setId, sessionId, profileId);
     if (!existing) {
       const session = await this.repo.getSession(sessionId, profileId);
       if (!session) throw new SessionNotFoundError();
       if (session.status !== SESSION_STATUS.COMPLETED) throw new SetNotFoundError();
-      const retryStatus = await this.retryDeletedChildPublication({
-        sessionId,
-        profileId,
-        publicationBlockSourceKey: trainingChildDeletionPublicationSourceKey("set", sessionId, setId),
-        operation: "completed-session-set-delete-retry",
-      });
-      if (retryStatus === undefined) throw new SetNotFoundError();
-      return { modelPublicationStatus: retryStatus };
+      throw new SetNotFoundError();
     }
     if (
       existing.sessionExercise.session.status !== SESSION_STATUS.ACTIVE
@@ -1529,12 +1501,7 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
     await this.repo.deleteSet(setId, sessionId, profileId);
-    const modelPublicationStatus = await this.noteSetMutation(
-      sessionId,
-      profileId,
-      trainingChildDeletionPublicationSourceKey("set", sessionId, setId),
-    );
-    return { ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+    return { deleted: true };
   }
 
   async getExerciseHistory(
@@ -1555,14 +1522,11 @@ export class TrainingService {
   async finishSession(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
 
     if (session.status === SESSION_STATUS.COMPLETED) {
-      const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt
-        ?? session.effectiveAccountingAt
-        ?? session.webStartedAt;
       // Idempotent finish: re-run matcher only while still PENDING/AUTO-eligible.
       // Retrospective sessions are already linked and never re-matched.
       if (
@@ -1575,41 +1539,7 @@ export class TrainingService {
       await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
       const refreshed = await this.repo.getSession(sessionId, profileId);
       if (!refreshed) throw new SessionNotFoundError();
-      // Keep the shadow dependency chain ordered; its failure remains isolated
-      // from the completed-session result.
-      let publicationDependenciesReady = true;
-      let shadowRefresh: TrainingShadowRefreshResultV1 | void = undefined;
-      try {
-        shadowRefresh = await this.recordExperimentalShadow({
-          session: refreshed, profileId, deferUnifiedPublication: true,
-        });
-      } catch (error) {
-        if (error instanceof StaleStrengthEnergySourceError) throw error;
-        publicationDependenciesReady = false;
-        logPhysiologyPublicationFailure("completed-session-republish", error);
-      }
-      let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
-      if (publicationDependenciesReady) {
-        try {
-          await this.refreshRelativeMuscleAfterEventChange(
-            sessionId,
-            profileId,
-            previousRelativeMuscleEventAt,
-            {
-              blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
-              blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
-              publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
-            },
-          );
-          modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
-        } catch (error) {
-          logPhysiologyPublicationFailure("completed-session-event-relocation", error);
-          modelPublicationStatus = this.db === prisma ? "stale" : undefined;
-        }
-      } else {
-        modelPublicationStatus = this.db === prisma ? "stale" : undefined;
-      }
-      return { ...refreshed, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+      return refreshed;
     }
 
     if (session.status !== SESSION_STATUS.ACTIVE) {
@@ -1627,16 +1557,7 @@ export class TrainingService {
     await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
-    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
-    try {
-      await this.recordExperimentalShadow({ session: refreshed, profileId });
-      modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
-    } catch (error) {
-      if (error instanceof StaleStrengthEnergySourceError) throw error;
-      logPhysiologyPublicationFailure("completed-session-republish", error);
-      modelPublicationStatus = this.db === prisma ? "stale" : undefined;
-    }
-    return { ...refreshed, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+    return refreshed;
   }
 
   async cancelSession(
@@ -1650,7 +1571,6 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
     await this.repo.markSessionCancelled(sessionId, new Date());
-    await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     return refreshed;
@@ -1663,59 +1583,15 @@ export class TrainingService {
   async deleteDiarySession(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<{ matchedWorkoutId: number | null; modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<{ matchedWorkoutId: number | null }> {
     const session = await this.repo.getSession(sessionId, profileId);
-    if (!session) {
-      if (this.db !== prisma) throw new SessionNotFoundError();
-      const lifecycle = new PhysiologyV7PersistenceRepository();
-      const blockToken = await lifecycle.readUnifiedPublicationBlockToken({
-        profileId, source: "training", sourceKey: String(sessionId),
-      });
-      if (blockToken === null) throw new SessionNotFoundError();
-      try {
-        const fromInstant = await trainingModelDateStartInstant(profileId, blockToken.fromDate);
-        return {
-          matchedWorkoutId: null,
-          modelPublicationStatus: await this.refreshDeletedCompletedSessionPublication({
-            sessionId, profileId, fromInstant, blockToken,
-          }),
-        };
-      } catch (error) {
-        logPhysiologyPublicationFailure("retry-deleted-completed-session-dependency-refresh", error);
-        return { matchedWorkoutId: null, modelPublicationStatus: "stale" };
-      }
-    }
+    if (!session) throw new SessionNotFoundError();
     if (session.status === SESSION_STATUS.ACTIVE) {
       throw new SessionNotEditableError();
     }
     const matchedWorkoutId = session.matchedWorkoutId;
-    const relativeMuscleEventAt = session.matchedWorkout?.startAt
-      ?? session.effectiveAccountingAt
-      ?? session.webStartedAt
-      ?? session.createdAt;
     await this.repo.deleteDiarySession(sessionId, profileId);
-    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
-    if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
-      try {
-        const eventAt = new Date(relativeMuscleEventAt);
-        const lifecycle = new PhysiologyV7PersistenceRepository();
-        const blockToken = await lifecycle.readUnifiedPublicationBlockToken({
-          profileId, source: "training", sourceKey: String(sessionId),
-        });
-        if (blockToken === null) throw new Error("completed training deletion lost its durable publication fence");
-        modelPublicationStatus = await this.refreshDeletedCompletedSessionPublication({
-          sessionId, profileId, fromInstant: eventAt, blockToken,
-        });
-      } catch (error) {
-        logPhysiologyPublicationFailure("deleted-completed-session-dependency-refresh", error);
-        modelPublicationStatus = "stale";
-      }
-    } else if (this.db === prisma) {
-      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
-    } else {
-      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
-    }
-    return { matchedWorkoutId, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+    return { matchedWorkoutId };
   }
 
   listRecentSessions(options?: { limit?: number; offset?: number; profileId?: number }) {
@@ -1771,16 +1647,12 @@ export class TrainingService {
     sessionId: number,
     input: ManualMatchInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
+  ): Promise<StrengthSessionDto> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     if (session.status !== SESSION_STATUS.COMPLETED) {
       throw new SessionNotFoundError();
     }
-    const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt
-      ?? session.effectiveAccountingAt
-      ?? session.webStartedAt;
-
     if (input.workoutId === null) {
       await this.repo.applyMatchResult({
         sessionId,
@@ -1818,40 +1690,7 @@ export class TrainingService {
     await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
-    // A manual link can add Garmin diagnostic context after completion.
-    let publicationDependenciesReady = true;
-    let shadowRefresh: TrainingShadowRefreshResultV1 | void = undefined;
-    try {
-      shadowRefresh = await this.recordExperimentalShadow({
-        session: refreshed, profileId, deferUnifiedPublication: true,
-      });
-    } catch (error) {
-      if (error instanceof StaleStrengthEnergySourceError) throw error;
-      publicationDependenciesReady = false;
-      logPhysiologyPublicationFailure("manual-match-republish", error);
-    }
-    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
-    if (publicationDependenciesReady) {
-      try {
-        await this.refreshRelativeMuscleAfterEventChange(
-          sessionId,
-          profileId,
-          previousRelativeMuscleEventAt,
-          {
-            blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
-            blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
-            publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
-          },
-        );
-        modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
-      } catch (error) {
-        logPhysiologyPublicationFailure("manual-match-event-relocation", error);
-        modelPublicationStatus = this.db === prisma ? "stale" : undefined;
-      }
-    } else {
-      modelPublicationStatus = this.db === prisma ? "stale" : undefined;
-    }
-    return { ...refreshed, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
+    return refreshed;
   }
 
   /**
@@ -1869,8 +1708,6 @@ export class TrainingService {
     const nextDay = new Date(windowStart.getTime() + 24 * 60 * 60_000);
     // Inclusive local day: [00:00, next 00:00)
     const windowEnd = nextDay;
-    let publicationDependenciesReady = true;
-
     const sessions = await this.repo.findPendingCompletedSessionsOverlapping({
       profileId,
       windowStart,
@@ -1882,48 +1719,18 @@ export class TrainingService {
       if (session.matchMethod === MATCH_METHOD.DIRECT_BACKFILL) continue;
       if (session.entryMode === ENTRY_MODE.RETROSPECTIVE) continue;
       if (session.webStartedAt === null) continue;
-      await this.tryAutoMatchSession(session.id, profileId);
-      if (this.db === prisma) {
-        // A delayed sync may add Garmin diagnostic context after finishSession.
-        let sessionPublicationDependenciesReady = true;
-        let shadowRefresh: TrainingShadowRefreshResultV1 | void = undefined;
-        try {
-          shadowRefresh = await this.recordExperimentalShadowsBySessionId({
-            sessionId: session.id,
-            profileId,
-            deferUnifiedPublication: true,
-          });
-        } catch (error) {
-          sessionPublicationDependenciesReady = false;
-          publicationDependenciesReady = false;
-          logPhysiologyPublicationFailure("health-sync-strength-republish", error);
-        }
-        if (sessionPublicationDependenciesReady) {
-          try {
-            await this.refreshRelativeMuscleAfterEventChange(
-              session.id,
-              profileId,
-              session.webStartedAt,
-              {
-                deferUnifiedPublication: true,
-                blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
-                blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
-                publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
-              },
-            );
-          } catch (error) {
-            publicationDependenciesReady = false;
-            logPhysiologyPublicationFailure("health-sync-strength-republication", error);
-          }
-        }
-      }
+      await this.tryAutoMatchSession(session.id, profileId, "health-fast");
     }
-    return publicationDependenciesReady;
+    // applyMatchResult writes Training invalidation and its durable debounce
+    // job atomically. Dependent shadows belong to that job, never this Health
+    // request/worker callback.
+    return true;
   }
 
   private async tryAutoMatchSession(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
+    deadlineMode: TrainingRefreshDeadlineMode = "training-debounce",
   ): Promise<void> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) return;
@@ -1964,6 +1771,7 @@ export class TrainingService {
           matchMethod: MATCH_METHOD.AUTO,
           matchedWorkoutId: result.workoutId,
           matchedAt: new Date(),
+          deadlineMode,
         });
       } catch (error) {
         if (isUniqueViolation(error)) {
@@ -1973,6 +1781,7 @@ export class TrainingService {
             matchMethod: null,
             matchedWorkoutId: null,
             matchedAt: null,
+            deadlineMode,
           });
           return;
         }
@@ -1988,6 +1797,7 @@ export class TrainingService {
         matchMethod: null,
         matchedWorkoutId: null,
         matchedAt: null,
+        deadlineMode,
       });
       return;
     }
@@ -2000,6 +1810,7 @@ export class TrainingService {
         matchMethod: null,
         matchedWorkoutId: null,
         matchedAt: null,
+        deadlineMode,
       });
     }
   }

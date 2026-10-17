@@ -29,7 +29,10 @@ import { physiologyV7ShadowService } from "./physiology-v7-shadow.service";
 import { rebuildFatWeightShadowV1 } from "./fat-weight-shadow-v1.service";
 import { rebuildExperimentalFatWeightUncertaintyV1 } from "./experimental-fat-weight-uncertainty-shadow.service";
 import { rebuildRelativeMuscleEpisodeTrajectories } from "./relative-muscle-shadow-core.service";
-import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
+import { PhysiologyV7PersistenceRepository, type ActiveEnergyConvergenceOwnerToken } from "./physiology-v7-persistence.repository";
+import {
+  assertTrainingRefreshWorkerLeaseInTransaction,
+} from "@/modules/training/training-refresh-worker-context";
 import {
   invalidateActiveEnergyResolutionDatesV1,
   materializeActiveEnergyCandidatesV1,
@@ -300,10 +303,41 @@ function unchangedActiveEpisodeResult(
 
 /** Full deterministic rebuild; reads, calculation, and replacement share one DB snapshot. */
 async function recalculateModelEpisodeProduction(
-  input: { episodeId?: number; now?: Date } = {},
+  input: {
+    episodeId?: number;
+    now?: Date;
+    requireDependentStages?: boolean;
+    onCandidateProcessed?: () => void | Promise<void>;
+    convergenceOwner?: ActiveEnergyConvergenceOwnerToken;
+  } = {},
   client: PrismaClient = prisma,
 ) {
-  let shadowInput: { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string; relativeMuscleFromDate: string } | null = null;
+  let shadowInput: {
+    profileId: number; fromDate: string; toDate: string; timeZone: string;
+    productionEpisodeId: number; productionModelVersion: string; relativeMuscleFromDate: string;
+    onCandidateProcessed?: () => void | Promise<void>;
+  } | null = null;
+  // Lifecycle bootstrap/version upgrade may write the lifecycle row. Keep
+  // that short operation under the shared profile fence in its own committed
+  // transaction, so the long candidate transaction never holds a lifecycle
+  // row lock while later waiting for that same profile fence.
+  await client.$transaction(async (transaction) => {
+    const repository = new ModelEpisodeRepository(transaction);
+    const episode = input.episodeId === undefined
+      ? await repository.getActive()
+      : await repository.getById(input.episodeId);
+    if (!episode) {
+      if (input.episodeId === undefined) throw new NoActiveModelEpisodeError();
+      throw new ModelEpisodeNotFoundError();
+    }
+    const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+    await lifecycle.lockProfile(episode.profileId);
+    await lifecycle.ensureLifecycle(episode.profileId, episode.startDate);
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    maxWait: 5_000,
+    timeout: 10_000,
+  });
   const production = await client.$transaction(async (transaction) => {
     const repository = new ModelEpisodeRepository(transaction);
     let episode = input.episodeId === undefined
@@ -314,8 +348,16 @@ async function recalculateModelEpisodeProduction(
       throw new ModelEpisodeNotFoundError();
     }
     const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
-    await lifecycle.lockProfile(episode.profileId);
-    const publicationState = await lifecycle.ensureLifecycle(episode.profileId, episode.startDate);
+    // Candidate production rows are transaction-private until commit. Keep the
+    // same rows-before-profile-lock ordering for worker and non-worker rebuilds
+    // so a concurrent rebuild cannot hold the profile fence while waiting for
+    // these rows as the Training worker waits in the reverse direction.
+    await assertTrainingRefreshWorkerLeaseInTransaction(transaction, episode.profileId);
+    const publicationState = await transaction.physiologyV7Lifecycle.findUnique({
+      where: { profileId: episode.profileId },
+      select: { invalidationGeneration: true, productionStaleFromDate: true },
+    });
+    if (!publicationState) throw new Error(`physiology lifecycle missing for profile ${episode.profileId}`);
     const expectedGeneration = publicationState.invalidationGeneration;
     const latestCompletedDate = latestCompletedLocalDate(
       input.now ?? new Date(),
@@ -330,6 +372,8 @@ async function recalculateModelEpisodeProduction(
       : { days: [], snapshots: [], workIntervals: [], workouts: [] };
 
     let candidateCalculation: EpisodeCalculation | null = null;
+    let deferCandidateSwitchForNonCurrentIncumbent = false;
+    let activeEpisodeSwitched = false;
     if (input.episodeId === undefined && sourceStart <= latestCompletedDate) {
       // Restart eligibility must use current semantics. Otherwise a legacy
       // episode can never see a modern rest day (observed workout feed + no
@@ -395,23 +439,38 @@ async function recalculateModelEpisodeProduction(
         ]);
         if (!currentStatus) throw new NoActiveModelEpisodeError();
 
-        const currentReadiness = episodeReadinessFromDiagnostics(currentDiagnostics);
-        const candidateReadiness = episodeReadinessFromCalculation({
-          calculation: candidateCalculation,
-          startDate: prepared.startDate,
-        });
-        if (!shouldSwitchModelEpisode(currentReadiness, candidateReadiness)) {
-          // Rejection is read-only: do not stale recoveries, persist states,
-          // rewrite the active episode, or consume an episode ID.
-          return unchangedActiveEpisodeResult(episode, currentStatus);
-        }
+        // A non-current incumbent has no trustworthy comparison baseline.
+        // The only exception is first publication with no persisted model
+        // rows, where the candidate is the initial build rather than a
+        // replacement of historical output.
+        const canBootstrapUnpublishedEpisode = !currentStatus.productionCurrent
+          && currentStatus.productionDirtyFromDate === null
+          && await transaction.dailyModelState.count({ where: { episodeId: episode.id } }) === 0;
+        if (!currentStatus.productionCurrent && !canBootstrapUnpublishedEpisode) {
+          // The persisted incumbent cannot be compared or replaced from
+          // current evidence. Rebuild it first, then reconsider a candidate
+          // against a current baseline on the next request.
+          candidateCalculation = null;
+          deferCandidateSwitchForNonCurrentIncumbent = true;
+        } else {
+          const currentReadiness = episodeReadinessFromDiagnostics(currentDiagnostics);
+          const candidateReadiness = episodeReadinessFromCalculation({
+            calculation: candidateCalculation,
+            startDate: prepared.startDate,
+          });
+          if (!shouldSwitchModelEpisode(currentReadiness, candidateReadiness)) {
+            // Rejection is read-only: do not stale recoveries, persist states,
+            // rewrite the active episode, or consume an episode ID.
+            return unchangedActiveEpisodeResult(episode, currentStatus);
+          }
 
-        // Both changes and the candidate calculation are committed atomically.
-        // PostgreSQL SERIALIZABLE plus the one-active partial unique index make
-        // concurrent switches fail closed rather than publish two active rows.
-        await lifecycle.invalidateUnifiedPublication(episode.profileId);
-        await repository.deactivateActive(input.now ?? new Date());
-        episode = await repository.createPrepared(prepared);
+          // Both changes and the candidate calculation are committed atomically.
+          // PostgreSQL SERIALIZABLE plus the one-active partial unique index make
+          // concurrent switches fail closed rather than publish two active rows.
+          await repository.deactivateActive(input.now ?? new Date());
+          episode = await repository.createPrepared(prepared);
+          activeEpisodeSwitched = true;
+        }
       }
     }
 
@@ -478,17 +537,34 @@ async function recalculateModelEpisodeProduction(
     // Scientific initialization semantics are frozen per episode. Legacy v4
     // episodes must be explicitly reinitialized rather than silently relabeled v5.
     const calculation = candidateCalculation ?? calculateEpisodeHistory({ episode, days: builtDays, resume });
+    if (deferCandidateSwitchForNonCurrentIncumbent && calculation.dailyStates.length === 0) {
+      // A zero-row replay cannot make persisted stale rows current. Preserve
+      // them and keep publication non-current rather than deleting the rows
+      // or publishing an empty replacement as successful current evidence.
+      const currentStatus = await repository.status(episode.id);
+      if (!currentStatus) throw new NoActiveModelEpisodeError();
+      return unchangedActiveEpisodeResult(episode, currentStatus);
+    }
     await repository.persistCalculation(
       episode.id,
       calculation,
       episode.modelVersion,
       calculation.replayMode === "suffix" ? resume?.fromDate : undefined,
     );
-    await lifecycle.publishProduction({ profileId: episode.profileId, expectedGeneration });
     // Recalculation follows all source mutations; stale conservatively until an
     // identical source/config/seed recovery resets the fingerprinted upsert.
     await repository.markRecoveryRunsStale(episode.id);
-    const status = await repository.status(episode.id);
+    // Candidate writes above are transaction-private. Taking the shared
+    // profile/job fence after them means Training CRUD is blocked only for the
+    // final generation CAS and commit, never for the historical calculation.
+    await lifecycle.lockProfile(episode.profileId);
+    await assertTrainingRefreshWorkerLeaseInTransaction(transaction, episode.profileId);
+    if (activeEpisodeSwitched) await lifecycle.invalidateUnifiedPublication(episode.profileId);
+    await lifecycle.publishProduction({
+      profileId: episode.profileId,
+      expectedGeneration,
+      ...(input.convergenceOwner === undefined ? {} : { convergenceOwner: input.convergenceOwner }),
+    });
     shadowInput = {
       profileId: episode.profileId,
       fromDate: episode.startDate,
@@ -499,6 +575,7 @@ async function recalculateModelEpisodeProduction(
       relativeMuscleFromDate: calculation.replayMode === "suffix"
         ? resume?.fromDate ?? episode.startDate
         : episode.startDate,
+      onCandidateProcessed: input.onCandidateProcessed,
     };
     return {
       status: "ok" as const,
@@ -531,78 +608,143 @@ async function recalculateModelEpisodeProduction(
       effectiveReplayFromDate: calculation.replayMode === "suffix"
         ? resume?.fromDate ?? episode.startDate
         : episode.startDate,
-      current: status,
+      current: null,
     };
   }, TRANSACTION_OPTIONS);
+  const current = production.current ?? await new ModelEpisodeRepository(client).status(production.episodeId);
+  const productionResult = { ...production, current };
   // Post-commit shadow rebuild: preserve the legacy result on failure, but do
   // not publish a response while dependency-relevant rebuilds are still
   // running in the background.
-  const committedShadowInput = shadowInput as { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string; relativeMuscleFromDate: string } | null;
+  const committedShadowInput = shadowInput as {
+    profileId: number; fromDate: string; toDate: string; timeZone: string;
+    productionEpisodeId: number; productionModelVersion: string; relativeMuscleFromDate: string;
+    onCandidateProcessed?: () => void | Promise<void>;
+  } | null;
   if (client === prisma && committedShadowInput !== null && committedShadowInput.fromDate <= committedShadowInput.toDate) {
-    await physiologyV7ShadowService.run(committedShadowInput).catch(() => {});
-    await rebuildFatWeightShadowV1(committedShadowInput).catch(() => {});
-    await rebuildExperimentalFatWeightUncertaintyV1(committedShadowInput).catch(() => {});
-    await rebuildRelativeMuscleEpisodeTrajectories({
-      profileId: committedShadowInput.profileId,
-      fromDate: committedShadowInput.relativeMuscleFromDate,
-    }).catch(() => {});
+    const required = input.requireDependentStages === true;
+    const rebuildRequiredStages = async () => {
+      await physiologyV7ShadowService.run({
+        ...committedShadowInput,
+        throwAfterDiagnostic: required,
+        onProgress: committedShadowInput.onCandidateProcessed,
+      });
+      await rebuildFatWeightShadowV1({
+        ...committedShadowInput,
+        onProgress: committedShadowInput.onCandidateProcessed,
+      });
+      await rebuildExperimentalFatWeightUncertaintyV1({
+        ...committedShadowInput,
+        onProgress: committedShadowInput.onCandidateProcessed,
+      });
+      await rebuildRelativeMuscleEpisodeTrajectories({
+        profileId: committedShadowInput.profileId,
+        fromDate: committedShadowInput.relativeMuscleFromDate,
+        onCandidateProcessed: committedShadowInput.onCandidateProcessed,
+      });
+    };
+    if (required) await rebuildRequiredStages();
+    else await rebuildRequiredStages().catch(() => {});
   }
-  return production;
+  return productionResult;
 }
 
 /**
  * Rebuild production history after deterministic Active Energy materialization.
- * Stepper estimates that need newly current D-1 mass are refreshed and replayed
- * until their canonical resolutions remain stable across a production pass.
+ * Active Energy candidates whose resolution depends on replayed production
+ * state are refreshed and replayed until canonical resolutions stabilize.
  */
 export async function recalculateModelEpisode(
   input: {
     episodeId?: number;
     now?: Date;
-    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+    requireDependentStages?: boolean;
+    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
+    onCandidateProcessed?: () => void | Promise<void>;
+    /** Deterministic integration seam after a committed production pass. */
+    afterProductionPassBeforeCandidateRefresh?: () => void | Promise<void>;
   } = {},
   client: PrismaClient = prisma,
 ) {
   const publishLifecycleFence = async () => {
     if (input.onLifecycleFenceChanged === undefined) return null;
     const fence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(1);
-    if (fence !== null) input.onLifecycleFenceChanged(fence);
+    if (fence !== null) await input.onLifecycleFenceChanged(fence);
     return fence;
   };
   if (client !== prisma) {
     const production = await recalculateModelEpisodeProduction(input, client);
     await publishLifecycleFence();
-    const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
-    void _effectiveReplayFromDate;
-    return result;
+    return production;
   }
   const status = await getModelStatus(input.episodeId, client);
   const profileId = 1;
-  const materialized = await materializeActiveEnergyCandidatesV1(profileId, { onLifecycleFenceChanged: input.onLifecycleFenceChanged });
-  await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates);
+  const lifecycleRepository = new PhysiologyV7PersistenceRepository(client);
+  const convergenceBlock = await lifecycleRepository.beginActiveEnergyConvergence({
+    profileId,
+    fromDate: status.episodeStartDate,
+  });
+  await publishLifecycleFence();
+  const materialized = await materializeActiveEnergyCandidatesV1(profileId, {
+    activeEnergyConvergenceOwner: convergenceBlock,
+    onLifecycleFenceChanged: input.onLifecycleFenceChanged,
+    onCandidateProcessed: async () => {
+      await lifecycleRepository.renewActiveEnergyConvergence({ profileId, owner: convergenceBlock });
+      await input.onCandidateProcessed?.();
+    },
+  });
+  await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates, convergenceBlock);
   await publishLifecycleFence();
   const eligibleRefreshes = materialized.stepperWorkoutIds.length
     + materialized.strengthSessionIds.length + materialized.strengthWorkoutIds.length;
   const maxRefreshPasses = Math.max(2, eligibleRefreshes + 2);
+  const effectiveReplayFromDates: string[] = [];
   for (let pass = 0; pass < maxRefreshPasses; pass += 1) {
-    const production = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
+    await lifecycleRepository.renewActiveEnergyConvergence({ profileId, owner: convergenceBlock });
+    const production = await recalculateModelEpisodeProduction({
+      ...input,
+      episodeId: status.episodeId,
+      convergenceOwner: convergenceBlock,
+    }, client);
+    effectiveReplayFromDates.push(production.effectiveReplayFromDate);
     // The production transaction may commit a new lifecycle timestamp before
     // candidate refresh completes. Keep the recovery CAS tied to this exact
     // committed fence if a later refresh step fails.
     await publishLifecycleFence();
+    await input.afterProductionPassBeforeCandidateRefresh?.();
+    await lifecycleRepository.renewActiveEnergyConvergence({ profileId, owner: convergenceBlock });
     const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate, {
+      activeEnergyConvergenceOwner: convergenceBlock,
       onLifecycleFenceChanged: input.onLifecycleFenceChanged,
+      onCandidateProcessed: async () => {
+        await lifecycleRepository.renewActiveEnergyConvergence({ profileId, owner: convergenceBlock });
+        await input.onCandidateProcessed?.();
+      },
     });
     if (changedDates.length === 0) {
+      const lifecycle = await client.physiologyV7Lifecycle.findUnique({
+        where: { profileId },
+        select: { invalidationGeneration: true },
+      });
+      if (!lifecycle || !await lifecycleRepository.finishActiveEnergyConvergence({
+        profileId,
+        expectedGeneration: lifecycle.invalidationGeneration,
+        expectedRevision: convergenceBlock.revision,
+        expectedFromDate: convergenceBlock.fromDate,
+        expectedOwnerToken: convergenceBlock.ownerToken,
+      })) {
+        throw new Error("Active Energy convergence lost its source or publication fence");
+      }
       await publishLifecycleFence();
-      const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
-      void _effectiveReplayFromDate;
-      return result;
+      return {
+        ...production,
+        effectiveReplayFromDate: [...effectiveReplayFromDates].sort()[0] ?? production.effectiveReplayFromDate,
+      };
     }
-    await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates);
+    await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates, convergenceBlock);
     await publishLifecycleFence();
   }
-  throw new Error("Stepper historical mass candidates did not converge after production replay");
+  throw new Error("Active Energy candidates did not converge after production replay");
 }
 
 export async function getModelStatus(

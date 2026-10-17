@@ -301,6 +301,7 @@
 .actionPanel .runRow { grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; }
 .actionPanel .runHelp { margin: 0; }
 .actionPanel .recalculateHint { margin: 0; padding-top: .55rem; border-top: 1px solid var(--line); }
+.actionComplete { margin: 0; padding: .65rem .75rem; color: var(--success-strong); background: var(--success-soft); border: 1px solid color-mix(in srgb, var(--success) 26%, var(--line)); border-radius: .55rem; font-size: .78rem; font-weight: 700; }
 .good, .info, .warning { color: var(--ink); background: var(--surface); border-color: var(--line); }
 .good { border-inline-start: .22rem solid var(--success); }
 .info { border-inline-start: .22rem solid var(--info); }

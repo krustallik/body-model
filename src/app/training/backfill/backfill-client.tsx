@@ -24,6 +24,8 @@ import {
   trainingSearchParamHref,
   updateTrainingSearchParams,
   useTrainingSearchParam,
+  currentTrainingHref,
+  safeTrainingReturnHref,
 } from "../training-url-state";
 import styles from "../training.module.css";
 
@@ -68,6 +70,9 @@ export function BackfillClient() {
   const router = useRouter();
   const { value: pageValue, ready } = useTrainingSearchParam("garminPage");
   const { value: missingValue } = useTrainingSearchParam("onlyMissingDiary");
+  const { value: refreshValue } = useTrainingSearchParam("refresh");
+  const { value: returnToValue, ready: returnToReady } = useTrainingSearchParam("returnTo");
+  const backHref = returnToReady ? safeTrainingReturnHref(returnToValue, "/training") : "/training";
   const page = parseTrainingPage(pageValue);
   const onlyMissing = missingValue === "true";
   const pageHref = useCallback((nextPage: number): string => {
@@ -83,7 +88,7 @@ export function BackfillClient() {
   const [error, setError] = useState<string | null>(null);
   const [listRevision, setListRevision] = useState(0);
   const requestSequence = useRef(0);
-  const requestKey = `${page}:${onlyMissing}:${listRevision}`;
+  const requestKey = `${page}:${onlyMissing}:${refreshValue ?? ""}:${listRevision}`;
   const loading = loadedRequestKey !== requestKey;
 
   const loadPrograms = useCallback(async () => {
@@ -211,7 +216,7 @@ export function BackfillClient() {
               : "Garmin workouts without sets — attach a program and fill sets. Garmin source stays untouched."}
           </p>
         </div>
-        <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+        <Link className={styles.secondaryButton} href={backHref}>{uk ? "Назад" : "Back"}</Link>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
@@ -406,7 +411,7 @@ export function BackfillClient() {
                           <button
                             className={styles.primaryButton}
                             type="button"
-                            onClick={() => router.push(`/training/backfill/from/${workout.workoutId}`)}
+                            onClick={() => router.push(`/training/backfill/from/${workout.workoutId}?returnTo=${encodeURIComponent(currentTrainingHref())}`)}
                           >
                             {uk ? "Додати запис" : "Add diary"}
                           </button>
@@ -414,7 +419,7 @@ export function BackfillClient() {
                           <button
                             className={styles.secondaryButton}
                             type="button"
-                            onClick={() => router.push(`/training/sessions/${workout.linkedSessionId}/edit`)}
+                            onClick={() => router.push(`/training/sessions/${workout.linkedSessionId}/edit?returnTo=${encodeURIComponent(currentTrainingHref())}`)}
                           >
                             {uk ? "Редагувати" : "Edit"}
                           </button>

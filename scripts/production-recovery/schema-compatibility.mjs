@@ -1,4 +1,5 @@
 import { canonicalDigest } from "./canonical.mjs";
+import { assertRollbackAppCanReadProgramlessSessions } from "../production-app-capabilities.mjs";
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -101,6 +102,58 @@ export async function verifyReadOnlySchemaCompatibility({
       requiredRelationsChecked: schemaSnapshot.length,
       migrationCount: normalizedMigrations.length,
     };
+  });
+}
+
+/**
+ * Produces the sanitized, exact-SHA rollback proof consumed by the root
+ * recovery adapter before starting the captured app and before enabling its
+ * writers. The database observation is read-only and bound to the captured
+ * logical database identity; it never returns session identifiers or payload.
+ */
+export async function verifyProgramlessSessionRollbackCompatibility({
+  withReadOnlyTransaction,
+  resolveLogicalDatabaseIdentity,
+  expectedLogicalProductionDbIdentityDigest,
+  repositoryPath,
+  rollbackAppSha,
+}) {
+  if (typeof withReadOnlyTransaction !== "function" || typeof resolveLogicalDatabaseIdentity !== "function") {
+    throw new Error("Read-only PostgreSQL transaction and logical database identity adapters are required.");
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(expectedLogicalProductionDbIdentityDigest ?? ""))
+    || !/^[a-f0-9]{40}$/.test(String(rollbackAppSha ?? "")) || !repositoryPath) {
+    throw new Error("Rollback programless-session compatibility requires exact database and app SHA bindings.");
+  }
+  return withReadOnlyTransaction(async (query) => {
+    if (typeof query !== "function") throw new Error("Read-only transaction adapter did not provide a query function.");
+    await query("SET TRANSACTION READ ONLY", []);
+    const identity = await resolveLogicalDatabaseIdentity(query);
+    if (!identity || identity.identityDigest !== expectedLogicalProductionDbIdentityDigest) {
+      throw new Error("Rollback compatibility query is not bound to the captured logical production database.");
+    }
+    const rows = await query(
+      'SELECT count(*)::text AS "programlessSessionCount" FROM public."StrengthDiarySession" '
+        + 'WHERE "programId" IS NULL AND "programVersionId" IS NULL',
+      [],
+    );
+    if (!Array.isArray(rows) || rows.length !== 1 || !/^\d+$/.test(String(rows[0]?.programlessSessionCount ?? ""))) {
+      throw new Error("Read-only rollback compatibility query did not return one sanitized session count.");
+    }
+    const programlessSessionCount = Number(rows[0].programlessSessionCount);
+    if (!Number.isSafeInteger(programlessSessionCount)) throw new Error("Programless-session count exceeds the safe integer range.");
+    const app = assertRollbackAppCanReadProgramlessSessions({ repositoryPath, releaseSha: rollbackAppSha, programlessSessionCount });
+    return Object.freeze({
+      schemaVersion: 1,
+      purpose: "bodycast-programless-session-rollback-compatibility",
+      rollbackAppSha,
+      logicalProductionDbIdentityDigest: identity.identityDigest,
+      programlessSessionCount,
+      rollbackAppSupportsProgramlessSessions: app.rollbackAppSupportsProgramlessSessions,
+      programlessSessionCompatible: app.programlessSessionCompatible,
+      rollbackAppCapabilityDigest: app.capabilityDigest,
+      observedAt: new Date().toISOString(),
+    });
   });
 }
 

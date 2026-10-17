@@ -18,7 +18,12 @@ async function createImageFixture() {
   for (const name of ["unified-v3-postflight.mjs", "unified-v4-activate-replay.mjs", "unified-v4-traffic-check.mjs"]) {
     await writeFile(path.join(fixturePath, "scripts", name), `// generated rollout fixture: ${name}\n${"x".repeat(300)}\n`);
   }
-  for (const migration of ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations) {
+  const reviewedMigrations = [...new Map([
+    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations,
+    ...V4_REPUBLICATION_MANIFEST.migrations,
+    ...V4_REPUBLICATION_MANIFEST.requiredAppliedMigrations,
+  ].map((migration) => [migration.name, migration])).values()];
+  for (const migration of reviewedMigrations) {
     const relative = `prisma/migrations/${migration.name}/migration.sql`;
     const committedBytes = execFileSync("git", ["show", `HEAD:${relative}`], { cwd: repositoryPath, maxBuffer: 8 * 1024 * 1024 });
     await writeFile(path.join(fixturePath, relative), committedBytes);

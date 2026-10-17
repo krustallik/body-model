@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/i18n/i18n-provider", () => ({
@@ -9,11 +9,12 @@ vi.mock("@/i18n/i18n-provider", () => ({
 
 const routerPush = vi.fn();
 const routerReplace = vi.fn();
+const mockRouter = { push: routerPush, replace: routerReplace };
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: routerPush, replace: routerReplace }),
+  useRouter: () => mockRouter,
   usePathname: () => "/training/sessions/88/edit",
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 vi.mock("@/components/app-nav", () => ({
@@ -21,7 +22,9 @@ vi.mock("@/components/app-nav", () => ({
 }));
 
 import { BackfillClient } from "@/app/training/backfill/backfill-client";
+import { FromWorkoutClient } from "@/app/training/backfill/from/[workoutId]/from-workout-client";
 import { SessionEditClient } from "@/app/training/sessions/[id]/edit/session-edit-client";
+import { updateTrainingSearchParams } from "@/app/training/training-url-state";
 import {
   DIARY_COMPLETENESS,
   ENTRY_MODE,
@@ -87,6 +90,7 @@ const session = {
 describe("Training backfill UI", () => {
   afterEach(() => {
     cleanup();
+    window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
     routerPush.mockReset();
     routerReplace.mockReset();
@@ -155,11 +159,96 @@ describe("Training backfill UI", () => {
     expect(screen.getAllByText(/No diary/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Push A/).length).toBeGreaterThan(0);
   });
+
+  it("refetches the Garmin list when a session editor returns with a refresh token", async () => {
+    window.history.replaceState(null, "", "/training/backfill");
+    let historicalRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+      const url = String(input);
+      if (url.includes("/workouts/historical")) {
+        historicalRequests += 1;
+        return Response.json({ workouts: [], totalCount: 0 });
+      }
+      if (url.includes("/programs")) return Response.json({ programs: [] });
+      return new Response("not found", { status: 404 });
+    }));
+
+    render(<BackfillClient />);
+    await waitFor(() => expect(historicalRequests).toBe(1));
+    updateTrainingSearchParams({ refresh: "2-2026-10-14T18:00:00.000Z" });
+    await waitFor(() => expect(historicalRequests).toBe(2));
+  });
+
+  it("returns from Garmin history to the originating Training hub query", async () => {
+    window.history.replaceState(null, "", `/training/backfill?returnTo=${encodeURIComponent("/training?recentPage=3&stepperPage=2")}`);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+      const url = String(input);
+      if (url.includes("/workouts/historical")) return Response.json({ workouts: [], totalCount: 0 });
+      if (url.includes("/programs")) return Response.json({ programs: [] });
+      return new Response("not found", { status: 404 });
+    }));
+
+    render(<BackfillClient />);
+    await waitFor(() => expect(screen.getByRole("link", { name: "Back" }).getAttribute("href"))
+      .toBe("/training?recentPage=3&stepperPage=2"));
+  });
+
+  it("ignores a stale linked-workout response after the return context changes", async () => {
+    window.history.replaceState(null, "", `/training/backfill/from/501?returnTo=${encodeURIComponent("/training?recentPage=1")}`);
+    let resolveOldWorkouts!: (response: Response) => void;
+    const oldWorkouts = new Promise<Response>((resolve) => { resolveOldWorkouts = resolve; });
+    let historicalRequests = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.includes("/workouts/historical")) {
+        historicalRequests += 1;
+        return historicalRequests === 1
+          ? oldWorkouts
+          : Promise.resolve(Response.json({ workouts: [{
+            workoutId: 501,
+            type: "Traditional Strength Training",
+            startAt: "2026-09-14T15:55:00.000Z",
+            endAt: "2026-09-14T17:06:00.000Z",
+            durationMinutes: 71,
+            activeEnergyKcal: 210,
+            linkedSessionId: 88,
+            linkedProgramName: "Push A",
+            diaryCompleteness: DIARY_COMPLETENESS.DIARY_WITH_SETS,
+          }] }));
+      }
+      if (url.includes("/programs")) return Promise.resolve(Response.json({ programs: [] }));
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }));
+    const view = render(<FromWorkoutClient workoutId={501} />);
+    await waitFor(() => expect(historicalRequests).toBe(1));
+
+    window.history.replaceState(null, "", `/training/backfill/from/501?returnTo=${encodeURIComponent("/training?recentPage=2")}`);
+    view.rerender(<FromWorkoutClient workoutId={501} />);
+    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith(
+      `/training/sessions/88/edit?returnTo=${encodeURIComponent("/training?recentPage=2")}`,
+    ));
+    await act(async () => {
+      resolveOldWorkouts(Response.json({ workouts: [{
+        workoutId: 501,
+        type: "Traditional Strength Training",
+        startAt: "2026-09-14T15:55:00.000Z",
+        endAt: "2026-09-14T17:06:00.000Z",
+        durationMinutes: 71,
+        activeEnergyKcal: 210,
+        linkedSessionId: 88,
+        linkedProgramName: "Push A",
+        diaryCompleteness: DIARY_COMPLETENESS.DIARY_WITH_SETS,
+      }] }));
+      await oldWorkouts;
+    });
+    expect(routerReplace).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Session edit UI", () => {
   afterEach(() => {
     cleanup();
+    window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
     routerPush.mockReset();
     routerReplace.mockReset();
@@ -206,13 +295,14 @@ describe("Session edit UI", () => {
       expect(screen.getByText(/30 kg|30 кг/)).toBeTruthy();
       expect(screen.getByRole("button", { name: /Session menu/i })).toBeTruthy();
     });
+    expect(screen.getByRole("link", { name: "← Back" }).getAttribute("href")).toContain("/training/backfill?refresh=2-");
 
     await user.click(screen.getByRole("button", { name: /Session menu/i }));
     const dialog = screen.getByRole("dialog", { name: /Actions|Дії/i });
     expect(within(dialog).getByRole("button", { name: /Change program/i })).toBeTruthy();
     await user.click(within(dialog).getByRole("button", { name: /Delete diary/i }));
     await waitFor(() => {
-      expect(routerPush).toHaveBeenCalledWith("/training/backfill");
+      expect(routerPush.mock.calls.at(-1)?.[0]).toMatch(/^\/training\/backfill\?refresh=\d+$/);
     });
   });
 });

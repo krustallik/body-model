@@ -5,6 +5,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalSha256, verifyHistoricalMigrationAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { verifyRestoredBackup } from "./production-migration-preflight.mjs";
+import { getProductionMigrationManifest } from "./production-migration-manifests.mjs";
+import { assertRollbackAppCanReadProgramlessSessions } from "./production-app-capabilities.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
 import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity,
   matchesPostgresDatabaseIdentityDigest, postgresDatabaseIdentityHostProjection, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
@@ -52,7 +54,7 @@ export function verifyCutbackEvidenceBundle({
   if (canonicalSha256(preflightReport?.identity) !== canonicalSha256(preflightResult?.identity)) {
     fail("preflight result identity differs from the original read-only PostgreSQL report.");
   }
-  for (const field of ["migrations", "objects", "tables"]) {
+  for (const field of ["migrations", "objects", "tables", "programlessSessionCount"]) {
     if (canonicalSha256(preflightReport?.[field]) !== canonicalSha256(preflightResult?.[field])) {
       fail(`preflight result ${field} differs from the original read-only PostgreSQL report.`);
     }
@@ -88,8 +90,9 @@ export function verifyCutbackEvidenceBundle({
     preflightResultDigest: claims.preflightResultDigest };
 }
 
-export function assertCutbackLiveDatabaseIdentity({ claims, liveReport }) {
+export function assertCutbackLiveDatabaseIdentity({ claims, liveReport, preflightReport }) {
   const identity = liveReport?.identity;
+  const manifest = getProductionMigrationManifest(claims?.manifestId);
   if (!isCanonicalPostgresDatabaseIdentity(identity)
     || !matchesPostgresDatabaseIdentityDigest(identity, claims.productionIdentityDigest)
     || identity.database !== "bodycast" || identity.role !== "bodycast"
@@ -97,9 +100,19 @@ export function assertCutbackLiveDatabaseIdentity({ claims, liveReport }) {
     || !Number.isSafeInteger(identity.databaseOid)) {
     fail("live PostgreSQL cluster/database/role identity differs from the exact signed pre-DDL target.");
   }
+  if (manifest.cutbackSupported !== true) fail("the exact migration manifest does not support database cutback.");
   if (liveReport?.writerDrain?.activeClientBackends?.length !== 0
     || liveReport?.writerDrain?.topology?.ready !== true) {
     fail("live writer-drain report is not empty and ready.");
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(preflightReport?.logicalDataFingerprint ?? ""))
+    || liveReport.logicalDataFingerprint !== preflightReport.logicalDataFingerprint) {
+    fail("live application data changed after the signed pre-DDL backup; database cutback would discard committed data.");
+  }
+  if (!Number.isSafeInteger(preflightReport?.programlessSessionCount) || preflightReport.programlessSessionCount < 0
+    || !Number.isSafeInteger(liveReport?.programlessSessionCount) || liveReport.programlessSessionCount < 0
+    || liveReport.programlessSessionCount !== preflightReport.programlessSessionCount) {
+    fail("programless-session state is missing or changed after the signed pre-DDL backup.");
   }
   return { verified: true, identityDigest: canonicalSha256(identity) };
 }
@@ -122,6 +135,11 @@ export function verifyCutbackRestoredState({ sourceReport, restoreResult, restor
     readability: readabilityReport?.readability,
   });
   const blockers = [...base.blockers];
+  if (!Number.isSafeInteger(sourceReport?.programlessSessionCount) || sourceReport.programlessSessionCount < 0
+    || !Number.isSafeInteger(restoredReport?.programlessSessionCount) || restoredReport.programlessSessionCount < 0
+    || sourceReport.programlessSessionCount !== restoredReport.programlessSessionCount) {
+    blockers.push("Restored programless-session state differs from the signed pre-DDL snapshot.");
+  }
   const expected = restoreResult?.readability;
   const actual = readabilityReport?.readability;
   for (const table of READABILITY_TABLES) {
@@ -187,6 +205,18 @@ export function verifyPreviousAppMigrationCompatibility({
   try {
     verifyPreviousAppCaptureMatchesPreflight(record, preflightResult, targetSha);
     assertPreviousAppProvenanceBoundToPreflight(record, preflightResult);
+  } catch (error) {
+    fail(error.message);
+  }
+
+  if (!Number.isSafeInteger(preflightResult?.programlessSessionCount) || preflightResult.programlessSessionCount < 0
+    || !Number.isSafeInteger(restoredReport?.programlessSessionCount) || restoredReport.programlessSessionCount < 0
+    || restoredReport.programlessSessionCount !== preflightResult.programlessSessionCount) {
+    fail("restored programless-session state differs from the signed pre-DDL baseline.");
+  }
+  try {
+    assertRollbackAppCanReadProgramlessSessions({ repositoryPath, releaseSha: record.previousSha,
+      programlessSessionCount: restoredReport.programlessSessionCount });
   } catch (error) {
     fail(error.message);
   }
@@ -261,12 +291,13 @@ async function main() {
   }
   if (mode === "--verify-live-identity") {
     const [directory, liveReportPath] = args;
-    const [envelope, liveReport] = await Promise.all([
+    const [envelope, liveReport, preflightReport] = await Promise.all([
       readFile(path.join(directory, "authorization-envelope.json"), "utf8"), readJson(liveReportPath),
+      readJson(path.join(directory, "preflight-report.json")),
     ]);
     const allowlist = await readJson(path.resolve("scripts/production-migration-verification-keys.json"));
     const historical = verifyHistoricalMigrationAuthorizationEnvelope(envelope, { allowlist });
-    process.stdout.write(JSON.stringify(assertCutbackLiveDatabaseIdentity({ claims: historical.payload, liveReport })) + "\n");
+    process.stdout.write(JSON.stringify(assertCutbackLiveDatabaseIdentity({ claims: historical.payload, liveReport, preflightReport })) + "\n");
     return;
   }
   if (mode === "--verify-restored-identity" || mode === "--verify-staged-identity") {

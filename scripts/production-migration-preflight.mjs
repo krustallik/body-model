@@ -419,6 +419,12 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
   const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
+  if (manifest.requireCompleteReleaseTree === true) {
+    const reviewedTree = [...(manifest.requiredAppliedMigrations ?? []).map(({ name }) => name), ...manifest.migrations.map(({ name }) => name)];
+    if (!sameArray(reviewedTree, [...new Set(reviewedTree)]) || !sameArray(reviewedTree, migrationDirectories)) {
+      blockers.push("Reviewed predecessor and pending sets do not cover the complete release migration tree exactly.");
+    }
+  }
   const expectedPending = sorted(manifest.migrations.map(({ name }) => name));
   if (!sameArray(migrationDirectories, [...new Set(migrationDirectories)])) blockers.push("Release tree contains duplicate migration directory names.");
   if (!sameArray(pending, expectedPending)) blockers.push(`Full release-tree pending set differs from manifest ${manifest.id}: ${sorted(pending).join(", ") || "none"}.`);
@@ -444,6 +450,12 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
       || !normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (wrongObjectsBefore.length) blockers.push(`Required pre-migration schema signatures differ from the reviewed baseline: ${wrongObjectsBefore.join(", ")}.`);
+  const wrongExactObjectsBefore = Object.entries(manifest.requiredObjectSignatureEquals ?? {}).filter(([name, expected]) => {
+    const object = objectMap.get(name);
+    return object?.present !== true || typeof object.signature !== "string"
+      || normalizeObjectSignature(canonicalInventorySignature(object)) !== normalizeObjectSignature(expected);
+  }).map(([name]) => name);
+  if (wrongExactObjectsBefore.length) blockers.push(`Required exact pre-migration schema signatures differ from the reviewed baseline: ${wrongExactObjectsBefore.join(", ")}.`);
   const changedObjectsBefore = Object.entries(manifest.requiredObjectSignatureExcludes ?? {}).filter(([name, fragment]) => {
     const object = objectMap.get(name);
     return object?.present !== true || typeof object.signature !== "string"
@@ -508,6 +520,7 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     objects: objectRows,
     identity: report?.identity ?? null,
     tables: report?.tables ?? {},
+    programlessSessionCount: report?.programlessSessionCount ?? null,
     readability: report?.readability ?? null,
     logicalDataFingerprint: report?.logicalDataFingerprint ?? null,
     conflictingLocks,
@@ -544,6 +557,13 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
       || typeof signature !== "string" || !normalizeObjectSignature(signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (wrongRelativeMuscleSignatures.length) blockers.push(`Relative Muscle postflight schema signatures differ from the reviewed contract: ${wrongRelativeMuscleSignatures.join(", ")}.`);
+  const wrongExactPostflightSignatures = Object.entries(manifest.postflightSignatureEquals ?? {}).filter(([name, expected]) => {
+    const object = byName.get(name);
+    const signature = canonicalInventorySignature(object);
+    return object?.present !== true || typeof signature !== "string"
+      || normalizeObjectSignature(signature) !== normalizeObjectSignature(expected);
+  }).map(([name]) => name);
+  if (wrongExactPostflightSignatures.length) blockers.push(`Postflight schema signatures differ from the exact reviewed contract: ${wrongExactPostflightSignatures.join(", ")}.`);
   const expectedDatabase = options.expectedDatabase ?? "bodycast";
   const expectedRole = options.expectedRole ?? "bodycast";
   if (report?.identity?.database !== expectedDatabase || report?.identity?.role !== expectedRole || !String(report?.identity?.serverVersion ?? "").startsWith("17.")

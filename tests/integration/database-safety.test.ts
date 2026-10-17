@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   requireIsolatedStage01Database,
+  POSTCOMMIT_FRESH_TEST_DATABASE_NAME,
+  FULL_INTEGRATION_REAUDIT_DATABASE_NAME,
+  FULL_INTEGRATION_CLEAN_DATABASE_NAME,
+  POSTCOMMIT_TEST_DATABASE_NAME,
+  POSTCOMMIT_TEST_DATABASE_PORT,
+  POSTCOMMIT_TEST_DATABASE_ROLE,
   STAGE01_TEST_DATABASE_NAME,
   STAGE01_TEST_DATABASE_ROLE,
 } from "../../src/modules/training/testing/require-isolated-database";
 
 const safeUrl = `postgresql://${STAGE01_TEST_DATABASE_ROLE}:secret@127.0.0.1:5432/${STAGE01_TEST_DATABASE_NAME}`;
+const postcommitSafeUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/${POSTCOMMIT_TEST_DATABASE_NAME}`;
+const freshPostcommitSafeUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/${POSTCOMMIT_FRESH_TEST_DATABASE_NAME}`;
 
 describe("Stage 01 isolated database guard", () => {
   it("accepts only the exact local test DB, role, port, and explicit operation mode", () => {
@@ -18,6 +26,59 @@ describe("Stage 01 isolated database guard", () => {
     });
     expect(requireIsolatedStage01Database(safeUrl, "seed", "seed").mode).toBe("seed");
     expect(requireIsolatedStage01Database(safeUrl, "cleanup", "cleanup").mode).toBe("cleanup");
+  });
+
+  it("accepts the exact isolated postcommit test container target", () => {
+    expect(requireIsolatedStage01Database(postcommitSafeUrl, "test", "test")).toMatchObject({
+      databaseName: POSTCOMMIT_TEST_DATABASE_NAME,
+      role: POSTCOMMIT_TEST_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: POSTCOMMIT_TEST_DATABASE_PORT,
+      mode: "test",
+    });
+  });
+
+  it("accepts the dedicated clean postcommit test database", () => {
+    expect(requireIsolatedStage01Database(freshPostcommitSafeUrl, "test", "test")).toMatchObject({
+      databaseName: POSTCOMMIT_FRESH_TEST_DATABASE_NAME,
+      role: POSTCOMMIT_TEST_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: POSTCOMMIT_TEST_DATABASE_PORT,
+      mode: "test",
+    });
+  });
+
+  it("accepts the dedicated re-audit test database", () => {
+    const reAuditUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/bodycast_training_reaudit_20261017_test`;
+    expect(requireIsolatedStage01Database(reAuditUrl, "test", "test")).toMatchObject({
+      databaseName: "bodycast_training_reaudit_20261017_test",
+      role: POSTCOMMIT_TEST_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: POSTCOMMIT_TEST_DATABASE_PORT,
+      mode: "test",
+    });
+  });
+
+  it("accepts only the dedicated full-integration re-audit database target", () => {
+    const fullReauditUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/${FULL_INTEGRATION_REAUDIT_DATABASE_NAME}`;
+    expect(requireIsolatedStage01Database(fullReauditUrl, "test", "test")).toMatchObject({
+      databaseName: FULL_INTEGRATION_REAUDIT_DATABASE_NAME,
+      role: POSTCOMMIT_TEST_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: POSTCOMMIT_TEST_DATABASE_PORT,
+      mode: "test",
+    });
+  });
+
+  it("accepts only the fresh full-integration continuation database target", () => {
+    const fullCleanUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/${FULL_INTEGRATION_CLEAN_DATABASE_NAME}`;
+    expect(requireIsolatedStage01Database(fullCleanUrl, "test", "test")).toMatchObject({
+      databaseName: FULL_INTEGRATION_CLEAN_DATABASE_NAME,
+      role: POSTCOMMIT_TEST_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: POSTCOMMIT_TEST_DATABASE_PORT,
+      mode: "test",
+    });
   });
 
   it.each([

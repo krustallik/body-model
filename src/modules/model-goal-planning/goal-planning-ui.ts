@@ -29,16 +29,6 @@ export type GoalFormValues = {
 
 export type GoalFormErrors = Partial<Record<Exclude<keyof GoalFormValues, "plan" | "mode"> | "plan", string>>;
 
-export type GuidedWorkDescription = "mostly-sitting" | "mostly-standing" | "manual-handling";
-
-/** Maps plain-language answers to the closest existing supported work category. */
-export function guidedWorkCategory(description: GuidedWorkDescription): PlanValues["workCategory"] {
-  if (description === "manual-handling") return "manualLight";
-  // The existing planner has no seated category; both low-movement answers use its
-  // lightest supported category. Users who need a more exact category can choose it directly.
-  return "standingLight";
-}
-
 export function defaultGoalForm(
   latestModeledDate?: string | null,
   currentWeightKg?: number | null,
@@ -115,7 +105,7 @@ function goalNutritionInput(
     currentWeightKg,
     modeledTdeeKcalPerDay: status.currentModeledTdeeKcalPerDay,
     modelEnergyStatus: status.continuityStatus === "resolved" && !status.recoveryRequired ? "available" : "limited",
-    calibrationStatus: status.calibrationStatus,
+    calibrationStatus: status.calibrationStatus ?? undefined,
     strengthSessionsPerWeek: values.plan.strengthDaysPerWeek,
     otherTrainingSessionsPerWeek: values.plan.otherTrainingDaysPerWeek,
     averageStepsPerDay: values.plan.averageStepsPerDay,

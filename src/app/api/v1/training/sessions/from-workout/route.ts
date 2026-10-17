@@ -14,8 +14,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const session = await trainingService.createSessionFromWorkout(parsed.data);
-    const { modelPublicationStatus, ...sessionDto } = session;
-    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) }, { status: 201 });
+    return Response.json({ session }, { status: 201 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

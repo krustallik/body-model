@@ -12,6 +12,7 @@ import {
 import {
   ActiveSessionExistsError,
   SetValidationError,
+  StaleStrengthEnergySourceError,
   WorkoutAlreadyMatchedError,
 } from "@/modules/training/training.errors";
 import { TrainingRepository } from "@/modules/training/training.repository";
@@ -46,6 +47,7 @@ type MockDb = {
   };
   strengthSet: {
     findFirst: ReturnType<typeof vi.fn>;
+    aggregate: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     delete: ReturnType<typeof vi.fn>;
@@ -59,6 +61,12 @@ type MockDb = {
   activeEnergyEventAlias: { findMany: ReturnType<typeof vi.fn> };
   physiologyV7Lifecycle: { upsert: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   physiologyV7DailyResult: { findFirst: ReturnType<typeof vi.fn> };
+  trainingSetCreateOperation: {
+    findUnique: ReturnType<typeof vi.fn>;
+    create: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
+  };
   $executeRaw: ReturnType<typeof vi.fn>;
   $transaction: ReturnType<typeof vi.fn>;
   $queryRaw: ReturnType<typeof vi.fn>;
@@ -88,6 +96,7 @@ function buildDb(): MockDb {
     strengthSessionExercise: { findFirst: vi.fn(), findUnique: vi.fn().mockResolvedValue({ sessionId: 50 }) },
     strengthSet: {
       findFirst: vi.fn(),
+      aggregate: vi.fn().mockResolvedValue({ _max: { setNumber: null } }),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
@@ -113,6 +122,12 @@ function buildDb(): MockDb {
       update: vi.fn().mockResolvedValue({}),
     },
     physiologyV7DailyResult: { findFirst: vi.fn().mockResolvedValue(null) },
+    trainingSetCreateOperation: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
     $queryRaw: vi.fn().mockResolvedValue([{
@@ -305,7 +320,48 @@ describe("TrainingService programs", () => {
     service = new TrainingService(db as never, repo);
   });
 
-  it("does not rebuild Unified after a required training shadow refresh fails", async () => {
+  it("reads an exact set for ambiguous-mutation reconciliation without finalizing sessions", async () => {
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 2,
+      reps: 8,
+      weightKg: decimal(32.5),
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "fixture",
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:09:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+      loadAccountingOverride: { additionalLoadKg: 2 },
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        session: { id: 50, status: SESSION_STATUS.COMPLETED },
+      },
+    });
+
+    await expect(service.getSetForSession(50, 900)).resolves.toEqual({
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 2,
+      reps: 8,
+      weightKg: 32.5,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "fixture",
+      completedAt: "2026-09-17T16:10:00.000Z",
+      createdAt: "2026-09-17T16:09:00.000Z",
+      updatedAt: "2026-09-17T16:12:00.000Z",
+      loadAccountingOverride: { additionalLoadKg: 2 },
+    });
+    expect(db.strengthSet.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 900, sessionExercise: { sessionId: 50, session: { profileId: 1 } } },
+    }));
+    expect(db.strengthDiarySession.findMany).not.toHaveBeenCalled();
+  });
+
+  it("does not await physiology publication after manual Training matching", async () => {
     const previousEvent = new Date("2071-01-01T12:00:00.000Z");
     const currentEvent = new Date("2071-01-02T16:00:00.000Z");
     const oldSession = sessionDetail({
@@ -352,8 +408,8 @@ describe("TrainingService programs", () => {
 
     try {
       const result = await serviceWithFailedShadow.manualMatch(50, { workoutId: 77 });
-      expect(result).toMatchObject({ modelPublicationStatus: "stale" });
-      expect(failShadows).toHaveBeenCalledOnce();
+      expect(result.status).toBe(SESSION_STATUS.COMPLETED);
+      expect(failShadows).not.toHaveBeenCalled();
       expect(invalidate).not.toHaveBeenCalled();
       expect(relativeRebuild).not.toHaveBeenCalled();
       expect(unifiedRebuild).not.toHaveBeenCalled();
@@ -405,7 +461,7 @@ describe("TrainingService programs", () => {
     unifiedRebuild.mockRestore();
   });
 
-  it("refreshes physiology after an explicit completed-session accounting refresh", async () => {
+  it("returns after a completed-session accounting refresh without awaiting physiology", async () => {
     const before = sessionDetail({
       status: SESSION_STATUS.COMPLETED,
       materializationState: "current",
@@ -429,7 +485,7 @@ describe("TrainingService programs", () => {
     expect(repository.materializeAccounting).toHaveBeenCalledWith({
       sessionId: 50, profileId: 1, mode: "refresh", idempotencyKey: "completed-accounting-refresh",
     });
-    expect(refreshDependencies).toHaveBeenCalledWith({ session: after, profileId: 1 });
+    expect(refreshDependencies).not.toHaveBeenCalled();
   });
 
   it("creates a program with version 1, order, planned sets, and resistance types", async () => {
@@ -588,10 +644,11 @@ describe("TrainingService snapshot immutability", () => {
 describe("TrainingService live session", () => {
   let db: MockDb;
   let service: TrainingService;
+  let repo: TrainingRepository;
 
   beforeEach(() => {
     db = buildDb();
-    const repo = new TrainingRepository(db as never);
+    repo = new TrainingRepository(db as never);
     vi.spyOn(repo, "materializeAccounting").mockResolvedValue(1);
     service = new TrainingService(db as never, repo);
   });
@@ -662,6 +719,38 @@ describe("TrainingService live session", () => {
         }),
       }),
     }));
+  });
+
+  it("starts and resumes a programless LIVE session with no fabricated template", async () => {
+    db.strengthDiarySession.findMany.mockResolvedValue([]);
+    db.strengthDiarySession.findFirst.mockResolvedValue(null);
+    const dynamicSession = {
+      id: 51,
+      status: SESSION_STATUS.ACTIVE,
+      entryMode: ENTRY_MODE.LIVE,
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      webStartedAt: "2026-10-15T09:00:00.000Z",
+      webEndedAt: null,
+      exercises: [],
+    } as never;
+    const createSnapshot = vi.spyOn(repo, "createSessionSnapshot").mockResolvedValue(dynamicSession);
+
+    const created = await service.startDynamicSession(1, "Europe/Bratislava");
+
+    expect(created).toBe(dynamicSession);
+    expect(createSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      profileId: 1,
+      programId: null,
+      programVersionId: null,
+      entryMode: ENTRY_MODE.LIVE,
+      accountingTimeZone: "Europe/Bratislava",
+      accountingTimeZoneProvenance: "client-session",
+      exercises: [],
+    }));
+    expect(db.trainingProgram.findFirst).not.toHaveBeenCalled();
   });
 
   it("supports set CRUD on active session exercises", async () => {
@@ -736,6 +825,105 @@ describe("TrainingService live session", () => {
     db.strengthSet.delete.mockResolvedValue({});
     await service.deleteSet(50, 900);
     expect(db.strengthSet.delete).toHaveBeenCalledWith({ where: { id: 900 } });
+  });
+
+  it("rejects over-limit BODYWEIGHT overrides at the service write boundary", async () => {
+    db.strengthSessionExercise.findFirst.mockResolvedValue({
+      id: 501,
+      sessionId: 50,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      sets: [],
+    });
+    await expect(service.createSet(50, 501, {
+      reps: 10,
+      weightKg: null,
+      loadAccountingOverride: { additionalLoadKg: 1e308 },
+    })).rejects.toBeInstanceOf(SetValidationError);
+    expect(db.strengthSet.create).not.toHaveBeenCalled();
+
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 900,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:09:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+      loadAccountingOverride: null,
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      },
+    });
+    await expect(service.updateSet(50, 900, {
+      loadAccountingOverride: { assistanceLoadKg: 2_000.01 },
+    })).rejects.toBeInstanceOf(SetValidationError);
+    expect(db.strengthSet.update).not.toHaveBeenCalled();
+  });
+
+  it("preserves a legacy raw override when service and repository receive an omitted override PATCH", async () => {
+    const rawOverride = {
+      additionalLoadKg: 2_500,
+      equipmentSetupId: "rings",
+      inventoryCount: 2,
+    };
+    const storedSet = {
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "before",
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:09:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+      loadAccountingOverride: rawOverride,
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        sessionId: 50,
+        session: { id: 50, status: SESSION_STATUS.ACTIVE, entryMode: ENTRY_MODE.LIVE },
+      },
+    };
+    vi.spyOn(repo, "findSetForSession").mockResolvedValue(storedSet as never);
+    vi.spyOn(repo, "getSession").mockResolvedValue(sessionDetail({ status: SESSION_STATUS.ACTIVE }) as never);
+    const repositoryUpdate = vi.spyOn(repo, "updateSet");
+    db.strengthSet.findFirst.mockResolvedValue(storedSet);
+    db.strengthSet.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...storedSet,
+      ...data,
+    }));
+
+    const updated = await service.updateSet(50, 900, { rir: 3, comment: "after" });
+
+    expect(updated).toMatchObject({
+      rir: 3,
+      comment: "after",
+      completedAt: "2026-09-17T16:10:00.000Z",
+      createdAt: "2026-09-17T16:09:00.000Z",
+      loadAccountingOverride: rawOverride,
+    });
+    expect(repositoryUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      rir: 3,
+      comment: "after",
+    }));
+    expect(repositoryUpdate).not.toHaveBeenCalledWith(expect.objectContaining({
+      reps: expect.anything(),
+      weightKg: expect.anything(),
+      bandNominalResistanceKg: expect.anything(),
+    }));
+    const persistedMutation = db.strengthSet.update.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    expect(Object.hasOwn(persistedMutation.data, "loadAccountingOverride")).toBe(false);
+    expect(db.strengthSet.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ rir: 3, comment: "after" }),
+    }));
   });
 
   it("creates, edits, and clears optional RIR on live sets; rejects invalid RIR", async () => {
@@ -847,6 +1035,34 @@ describe("TrainingService live session", () => {
       data: expect.objectContaining({ status: SESSION_STATUS.COMPLETED }),
     }));
   });
+
+  it("returns the committed completed session without awaiting dependent publication", async () => {
+    const active = sessionDetail({ matchMethod: MATCH_METHOD.MANUAL });
+    const completed = sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      webEndedAt: new Date("2026-09-17T17:18:00Z"),
+      matchMethod: MATCH_METHOD.MANUAL,
+    });
+    const repository = {
+      getSession: vi.fn()
+        .mockResolvedValueOnce(active)
+        .mockResolvedValueOnce(completed)
+        .mockResolvedValueOnce(completed),
+      materializeAccounting: vi.fn().mockResolvedValue(1),
+    };
+    const stalePublication = vi.fn().mockRejectedValue(new StaleStrengthEnergySourceError());
+    const serviceWithStalePublication = new TrainingService(
+      prisma,
+      repository as never,
+      stalePublication,
+    );
+
+    const result = await serviceWithStalePublication.finishSession(50);
+
+    expect(result.status).toBe(SESSION_STATUS.COMPLETED);
+    expect(repository.materializeAccounting).toHaveBeenCalledTimes(2);
+    expect(stalePublication).not.toHaveBeenCalled();
+  });
 });
 
 describe("TrainingService matching cases", () => {
@@ -917,6 +1133,10 @@ describe("TrainingService matching cases", () => {
   });
 
   it("case 2: delayed sync matches PENDING completed session", async () => {
+    const applyMatchResult = vi.spyOn(
+      (service as unknown as { repo: TrainingRepository }).repo,
+      "applyMatchResult",
+    );
     db.strengthDiarySession.findMany.mockResolvedValue([{
       id: 50,
       webStartedAt: new Date("2026-09-17T16:02:00Z"),
@@ -962,9 +1182,10 @@ describe("TrainingService matching cases", () => {
         matchedWorkoutId: 77,
       }),
     }));
+    expect(applyMatchResult).toHaveBeenCalledWith(expect.objectContaining({ deadlineMode: "health-fast" }));
   });
 
-  it("refreshes later sessions after an earlier session shadow fails, but blocks batch publication", async () => {
+  it("keeps Health-triggered matching out of the Training physiology rebuild path", async () => {
     const firstStartedAt = new Date("2026-09-17T10:00:00.000Z");
     const secondStartedAt = new Date("2026-09-17T16:00:00.000Z");
     const sessions = [
@@ -991,20 +1212,9 @@ describe("TrainingService matching cases", () => {
       value: relativeRefresh,
     });
     await expect(serviceWithProductionDependencies.afterHealthSyncMatch("2026-09-17", { timezone: "UTC" }))
-      .resolves.toBe(false);
-    expect(strengthShadow).toHaveBeenNthCalledWith(1, {
-      sessionId: 50, profileId: 1, deferUnifiedPublication: true,
-    });
-    expect(strengthShadow).toHaveBeenNthCalledWith(2, {
-      sessionId: 51, profileId: 1, deferUnifiedPublication: true,
-    });
-    expect(relativeRefresh).toHaveBeenCalledTimes(1);
-    expect(relativeRefresh).toHaveBeenCalledWith(51, 1, secondStartedAt, {
-      deferUnifiedPublication: true,
-      blockRevision: null,
-      blockFromDate: null,
-      publicationFromDate: undefined,
-    });
+      .resolves.toBe(true);
+    expect(strengthShadow).not.toHaveBeenCalled();
+    expect(relativeRefresh).not.toHaveBeenCalled();
   });
 
   it("case 5: stepper is excluded from auto-match candidates", async () => {

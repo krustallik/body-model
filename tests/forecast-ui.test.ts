@@ -18,6 +18,7 @@ import {
   planAssumptions,
   qualityPresentation,
   recalculateModelPresentation,
+  recalculateCompletionMessage,
   summarizeEndpoint,
 } from "@/modules/model-forecast/forecast-ui";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
@@ -246,6 +247,12 @@ describe("forecast application helpers", () => {
     expect(modelNeedsRecalculation(null)).toBe(false);
     expect(modelNeedsRecalculation(modelStatus({ daysModeled: 0, latestModeledDate: null, currentPredictedWeightKg: null }))).toBe(true);
     expect(modelNeedsRecalculation(modelStatus())).toBe(false);
+  });
+
+  it("does not describe stale or unconfirmed publication as current after recalculation", () => {
+    expect(recalculateCompletionMessage("current", "en")).toMatch(/published and current/);
+    expect(recalculateCompletionMessage("stale", "en")).toMatch(/publication is stale/);
+    expect(recalculateCompletionMessage("unknown", "uk")).toMatch(/не підтверджена/);
   });
 
   it("uses accurate Diagnostics banner copy for zero-day and stale modeled states", () => {

@@ -59,6 +59,21 @@ describe("production logger", () => {
     expect(JSON.stringify(fields)).not.toContain("/srv/bodycast");
   });
 
+  it("classifies Prisma transaction expiration without logging engine text", () => {
+    const error = Object.assign(new Error(
+      "Transaction already closed: timeout for this transaction was 30000 ms, however 30211 ms passed since the start",
+    ), { code: "P2028" });
+    const fields = errorDiagnosticFields(error);
+    expect(fields).toMatchObject({
+      errorType: "Error",
+      errorCode: "P2028",
+      transactionFailureKind: "transaction-expired-or-closed",
+      transactionTimeoutMs: 30_000,
+      transactionElapsedMs: 30_211,
+    });
+    expect(JSON.stringify(fields)).not.toContain("Transaction already closed");
+  });
+
   it("does not emit untrusted error codes or non-application stack frames", () => {
     const error = new Error("secret");
     Object.assign(error, { code: "DATABASE_URL=secret" });

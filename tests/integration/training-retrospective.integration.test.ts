@@ -325,6 +325,39 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
       toProgramVersionId: programB.versionId,
     });
 
+    // ACTIVE program changes retain the transient publication path through
+    // the durable Training worker, atomically with the source edit.
+    const beforeActiveProgramChange = await prisma.trainingRefreshJob.findUnique({
+      where: { profileId: 1 }, select: { requestedGeneration: true, completedGeneration: true },
+    });
+    const active = await training.startSession(programA.id, 1, "Europe/Bratislava");
+    expect(active.status).toBe(SESSION_STATUS.ACTIVE);
+    const activeChanged = await training.changeSessionProgram(active.id, {
+      programId: programB.id,
+      programVersionId: programB.versionId,
+    });
+    expect(activeChanged.status).toBe(SESSION_STATUS.ACTIVE);
+    const activeProgramChange = await prisma.trainingSourceChange.findFirstOrThrow({
+      where: {
+        profileId: 1,
+        operationKind: "training_active_session_program_changed",
+        affectedSessionIds: { has: active.id },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(activeProgramChange).toMatchObject({
+      affectedSessionIds: [active.id],
+      evidenceComplete: true,
+      oldModelDates: [expect.any(String)],
+      newModelDates: [expect.any(String)],
+    });
+    const afterActiveProgramChange = await prisma.trainingRefreshJob.findUniqueOrThrow({
+      where: { profileId: 1 }, select: { requestedGeneration: true, completedGeneration: true },
+    });
+    expect(afterActiveProgramChange.requestedGeneration).toBeGreaterThan(
+      beforeActiveProgramChange?.requestedGeneration ?? beforeActiveProgramChange?.completedGeneration ?? 0,
+    );
+
     const workoutAfterDiary = await prisma.workout.findUniqueOrThrow({
       where: { id: garminSnapshot.id },
     });

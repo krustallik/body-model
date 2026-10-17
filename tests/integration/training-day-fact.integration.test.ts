@@ -15,6 +15,9 @@ const garminSourcePrefix = "stage00-training-day-fact:";
 const healthRowMarker = "stage00-training-day-fact-garmin-fixture";
 
 async function clean(): Promise<void> {
+  await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+  await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+  await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1, source: "training" } });
   await prisma.healthMetricSample.deleteMany({
     where: { metric: "weight-kg", timestamp: new Date("2046-02-10T08:30:00.000Z") },
   });
@@ -239,7 +242,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     expect(hidden.events[0]?.source).toBe("workout");
   });
 
-  it("recomputes canonical diary energy from refreshed Stage 02 mass without a session revision bump", async () => {
+  it("recomputes diary energy from refreshed Stage 02 mass but keeps readers fail-closed until replay", async () => {
     const freshDate = "2046-02-10";
     await clean();
     await prisma.dailyHealthData.create({
@@ -324,8 +327,8 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     const fresh = await facts.forDate(freshDate);
     expect(fresh.events[0]).toMatchObject({
       diaryOnly: true,
-      activeEnergyKcal: initialKcal,
-      energySource: "bodycast-strength-estimate",
+      activeEnergyKcal: null,
+      energySource: "unavailable",
     });
 
     await prisma.dailyHealthData.update({
@@ -340,12 +343,21 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     );
     expect(refreshedAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81.4 });
     await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId: 1 });
+    const refreshedShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({
+      where: { sessionId: session.id },
+    });
+    const refreshedKcal = (refreshedShadow.result as { estimatedActiveKcal: number }).estimatedActiveKcal;
+    expect(refreshedKcal).not.toBe(initialKcal);
+    const pending = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(pending.requestedGeneration).toBeGreaterThan(pending.completedGeneration);
     const stale = await facts.forDate(freshDate);
-    // The source edit is incorporated by refreshing the persisted Stage 02
-    // mass snapshot and regenerating its shadow candidate.
-    expect(stale.events[0]?.energySource).toBe("bodycast-strength-estimate");
-    expect(stale.events[0]?.activeEnergyKcal).not.toBeNull();
-    expect(stale.events[0]?.activeEnergyKcal).not.toBe(initialKcal);
+    // A newly committed accounting snapshot has a durable pending generation;
+    // readers must not expose the recalculated shadow until that generation
+    // finishes its full publication chain.
+    expect(stale.events[0]).toMatchObject({
+      energySource: "unavailable",
+      activeEnergyKcal: null,
+    });
 
     await clean();
   });

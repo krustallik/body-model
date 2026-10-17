@@ -4,6 +4,7 @@ import {
   StepperWorkoutListQuerySchema,
 } from "@/modules/training/stepper-workout.schema";
 import { stepperWorkoutRepository } from "@/modules/training/stepper-workout.repository";
+import { z } from "zod";
 
 export const dynamic = "force-dynamic";
 
@@ -28,9 +29,20 @@ export async function POST(request: Request): Promise<Response> {
   if (body instanceof Response) return body;
   const parsed = CreateStepperWorkoutSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
+  const rawOperationId = request.headers.get("Idempotency-Key");
+  if (rawOperationId === null) return Response.json({ error: "idempotency_key_required" }, { status: 428 });
+  const operationId = z.string().uuid().safeParse(rawOperationId);
+  if (!operationId.success) return Response.json({ error: "invalid_idempotency_key" }, { status: 400 });
   try {
-    return Response.json({ workout: await stepperWorkoutRepository.create(parsed.data) }, { status: 201 });
-  } catch {
+    const workout = await stepperWorkoutRepository.create(parsed.data, operationId.data);
+    return Response.json({ operationId: operationId.data, state: "COMMITTED", workout }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error && error.name === "StepperCreateOperationConflictError") {
+      return Response.json({ error: "idempotency_key_payload_mismatch" }, { status: 409 });
+    }
+    if (error instanceof Error && error.name === "StepperCreateOperationTombstonedError") {
+      return Response.json({ error: "operation_tombstoned" }, { status: 410 });
+    }
     return Response.json({ error: "internal_error" }, { status: 500 });
   }
 }

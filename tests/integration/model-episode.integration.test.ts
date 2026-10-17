@@ -34,6 +34,7 @@ import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.r
 import { calculateHistoricalBodyweightAsOfV1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
 import { trainingRepository } from "@/modules/training/training.repository";
 import { trainingService } from "@/modules/training/training.service";
+import { processNextTrainingRefreshJob } from "@/modules/training/training-refresh-worker";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
@@ -85,6 +86,13 @@ function goalPlanningRequest(targetValueKg: number, goalDate: string): GoalPlann
 }
 
 async function removeTestData(): Promise<void> {
+  // This suite owns profile 1 in its isolated database. Training queue evidence
+  // is durable by design, so fixture cleanup must explicitly clear it between
+  // cases before deleting the synthetic profile.
+  await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+  await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+  await prisma.trainingSetCreateOperation.deleteMany({ where: { profileId: 1 } });
+  await prisma.stepperCreateOperation.deleteMany({ where: { profileId: 1 } });
   const fixtureBlocks = await prisma.unifiedPublicationBlock.findMany({
     where: { profileId: 1, fromDate: { gte: testRangeStart, lte: finalDate } },
     select: { profileId: true, source: true, sourceKey: true },
@@ -94,6 +102,9 @@ async function removeTestData(): Promise<void> {
     source: "health" | "training" | "day" | "stepper";
     sourceKey: string;
   }>);
+  await prisma.unifiedPublicationBlock.deleteMany({
+    where: { profileId: 1, source: "active_energy", sourceKey: "convergence" },
+  });
   const fixtureEpisodes = await prisma.modelEpisode.findMany({
     where: { startDate: { gte: testRangeStart, lte: finalDate } }, select: { id: true },
   });
@@ -204,6 +215,26 @@ async function prepareCurrentForecastV2(requestNow: Date): Promise<void> {
   await activateAndReplayUnifiedV4({ profileId: 1 });
 }
 
+async function completePendingTrainingRefresh(): Promise<void> {
+  const job = await prisma.trainingRefreshJob.findUnique({ where: { profileId: 1 } });
+  if (!job || job.completedGeneration >= job.requestedGeneration) return;
+  await prisma.trainingRefreshJob.update({
+    where: { profileId: 1 },
+    data: { dueAt: new Date(0), nextAttemptAt: new Date(0), leaseToken: null, leaseUntil: null },
+  });
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await processNextTrainingRefreshJob();
+    const current = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+    if (current.completedGeneration >= current.requestedGeneration) return;
+    await prisma.trainingRefreshJob.update({
+      where: { profileId: 1 },
+      data: { dueAt: new Date(0), nextAttemptAt: new Date(0), leaseToken: null, leaseUntil: null },
+    });
+  }
+  const unresolved = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+  throw new Error(`Training refresh fixture remained pending: ${unresolved.lastErrorType ?? "unknown"}`);
+}
+
 async function resetForecastRolloutFixtureToV3(): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
@@ -255,6 +286,49 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await resetForecastRolloutFixtureToV3();
   });
 
+  it("keeps production readers stale between passes and only exposes stable convergence under concurrent replay", async () => {
+    let enterFirst!: () => void;
+    let releaseFirst!: () => void;
+    const firstAtBoundary = new Promise<void>((resolve) => { enterFirst = resolve; });
+    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstReplay = recalculateModelEpisode({
+      episodeId,
+      now,
+      afterProductionPassBeforeCandidateRefresh: async () => {
+        enterFirst();
+        await holdFirst;
+      },
+    });
+    await firstAtBoundary;
+    expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false, recoveryRequired: true });
+    expect((await getModelHistory({ episodeId, from: episodeStart, to: finalDate, limit: 200, offset: 0 })).days).toEqual([]);
+
+    let enterSecond!: () => void;
+    let releaseSecond!: () => void;
+    const secondAtBoundary = new Promise<void>((resolve) => { enterSecond = resolve; });
+    const holdSecond = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const secondReplay = recalculateModelEpisode({
+      episodeId,
+      now,
+      afterProductionPassBeforeCandidateRefresh: async () => {
+        enterSecond();
+        await holdSecond;
+      },
+    });
+    try {
+      await secondAtBoundary;
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
+      releaseSecond();
+      await secondReplay;
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+    } finally {
+      releaseSecond();
+      releaseFirst();
+    }
+    await expect(firstReplay).rejects.toThrow("Active Energy convergence owner lease was lost");
+    expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+  }, 60_000);
+
   it("refreshes historical model-estimated bodyweight references beyond seven days after a raw weight correction", async () => {
     await prepareCurrentForecastV2(now);
     await trainingRepository.ensureCanonicalExerciseCatalog(1);
@@ -280,6 +354,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         completedAt: sessionAt.toISOString(),
       }, 1);
       await trainingService.finishSession(session.id, 1);
+      await completePendingTrainingRefresh();
 
       const asOfEpisode = await new ModelEpisodeRepository(prisma).getAsOf(addCalendarDays(episodeStart, 8));
       expect(asOfEpisode, "the fixture must have an active episode for the session date").not.toBeNull();
@@ -316,9 +391,15 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         where: { profileId: 1 }, select: { source: true, sourceKey: true, fromDate: true },
       });
       expect(updated).toMatchObject({ date: episodeStart, weightKg: 95 });
+      // Refreshing the completed session's bodyweight accounting snapshot is a
+      // derived Training source change. It is durably queued with Health-fast
+      // semantics; until that generation finishes, the correct read is stale.
       expect(updated!.modelPublicationStatus, JSON.stringify({ lifecycleAfterWeightChange, blocksAfterWeightChange }))
-        .toBe("current");
-      expect(blocksAfterWeightChange).toEqual([]);
+        .toBe("stale");
+      expect(blocksAfterWeightChange.some(({ source }) => source === "training")).toBe(true);
+      await completePendingTrainingRefresh();
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      expect(await prisma.unifiedPublicationBlock.findMany({ where: { profileId: 1 } })).toEqual([]);
 
       const after = await trainingService.getSession(session.id, 1);
       expect(after?.activeEnergyMassReference?.reference).toMatchObject({
@@ -600,7 +681,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await experimentalForecastModelEpisode(restartedRequest, prisma)).not.toBeNull();
   }, 60_000);
 
-  it("rejects a 4-day restart candidate, preserves stored rows, and fails closed while production is stale", async () => {
+  it("fails closed when Diagnostics has no current incumbent baseline for a 4-day candidate", async () => {
     const baselineNow = new Date("2041-03-30T10:00:00.000Z");
     const candidateNow = new Date("2041-03-31T10:00:00.000Z");
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
@@ -620,6 +701,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.dailyHealthData.update({
       where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
     });
+    await prisma.physiologyV7Lifecycle.update({
+      where: { profileId: 1 },
+      data: { invalidationGeneration: { increment: 1 }, productionStaleFromDate: null },
+    });
+    const staleDiagnostics = await getModelDiagnostics(prisma);
+    expect(staleDiagnostics.currentState.status).toBe("unavailable");
+    expect(staleDiagnostics.dataContinuity.completeDayCount).toBe(0);
+    expect(staleDiagnostics.episode.latestModeledDate).toBeNull();
 
     const before = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
@@ -630,6 +719,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     const first = await recalculateModelEpisode({ now: candidateNow }, prisma);
     expect(first.episodeId).toBe(episodeId);
+    if (first.current === null) throw new Error("Expected current status for stale incumbent result");
+    expect(first.current.productionCurrent).toBe(false);
     expect(first.current).toMatchObject({ latestModeledDate: null, daysModeled: 0 });
     const afterFirst = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
@@ -639,16 +730,60 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     };
     expect(afterFirst).toEqual(before);
     const afterDiagnostics = await getModelDiagnostics(prisma);
-    expect(afterDiagnostics.currentState.status).toBe("unavailable");
-    expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(28);
+    expect(afterDiagnostics.episode.latestModeledDate).toBeNull();
+    expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(0);
 
     const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
     expect(repeated.episodeId).toBe(episodeId);
-    expect(repeated.current).toMatchObject({ latestModeledDate: null, daysModeled: 0 });
+    expect(repeated.current).toMatchObject({ productionCurrent: false, latestModeledDate: null, daysModeled: 0 });
     expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
       .toBe(before.episodes);
     expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }))
       .toEqual(before.states);
+  });
+
+  it("publishes a non-empty incumbent replay before reconsidering a candidate", async () => {
+    const baselineNow = new Date("2041-03-30T10:00:00.000Z");
+    const candidateNow = new Date("2041-03-31T10:00:00.000Z");
+    await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
+    await recalculateModelEpisode({ episodeId, now: baselineNow }, prisma);
+
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { gte: "2041-03-22", lte: "2041-03-25" } },
+      data: { steps: null, walkingDistanceKm: null },
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-26" }, data: { bodyFatPercent: 20 },
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+    });
+    await prisma.physiologyV7Lifecycle.update({
+      where: { profileId: 1 },
+      data: { invalidationGeneration: { increment: 1 }, productionStaleFromDate: null },
+    });
+
+    const staleDiagnostics = await getModelDiagnostics(prisma);
+    expect(staleDiagnostics.episode.latestModeledDate).toBeNull();
+    expect(staleDiagnostics.dataContinuity.completeDayCount).toBe(0);
+
+    const episodeCount = await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    });
+    const rebuilt = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    expect(rebuilt.episodeId).toBe(episodeId);
+    if (rebuilt.current === null) throw new Error("Expected current status after incumbent replay");
+    expect(rebuilt.current.productionCurrent).toBe(true);
+    expect(rebuilt.current.latestModeledDate).not.toBeNull();
+    const currentDiagnostics = await getModelDiagnostics(prisma);
+    expect(currentDiagnostics.episode.latestModeledDate).toBe(rebuilt.current.latestModeledDate);
+    expect(currentDiagnostics.dataContinuity.completeDayCount).toBeGreaterThan(0);
+    expect(await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    })).toBe(episodeCount);
+
+    const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    expect(repeated.episodeId).toBe(episodeId);
   });
 
   it("continues route recovery on the existing active episode after rejecting a replacement", async () => {
@@ -806,6 +941,34 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(diagnostics.currentState.status).toBe("unavailable");
     expect(diagnostics.forecastReadiness).toMatchObject({ allowed: false, reasons: ["current-state-unavailable"] });
     expect(JSON.stringify(diagnostics)).not.toMatch(/ensemble|posteriorSummary|observationDates|topParticleOrigins/);
+    if (diagnostics.episode.latestModeledDate) {
+      const latestModeledDay = await prisma.dailyModelState.findUniqueOrThrow({
+        where: { episodeId_date: { episodeId, date: diagnostics.episode.latestModeledDate } },
+        select: { date: true, status: true, energyExpenditureKcal: true },
+      });
+      expect(diagnostics.energyHistory.latestModeledDay).toEqual(
+        latestModeledDay.status === "complete" || latestModeledDay.status === "incomplete"
+          ? { date: latestModeledDay.date, status: latestModeledDay.status, expenditureKcalPerDay: latestModeledDay.energyExpenditureKcal }
+          : null,
+      );
+      const previousDates = Array.from({ length: 7 }, (_, index) => addCalendarDays(diagnostics.episode.latestModeledDate!, index - 7));
+      const previousRows = await prisma.dailyModelState.findMany({
+        where: { episodeId, date: { gte: previousDates[0], lt: diagnostics.episode.latestModeledDate } },
+        orderBy: { date: "asc" },
+        select: { date: true, status: true, energyExpenditureKcal: true },
+      });
+      const previousByDate = new Map(previousRows.map((row) => [row.date, row]));
+      const expectedPreviousCompletedDays = previousDates.map((date) => {
+        const row = previousByDate.get(date);
+        return {
+          date,
+          expenditureKcalPerDay: row?.status === "complete" && row.energyExpenditureKcal !== null
+            ? row.energyExpenditureKcal
+            : null,
+        };
+      });
+      expect(diagnostics.energyHistory.previousCompletedDays).toEqual(expectedPreviousCompletedDays);
+    }
     expect(after).toEqual(before);
   });
 

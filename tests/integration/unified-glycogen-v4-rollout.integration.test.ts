@@ -85,6 +85,7 @@ function deferred() {
 let migratorArtifactRoot: string;
 let originalProfile: Awaited<ReturnType<typeof prisma.profile.findUnique>>;
 let originalLifecycle: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle.findUnique>>;
+let originalUnifiedPublicationBlocks: Awaited<ReturnType<typeof prisma.unifiedPublicationBlock.findMany>> = [];
 let originalTrainingRefreshCompletedGeneration: number | null = null;
 let originalTrainingRefreshUpdatedAt: Date | null = null;
 
@@ -209,6 +210,8 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
     await prisma.$executeRawUnsafe(`INSERT INTO "${schema}"."LockSource" ("id", "value") VALUES (1, 0)`);
     originalProfile = await prisma.profile.findUnique({ where: { id: profileId } });
     originalLifecycle = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+    originalUnifiedPublicationBlocks = await prisma.unifiedPublicationBlock.findMany({ where: { profileId } });
+    await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId } });
     const originalTrainingRefreshJob = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
     if (originalTrainingRefreshJob
         && originalTrainingRefreshJob.requestedGeneration > originalTrainingRefreshJob.completedGeneration) {
@@ -232,6 +235,8 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
         invalidationGeneration: 1,
         productionStaleFromDate: null,
         productionPublishedGeneration: 1,
+      unifiedPublicationBlockedFromDate: null,
+      unifiedPublicationBlockedSource: null,
         unifiedPublishedGeneration: 1,
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
         unifiedRolloutEpoch: 0,
@@ -248,6 +253,10 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
   afterAll(async () => {
     try {
       await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { profileId } });
+      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId } });
+      if (originalUnifiedPublicationBlocks.length > 0) {
+        await prisma.unifiedPublicationBlock.createMany({ data: originalUnifiedPublicationBlocks });
+      }
       await prisma.dailyModelState.deleteMany({ where: { episode: { profileId } } });
       await prisma.modelEpisode.deleteMany({ where: { profileId } });
       await prisma.dailyHealthData.deleteMany({ where: { date: modelDate } });

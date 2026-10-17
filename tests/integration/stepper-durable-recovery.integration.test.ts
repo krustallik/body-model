@@ -96,7 +96,13 @@ describe("legacy Stepper publication block recovery on isolated PostgreSQL", () 
       dirtyFromDate: [before?.dirtyFromDate, fromDate].filter((date): date is string => date !== null && date !== undefined).sort()[0],
       dueAt: expect.any(Date),
     });
-    expect(job.dueAt!.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
+    if (before && before.requestedGeneration > before.completedGeneration && before.dueAt) {
+      // Fast recovery preserves an already-pending Training debounce instead
+      // of pulling another generation ahead of its existing trailing edge.
+      expect(job.dueAt).toEqual(before.dueAt);
+    } else {
+      expect(job.dueAt!.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
+    }
     expect(change).toMatchObject({
       operationKind: "stepper_workout_legacy_block_recovery",
       affectedWorkoutIds: [Number(sourceKey)],

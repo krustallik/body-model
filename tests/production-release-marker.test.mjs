@@ -103,6 +103,40 @@ describe("durable Prisma DDL marker handoff", () => {
       .toBe("unified-v4-republication-v1");
   });
 
+  it.skipIf(process.platform === "win32")("accepts the Training ledger manifest through the standard DDL marker lifecycle", async () => {
+    const fixture = await markerFixture();
+    const marker = await writeDdlStartingMarker({
+      markerDirectory: fixture.markerDirectory,
+      ...markerArguments,
+      manifestId: "training-mutation-ledger-refresh-queue-v1",
+    });
+    expect(marker.marker.manifestId).toBe("training-mutation-ledger-refresh-queue-v1");
+    const acknowledged = await acknowledgePrismaSpawn({ markerPath: fixture.markerPath, expectedDigest: marker.digest });
+    expect(acknowledged.marker).toMatchObject({
+      manifestId: "training-mutation-ledger-refresh-queue-v1",
+      state: "ddl-started",
+      spawnState: "started",
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a forward-resume marker for the Training ledger manifest", async () => {
+    const fixture = await markerFixture();
+    const trainingReleaseSha = "c".repeat(40);
+    await writeFile(fixture.markerPath, [
+      "schemaVersion=2",
+      "manifestId=training-mutation-ledger-refresh-queue-v1",
+      `releaseSha=${trainingReleaseSha}`,
+      "state=forward-resume-armed",
+      "workflowRunId=390001",
+      "workflowRunAttempt=1",
+      "authorizationId=authorization-marker-test-12345",
+      `lineageDigest=${"d".repeat(64)}`,
+      "spawnState=not-started",
+      "",
+    ].join("\n"), { flag: "wx", mode: 0o600 });
+    await expect(readProductionReleaseMarker(fixture.markerPath)).rejects.toThrow("do not support forward resume");
+  });
+
   it.skipIf(process.platform === "win32")("records Prisma as started only after the OS spawn acknowledgement and durable transition", async () => {
     const fixture = await markerFixture();
     const marker = await writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments });

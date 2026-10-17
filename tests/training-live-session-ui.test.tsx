@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { webcrypto } from "node:crypto";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/i18n/i18n-provider", () => ({
@@ -14,6 +15,99 @@ vi.mock("@/components/app-nav", () => ({
 const routerPush = vi.fn();
 const routerReplace = vi.fn();
 let searchParams = new URLSearchParams();
+const setCreateOperations = vi.hoisted(() => ({
+  rows: new Map<string, {
+    operationId: string;
+    sessionId: number;
+    exerciseId: number;
+    payload: Record<string, unknown>;
+    draft: unknown;
+    createdAt: number;
+    terminalState?: "new-intent-required" | "replaced";
+    terminalReason?: "not-committed" | "tombstoned";
+    replacementOperationId?: string;
+  }>(),
+  failWrites: false,
+}));
+
+vi.mock("@/app/training/set-create-operation-store", () => ({
+  storeSetCreateOperation: vi.fn(async (operation: {
+    operationId: string;
+    sessionId: number;
+    exerciseId: number;
+    payload: Record<string, unknown>;
+    draft: unknown;
+    createdAt: number;
+    terminalState?: "new-intent-required" | "replaced";
+    terminalReason?: "not-committed" | "tombstoned";
+    replacementOperationId?: string;
+  }) => {
+    if (setCreateOperations.failWrites) throw new Error("IndexedDB unavailable");
+    if (!setCreateOperations.rows.has(operation.operationId)) {
+      setCreateOperations.rows.set(operation.operationId, { ...operation });
+    }
+  }),
+  markSetCreateOperationTerminal: vi.fn(async (operation: {
+    operationId: string; sessionId: number; exerciseId: number; payload: Record<string, unknown>;
+    draft: unknown; createdAt: number; terminalState?: "new-intent-required" | "replaced";
+    terminalReason?: "not-committed" | "tombstoned"; replacementOperationId?: string;
+  }) => {
+    if (setCreateOperations.failWrites) throw new Error("IndexedDB unavailable");
+    let current = setCreateOperations.rows.get(operation.operationId);
+    const visited = new Set<string>();
+    while (current?.replacementOperationId) {
+      if (visited.has(current.operationId)) return null;
+      visited.add(current.operationId);
+      current = setCreateOperations.rows.get(current.replacementOperationId);
+    }
+    if (!current) {
+      setCreateOperations.rows.set(operation.operationId, { ...operation });
+      return operation;
+    }
+    if (current.operationId !== operation.operationId) return current;
+    const terminal = { ...current, terminalState: operation.terminalState, terminalReason: operation.terminalReason };
+    setCreateOperations.rows.set(operation.operationId, terminal);
+    return terminal;
+  }),
+  listSetCreateOperations: vi.fn(async (sessionId: number) =>
+    [...setCreateOperations.rows.values()].filter((operation) => operation.sessionId === sessionId
+      && operation.replacementOperationId === undefined)),
+  replaceSetCreateOperation: vi.fn(async (previousOperationId: string, operation: { operationId: string; sessionId: number; exerciseId: number; payload: Record<string, unknown>; draft: unknown; createdAt: number; terminalState?: "new-intent-required" | "replaced"; terminalReason?: "not-committed" | "tombstoned"; replacementOperationId?: string }) => {
+    let previous = setCreateOperations.rows.get(previousOperationId);
+    const visited = new Set<string>();
+    while (previous?.replacementOperationId) {
+      if (visited.has(previous.operationId)) return null;
+      visited.add(previous.operationId);
+      previous = setCreateOperations.rows.get(previous.replacementOperationId);
+    }
+    if (!previous) return null;
+    if (previous.operationId !== previousOperationId) return previous;
+    if (previous.terminalState !== "new-intent-required") return null;
+    setCreateOperations.rows.set(previousOperationId, {
+      ...previous, terminalState: "replaced", terminalReason: undefined,
+      replacementOperationId: operation.operationId,
+    });
+    const replacement = { ...previous, operationId: operation.operationId, createdAt: operation.createdAt,
+      terminalState: undefined, terminalReason: undefined, replacementOperationId: undefined };
+    setCreateOperations.rows.set(operation.operationId, replacement);
+    return replacement;
+  }),
+  removeSetCreateOperation: vi.fn(async (operationId: string) => {
+    const removedIds = new Set([operationId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const operation of setCreateOperations.rows.values()) {
+        if (operation.replacementOperationId && removedIds.has(operation.replacementOperationId)
+            && !removedIds.has(operation.operationId)) {
+          removedIds.add(operation.operationId);
+          changed = true;
+        }
+      }
+    }
+    for (const removedId of removedIds) setCreateOperations.rows.delete(removedId);
+  }),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: routerReplace }),
@@ -21,7 +115,9 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
 }));
 
-import { SessionClient } from "@/app/training/sessions/[id]/session-client";
+import { SessionClient, setCreatePayloadDigest as liveSetCreatePayloadDigest } from "@/app/training/sessions/[id]/session-client";
+import { replaceSetCreateOperation } from "@/app/training/set-create-operation-store";
+import { sha256Canonical } from "@/modules/training/persisted-load-accounting-v1";
 import styles from "@/app/training/training.module.css";
 
 function activePane() {
@@ -115,13 +211,72 @@ function setViewportWidth(width: number) {
 const originalViewportWidth = window.innerWidth;
 
 describe("Live training session mobile UI", () => {
+  beforeEach(() => {
+    vi.stubGlobal("crypto", webcrypto);
+  });
+
   afterEach(() => {
     cleanup();
+    setCreateOperations.rows.clear();
+    setCreateOperations.failWrites = false;
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalViewportWidth });
     vi.restoreAllMocks();
     routerPush.mockReset();
     routerReplace.mockReset();
     searchParams = new URLSearchParams();
+  });
+
+  it("serializes concurrent terminal-intent replacement onto one new operation ID", async () => {
+    const previous = {
+      operationId: "terminal-original", sessionId: 42, exerciseId: 1,
+      payload: { reps: 8 }, draft: { reps: "8" }, createdAt: 1,
+      terminalState: "new-intent-required" as const, terminalReason: "tombstoned" as const,
+    };
+    setCreateOperations.rows.set(previous.operationId, previous);
+    const candidates = ["replacement-a", "replacement-b"].map((operationId) => ({
+      operationId, sessionId: 42, exerciseId: 1,
+      payload: { reps: 8 }, draft: { reps: "8" }, createdAt: 2,
+    }));
+    const selected = await Promise.all(candidates.map((candidate) =>
+      replaceSetCreateOperation(previous.operationId, candidate)));
+
+    expect(selected[0]?.operationId).toMatch(/^replacement-/);
+    expect(selected[1]?.operationId).toBe(selected[0]?.operationId);
+    expect([...setCreateOperations.rows.values()].filter((operation) => operation.replacementOperationId === undefined))
+      .toHaveLength(1);
+  });
+
+  it("resolves multi-hop aliases and ignores stale terminal writes", async () => {
+    const original = {
+      operationId: "chain-original", sessionId: 42, exerciseId: 1,
+      payload: { reps: 8 }, draft: { reps: "8" }, createdAt: 1,
+      terminalState: "replaced" as const, replacementOperationId: "chain-middle",
+    };
+    const middle = {
+      ...original, operationId: "chain-middle", createdAt: 2,
+      replacementOperationId: "chain-leaf",
+    };
+    const leaf = {
+      operationId: "chain-leaf", sessionId: 42, exerciseId: 1,
+      payload: { reps: 8 }, draft: { reps: "8" }, createdAt: 3,
+    };
+    setCreateOperations.rows.set(original.operationId, original);
+    setCreateOperations.rows.set(middle.operationId, middle);
+    setCreateOperations.rows.set(leaf.operationId, leaf);
+
+    const selected = await replaceSetCreateOperation(original.operationId, {
+      operationId: "must-not-be-created", sessionId: 42, exerciseId: 1,
+      payload: { reps: 8 }, draft: { reps: "8" }, createdAt: 4,
+    });
+    const terminal = await import("@/app/training/set-create-operation-store").then(({ markSetCreateOperationTerminal }) =>
+      markSetCreateOperationTerminal({ ...original, terminalState: "new-intent-required", terminalReason: "not-committed" }));
+
+    expect(selected?.operationId).toBe("chain-leaf");
+    expect(terminal?.operationId).toBe("chain-leaf");
+    expect(setCreateOperations.rows.get(original.operationId)?.replacementOperationId).toBe("chain-middle");
+    expect(setCreateOperations.rows.get(middle.operationId)?.replacementOperationId).toBe("chain-leaf");
+    expect(setCreateOperations.rows.has("must-not-be-created")).toBe(false);
+    expect(setCreateOperations.rows.get("chain-leaf")?.terminalState).toBeUndefined();
   });
 
   function stubSessionFetch(
@@ -311,6 +466,212 @@ describe("Live training session mobile UI", () => {
     });
   });
 
+  it("fails closed when the set-create draft cannot be persisted", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/history")) return Response.json({ entries: [] });
+      if (init?.method === "POST") return Response.json({ error: "unexpected_post" }, { status: 500 });
+      return Response.json({ session: buildSession() });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setCreateOperations.failWrites = true;
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent)
+      .toContain("Підхід не надіслано"));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("uses the server canonical digest for multi-key set overrides", async () => {
+    const operation = {
+      sessionId: 42,
+      exerciseId: 1,
+      payload: {
+        reps: 8,
+        weightKg: null,
+        loadAccountingOverride: { loadInput: "per-implement-kg", loadedSides: 2 },
+      },
+    };
+    const expected = sha256Canonical({
+      version: 1,
+      sessionId: operation.sessionId,
+      exerciseId: operation.exerciseId,
+      requestedSetNumber: null,
+      reps: 8,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: null,
+      loadAccountingOverride: operation.payload.loadAccountingOverride,
+    });
+    await expect(liveSetCreatePayloadDigest(operation)).resolves.toBe(expected);
+  });
+
+  it("requires explicit confirmation before creating a new intent after a pre-write conflict", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const savedSet = {
+      id: 311,
+      sessionExerciseId: 1,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+      loadAccountingOverride: null,
+    };
+    const operationIds: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/42" && !init?.method) return Response.json({ session: initial });
+      if (url.endsWith("/exercises/1/sets") && init?.method === "POST") {
+        operationIds.push((init.headers as Record<string, string>)["Idempotency-Key"]!);
+        return operationIds.length === 1
+          ? Response.json({ error: "training_concurrent_mutation" }, { status: 409 })
+          : Response.json({ operationId: operationIds[1], state: "COMMITTED", set: savedSet }, { status: 201 });
+      }
+      if (url.startsWith("/api/v1/training/set-create-operations/")) {
+        return Response.json({ operationId: operationIds.at(-1), state: "COMMITTED", set: savedSet });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    const createAgain = await screen.findByRole("button", { name: "Створити знову" });
+    expect(operationIds).toHaveLength(1);
+    expect(setCreateOperations.rows.size).toBe(1);
+    expect([...setCreateOperations.rows.values()][0]?.terminalReason).toBe("not-committed");
+
+    await user.click(createAgain);
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).not.toBe(operationIds[0]);
+    expect(setCreateOperations.rows.size).toBe(0);
+  });
+
+  it("keeps a tombstoned create draft durable and starts a new intent only on explicit action", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const savedSet = {
+      id: 312,
+      sessionExerciseId: 1,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+      loadAccountingOverride: null,
+    };
+    const operationIds: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/42" && !init?.method) return Response.json({ session: initial });
+      if (url.startsWith("/api/v1/training/set-create-operations/")) {
+        const operationId = url.split("/").at(-1)!.split("?")[0];
+        if (operationId === operationIds[0]) return Response.json({ state: "TOMBSTONED" }, { status: 410 });
+        return Response.json({ operationId, state: "COMMITTED", set: savedSet });
+      }
+      if (url.endsWith("/exercises/1/sets") && init?.method === "POST") {
+        operationIds.push((init.headers as Record<string, string>)["Idempotency-Key"]!);
+        return operationIds.length === 1
+          ? Response.json({ error: "temporary response failure" }, { status: 500 })
+          : Response.json({ operationId: operationIds[1], state: "COMMITTED", set: savedSet }, { status: 201 });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    const createAgain = await screen.findByRole("button", { name: "Створити знову" });
+    expect(operationIds).toHaveLength(1);
+    expect([...setCreateOperations.rows.values()][0]?.terminalReason).toBe("tombstoned");
+
+    await user.click(createAgain);
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).not.toBe(operationIds[0]);
+    expect(setCreateOperations.rows.size).toBe(0);
+  });
+
+  it("recovers a server-rejected operation as terminal and uses a new key only after explicit action", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const savedSet = {
+      id: 313,
+      sessionExerciseId: 1,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+      loadAccountingOverride: null,
+    };
+    const operationIds: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/42" && !init?.method) return Response.json({ session: initial });
+      if (url.startsWith("/api/v1/training/set-create-operations/")) {
+        const operationId = url.split("/").at(-1)!.split("?")[0];
+        if (operationId === operationIds[0]) {
+          return Response.json({ state: "REJECTED", error: "set_create_operation_rejected" }, { status: 409 });
+        }
+        return Response.json({ operationId, state: "COMMITTED", set: savedSet });
+      }
+      if (url.endsWith("/exercises/1/sets") && init?.method === "POST") {
+        operationIds.push((init.headers as Record<string, string>)["Idempotency-Key"]!);
+        if (operationIds.length === 1) throw new TypeError("connection reset after request dispatch");
+        return Response.json({ operationId: operationIds[1], state: "COMMITTED", set: savedSet }, { status: 201 });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(activePane().getByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    const createAgain = await screen.findByRole("button", { name: "Створити знову" });
+    expect(operationIds).toHaveLength(1);
+    expect([...setCreateOperations.rows.values()][0]?.terminalReason).toBe("not-committed");
+
+    await user.click(createAgain);
+    await waitFor(() => expect(activePane().getByText(/30 кг × 12/)).toBeTruthy());
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).not.toBe(operationIds[0]);
+    expect(setCreateOperations.rows.size).toBe(0);
+  });
+
   it("reconciles a committed set from authoritative GET after a stale-fence response without retrying", async () => {
     const user = userEvent.setup();
     const initial = buildSession();
@@ -342,7 +703,14 @@ describe("Live training session mobile UI", () => {
             ? { ...exercise, sets: [createdSet] }
             : exercise),
         };
-        return Response.json({ error: "strength_energy_source_stale" }, { status: 409 });
+        return Response.json({ error: "temporary postcommit response failure" }, { status: 500 });
+      }
+      if (url.startsWith("/api/v1/training/set-create-operations/")) {
+        return Response.json({
+          operationId: url.split("/").at(-1),
+          state: "COMMITTED",
+          set: createdSet,
+        });
       }
       return Response.json({ session: initial });
     });
@@ -504,12 +872,12 @@ describe("Live training session mobile UI", () => {
     const sessionMenu = screen.getByRole("dialog", { name: "Дії" });
     await user.click(within(sessionMenu).getByRole("button", { name: "Завершити тренування" }));
 
-    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard?finishPublication=unknown"));
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
     expect(finishCalls).toHaveLength(1);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("returns to the safe Training Hub URL with an active-session refresh and stale-publication notice", async () => {
+  it("returns to the safe Training Hub URL with an active-session refresh", async () => {
     const user = userEvent.setup();
     const active = buildSession();
     const completed = buildSession({
@@ -539,7 +907,7 @@ describe("Live training session mobile UI", () => {
     await user.click(within(screen.getByRole("dialog", { name: "Дії" })).getByRole("button", { name: "Завершити тренування" }));
 
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/training\?recentPage=3&programsRefresh=\d+&finishPublication=stale$/),
+      expect.stringMatching(/^\/training\?recentPage=3&programsRefresh=\d+$/),
     ));
     expect(persistedSession.status).toBe(SESSION_STATUS.COMPLETED);
   });
@@ -1439,7 +1807,9 @@ describe("Live training session mobile UI", () => {
 
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/training?recentPage=3"));
     expect(confirmSpy).toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith("/api/v1/training/sessions/42", { method: "DELETE" });
+    expect(fetchMock.mock.calls.some(([url, init]) =>
+      url === "/api/v1/training/sessions/42" && init?.method === "DELETE"))
+      .toBe(true);
   });
 
   it("omits unchanged historical BODYWEIGHT overrides from RIR/comment patches and preserves changed load fields", async () => {
@@ -1875,7 +2245,8 @@ describe("Live training session mobile UI", () => {
     await user.click(within(historySet).getByRole("button", { name: "Зберегти" }));
 
     await waitFor(() => expect(within(historySet).getByText(/власна вага \+20 кг × 10/)).toBeTruthy());
-    expect(await screen.findByText("Підхід збережено; модель актуальна.")).toBeTruthy();
+    expect(screen.getByText("Підхід збережено.")).toBeTruthy();
+    expect(screen.queryByText(/модель актуальна/)).toBeNull();
     expect(persistedHistorySet).toMatchObject({
       reps: 10,
       rir: 3,
@@ -1883,6 +2254,52 @@ describe("Live training session mobile UI", () => {
       loadAccountingOverride: { additionalLoadKg: 20 },
     });
     expect(requests).toContainEqual({ url: "/api/v1/training/sessions/40/sets/71", method: "GET" });
+  });
+
+  it("releases a historical edit into an explicit unresolved error when PATCH and verification both time out", async () => {
+    const bodyweightExercise = {
+      id: 77, sourceExerciseCatalogId: 9, stableKey: "pull_up_bar", snapshotExerciseName: "Підтягування",
+      order: 0, plannedSets: 0, resistanceType: RESISTANCE.BODYWEIGHT, origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null, sets: [],
+    };
+    const session = buildSession({
+      programId: null, programName: null, programVersionId: null, programVersionNumber: null,
+      exercises: [bodyweightExercise],
+    });
+    const historySet = {
+      id: 71, setNumber: 1, reps: 10, weightKg: null, bandNominalResistanceKg: null, rir: 2,
+      comment: null, completedAt: "2026-09-10T16:10:00.000Z", loadAccountingOverride: null,
+    };
+    const historyEntry = {
+      sessionId: 40, occurredAt: "2026-09-10T16:00:00.000Z", programName: null,
+      resistanceType: RESISTANCE.BODYWEIGHT, sets: [historySet],
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/history")) return Response.json({ entries: [historyEntry] });
+      if (url === "/api/v1/training/sessions/40/sets/71" && (method === "PATCH" || method === "GET")) {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      return Response.json({ session });
+    }));
+    render(<SessionClient sessionId={42} />);
+    await screen.findByTestId("active-exercise-pane");
+    const historyRow = await within(activePane().getByLabelText("Історія вправи"))
+      .findByTestId("history-set-40-71");
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(within(historyRow).getByRole("button", { name: "Редагувати підхід 1" }));
+      fireEvent.change(within(historyRow).getByLabelText("RIR"), { target: { value: "3" } });
+      fireEvent.click(within(historyRow).getByRole("button", { name: "Зберегти" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+      expect(within(historyRow).getByRole("alert").textContent).toContain("Не вдалося зберегти підхід.");
+      expect(within(historyRow).getByRole("button", { name: "Зберегти" })).toHaveProperty("disabled", false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers to finish after filling the last planned set of the last exercise", async () => {

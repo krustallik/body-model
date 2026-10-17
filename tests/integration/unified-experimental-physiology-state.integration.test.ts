@@ -7,7 +7,13 @@ import {
 } from "@/model/unified-experimental-physiology-v1";
 import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
-import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
+import {
+  POSTCOMMIT_FRESH_TEST_DATABASE_NAME,
+  FULL_INTEGRATION_CLEAN_DATABASE_NAME,
+  FULL_INTEGRATION_REAUDIT_DATABASE_NAME,
+  REAUDIT_TEST_DATABASE_NAME,
+  requireIsolatedStage01Database,
+} from "@/modules/training/testing/require-isolated-database";
 import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 import { invalidateUnifiedRelativeMuscleSuffixV1, rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import * as unifiedStateService from "@/modules/model-episodes/unified-experimental-physiology-state.service";
@@ -15,7 +21,11 @@ import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceReposit
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { healthSyncRepository } from "@/modules/health/health.repository";
 import { syncHealthData } from "@/modules/health/health.service";
+import { processNextHealthSyncRefreshJob } from "@/modules/health/health-sync-refresh-worker";
 import * as glycogenStateShadowService from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
+import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
+import { rebuildRelativeMuscleEpisodeTrajectories } from "@/modules/model-episodes/relative-muscle-shadow-core.service";
+import { utcMondayWeekStart } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
 import * as strengthGlycogenDemandShadowService from "@/modules/training/experimental-strength-glycogen-demand-shadow.service";
 import * as stepperActiveEnergyShadowService from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import * as stepperGlycogenShadowService from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
@@ -24,6 +34,7 @@ import * as activeEnergyPublication from "@/modules/activity/active-energy-publi
 import * as activeEnergyMaterialization from "@/modules/activity/active-energy-materialization";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { trainingService } from "@/modules/training/training.service";
+import { processNextTrainingRefreshJob } from "@/modules/training/training-refresh-worker";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import { trainingChildDeletionPublicationSourceKey, trainingRepository } from "@/modules/training/training.repository";
 import { recordExperimentalStrengthEnergyShadow } from "@/modules/training/experimental-strength-energy-shadow.service";
@@ -47,6 +58,7 @@ let lifecycleBeforeSuite: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle
 let lifecycleSnapshotCaptured = false;
 let episodeId: number | null = null;
 const deletedFixtureTrainingSourceKeys = new Set<string>();
+const fixtureUnlinkedSessionIds = new Set<number>();
 const deletedFixtureStepperSourceKeys = new Set<string>();
 const fixtureHeartRateTimestamps = new Set<string>();
 
@@ -99,8 +111,11 @@ async function clean(): Promise<void> {
   const fixturePrograms = await prisma.trainingProgram.findMany({
     where: { profileId, name: { startsWith: `${fixtureMethod}-` } }, select: { id: true },
   });
-  const fixtureSessions = fixturePrograms.length === 0 ? [] : await prisma.strengthDiarySession.findMany({
-    where: { profileId, programId: { in: fixturePrograms.map(({ id }) => id) } }, select: { id: true },
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { profileId, OR: [
+      { programId: { in: fixturePrograms.map(({ id }) => id) } },
+      { id: { in: [...fixtureUnlinkedSessionIds] } },
+    ] }, select: { id: true },
   });
   const fixtureTrainingSessionIds = [...new Set([
     ...fixtureSessions.map(({ id }) => String(id)),
@@ -183,7 +198,14 @@ async function clean(): Promise<void> {
   await prisma.strengthDiarySession.deleteMany({ where: { id: { in: fixtureSessions.map(({ id }) => id) } } });
   await prisma.trainingProgram.deleteMany({ where: { id: { in: fixturePrograms.map(({ id }) => id) } } });
   await prisma.modelEpisode.deleteMany({ where: { profileId, baselineDerivationMethod: fixtureMethod } });
+  // Durable refresh metadata is fixture-owned in this dedicated integration DB.
+  // A source mutation in one test must not make the next test's V4 publication
+  // appear pending after the source fixture itself has been cleaned.
+  await prisma.trainingSourceChange.deleteMany({ where: { profileId } });
+  await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+  await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId } });
   deletedFixtureTrainingSourceKeys.clear();
+  fixtureUnlinkedSessionIds.clear();
   deletedFixtureStepperSourceKeys.clear();
   episodeId = null;
   await deleteDailyHealthRows(prisma, allDates);
@@ -382,6 +404,7 @@ async function syncHealthWeightThroughService(
   weightKg: number,
   receivedAt: string,
   publicationNow: Date = fixtureNow,
+  deferDependentRefresh = false,
 ): ReturnType<typeof syncHealthData> {
   const day = { date, weightKg, caloriesKcal: 2_200, proteinG: 160, fatG: 70, carbsG: 220 };
   const rawDay = { ...day, __bodycastFixture: healthSnapshotFixtureTag };
@@ -391,7 +414,7 @@ async function syncHealthWeightThroughService(
     [rawDay],
     new Date(receivedAt),
     undefined,
-    { publicationNow },
+    { publicationNow, deferDependentRefresh },
   );
 }
 
@@ -408,9 +431,59 @@ async function readFixtureHealthSnapshotId(date: string, receivedAt: string): Pr
 
 const fixtureNow = new Date(`${futureDate}T12:00:00.000Z`);
 
+async function makeTrainingRefreshDue(profileId: number): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE "TrainingRefreshJob"
+    SET "dueAt" = clock_timestamp(), "nextAttemptAt" = clock_timestamp()
+    WHERE "profileId" = ${profileId}
+      AND "completedGeneration" < "requestedGeneration"
+  `;
+}
+
+async function runOneTrainingRefreshAttempt(
+  profileId: number,
+  hooks?: Parameters<typeof processNextTrainingRefreshJob>[0],
+): Promise<boolean> {
+  await makeTrainingRefreshDue(profileId);
+  return processNextTrainingRefreshJob(hooks);
+}
+
+async function runTrainingRefreshToCompletion(profileId: number, maxAttempts = 5): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const state = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
+    if (!state || state.completedGeneration >= state.requestedGeneration) return;
+    const claimed = await runOneTrainingRefreshAttempt(profileId);
+    if (!claimed) break;
+  }
+  const remaining = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
+  if (remaining && remaining.completedGeneration < remaining.requestedGeneration) {
+    throw new Error(`Training refresh fixture did not complete generation ${remaining.requestedGeneration}`);
+  }
+}
+
+async function runHealthRefreshToCompletion(profileId: number, maxAttempts = 5): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const state = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId } });
+    if (!state || state.completedGeneration >= state.requestedGeneration) return;
+    await prisma.$executeRaw`
+      UPDATE "HealthSyncRefreshJob"
+      SET "nextAttemptAt" = clock_timestamp()
+      WHERE "profileId" = ${profileId}
+        AND "completedGeneration" < "requestedGeneration"
+    `;
+    const claimed = await processNextHealthSyncRefreshJob();
+    if (!claimed) break;
+  }
+  const remaining = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId } });
+  if (remaining && remaining.completedGeneration < remaining.requestedGeneration) {
+    throw new Error(`Health refresh fixture did not complete generation ${remaining.requestedGeneration}`);
+  }
+}
+
 describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
   beforeAll(() => {
-    expect(isolatedDatabase.databaseName).toBe("bodycast_training_history_stage01_test");
+    expect(["bodycast_training_history_stage01_test", "bodycast_training_postcommit_test", POSTCOMMIT_FRESH_TEST_DATABASE_NAME, REAUDIT_TEST_DATABASE_NAME, FULL_INTEGRATION_REAUDIT_DATABASE_NAME, FULL_INTEGRATION_CLEAN_DATABASE_NAME])
+      .toContain(isolatedDatabase.databaseName);
   });
 
   beforeEach(async () => {
@@ -602,6 +675,13 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         completedAt: `${futureDate}T10:30:00.000Z`,
       }, profileId);
       await trainingService.finishSession(laterSession.id, profileId);
+      await runTrainingRefreshToCompletion(profileId);
+      const relativeMuscleBeforeEdit = await prisma.experimentalSkeletalMuscleDeltaShadow.findUnique({
+        where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[1]! } },
+        select: { sourceFingerprint: true, isStale: true },
+      });
+      expect(relativeMuscleBeforeEdit).not.toBeNull();
+      expect(relativeMuscleBeforeEdit?.isStale).toBe(false);
       const laterSource = await prisma.strengthDiarySession.findUniqueOrThrow({
         where: { id: laterSession.id }, select: { matchedWorkoutId: true },
       });
@@ -613,6 +693,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 4 });
 
       await trainingService.updateSet(olderSession.id, olderSet.id, { reps: 9 }, profileId);
+      await runTrainingRefreshToCompletion(profileId);
+
+      const relativeMuscleAfterEdit = await prisma.experimentalSkeletalMuscleDeltaShadow.findUniqueOrThrow({
+        where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[1]! } },
+        select: { sourceFingerprint: true, isStale: true },
+      });
+      expect(relativeMuscleAfterEdit.sourceFingerprint).not.toBe(relativeMuscleBeforeEdit?.sourceFingerprint);
+      expect(relativeMuscleAfterEdit.isStale).toBe(false);
 
       const laterTransientAfter = await prisma.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
         where: { sessionId: laterSession.id }, select: { sourceFingerprint: true, result: true },
@@ -692,15 +780,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       await trainingService.finishSession(session.id, profileId);
 
-      const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
-        .mockRejectedValueOnce(new Error("injected completed-session deletion shadow failure"));
-      let firstDelete: Awaited<ReturnType<typeof trainingService.deleteDiarySession>>;
-      try {
-        firstDelete = await trainingService.deleteDiarySession(session.id, profileId);
-      } finally {
-        failFirstGlycogenRefresh.mockRestore();
-      }
-      expect(firstDelete).toMatchObject({ matchedWorkoutId: null, modelPublicationStatus: "stale" });
+      const firstDelete = await trainingService.deleteDiarySession(session.id, profileId);
+      expect(firstDelete).toEqual({ matchedWorkoutId: null });
       expect(await prisma.strengthDiarySession.findUnique({ where: { id: session.id }, select: { id: true } })).toBeNull();
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(session.id) } },
@@ -710,10 +791,16 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(blockedLifecycle.unifiedPublicationBlockedFromDate).not.toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
-      await expect(trainingService.deleteDiarySession(session.id, profileId)).resolves.toMatchObject({
-        matchedWorkoutId: null,
-        modelPublicationStatus: "current",
-      });
+      const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
+        .mockRejectedValueOnce(new Error("injected completed-session deletion shadow failure"));
+      try {
+        await runOneTrainingRefreshAttempt(profileId);
+      } finally {
+        failFirstGlycogenRefresh.mockRestore();
+      }
+      const failedJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(failedJob.completedGeneration).toBeLessThan(failedJob.requestedGeneration);
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.strengthDiarySession.findUnique({ where: { id: session.id }, select: { id: true } })).toBeNull();
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(session.id) } },
@@ -735,26 +822,23 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       await trainingService.finishSession(retrySession.id, profileId);
 
-      const failFinalUnified = vi.spyOn(unifiedStateService, "rebuildUnifiedExperimentalPhysiologyStateV1")
-        .mockRejectedValueOnce(new Error("injected final session-delete Unified failure"));
-      try {
-        await expect(trainingService.deleteDiarySession(retrySession.id, profileId)).resolves.toMatchObject({
-          matchedWorkoutId: null,
-          modelPublicationStatus: "stale",
-        });
-      } finally {
-        failFinalUnified.mockRestore();
-      }
+      await expect(trainingService.deleteDiarySession(retrySession.id, profileId)).resolves.toMatchObject({
+        matchedWorkoutId: null,
+      });
       expect(await prisma.strengthDiarySession.findUnique({ where: { id: retrySession.id }, select: { id: true } })).toBeNull();
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(retrySession.id) } },
       })).not.toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
-      await expect(trainingService.deleteDiarySession(retrySession.id, profileId)).resolves.toMatchObject({
-        matchedWorkoutId: null,
-        modelPublicationStatus: "current",
-      });
+      const failFinalUnified = vi.spyOn(unifiedStateService, "rebuildUnifiedExperimentalPhysiologyStateV1")
+        .mockRejectedValueOnce(new Error("injected final session-delete Unified failure"));
+      try {
+        await runOneTrainingRefreshAttempt(profileId);
+      } finally {
+        failFinalUnified.mockRestore();
+      }
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(retrySession.id) } },
       })).toBeNull();
@@ -793,14 +877,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       await trainingService.finishSession(session.id, profileId);
 
-      const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
-        .mockRejectedValueOnce(new Error("injected completed-set deletion shadow failure"));
-      try {
-        await expect(trainingService.deleteSet(session.id, set.id, profileId))
-          .resolves.toEqual({ modelPublicationStatus: "stale" });
-      } finally {
-        failFirstGlycogenRefresh.mockRestore();
-      }
+      await expect(trainingService.deleteSet(session.id, set.id, profileId))
+        .resolves.toEqual({ deleted: true });
 
       expect(await prisma.strengthSet.findUnique({ where: { id: set.id }, select: { id: true } })).toBeNull();
       const setDeleteBlockKey = trainingChildDeletionPublicationSourceKey("set", session.id, set.id);
@@ -812,9 +890,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       // A session's pending block does not prove a different missing child was
       // deleted. Only the exact operation key is valid retry evidence.
       await expect(trainingService.deleteSet(session.id, set.id + 1_000_000, profileId)).rejects.toThrow();
-      await expect(trainingService.deleteSet(session.id, set.id, profileId)).resolves.toMatchObject({
-        modelPublicationStatus: "current",
-      });
+      const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
+        .mockRejectedValueOnce(new Error("injected completed-set deletion shadow failure"));
+      try {
+        await runOneTrainingRefreshAttempt(profileId);
+      } finally {
+        failFirstGlycogenRefresh.mockRestore();
+      }
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.strengthSet.findUnique({ where: { id: set.id }, select: { id: true } })).toBeNull();
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: setDeleteBlockKey } },
@@ -839,34 +922,27 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         completedAt: `${dates[1]}T17:30:00.000Z`,
       }, profileId);
       const secondSetDeleteBlockKey = trainingChildDeletionPublicationSourceKey("set", session.id, secondSet.id);
-      const failUnifiedPublication = vi.spyOn(unifiedStateService, "rebuildUnifiedExperimentalPhysiologyStateV1")
-        .mockRejectedValueOnce(new Error("injected final Unified publication failure"));
-      try {
-        await expect(trainingService.deleteSet(session.id, secondSet.id, profileId))
-          .resolves.toEqual({ modelPublicationStatus: "stale" });
-      } finally {
-        failUnifiedPublication.mockRestore();
-      }
+      await expect(trainingService.deleteSet(session.id, secondSet.id, profileId))
+        .resolves.toEqual({ deleted: true });
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: secondSetDeleteBlockKey } },
       })).not.toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
-      await expect(trainingService.deleteSet(session.id, secondSet.id, profileId)).resolves.toMatchObject({
-        modelPublicationStatus: "current",
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterProgressStage: async (_job, stage) => {
+          if (stage === "unified-publication") throw new Error("injected final Unified publication failure");
+        },
       });
+      expect(await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } }))
+        .toMatchObject({ leaseToken: null });
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: secondSetDeleteBlockKey } },
       })).toBeNull();
 
       const sessionExerciseId = session.exercises[0]!.id;
-      const failFirstExerciseRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
-        .mockRejectedValueOnce(new Error("injected completed-exercise deletion shadow failure"));
-      try {
-        await expect(trainingService.deleteSessionExercise(session.id, sessionExerciseId, {}, profileId))
-          .resolves.toMatchObject({ modelPublicationStatus: "stale" });
-      } finally {
-        failFirstExerciseRefresh.mockRestore();
-      }
+      await expect(trainingService.deleteSessionExercise(session.id, sessionExerciseId, {}, profileId))
+        .resolves.toMatchObject({ id: session.id, status: "COMPLETED" });
       expect(await prisma.strengthSessionExercise.findUnique({
         where: { id: sessionExerciseId }, select: { id: true },
       })).toBeNull();
@@ -877,8 +953,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
       await expect(trainingService.deleteSessionExercise(session.id, sessionExerciseId + 1_000_000, {}, profileId)).rejects.toThrow();
-      await expect(trainingService.deleteSessionExercise(session.id, sessionExerciseId, {}, profileId))
-        .resolves.toMatchObject({ modelPublicationStatus: "current" });
+      const failFirstExerciseRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
+        .mockRejectedValueOnce(new Error("injected completed-exercise deletion shadow failure"));
+      try {
+        await runOneTrainingRefreshAttempt(profileId);
+      } finally {
+        failFirstExerciseRefresh.mockRestore();
+      }
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.strengthSessionExercise.findUnique({
         where: { id: sessionExerciseId }, select: { id: true },
       })).toBeNull();
@@ -1546,23 +1628,22 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(fixtureNow);
     try {
-      const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
-        .mockRejectedValueOnce(new Error("injected retrospective creation shadow failure"));
-      let first: Awaited<ReturnType<typeof trainingService.createSessionFromWorkout>>;
-      try {
-        first = await trainingService.createSessionFromWorkout({ workoutId: workout.id, programId: program.id }, profileId);
-      } finally {
-        failFirstGlycogenRefresh.mockRestore();
-      }
-      expect(first).toMatchObject({ status: "COMPLETED", matchedWorkoutId: workout.id, modelPublicationStatus: "stale" });
+      const first = await trainingService.createSessionFromWorkout({ workoutId: workout.id, programId: program.id }, profileId);
+      expect(first).toMatchObject({ status: "COMPLETED", matchedWorkoutId: workout.id });
       expect(await prisma.strengthDiarySession.count({ where: { matchedWorkoutId: workout.id } })).toBe(1);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(first.id) } },
       })).not.toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
-      const retry = await trainingService.createSessionFromWorkout({ workoutId: workout.id, programId: program.id }, profileId);
-      expect(retry).toMatchObject({ id: first.id, modelPublicationStatus: "current" });
+      const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
+        .mockRejectedValueOnce(new Error("injected retrospective creation shadow failure"));
+      try {
+        await runOneTrainingRefreshAttempt(profileId);
+      } finally {
+        failFirstGlycogenRefresh.mockRestore();
+      }
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.strengthDiarySession.count({ where: { matchedWorkoutId: workout.id } })).toBe(1);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(first.id) } },
@@ -1608,6 +1689,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       await trainingService.finishSession(session.id, profileId);
 
+      await runTrainingRefreshToCompletion(profileId);
+
       const originalShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({
         where: { sessionId: session.id }, select: { sourceFingerprint: true, modelRevision: true },
       });
@@ -1636,7 +1719,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
       await expect(trainingService.updateSet(session.id, set.id, { reps: 10 }, profileId))
-        .resolves.toMatchObject({ reps: 10, modelPublicationStatus: "current" });
+        .resolves.toMatchObject({ reps: 10 });
+      await runTrainingRefreshToCompletion(profileId);
       const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(lifecycle).toMatchObject({
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
@@ -1681,6 +1765,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       vi.setSystemTime(new Date(`${dates[1]}T18:00:00.000Z`));
       await trainingService.finishSession(session.id, profileId);
+      await runTrainingRefreshToCompletion(profileId);
 
       const beforeShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({
         where: { sessionId: session.id }, select: { sourceFingerprint: true, result: true },
@@ -1713,6 +1798,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
           })).toBe(1);
         },
       })).rejects.toBeInstanceOf(StaleStrengthEnergySourceError);
+
+      await runTrainingRefreshToCompletion(profileId);
 
       const refreshedShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({
         where: { sessionId: session.id }, select: { sourceFingerprint: true, result: true },
@@ -1771,13 +1858,16 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       await trainingService.finishSession(session.id, profileId);
 
-      const recalculate = activeEnergyPublication.recalculateActiveEnergyChangesV1;
       let fenceBeforeConcurrentChange: { revision: number; fromDate: string } | null = null;
       let fenceAfterConcurrentChange: { revision: number; fromDate: string } | null = null;
       const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
-      const recalculateSpy = vi.spyOn(activeEnergyPublication, "recalculateActiveEnergyChangesV1")
-        .mockImplementationOnce(async () => {
-          const window = await recalculate();
+      await expect(trainingService.updateSet(session.id, set.id, { reps: 10 }, profileId))
+        .resolves.toMatchObject({ reps: 10 });
+      let mutationInjected = false;
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterClaim: async () => {
+          if (mutationInjected) return;
+          mutationInjected = true;
           fenceBeforeConcurrentChange = await lifecycle.readUnifiedPublicationBlockToken({
             profileId, source: "training", sourceKey: String(session.id),
           });
@@ -1788,14 +1878,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
           fenceAfterConcurrentChange = await lifecycle.readUnifiedPublicationBlockToken({
             profileId, source: "training", sourceKey: String(session.id),
           });
-          return window;
-        });
-      try {
-        await expect(trainingService.updateSet(session.id, set.id, { reps: 10 }, profileId))
-          .rejects.toBeInstanceOf(StaleStrengthEnergySourceError);
-      } finally {
-        recalculateSpy.mockRestore();
-      }
+        },
+      });
 
       expect(fenceBeforeConcurrentChange).not.toBeNull();
       expect(fenceAfterConcurrentChange).not.toBeNull();
@@ -1806,8 +1890,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       })).toMatchObject({ revision: fenceAfterConcurrentChange!.revision, fromDate: fenceAfterConcurrentChange!.fromDate });
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
-      await expect(trainingService.updateSet(session.id, set.id, { reps: 11 }, profileId))
-        .resolves.toMatchObject({ reps: 11, modelPublicationStatus: "current" });
+      await runTrainingRefreshToCompletion(profileId);
+      expect((await trainingRepository.getSession(session.id, profileId))?.exercises[0]?.sets[0]?.reps).toBe(9);
       const currentLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(currentLifecycle).toMatchObject({
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
@@ -1857,7 +1941,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       const completed = await trainingService.createSessionFromWorkout({ workoutId: workout.id, programId: program.id }, profileId);
       expect(completed.status).toBe("COMPLETED");
       expect(completed.matchedWorkoutId).toBe(workout.id);
-      expect(completed.modelPublicationStatus).toBe("current");
+      expect(completed.status).toBe("COMPLETED");
+      await runTrainingRefreshToCompletion(profileId);
 
       const strengthShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({
         where: { sessionId: completed.id }, select: { result: true },
@@ -1867,6 +1952,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         unavailableReason: "missing-body-mass",
         features: { completedSetCount: 0 },
       });
+      // The accounting snapshot is current even though its independent
+      // Active Energy candidate remains unavailable without Stage 02 mass.
       expect(completed.materializationState).toBe("current");
       const alias = await prisma.activeEnergyEventAlias.findUniqueOrThrow({
         where: { profileId_sourceType_sourceId: {
@@ -1888,12 +1975,17 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         70,
         `${dates[2]}T13:00:00.000Z`,
         new Date(`${futureDate}T14:00:00.000Z`),
+        true,
       );
-      expect(healthResult).toMatchObject({ status: "ok", modelPublicationStatus: "current" });
+      expect(healthResult).toMatchObject({ status: "ok", modelPublicationStatus: "stale" });
 
       expect(Number((await prisma.dailyHealthData.findUniqueOrThrow({
         where: { date: dates[2] }, select: { weightKg: true },
       })).weightKg)).toBe(70);
+      const pendingHealth = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(pendingHealth.completedGeneration).toBeLessThan(pendingHealth.requestedGeneration);
+      await runHealthRefreshToCompletion(profileId);
+      await runTrainingRefreshToCompletion(profileId);
       const afterWeightEvent = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
         where: { id: alias.eventId },
         select: { currentSource: true, currentProvenance: true },
@@ -2012,7 +2104,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({ where: { workoutId: stepper.id } }))
         .not.toBeNull();
       const stepperRepository = new StepperWorkoutRepository();
-      await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
+      await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({ deleted: true });
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({ where: { workoutId: stepper.id } }))
         .toBeNull();
       expect(await prisma.workout.findUniqueOrThrow({ where: { id: stepper.id }, select: { hiddenFromHistory: true } }))
@@ -2146,6 +2239,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       } finally {
         updateSetSpy.mockRestore();
       }
+      await runTrainingRefreshToCompletion(profileId);
       const afterCompletionRace = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(afterCompletionRace).toMatchObject({
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
@@ -2165,23 +2259,19 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect((uiStartDay.sourceLineage as { diarySessions: Array<{ id: number }> }).diarySessions)
         .not.toContainEqual(expect.objectContaining({ id: session.id }));
       const completedSnapshotRefreshKey = `v4-completed-accounting-refresh-${session.id}`;
-      const demandShadowFailure = vi.spyOn(
-        strengthGlycogenDemandShadowService,
-        "recordExperimentalStrengthGlycogenDemandShadow",
-      ).mockRejectedValueOnce(new Error("injected completed-session demand-shadow failure"));
-      try {
-        await expect(trainingService.refreshSessionAccounting(
-          session.id,
-          profileId,
-          completedSnapshotRefreshKey,
-        )).rejects.toMatchObject({
-          name: "TrainingPublicationStageError",
-          message: "Training dependency refresh failed",
-          originalError: expect.objectContaining({ message: "injected completed-session demand-shadow failure" }),
-        });
-      } finally {
-        demandShadowFailure.mockRestore();
-      }
+      await trainingService.refreshSessionAccounting(session.id, profileId, completedSnapshotRefreshKey);
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterProgressStage: async (_job, stage) => {
+          if (stage === "training-glycogen-demand") {
+            throw new Error("injected completed-session demand-shadow failure");
+          }
+        },
+      });
+      const failedSnapshotRefresh = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(failedSnapshotRefresh).toMatchObject({
+        lastErrorType: "Error",
+        leaseToken: null,
+      });
       const afterFailedCompletedAccountingRefresh = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(afterFailedCompletedAccountingRefresh).toMatchObject({
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
@@ -2189,9 +2279,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         unifiedPublishedGeneration: null,
       });
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
-      const committedSnapshotRevision = (await trainingRepository.getSession(session.id, profileId))
-        ?.activeEnergyMassReference?.snapshotRevision;
+      const committedSnapshotRevision = (await prisma.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id }, select: { currentSnapshotRevision: true },
+      })).currentSnapshotRevision;
       expect(committedSnapshotRevision).toEqual(expect.any(Number));
+      expect(await prisma.strengthSessionAccountingSnapshot.findUnique({
+        where: { sessionId_snapshotRevision: { sessionId: session.id, snapshotRevision: committedSnapshotRevision! } },
+        select: { sessionId: true },
+      })).toEqual({ sessionId: session.id });
 
       // The snapshot write committed before dependent publication failed. A
       // retry with the same idempotency key must repair publication even
@@ -2203,6 +2298,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       );
       expect(completedSnapshotRefresh.status).toBe("COMPLETED");
       expect(completedSnapshotRefresh.snapshotRevision).toBe(committedSnapshotRevision);
+      await runTrainingRefreshToCompletion(profileId);
       const afterCompletedAccountingRefresh = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(afterCompletedAccountingRefresh).toMatchObject({
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
@@ -2216,35 +2312,29 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       // The session accounting timezone maps this old occurrence to Jan 2,
       // while its episode model date is Jan 1. Moving it to Jan 3 must replay
       // glycogen from the old episode date, not the later accounting date.
-      const glycogenReplayDates: string[] = [];
-      const recordGlycogenState = glycogenStateShadowService.recordExperimentalGlycogenStateShadow;
-      const glycogenReplaySpy = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
-        .mockImplementation(async (input) => {
-          glycogenReplayDates.push(input.date);
-          await recordGlycogenState(input);
-        });
-      const failFinalRelocationPublication = vi.spyOn(unifiedStateService, "rebuildUnifiedExperimentalPhysiologyStateV1")
-        .mockRejectedValueOnce(new Error("injected final training-relocation Unified failure"));
-      try {
-        await expect(trainingService.updateSessionAccountingContext(session.id, {
-          effectiveAccountingAt: `${dates[2]}T14:00:00.000Z`,
-          timeZone: "Pacific/Kiritimati",
-        }, profileId)).rejects.toThrow("injected final training-relocation Unified failure");
-      } finally {
-        glycogenReplaySpy.mockRestore();
-        failFinalRelocationPublication.mockRestore();
-      }
-      expect(glycogenReplayDates).toContain(dates[0]);
+      await trainingService.updateSessionAccountingContext(session.id, {
+        effectiveAccountingAt: `${dates[2]}T14:00:00.000Z`,
+        timeZone: "Pacific/Kiritimati",
+      }, profileId);
+      const relocationChange = await prisma.trainingSourceChange.findFirstOrThrow({
+        where: { profileId, operationKind: "accounting_context_relocated", affectedSessionIds: { has: session.id } },
+        orderBy: { generation: "desc" },
+        select: { oldModelDates: true, newModelDates: true },
+      });
+      expect(relocationChange.oldModelDates).toContain(dates[0]);
+      expect(relocationChange.newModelDates).toContain(dates[2]);
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterProgressStage: async (_job, stage) => {
+          if (stage === "unified-publication") throw new Error("injected final training-relocation Unified failure");
+        },
+      });
 
       const relocationBlock = await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(session.id) } },
       });
       expect(relocationBlock).not.toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
-      await trainingService.updateSessionAccountingContext(session.id, {
-        effectiveAccountingAt: `${dates[2]}T14:00:00.000Z`,
-        timeZone: "Pacific/Kiritimati",
-      }, profileId);
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(session.id) } },
       })).toBeNull();
@@ -2670,12 +2760,23 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const stepper = await stepperRepository.create({
       startAt: `${dates[1]}T00:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
     });
+    const createChange = await prisma.trainingSourceChange.findFirstOrThrow({
+      where: { profileId, affectedWorkoutIds: { has: stepper.id }, operationKind: "stepper_workout_create" },
+    });
+    // The fixture's raw sync-day date is Jan 2, while the active episode's
+    // America/Los_Angeles model date is Jan 1. Recovery must retain both.
+    expect(createChange.newModelDates).toEqual([dates[0], dates[1]]);
+    await runTrainingRefreshToCompletion(profileId);
+    expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({
+      where: { workoutId: stepper.id }, select: { workoutId: true },
+    })).toEqual({ workoutId: stepper.id });
+    await expect(stepperRepository.update(stepper.id, {
+      startAt: `${dates[2]}T00:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
+    })).resolves.toMatchObject({ id: stepper.id, modelPublicationStatus: "stale" });
     const failFirstStateReplay = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
       .mockRejectedValueOnce(new Error("fixture stepper state replay failure"));
     try {
-      await expect(stepperRepository.update(stepper.id, {
-        startAt: `${dates[2]}T00:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
-      })).resolves.toMatchObject({ id: stepper.id, modelPublicationStatus: "stale" });
+      await runOneTrainingRefreshAttempt(profileId);
     } finally {
       failFirstStateReplay.mockRestore();
     }
@@ -2689,21 +2790,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect(blocked.fromDate).toBe(dates[0]);
 
     const refreshDates: string[] = [];
-    const recordActiveEnergy = stepperActiveEnergyShadowService.recordExperimentalStepperActiveEnergyShadowsForLocalDate;
     const recordDemand = stepperGlycogenShadowService.recordExperimentalStepperGlycogenDemandShadowsForLocalDate;
-    const activeEnergySpy = vi.spyOn(stepperActiveEnergyShadowService, "recordExperimentalStepperActiveEnergyShadowsForLocalDate")
-      .mockImplementation(async (input) => { refreshDates.push(input.date); await recordActiveEnergy(input); });
     const demandSpy = vi.spyOn(stepperGlycogenShadowService, "recordExperimentalStepperGlycogenDemandShadowsForLocalDate")
       .mockImplementation(async (input) => { refreshDates.push(input.date); await recordDemand(input); });
     try {
-      await expect(stepperRepository.update(stepper.id, {
-        startAt: `${dates[2]}T00:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
-      })).resolves.toMatchObject({ id: stepper.id, modelPublicationStatus: "current" });
+      await runTrainingRefreshToCompletion(profileId);
       expect(refreshDates).toContain(dates[0]);
-      expect(activeEnergySpy).toHaveBeenCalledWith({ date: dates[0], profileId });
       expect(demandSpy).toHaveBeenCalledWith({ date: dates[0], profileId });
     } finally {
-      activeEnergySpy.mockRestore();
       demandSpy.mockRestore();
     }
 
@@ -2738,13 +2832,12 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       startAt: `${dates[1]}T08:00:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
     });
     deletedFixtureStepperSourceKeys.add(String(stepper.id));
+    await runTrainingRefreshToCompletion(profileId);
+    await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({ deleted: true });
     const failFirstStateReplay = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
       .mockRejectedValueOnce(new Error("fixture stepper delete shadow failure"));
     try {
-      await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({
-        deleted: true,
-        modelPublicationStatus: "stale",
-      });
+      await runOneTrainingRefreshAttempt(profileId);
     } finally {
       failFirstStateReplay.mockRestore();
     }
@@ -2753,10 +2846,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     })).not.toBeNull();
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow("Unified V4 is current");
 
-    await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({
-      deleted: true,
-      modelPublicationStatus: "current",
-    });
+    await runTrainingRefreshToCompletion(profileId);
     expect(await prisma.unifiedPublicationBlock.findUnique({
       where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(stepper.id) } },
     })).toBeNull();
@@ -2766,24 +2856,21 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       startAt: `${dates[2]}T09:00:00.000Z`, durationMinutes: 15, manualStepCount: 900,
     });
     deletedFixtureStepperSourceKeys.add(String(secondStepper.id));
-    const failFinalPublish = vi.spyOn(activeEnergyPublication, "publishActiveEnergyChangesV1")
-      .mockRejectedValueOnce(new Error("fixture final stepper-delete publication failure"));
-    try {
-      await expect(stepperRepository.delete(secondStepper.id)).resolves.toMatchObject({
-        deleted: true,
-        modelPublicationStatus: "stale",
-      });
-    } finally {
-      failFinalPublish.mockRestore();
-    }
-    expect(await prisma.unifiedPublicationBlock.findUnique({
-      where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(secondStepper.id) } },
-    })).not.toBeNull();
-    await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
-    await expect(stepperRepository.delete(secondStepper.id)).resolves.toMatchObject({
-      deleted: true,
-      modelPublicationStatus: "current",
+    await expect(stepperRepository.delete(secondStepper.id)).resolves.toMatchObject({ deleted: true });
+    await runOneTrainingRefreshAttempt(profileId, {
+      afterProgressStage: async (_job, stage) => {
+        if (stage === "unified-publication") throw new Error("fixture final stepper-delete publication failure");
+      },
     });
+    const secondDeleteJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+    expect(secondDeleteJob.leaseToken).toBeNull();
+      expect(await prisma.unifiedPublicationBlock.findUnique({
+      where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(secondStepper.id) } },
+      })).toBeNull();
+      const failedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(isUnifiedGenerationCurrentV1(failedLifecycle)).toBe(false);
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
+    await runTrainingRefreshToCompletion(profileId);
     expect(await prisma.unifiedPublicationBlock.findUnique({
       where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(secondStepper.id) } },
     })).toBeNull();
@@ -2793,65 +2880,40 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     }
   }, 60_000);
 
-  it("restores a stepper retry fence when a false publication is followed by an unreadable blocker state", async () => {
+  it("keeps a stepper generation recoverable when publication succeeds but worker acknowledgement fails", async () => {
     await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0]!, toDate: dates[2]! });
     await verifyAndPublishUnifiedV3Postflight({ profileId });
     await activateAndReplayUnifiedV4({ profileId });
-    const before = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
-
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(fixtureNow);
     const stepperRepository = new StepperWorkoutRepository();
-    const hasBlocks = PhysiologyV7PersistenceRepository.prototype.hasUnifiedPublicationBlocks;
-    let publishReturnedFalse = false;
-    let postFalseBlockReadCount = 0;
-    const failPostFalseBlockRead = vi.spyOn(
-      PhysiologyV7PersistenceRepository.prototype,
-      "hasUnifiedPublicationBlocks",
-    ).mockImplementation(async function (this: PhysiologyV7PersistenceRepository, checkedProfileId: number) {
-      if (publishReturnedFalse) {
-        postFalseBlockReadCount += 1;
-        throw new Error("fixture post-false publication-block read failure");
-      }
-      return hasBlocks.call(this, checkedProfileId);
+    const created = await stepperRepository.create({
+      startAt: `${dates[1]}T09:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_300,
     });
-    const returnFalseFromPublish = vi.spyOn(activeEnergyPublication, "publishActiveEnergyChangesV1")
-      .mockImplementationOnce(async () => {
-        publishReturnedFalse = true;
-        return false;
-      });
-    let created: Awaited<ReturnType<StepperWorkoutRepository["create"]>>;
+    deletedFixtureStepperSourceKeys.add(String(created.id));
     try {
-      created = await stepperRepository.create({
-        startAt: `${dates[1]}T09:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_300,
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterPublicationBeforeAcknowledge: async () => {
+          throw new Error("fixture crash after atomic publication before queue acknowledgement");
+        },
       });
-      deletedFixtureStepperSourceKeys.add(String(created.id));
     } finally {
-      failPostFalseBlockRead.mockRestore();
-      returnFalseFromPublish.mockRestore();
-      vi.useRealTimers();
+      // Keep deterministic fixture time until the recovery attempt has run.
     }
 
     expect(created.modelPublicationStatus).toBe("stale");
-    expect(postFalseBlockReadCount).toBe(1);
-    expect(await prisma.unifiedPublicationBlock.findUniqueOrThrow({
+    const retainedSourceFence = await prisma.unifiedPublicationBlock.findUnique({
       where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(created.id) } },
-    })).toMatchObject({
-      profileId,
-      source: "stepper",
-      sourceKey: String(created.id),
-      fromDate: dates[1],
     });
-    const failed = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
-    expect(failed).toMatchObject({
-      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
-      unifiedRolloutEpoch: before.unifiedRolloutEpoch,
-      unifiedPublishedGeneration: null,
-      unifiedPublishedRolloutEpoch: null,
-    });
-    expect(isUnifiedGenerationCurrentV1(failed)).toBe(false);
+    expect(retainedSourceFence).toBeNull();
+    const failed = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+    expect(failed.leaseToken).toBeNull();
+    expect(failed.completedGeneration).toBeLessThanOrEqual(failed.requestedGeneration);
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
+    await runTrainingRefreshToCompletion(profileId);
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1 });
+    vi.useRealTimers();
   }, 60_000);
 
   it("retries a committed stepper create with the same numeric-id publication fence", async () => {
@@ -2865,10 +2927,11 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const startAt = `${dates[1]}T09:15:00.000Z`;
     const input = { startAt, durationMinutes: 25, manualStepCount: 1_600 };
     const stepperRepository = new StepperWorkoutRepository();
+    const created = await stepperRepository.create(input);
     const failFirstReplay = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
       .mockRejectedValueOnce(new Error("fixture stepper create shadow failure"));
     try {
-      await expect(stepperRepository.create(input)).resolves.toMatchObject({ modelPublicationStatus: "stale" });
+      await runOneTrainingRefreshAttempt(profileId);
     } finally {
       failFirstReplay.mockRestore();
     }
@@ -2877,6 +2940,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       where: { type: "Stair Climbing", startAt: new Date(startAt), sourceIdentity: { startsWith: "manual:stepper:" } },
       select: { id: true, sourceIdentity: true },
     });
+    expect(committed.id).toBe(created.id);
     expect(await prisma.unifiedPublicationBlock.findUnique({
       where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(committed.id) } },
       select: { sourceKey: true },
@@ -2888,6 +2952,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     try {
       await expect(stepperRepository.update(committed.id, input)).resolves.toMatchObject({ id: committed.id });
+      await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(committed.id) } },
       })).toBeNull();
@@ -2935,7 +3000,8 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         undefined,
         { publicationNow: fixtureNow },
       );
-      expect(result).toMatchObject({ status: "ok", modelPublicationStatus: "current" });
+      expect(result).toMatchObject({ status: "ok", modelPublicationStatus: "stale" });
+      await runTrainingRefreshToCompletion(profileId);
       const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(lifecycle).toMatchObject({
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
@@ -2981,10 +3047,11 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         completedAt: `${dates[1]}T11:00:00.000Z`,
       }, profileId);
       await expect(trainingService.finishSession(session.id, profileId))
-        .resolves.toMatchObject({ status: "COMPLETED", modelPublicationStatus: "stale" });
-      expect(await lifecycle.readUnifiedPublicationBlockToken({
+        .resolves.toMatchObject({ status: "COMPLETED" });
+      const trainingFence = await lifecycle.readUnifiedPublicationBlockToken({
         profileId, source: "training", sourceKey: String(session.id),
-      })).toBeNull();
+      });
+      expect(trainingFence).not.toBeNull();
       expect(await lifecycle.readUnifiedPublicationBlockToken({
         profileId, source: "health", sourceKey: dates[2]!,
       })).toEqual(healthFence);
@@ -2995,9 +3062,10 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       });
       deletedFixtureStepperSourceKeys.add(String(stepper.id));
       expect(stepper.modelPublicationStatus).toBe("stale");
-      expect(await lifecycle.readUnifiedPublicationBlockToken({
+      const stepperFence = await lifecycle.readUnifiedPublicationBlockToken({
         profileId, source: "stepper", sourceKey: String(stepper.id),
-      })).toBeNull();
+      });
+      expect(stepperFence).not.toBeNull();
       expect(await lifecycle.readUnifiedPublicationBlockToken({
         profileId, source: "health", sourceKey: dates[2]!,
       })).toEqual(healthFence);
@@ -3010,7 +3078,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         expectedRevision: healthFence!.revision,
         expectedFromDate: healthFence!.fromDate,
       })).toBe(true);
-      expect(await publishActiveEnergyChangesV1()).toBe(true);
+      await runTrainingRefreshToCompletion(profileId);
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1 });
       const finalLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(finalLifecycle.unifiedRolloutEpoch).toBe(1);
@@ -3305,6 +3373,63 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         sets: { create: [{ setNumber: 1, reps: 10, weightKg: 20, rir: 1, completedAt: eventAt }] },
       }] },
     } });
+    const unlinkedModelDate = dateLineDates[2]!;
+    await rebuildRelativeMuscleEpisodeTrajectories({ profileId, fromDate: unlinkedModelDate });
+    const relativeBeforeUnlinked = await prisma.experimentalSkeletalMuscleDeltaShadow.findUniqueOrThrow({
+      where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeTwo.id, date: unlinkedModelDate } },
+      select: { sourceFingerprint: true },
+    });
+    await recordExperimentalLocalHypertrophyResponseShadow({ date: unlinkedModelDate, profileId });
+    const weekStartDate = utcMondayWeekStart(unlinkedModelDate);
+    const hypertrophyBeforeUnlinked = await prisma.experimentalLocalHypertrophyResponseShadow.findUniqueOrThrow({
+      where: { profileId_weekStartDate: { profileId, weekStartDate } }, select: { result: true },
+    });
+    const unlinkedSessionAt = new Date("2100-01-03T13:00:00.000Z");
+    const unlinkedSession = await prisma.strengthDiarySession.create({ data: {
+      profileId,
+      status: "COMPLETED",
+      entryMode: "RETROSPECTIVE",
+      effectiveAccountingAt: unlinkedSessionAt,
+      // Deliberately different from the episode timezone. Model routing must
+      // use the episode-local date, matching Unified's chronological reader.
+      accountingTimeZone: "Pacific/Kiritimati",
+      accountingTimeZoneProvenance: "integration-fixture",
+      matchStatus: "UNMATCHED",
+      exercises: { create: [{
+        snapshotExerciseName: "Programless historical extension",
+        sortOrder: 0,
+        plannedSets: 1,
+        resistanceType: "EXTERNAL_WEIGHT",
+        origin: "EXTRA",
+        muscleMappingSnapshot: buildExerciseMuscleMappingSnapshotV7("hyperextension"),
+        sets: { create: [{ setNumber: 1, reps: 10, weightKg: 20, rir: 1, completedAt: unlinkedSessionAt }] },
+      }] },
+    } });
+    fixtureUnlinkedSessionIds.add(unlinkedSession.id);
+    await strengthGlycogenDemandShadowService.recordExperimentalStrengthGlycogenDemandShadowBySessionId({
+      sessionId: unlinkedSession.id, profileId,
+    });
+    await glycogenStateShadowService.rebuildExperimentalGlycogenStateShadows({
+      profileId, fromDate: unlinkedModelDate, toDate: unlinkedModelDate,
+    });
+    const unlinkedDayGlycogen = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+      where: { profileId_date: { profileId, date: unlinkedModelDate } }, select: { result: true },
+    });
+    expect((unlinkedDayGlycogen.result as { sourceLineage: { strengthDemandShadows: Array<{ sessionId: number }> } })
+      .sourceLineage.strengthDemandShadows).toContainEqual(expect.objectContaining({ sessionId: unlinkedSession.id }));
+    await recordExperimentalLocalHypertrophyResponseShadow({ date: unlinkedModelDate, profileId });
+    const hypertrophyAfterUnlinked = await prisma.experimentalLocalHypertrophyResponseShadow.findUniqueOrThrow({
+      where: { profileId_weekStartDate: { profileId, weekStartDate } }, select: { result: true },
+    });
+    expect((hypertrophyAfterUnlinked.result as { features: { sessionCount: number } }).features.sessionCount)
+      .toBe((hypertrophyBeforeUnlinked.result as { features: { sessionCount: number } }).features.sessionCount + 1);
+    await rebuildRelativeMuscleEpisodeTrajectories({ profileId, fromDate: unlinkedModelDate });
+    const relativeAfterUnlinked = await prisma.experimentalSkeletalMuscleDeltaShadow.findUniqueOrThrow({
+      where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeTwo.id, date: unlinkedModelDate } },
+      select: { sourceFingerprint: true, features: true },
+    });
+    expect(relativeAfterUnlinked.sourceFingerprint).not.toBe(relativeBeforeUnlinked.sourceFingerprint);
+    expect(relativeAfterUnlinked.features).toMatchObject({ lineage: { episodeId: episodeTwo.id, modelDate: unlinkedModelDate } });
     expect(dailyDataByDate.size).toBe(4);
     // Publish the deliberately hand-seeded production fixture after source
     // writes so database invalidation triggers are reflected in its generation.
@@ -3356,7 +3481,13 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const episodeOneNextDay = requestedSequence[1]!.state as { transientWater: { activeImpulses: Array<{ impulse: { strengthDiarySessionId: number }; ageModelDays: number }> } };
     const episodeTwoFirstDay = requestedSequence[2]!.state as { transientWater: { activeImpulses: Array<{ impulse: { strengthDiarySessionId: number }; ageModelDays: number }> } };
     expect(episodeOneNextDay.transientWater.activeImpulses).toMatchObject([{ impulse: { strengthDiarySessionId: session.id }, ageModelDays: 0 }]);
-    expect(episodeTwoFirstDay.transientWater.activeImpulses).toMatchObject([{ impulse: { strengthDiarySessionId: session.id }, ageModelDays: 1 }]);
+    expect(episodeTwoFirstDay.transientWater.activeImpulses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ impulse: expect.objectContaining({ strengthDiarySessionId: session.id }), ageModelDays: 1 }),
+      expect.objectContaining({ impulse: expect.objectContaining({ strengthDiarySessionId: unlinkedSession.id }), ageModelDays: 0 }),
+    ]));
+    const unlinkedUnifiedDay = allEpisodeRows.find((row) => row.modelEpisodeId === episodeTwo.id && row.date === unlinkedModelDate);
+    expect((unlinkedUnifiedDay?.sourceLineage as { diarySessions: Array<{ id: number }> }).diarySessions)
+      .toContainEqual(expect.objectContaining({ id: unlinkedSession.id }));
 
     const forecastDonor = await readLatestUnifiedExperimentalPhysiologyV2ForEpisode(prisma, {
       profileId, modelEpisodeId: episodeTwo.id, throughDate: dateLineDates[2]!,

@@ -11,6 +11,7 @@ import {
   transitionExperimentalDataGapContextV1,
   type ExperimentalDataGapContextV1,
 } from "@/model/physiology-v7/experimental-data-gap-context-v1";
+import { persistUnifiedShadowCandidateV1, readUnifiedSourceFenceV1 } from "./physiology-v7-persistence.repository";
 
 function uncertaintyFromStored(result: unknown): ExperimentalFatWeightUncertaintyStateV1 | null {
   if (!result || typeof result !== "object") return null;
@@ -27,7 +28,9 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
   profileId: number;
   fromDate: string;
   toDate: string;
+  onProgress?: () => Promise<void> | void;
 }): Promise<void> {
+  const sourceFence = await readUnifiedSourceFenceV1(prisma, input.profileId);
   const source = await prisma.dailyModelState.findFirst({
     where: { date: { gte: input.fromDate, lte: input.toDate }, episode: { profileId: input.profileId } },
     orderBy: [{ date: "asc" }, { id: "asc" }],
@@ -69,6 +72,11 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
   let priorUncertainty = uncertaintyFromStored(priorUncertaintyRow?.result)
     ?? initialExperimentalFatWeightUncertaintyStateV1();
   let priorGapContext = (priorUncertaintyRow?.result as { gapContext?: ExperimentalDataGapContextV1 } | null)?.gapContext ?? null;
+  const candidates: Array<{
+    date: string;
+    sourceFingerprint: string;
+    result: ReturnType<typeof transitionExperimentalFatWeightUncertaintyV1> & { gapContext: ExperimentalDataGapContextV1 };
+  }> = [];
 
   for (const row of states) {
     const observed = byDate.get(row.date);
@@ -91,23 +99,7 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
     });
     const result = { ...transition, gapContext };
     const sourceFingerprint = stableSha256(result);
-    await prisma.experimentalFatWeightUncertaintyShadow.upsert({
-      where: { profileId_date: { profileId: input.profileId, date: row.date } },
-      create: {
-        profileId: input.profileId,
-        date: row.date,
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
-        features: { ...result.features, gapContext },
-        result,
-      },
-      update: {
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
-        features: { ...result.features, gapContext },
-        result,
-      },
-    });
+    candidates.push({ date: row.date, sourceFingerprint, result });
     if (result.availability === "available"
         && result.fatMassKg.pointKg !== null
         && result.slowNonFatKgPoint !== null) {
@@ -137,5 +129,43 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
       };
     }
     priorGapContext = gapContext;
+    await input.onProgress?.();
   }
+
+  await persistUnifiedShadowCandidateV1({
+    client: prisma,
+    profileId: input.profileId,
+    expectedFence: sourceFence,
+    persist: async (tx) => {
+      let changed = false;
+      for (const candidate of candidates) {
+        const existing = await tx.experimentalFatWeightUncertaintyShadow.findUnique({
+          where: { profileId_date: { profileId: input.profileId, date: candidate.date } },
+          select: { sourceFingerprint: true, modelRevision: true },
+        });
+        if (existing?.sourceFingerprint === candidate.sourceFingerprint
+            && existing.modelRevision === EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION) continue;
+        await tx.experimentalFatWeightUncertaintyShadow.upsert({
+          where: { profileId_date: { profileId: input.profileId, date: candidate.date } },
+          create: {
+            profileId: input.profileId,
+            date: candidate.date,
+            sourceFingerprint: candidate.sourceFingerprint,
+            modelRevision: EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
+            features: { ...candidate.result.features, gapContext: candidate.result.gapContext },
+            result: candidate.result,
+          },
+          update: {
+            sourceFingerprint: candidate.sourceFingerprint,
+            modelRevision: EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
+            features: { ...candidate.result.features, gapContext: candidate.result.gapContext },
+            result: candidate.result,
+          },
+        });
+        changed = true;
+        await input.onProgress?.();
+      }
+      return changed;
+    },
+  });
 }

@@ -105,7 +105,7 @@ function goalNutritionInput(
     currentWeightKg,
     modeledTdeeKcalPerDay: status.currentModeledTdeeKcalPerDay,
     modelEnergyStatus: status.continuityStatus === "resolved" && !status.recoveryRequired ? "available" : "limited",
-    calibrationStatus: status.calibrationStatus,
+    calibrationStatus: status.calibrationStatus ?? undefined,
     strengthSessionsPerWeek: values.plan.strengthDaysPerWeek,
     otherTrainingSessionsPerWeek: values.plan.otherTrainingDaysPerWeek,
     averageStepsPerDay: values.plan.averageStepsPerDay,

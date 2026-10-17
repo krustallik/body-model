@@ -5,6 +5,7 @@ import {
   experimentalFfmRetentionV1Fingerprint,
 } from "@/model/physiology-v7/experimental-ffm-retention-v1";
 import type { ExperimentalTrainingExposureKindV1 } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
+import { persistUnifiedShadowCandidateV1, readUnifiedSourceFenceV1 } from "./physiology-v7-persistence.repository";
 
 /**
  * Isolated experimental/shadow FFM / slow-nonfat retention.
@@ -16,6 +17,7 @@ export async function recordExperimentalFfmRetentionShadow(input: {
   profileId?: number;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
+  const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
   const [health, modelState, priorFat] = await Promise.all([
     prisma.dailyHealthData.findUnique({
       where: { date: input.date },
@@ -60,21 +62,36 @@ export async function recordExperimentalFfmRetentionShadow(input: {
     hallForbesReferenceFatMassKg: typeof priorFatMassKg === "number" ? priorFatMassKg : null,
   });
   const sourceFingerprint = experimentalFfmRetentionV1Fingerprint(result);
-  await prisma.experimentalFfmRetentionShadow.upsert({
-    where: { profileId_date: { profileId, date: input.date } },
-    create: {
-      profileId,
-      date: input.date,
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_FFM_RETENTION_V1_REVISION,
-      features: result.features,
-      result,
-    },
-    update: {
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_FFM_RETENTION_V1_REVISION,
-      features: result.features,
-      result,
+  await persistUnifiedShadowCandidateV1({
+    client: prisma,
+    profileId,
+    expectedFence: sourceFence,
+    persist: async (tx) => {
+      const currentHealth = await tx.dailyHealthData.findUnique({
+        where: { date: input.date },
+        select: { proteinG: true, weightKg: true },
+      });
+      if (currentHealth?.proteinG !== health?.proteinG || currentHealth?.weightKg !== health?.weightKg) {
+        throw new Error("FFM retention inputs changed before persistence");
+      }
+      await tx.experimentalFfmRetentionShadow.upsert({
+        where: { profileId_date: { profileId, date: input.date } },
+        create: {
+          profileId,
+          date: input.date,
+          sourceFingerprint,
+          modelRevision: EXPERIMENTAL_FFM_RETENTION_V1_REVISION,
+          features: result.features,
+          result,
+        },
+        update: {
+          sourceFingerprint,
+          modelRevision: EXPERIMENTAL_FFM_RETENTION_V1_REVISION,
+          features: result.features,
+          result,
+        },
+      });
+      return true;
     },
   });
 }

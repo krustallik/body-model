@@ -3,7 +3,9 @@ import { z } from "zod";
 const StepperWorkoutInputSchema = z.object({
   startAt: z.string().datetime({ offset: true }),
   durationMinutes: z.number().int().min(1).max(1_440),
-  manualStepCount: z.number().int().nonnegative().nullable().optional(),
+  // Persisted as PostgreSQL Int; reject out-of-range declarations before a
+  // durable idempotency intent can become permanently unreplayable.
+  manualStepCount: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
   manualActiveEnergyKcal: z.number().nonnegative().nullable().optional(),
 }).strict();
 

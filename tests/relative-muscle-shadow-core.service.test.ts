@@ -98,6 +98,12 @@ function createClient(input: {
     dailyModelState: { findMany: vi.fn(async () => input.dailyStates) },
     workout: { findMany: vi.fn(async () => input.workouts ?? []) },
     strengthDiarySession: { findMany: vi.fn(async () => []) },
+    physiologyV7Lifecycle: {
+      findUnique: vi.fn(async () => ({
+        invalidationGeneration: 0,
+        updatedAt: new Date("2026-09-03T12:00:00.000Z"),
+      })),
+    },
     experimentalSkeletalMuscleDeltaShadow: delta,
     experimentalCessationDetrainingShadow: cessation,
     $transaction: vi.fn(async (operation: unknown) => {
@@ -109,6 +115,7 @@ function createClient(input: {
         dailyModelState: client.dailyModelState,
         workout: client.workout,
         strengthDiarySession: client.strengthDiarySession,
+        physiologyV7Lifecycle: client.physiologyV7Lifecycle,
         experimentalSkeletalMuscleDeltaShadow: delta,
         experimentalCessationDetrainingShadow: cessation,
         $queryRaw: vi.fn().mockResolvedValue([]),

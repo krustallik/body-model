@@ -12,6 +12,7 @@ import { pruneExpiredHealthSyncAudits } from "./health-sync-audit";
 import { APPLE_HEALTH_SHORTCUT_SOURCE, healthSyncRepository } from "./health.repository";
 import { syncHealthData } from "./health.service";
 import type { TimestampedHealthMetricSample } from "./normalize-shortcut-range-payload";
+import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
 
 const POLL_INTERVAL_MS = 1_000;
 const LEASE_DURATION_MS = 5 * 60_000;
@@ -167,6 +168,7 @@ async function assertAndRenewHealthSyncRefreshLease(job: ClaimedHealthSyncRefres
 }
 
 async function isUnifiedPublicationCurrentForHealthJob(job: ClaimedHealthSyncRefreshJob): Promise<boolean> {
+  if (isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, job.profileId))) return false;
   const lifecycle = await prisma.physiologyV7Lifecycle.findUnique({
     where: { profileId: job.profileId },
     select: {
@@ -287,6 +289,13 @@ async function refreshPendingHealthSyncWork(
     where: { profileId: job.profileId, source: "health" },
   });
   if (remainingBlocks > 0) throw new Error("Health sync dependent refresh remains blocked.");
+
+  // Health's required child dependencies are now durable and its exact retry
+  // blocks are clear. A pending Training generation owns final publication;
+  // acknowledge Health so the Training worker can publish without a mutual
+  // retry deadlock. The Training visibility gate keeps readers fail-closed.
+  if (healthDependenciesComplete
+      && isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, job.profileId))) return;
 
   if (!await isUnifiedPublicationCurrentForHealthJob(job)) {
     await assertAndRenewHealthSyncRefreshLease(job);

@@ -12,6 +12,8 @@ import { prisma } from "@/lib/db/prisma";
 import { logEvent } from "@/lib/logger";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
+import { enqueueTrainingSourceChangeInTransaction } from "@/modules/training/training-refresh-queue";
+import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   invalidateStepperMassDependenciesInTransactionV1,
@@ -189,6 +191,9 @@ async function reconcileDayWorkouts(
       type: true,
       startAt: true,
       endAt: true,
+      durationMinutes: true,
+      energyKcal: true,
+      activeEnergyKcal: true,
       syncProtected: true,
       hiddenFromHistory: true,
       matchedDiarySession: { select: { id: true } },
@@ -216,6 +221,16 @@ async function reconcileDayWorkouts(
   );
 
   for (const update of plan.updates) {
+    const previousWorkout = existing.find((row) => row.id === update.id);
+    const workoutInputsChanged = previousWorkout === undefined
+      || previousWorkout.sourceIdentity !== update.fields.sourceIdentity
+      || previousWorkout.externalId !== update.fields.externalId
+      || previousWorkout.type !== update.fields.type
+      || previousWorkout.startAt.getTime() !== update.fields.startAt.getTime()
+      || previousWorkout.endAt.getTime() !== update.fields.endAt.getTime()
+      || previousWorkout.durationMinutes !== update.fields.durationMinutes
+      || (previousWorkout.energyKcal === null ? null : Number(previousWorkout.energyKcal)) !== update.fields.energyKcal
+      || (previousWorkout.activeEnergyKcal === null ? null : Number(previousWorkout.activeEnergyKcal)) !== update.fields.activeEnergyKcal;
     await transaction.workout.update({
       where: { id: update.id },
       data: {
@@ -238,28 +253,73 @@ async function reconcileDayWorkouts(
         await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(linked.profileId);
       }
       const previousEffectiveAt = linked.effectiveAccountingAt ?? linked.webStartedAt ?? linked.createdAt;
-      if (previousEffectiveAt.getTime() === update.fields.startAt.getTime()) continue;
-      const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
-      const timeZoneProvenance = linked.accountingTimeZoneProvenance ?? "legacy-default";
-      const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
-      const nextLocalDate = instantToLocalDateTime(update.fields.startAt, timeZone).date;
-      await transaction.strengthDiarySession.update({
-        where: { id: linked.id },
-        data: {
-          effectiveAccountingAt: update.fields.startAt,
-          ...(previousLocalDate === nextLocalDate ? {} : {
-            accountingInputRevision: { increment: 1 },
-            currentSnapshotRevision: null,
-          }),
-        },
-      });
-      if (previousLocalDate === nextLocalDate) {
-        await rebaseCurrentAccountingSnapshotTimestamp(transaction, {
-          sessionId: linked.id,
-          effectiveAccountingAt: update.fields.startAt,
-          effectiveLocalDate: nextLocalDate,
-          timeZone,
-          timeZoneProvenance,
+      if (previousEffectiveAt.getTime() !== update.fields.startAt.getTime()) {
+        const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+        const timeZoneProvenance = linked.accountingTimeZoneProvenance ?? "legacy-default";
+        const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
+        const nextLocalDate = instantToLocalDateTime(update.fields.startAt, timeZone).date;
+        await transaction.strengthDiarySession.update({
+          where: { id: linked.id },
+          data: {
+            effectiveAccountingAt: update.fields.startAt,
+            ...(previousLocalDate === nextLocalDate ? {} : {
+              accountingInputRevision: { increment: 1 },
+              currentSnapshotRevision: null,
+            }),
+          },
+        });
+        if (previousLocalDate === nextLocalDate) {
+          await rebaseCurrentAccountingSnapshotTimestamp(transaction, {
+            sessionId: linked.id,
+            effectiveAccountingAt: update.fields.startAt,
+            effectiveLocalDate: nextLocalDate,
+            timeZone,
+            timeZoneProvenance,
+          });
+        }
+      }
+      if (linked.status === "COMPLETED" && workoutInputsChanged) {
+        const previousWorkout = existing.find((row) => row.id === update.id);
+        const priorSourceInstant = previousWorkout?.startAt ?? previousEffectiveAt;
+        const nextSourceInstant = update.fields.startAt;
+        const episodes = await transaction.modelEpisode.findMany({
+          where: { profileId: linked.profileId },
+          orderBy: [{ startDate: "asc" }, { id: "asc" }],
+          select: { id: true, startDate: true, timezone: true, active: true },
+        });
+        const oldModelDate = episodeTimeContextForInstantV1(episodes, priorSourceInstant).date;
+        const newModelDate = episodeTimeContextForInstantV1(episodes, nextSourceInstant).date;
+        await enqueueTrainingSourceChangeInTransaction(transaction, {
+          profileId: linked.profileId,
+          operationKind: "health-linked-workout-reconciled",
+          affectedSessionIds: [linked.id],
+          oldSourceIdentity: {
+            kind: "health-workout",
+            workoutId: update.id,
+            sourceIdentity: previousWorkout?.sourceIdentity ?? null,
+            externalId: previousWorkout?.externalId ?? null,
+            type: previousWorkout?.type ?? null,
+          },
+          newSourceIdentity: {
+            kind: "health-workout",
+            workoutId: update.id,
+            sourceIdentity: update.fields.sourceIdentity,
+            externalId: update.fields.externalId,
+            type: update.fields.type,
+          },
+          oldEventInstants: {
+            trainingEffectiveAt: priorSourceInstant.toISOString(),
+            workoutStartAt: previousWorkout?.startAt.toISOString() ?? null,
+            workoutEndAt: previousWorkout?.endAt.toISOString() ?? null,
+          },
+          newEventInstants: {
+            trainingEffectiveAt: nextSourceInstant.toISOString(),
+            workoutStartAt: nextSourceInstant.toISOString(),
+            workoutEndAt: update.fields.endAt.toISOString(),
+          },
+          oldModelDates: [oldModelDate],
+          newModelDates: [newModelDate],
+          deadlineMode: "health-fast",
         });
       }
     }

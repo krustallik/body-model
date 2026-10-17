@@ -13,8 +13,22 @@ import {
 } from "./training-day-fact";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { emptyTrainingDayFact } from "./training-day-fact-empty";
+import {
+  activeEnergyConvergenceFenceChanged,
+  isTrainingRefreshPending,
+  readActiveEnergyConvergenceVisibilityFence,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+} from "@/modules/training/training-refresh-queue";
 
 export type TrainingDayFactRange = { from?: string; to?: string };
+
+const DERIVED_TRAINING_ENERGY_FIELDS = [
+  "canonicalEnergyResolution",
+  "energyShadow",
+  "activeEnergyMassReference",
+  "estimatorVersion",
+] as const;
 
 type SetRow = {
   id: number;
@@ -196,6 +210,8 @@ export class TrainingDayFactRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
   async list(range: TrainingDayFactRange = {}): Promise<TrainingDayFact[]> {
+    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, 1);
+    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, 1);
     // Episode timezone can differ from the browser/default timezone. Query a
     // UTC envelope wide enough to include every event whose episode-local
     // date may fall in the requested date-only range, then filter by that
@@ -405,7 +421,21 @@ export class TrainingDayFactRepository {
         diaryModelDates.get(row.id)?.timeZone ?? DEFAULT_TIME_ZONE,
       )),
     });
-    return facts.filter(({ date }) => (!range.from || date >= range.from) && (!range.to || date <= range.to));
+    const visibleFacts = facts.filter(({ date }) => (!range.from || date >= range.from) && (!range.to || date <= range.to));
+    const refreshPending = convergenceFence?.active === true
+      || isTrainingRefreshPending(trainingFence)
+      || await trainingRefreshFenceChanged(this.client, 1, trainingFence)
+      || await activeEnergyConvergenceFenceChanged(this.client, 1, convergenceFence);
+    if (!refreshPending) return visibleFacts;
+    return visibleFacts.map((fact) => ({
+      ...fact,
+      events: fact.events.map((event) => {
+        const masked = { ...event, activeEnergyKcal: null, energySource: "unavailable" as const };
+        const extensible = masked as typeof masked & Record<string, unknown>;
+        for (const field of DERIVED_TRAINING_ENERGY_FIELDS) delete extensible[field];
+        return masked;
+      }),
+    }));
   }
 
   async forDate(date: string): Promise<TrainingDayFact> {

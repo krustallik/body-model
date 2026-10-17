@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { webcrypto } from "node:crypto";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -11,6 +12,81 @@ const routerPush = vi.fn();
 const searchParams = new URLSearchParams();
 const PROGRAM_CHANGE_UI_TIMEOUT_MS = 10_000;
 const PROGRAM_CHANGE_TEST_TIMEOUT_MS = 12_000;
+const draftOperations = vi.hoisted(() => new Map<string, {
+  operationId: string;
+  sessionId: number;
+  exerciseId: number;
+  payload: Record<string, unknown>;
+  draft: unknown;
+  createdAt: number;
+  terminalState?: "new-intent-required" | "replaced";
+  terminalReason?: "not-committed" | "tombstoned";
+  replacementOperationId?: string;
+}>());
+
+vi.mock("../src/app/training/set-create-operation-store", () => ({
+  storeSetCreateOperation: vi.fn(async (operation: { operationId: string; sessionId: number; exerciseId: number; payload: Record<string, unknown>; draft: unknown; createdAt: number }) => {
+    if (!draftOperations.has(operation.operationId)) draftOperations.set(operation.operationId, { ...operation });
+  }),
+  markSetCreateOperationTerminal: vi.fn(async (operation: {
+    operationId: string; sessionId: number; exerciseId: number; payload: Record<string, unknown>;
+    draft: unknown; createdAt: number; terminalState?: "new-intent-required" | "replaced";
+    terminalReason?: "not-committed" | "tombstoned"; replacementOperationId?: string;
+  }) => {
+    let current = draftOperations.get(operation.operationId);
+    const visited = new Set<string>();
+    while (current?.replacementOperationId) {
+      if (visited.has(current.operationId)) return null;
+      visited.add(current.operationId);
+      current = draftOperations.get(current.replacementOperationId);
+    }
+    if (!current) {
+      draftOperations.set(operation.operationId, { ...operation });
+      return operation;
+    }
+    if (current.operationId !== operation.operationId) return current;
+    const terminal = { ...current, terminalState: operation.terminalState, terminalReason: operation.terminalReason };
+    draftOperations.set(operation.operationId, terminal);
+    return terminal;
+  }),
+  listSetCreateOperations: vi.fn(async (sessionId: number) => [...draftOperations.values()].filter((operation) =>
+    operation.sessionId === sessionId && operation.replacementOperationId === undefined)),
+  replaceSetCreateOperation: vi.fn(async (previousOperationId: string, operation: { operationId: string; sessionId: number; exerciseId: number; payload: Record<string, unknown>; draft: unknown; createdAt: number; terminalState?: "new-intent-required" | "replaced"; terminalReason?: "not-committed" | "tombstoned"; replacementOperationId?: string }) => {
+    let previous = draftOperations.get(previousOperationId);
+    const visited = new Set<string>();
+    while (previous?.replacementOperationId) {
+      if (visited.has(previous.operationId)) return null;
+      visited.add(previous.operationId);
+      previous = draftOperations.get(previous.replacementOperationId);
+    }
+    if (!previous) return null;
+    if (previous.operationId !== previousOperationId) return previous;
+    if (previous.terminalState !== "new-intent-required") return null;
+    draftOperations.set(previousOperationId, {
+      ...previous, terminalState: "replaced", terminalReason: undefined,
+      replacementOperationId: operation.operationId,
+    });
+    const replacement = { ...previous, operationId: operation.operationId, createdAt: operation.createdAt,
+      terminalState: undefined, terminalReason: undefined, replacementOperationId: undefined };
+    draftOperations.set(operation.operationId, replacement);
+    return replacement;
+  }),
+  removeSetCreateOperation: vi.fn(async (operationId: string) => {
+    const removedIds = new Set([operationId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const operation of draftOperations.values()) {
+        if (operation.replacementOperationId && removedIds.has(operation.replacementOperationId)
+            && !removedIds.has(operation.operationId)) {
+          removedIds.add(operation.operationId);
+          changed = true;
+        }
+      }
+    }
+    for (const removedId of removedIds) draftOperations.delete(removedId);
+  }),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
@@ -18,7 +94,8 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
 }));
 
-import { SessionEditClient } from "@/app/training/sessions/[id]/edit/session-edit-client";
+import { SessionEditClient, setCreatePayloadDigest as editSetCreatePayloadDigest } from "@/app/training/sessions/[id]/edit/session-edit-client";
+import { sha256Canonical } from "@/modules/training/persisted-load-accounting-v1";
 import styles from "@/app/training/training.module.css";
 
 function activePane() {
@@ -118,6 +195,28 @@ function makeSession(
   };
 }
 
+function operationStatusResponse(url: string, session: StrengthSessionDto): Response | null {
+  const match = url.match(/^\/api\/v1\/training\/set-create-operations\/([^/?]+)(?:\?.*)?$/);
+  if (!match) return null;
+  const operation = draftOperations.get(decodeURIComponent(match[1]!));
+  if (!operation) return Response.json({ state: "NOT_FOUND" }, { status: 404 });
+  const exercise = session.exercises.find((candidate) => candidate.id === operation.exerciseId);
+  const set = exercise?.sets.find((candidate) => {
+    const payload = operation.payload;
+    const fields = ["setNumber", "reps", "weightKg", "bandNominalResistanceKg", "rir", "comment"] as const;
+    if (fields.some((field) => Object.prototype.hasOwnProperty.call(payload, field)
+      && candidate[field] !== payload[field])) return false;
+    if (Object.prototype.hasOwnProperty.call(payload, "loadAccountingOverride")) {
+      return JSON.stringify(candidate.loadAccountingOverride ?? null)
+        === JSON.stringify(payload.loadAccountingOverride ?? null);
+    }
+    return candidate.loadAccountingOverride == null;
+  });
+  return set
+    ? Response.json({ state: "COMMITTED", set })
+    : Response.json({ state: "NOT_FOUND" }, { status: 404 });
+}
+
 function installCompletedSessionMutationFetch(
   outcome: "postcommit-error" | "postcommit-network-error" | "not-committed" | "unknown",
 ) {
@@ -179,10 +278,15 @@ function setViewportWidth(width: number) {
 const originalViewportWidth = window.innerWidth;
 
 describe("Session edit exercise pager", () => {
+  beforeEach(() => {
+    vi.stubGlobal("crypto", webcrypto);
+  });
+
   afterEach(() => {
     cleanup();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalViewportWidth });
     vi.restoreAllMocks();
+    draftOperations.clear();
     routerPush.mockReset();
     searchParams.delete("exercise");
     window.sessionStorage.clear();
@@ -433,7 +537,7 @@ describe("Session edit exercise pager", () => {
     await user.type(within(row).getByLabelText("Reps"), "11");
     await user.click(within(row).getByRole("button", { name: "Update set" }));
 
-    await screen.findByText("Set saved. Waiting for model refresh confirmation.", {}, { timeout: 2_000 });
+    await screen.findByText("Set saved.", {}, { timeout: 2_000 });
     expect(within(row).queryByRole("button", { name: "Update set" })).toBeNull();
 
     persisted = structuredClone(makeSession()) as StrengthSessionDto;
@@ -484,12 +588,12 @@ describe("Session edit exercise pager", () => {
     await user.type(within(row).getByLabelText("Reps"), "11");
     await user.click(within(row).getByRole("button", { name: "Update set" }));
 
-    await screen.findByText("Set saved. Waiting for model refresh confirmation.", {}, { timeout: 2_000 });
+    await screen.findByText("Set saved.", {}, { timeout: 2_000 });
     expect(within(row).queryByRole("button", { name: "Update set" })).toBeNull();
     resolvePatch(Response.json({ error: "publication unavailable" }, { status: 503 }));
 
     expect(await screen.findByRole("button", { name: "Check status" })).toBeTruthy();
-    expect(screen.queryByText("Set saved. Waiting for model refresh confirmation.")).toBeNull();
+    expect(screen.queryByText(/model publication|waiting for model/i)).toBeNull();
     await waitFor(() => {
       expect(within(row).getByRole("button", { name: "Update set" }).hasAttribute("disabled")).toBe(true);
       expect((within(row).getByLabelText("Reps") as HTMLInputElement).value).toBe("11");
@@ -537,7 +641,7 @@ describe("Session edit exercise pager", () => {
     expect(fixture.requests.filter((request) => request.method === "PATCH")).toHaveLength(1);
   });
 
-  it("adds a completed-session set from the authoritative GET without page reload and shows stale publication", async () => {
+  it("adds a completed-session set from the authoritative GET without a model notice", async () => {
     const user = userEvent.setup();
     let persisted = structuredClone(makeSession()) as StrengthSessionDto;
     const createdSet = {
@@ -556,6 +660,8 @@ describe("Session edit exercise pager", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return operationStatus;
       if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
       if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
       if (url.includes("/history")) return Response.json({ entries: [] });
@@ -582,7 +688,8 @@ describe("Session edit exercise pager", () => {
     await user.click(pane.getByRole("button", { name: "Add set" }));
 
     expect(await screen.findByTestId("logged-set-10")).toBeTruthy();
-    expect(screen.getByText("Set saved, but model publication is not current yet.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set saved.").getAttribute("role")).toBe("status");
+    expect(screen.queryByText(/model publication|energy|glycogen|unified recalculation/i)).toBeNull();
     expect(persisted.exercises[0]?.sets).toHaveLength(2);
     const createCall = fetchMock.mock.calls.find(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/exercises/1/sets" && init?.method === "POST"
@@ -593,7 +700,8 @@ describe("Session edit exercise pager", () => {
     expect(fetchMock.mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88" && !init?.method
     ))).toHaveLength(2);
-    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ setNumber: 2, reps: 8, weightKg: 25 });
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ reps: 8, weightKg: 25 });
+    expect(createdSet.setNumber).toBe(2);
   });
 
   it("locks a create draft while outcome is uncertain and restores it only after the authoritative check", async () => {
@@ -622,6 +730,8 @@ describe("Session edit exercise pager", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return operationStatus;
       if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
       if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
       if (url.includes("/history")) return Response.json({ entries: [historicalEntry] });
@@ -645,7 +755,7 @@ describe("Session edit exercise pager", () => {
     await user.type(pane.getByLabelText("Reps"), "8");
     await user.click(pane.getByRole("button", { name: "Add set" }));
 
-    const checkStatus = await screen.findByRole("button", { name: "Check status" });
+    const checkStatus = await screen.findByRole("button", { name: "Check status" }, { timeout: 5_000 });
     const reps = pane.getByLabelText("Reps") as HTMLInputElement;
     expect(reps.readOnly).toBe(true);
     expect(reps.value).toBe("8");
@@ -670,14 +780,20 @@ describe("Session edit exercise pager", () => {
     await user.click(checkStatus);
 
     await screen.findByRole("alert");
+    await waitFor(() => expect(checkStatus.hasAttribute("disabled")).toBe(false));
     expect((pane.getByLabelText("Reps") as HTMLInputElement).value).toBe("8");
-    expect(postCount).toBe(1);
+    expect(postCount).toBe(2);
+    const idempotencyKeys = fetchMock.mock.calls
+      .filter(([url, request]) => String(url) === "/api/v1/training/sessions/88/exercises/1/sets" && request?.method === "POST")
+      .map(([, request]) => (request?.headers as Record<string, string>)?.["Idempotency-Key"]);
+    expect(new Set(idempotencyKeys).size).toBe(1);
   });
 
   it("shows a completed-session set as soon as an authoritative GET confirms persistence", async () => {
     const user = userEvent.setup();
     let persisted = structuredClone(makeSession()) as StrengthSessionDto;
     let resolvePost!: (response: Response) => void;
+    let postCommitted = false;
     const createdSet = {
       id: 10,
       sessionExerciseId: 1,
@@ -694,6 +810,11 @@ describe("Session edit exercise pager", () => {
     };
     const fetchMock = vi.fn((input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      if (url.startsWith("/api/v1/training/set-create-operations/") && !postCommitted) {
+        return Promise.resolve(Response.json({ state: "NOT_FOUND" }, { status: 404 }));
+      }
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return Promise.resolve(operationStatus);
       if (url === "/api/v1/training/exercises") return Promise.resolve(Response.json({ exercises: [] }));
       if (url === "/api/v1/training/programs") return Promise.resolve(Response.json({ programs: [] }));
       if (url.includes("/history")) return Promise.resolve(Response.json({ entries: [] }));
@@ -718,19 +839,21 @@ describe("Session edit exercise pager", () => {
     await user.type(pane.getByLabelText("Reps"), "8");
     await user.click(pane.getByRole("button", { name: "Add set" }));
 
-    expect(await screen.findByTestId("logged-set-10", {}, { timeout: 2_000 })).toBeTruthy();
-    expect(screen.getByText("Set saved. Waiting for model refresh confirmation.").getAttribute("role")).toBe("status");
-    expect(pane.getByRole("button", { name: "Change saved · waiting for model…" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByTestId("logged-set-10")).toBeNull();
     expect(fetchMock.mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/exercises/1/sets" && init?.method === "POST"
     ))).toHaveLength(1);
 
+    postCommitted = true;
     resolvePost(Response.json({ set: createdSet, modelPublicationStatus: "stale" }, { status: 201 }));
-    expect(await screen.findByText("Set saved, but model publication is not current yet.")).toBeTruthy();
-    expect(window.sessionStorage.length).toBe(0);
+    expect(await screen.findByTestId("logged-set-10")).toBeTruthy();
+    expect(screen.getByText("Set saved.").getAttribute("role")).toBe("status");
+    expect(screen.queryByText(/model publication|waiting for model/i)).toBeNull();
+    expect(await screen.findByText("Set saved.")).toBeTruthy();
+    expect(draftOperations.size).toBe(0);
   });
 
-  it("does not treat a colliding create with an omitted override as committed when GET has a non-null override", async () => {
+  it("does not treat a 409 colliding create as committed or clear its draft", async () => {
     const user = userEvent.setup();
     const concurrentSet = {
       id: 10,
@@ -749,6 +872,8 @@ describe("Session edit exercise pager", () => {
     let persisted = structuredClone(makeSession()) as StrengthSessionDto;
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return operationStatus;
       if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
       if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
       if (url.includes("/history")) return Response.json({ entries: [] });
@@ -774,12 +899,13 @@ describe("Session edit exercise pager", () => {
     await user.click(pane.getByRole("button", { name: "Add set" }));
 
     expect(await screen.findByRole("button", { name: "Check status" })).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toContain("outcome is unknown");
+    expect(screen.getByRole("alert").textContent).toContain("conflicts with the current set state");
     expect(screen.queryByRole("status")).toBeNull();
-    expect(window.sessionStorage.length).toBe(1);
-    expect(fetchMock.mock.calls.filter(([input, init]) => (
+    expect(draftOperations.size).toBeGreaterThan(0);
+    const createAttempts = fetchMock.mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/exercises/1/sets" && init?.method === "POST"
-    ))).toHaveLength(1);
+    ));
+    expect(createAttempts).toHaveLength(1);
   });
 
   it("uses the latest persisted row after a delayed successful PATCH response", async () => {
@@ -800,6 +926,8 @@ describe("Session edit exercise pager", () => {
     const patchPayloads: Record<string, unknown>[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return operationStatus;
       if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
       if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
       if (url.includes("/history")) return Response.json({ entries: [] });
@@ -835,7 +963,7 @@ describe("Session edit exercise pager", () => {
     ))).toHaveLength(2);
   });
 
-  it("reconciles a POST committed before its error response without creating a duplicate set", async () => {
+  it("reconciles a POST committed before a postcommit server error without creating a duplicate set", async () => {
     const user = userEvent.setup();
     let persisted = structuredClone(makeSession()) as StrengthSessionDto;
     const createdSet = {
@@ -854,6 +982,8 @@ describe("Session edit exercise pager", () => {
     };
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return operationStatus;
       if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
       if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
       if (url.includes("/history")) return Response.json({ entries: [] });
@@ -865,7 +995,7 @@ describe("Session edit exercise pager", () => {
             ? { ...exercise, sets: [...exercise.sets, createdSet] }
             : exercise),
         };
-        return Response.json({ error: "stale publication" }, { status: 409 });
+        return Response.json({ error: "temporary postcommit response failure" }, { status: 500 });
       }
       return Response.json({});
     });
@@ -885,20 +1015,179 @@ describe("Session edit exercise pager", () => {
     ))).toHaveLength(1);
   });
 
-  it("retains an ambiguous create across reload and reconciles it without a second POST", async () => {
+  it("uses the server canonical digest for multi-key set overrides", async () => {
+    const operation = {
+      sessionId: 88,
+      exerciseId: 1,
+      payload: {
+        reps: 8,
+        weightKg: null,
+        loadAccountingOverride: { loadInput: "per-implement-kg", loadedSides: 2 },
+      },
+    };
+    const expected = sha256Canonical({
+      version: 1,
+      sessionId: operation.sessionId,
+      exerciseId: operation.exerciseId,
+      requestedSetNumber: null,
+      reps: 8,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: null,
+      loadAccountingOverride: operation.payload.loadAccountingOverride,
+    });
+    await expect(editSetCreatePayloadDigest(operation)).resolves.toBe(expected);
+  });
+
+  it("retains a pre-write conflict draft and creates a fresh intent only after explicit action", async () => {
     const user = userEvent.setup();
     let persisted = structuredClone(makeSession()) as StrengthSessionDto;
-    let detailReads = 0;
+    const operationIds: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      const status = operationStatusResponse(url, persisted);
+      if (status) return status;
       if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
       if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
       if (url.includes("/history")) return Response.json({ entries: [] });
-      if (url === "/api/v1/training/sessions/88" && !init?.method) {
-        detailReads += 1;
-        if (detailReads === 2) return Response.json({ error: "temporary verification outage" }, { status: 503 });
-        return Response.json({ session: persisted });
+      if (url === "/api/v1/training/sessions/88" && !init?.method) return Response.json({ session: persisted });
+      if (url === "/api/v1/training/sessions/88/exercises/1/sets" && init?.method === "POST") {
+        operationIds.push((init.headers as Record<string, string>)["Idempotency-Key"]!);
+        if (operationIds.length === 1) return Response.json({ error: "training_concurrent_mutation" }, { status: 409 });
+        const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const created = {
+          id: 101,
+          sessionExerciseId: 1,
+          ...payload,
+          setNumber: 2,
+          reps: payload.reps as number,
+          rir: payload.rir as number | null,
+          comment: payload.comment as string | null,
+          weightKg: payload.weightKg as number,
+          bandNominalResistanceKg: null,
+          completedAt: "2026-09-10T16:30:00.000Z",
+          createdAt: "2026-09-10T16:30:00.000Z",
+          updatedAt: "2026-09-10T16:30:00.000Z",
+          loadAccountingOverride: null,
+        };
+        persisted = {
+          ...persisted,
+          exercises: persisted.exercises.map((exercise) => exercise.id === 1
+            ? { ...exercise, sets: [...exercise.sets, created] }
+            : exercise),
+        };
+        return Response.json({ set: created }, { status: 201 });
       }
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionEditClient sessionId={88} />);
+    await screen.findByTestId("active-exercise-pane");
+    const pane = activePane();
+    await user.clear(await pane.findByLabelText("Weight, kg"));
+    await user.type(pane.getByLabelText("Weight, kg"), "25");
+    await user.type(pane.getByLabelText("Reps"), "8");
+    await user.click(pane.getByRole("button", { name: "Add set" }));
+    const createAgain = await screen.findByRole("button", { name: "Create again" });
+    expect(operationIds).toHaveLength(1);
+    expect([...draftOperations.values()][0]?.terminalReason).toBe("not-committed");
+
+    await user.click(createAgain);
+    expect(await screen.findByTestId("logged-set-101")).toBeTruthy();
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).not.toBe(operationIds[0]);
+    expect(draftOperations.size).toBe(0);
+  });
+
+  it("turns a restored same-key pre-write 409 into an explicit fresh-intent state", async () => {
+    const user = userEvent.setup();
+    let persisted = structuredClone(makeSession()) as StrengthSessionDto;
+    const oldOperationId = "restored-pending-create";
+    draftOperations.set(oldOperationId, {
+      operationId: oldOperationId,
+      sessionId: 88,
+      exerciseId: 1,
+      payload: { reps: 8, weightKg: 25, bandNominalResistanceKg: null, rir: null, comment: null },
+      draft: {
+        reps: "8", asymmetricRepsEnabled: false, leftReps: "", rightReps: "",
+        weightKg: "25", additionalLoadKg: "", bandNominalResistanceKg: "", rir: "", comment: "",
+      },
+      createdAt: 1,
+    });
+    const operationIds: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      const status = operationStatusResponse(url, persisted);
+      if (status) return status;
+      if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
+      if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/88" && !init?.method) return Response.json({ session: persisted });
+      if (url === "/api/v1/training/sessions/88/exercises/1/sets" && init?.method === "POST") {
+        const operationId = (init.headers as Record<string, string>)["Idempotency-Key"]!;
+        operationIds.push(operationId);
+        if (operationIds.length === 1) {
+          return Response.json({ error: "training_concurrent_mutation" }, { status: 409 });
+        }
+        const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const created = {
+          id: 102,
+          sessionExerciseId: 1,
+          setNumber: 2,
+          reps: payload.reps as number,
+          weightKg: payload.weightKg as number,
+          bandNominalResistanceKg: null,
+          rir: null,
+          comment: null,
+          completedAt: "2026-09-10T16:30:00.000Z",
+          createdAt: "2026-09-10T16:30:00.000Z",
+          updatedAt: "2026-09-10T16:30:00.000Z",
+          loadAccountingOverride: null,
+        };
+        persisted = {
+          ...persisted,
+          exercises: persisted.exercises.map((exercise) => exercise.id === 1
+            ? { ...exercise, sets: [...exercise.sets, created] }
+            : exercise),
+        };
+        return Response.json({ set: created }, { status: 201 });
+      }
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionEditClient sessionId={88} />);
+    await screen.findByRole("button", { name: "Check status" });
+    await user.click(screen.getByRole("button", { name: "Check status" }));
+    const createAgain = await screen.findByRole("button", { name: "Create again" });
+    expect(operationIds).toEqual([oldOperationId]);
+    expect(draftOperations.get(oldOperationId)).toMatchObject({ terminalReason: "not-committed" });
+
+    await user.click(createAgain);
+    expect(await screen.findByTestId("logged-set-102")).toBeTruthy();
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).not.toBe(oldOperationId);
+  });
+
+  it("retains an ambiguous create across reload and reconciles it without a second POST", async () => {
+    const user = userEvent.setup();
+    let persisted = structuredClone(makeSession()) as StrengthSessionDto;
+    let operationStatusReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/training/set-create-operations/")) {
+        operationStatusReads += 1;
+        if (operationStatusReads === 1) return Response.json({ error: "temporary operation read outage" }, { status: 503 });
+      }
+      const operationStatus = operationStatusResponse(url, persisted);
+      if (operationStatus) return operationStatus;
+      if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
+      if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/88" && !init?.method) return Response.json({ session: persisted });
       if (url === "/api/v1/training/sessions/88/exercises/1/sets" && init?.method === "POST") {
         const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
         const created = {
@@ -935,7 +1224,7 @@ describe("Session edit exercise pager", () => {
     await user.type(pane.getByLabelText("Reps"), "8");
     await user.click(pane.getByRole("button", { name: "Add set" }));
     await screen.findByRole("button", { name: "Check status" });
-    expect(window.sessionStorage.length).toBe(1);
+    expect(draftOperations.size).toBeGreaterThan(0);
     firstMount.unmount();
 
     render(<SessionEditClient sessionId={88} />);
@@ -945,7 +1234,7 @@ describe("Session edit exercise pager", () => {
     expect(await screen.findByTestId("logged-set-10")).toBeTruthy();
     expect(persisted.exercises[0]?.sets).toHaveLength(2);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
-    expect(window.sessionStorage.length).toBe(0);
+    expect(draftOperations.size).toBe(0);
   });
 
   it("confirms current completed-session deletion after a 75 percent viewport-width swipe", async () => {
@@ -986,7 +1275,7 @@ describe("Session edit exercise pager", () => {
     expect(screen.getByTestId("logged-set-9")).toBeTruthy();
   });
 
-  it("removes a deleted completed-session set immediately and keeps the stale-publication notice", async () => {
+  it("removes a deleted completed-session set immediately without a model notice", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("confirm", vi.fn(() => true));
     let persisted = structuredClone(makeSession()) as StrengthSessionDto;
@@ -1014,7 +1303,8 @@ describe("Session edit exercise pager", () => {
     await user.click(within(row).getByRole("button", { name: "Delete set 1" }));
 
     await waitFor(() => expect(screen.queryByTestId("logged-set-9")).toBeNull());
-    expect(screen.getByText("Set deleted, but model publication is not current yet.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set deleted.").getAttribute("role")).toBe("status");
+    expect(screen.queryByText(/model publication|energy|glycogen|unified recalculation/i)).toBeNull();
     expect(persisted.exercises[0]?.sets).toHaveLength(0);
     expect(fetchMock.mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/sets/9" && init?.method === "DELETE"
@@ -1049,7 +1339,7 @@ describe("Session edit exercise pager", () => {
     await user.click(within(row).getByRole("button", { name: "Delete set 1" }));
 
     await waitFor(() => expect(screen.queryByTestId("logged-set-9")).toBeNull());
-    expect(screen.getByText("Set deleted, but model publication is not current yet.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set deleted.").getAttribute("role")).toBe("status");
     expect(persisted.exercises[0]?.sets).toHaveLength(0);
     expect(fetchMock.mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/sets/9" && init?.method === "DELETE"
@@ -1478,10 +1768,10 @@ describe("Session edit exercise pager", () => {
       },
     });
     await waitFor(() => expect(within(historySet).getByText(/28 kg × 11/)).toBeTruthy());
-    expect(screen.getByText("Set saved, but the model is not current.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set saved.").getAttribute("role")).toBe("status");
   });
 
-  it("does not describe a skipped historical publication as stale", async () => {
+  it("does not expose a skipped historical publication status", async () => {
     const user = userEvent.setup();
     stubFetch(makeSession(), { publicationStatus: "not-run" });
     render(<SessionEditClient sessionId={88} />);
@@ -1493,7 +1783,8 @@ describe("Session edit exercise pager", () => {
     await user.type(within(historySet).getByLabelText("Comment"), "updated note");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText("Set saved; model currentness could not be confirmed.")).toBeTruthy();
+    expect(await screen.findByText("Set saved.")).toBeTruthy();
+    expect(screen.queryByText(/model publication|currentness/i)).toBeNull();
   });
 
   it("edits and clears historical BODYWEIGHT load while preserving other override attributes", async () => {
@@ -1684,7 +1975,7 @@ describe("Session edit exercise pager", () => {
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(within(historySet).getByText(/28 kg × 11/)).toBeTruthy());
-    expect(screen.getByText("Set saved; model publication status could not be confirmed.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set saved.").getAttribute("role")).toBe("status");
     expect(within(historySet).queryByRole("alert")).toBeNull();
   });
 
@@ -1702,7 +1993,7 @@ describe("Session edit exercise pager", () => {
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(within(historySet).getByText(/28\.13 kg/)).toBeTruthy());
-    expect(screen.getByText("Set saved; model publication status could not be confirmed.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set saved.").getAttribute("role")).toBe("status");
     expect(vi.mocked(fetch).mock.calls.some(([url, init]) => (
       url === "/api/v1/training/sessions/40/sets/71" && init?.method === undefined
     ))).toBe(true);
@@ -1721,7 +2012,7 @@ describe("Session edit exercise pager", () => {
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(within(historySet).getByText(/28 kg × 11/)).toBeTruthy());
-    expect(screen.getByText("Set saved; model publication status could not be confirmed.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set saved.").getAttribute("role")).toBe("status");
     expect(vi.mocked(fetch).mock.calls.some(([url, init]) => (
       url === "/api/v1/training/sessions/40/sets/71" && init?.method === undefined
     ))).toBe(true);
@@ -1840,14 +2131,14 @@ describe("Session edit exercise pager", () => {
     await user.click(within(historySet).getByRole("button", { name: "Delete set 1" }));
 
     await waitFor(() => expect(within(historyRegion).queryByTestId("history-set-40-71")).toBeNull());
-    expect(screen.getByText("The set is absent and history is refreshed; model publication status could not be confirmed.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("The set is absent; the current history is shown.").getAttribute("role")).toBe("status");
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
     expect(vi.mocked(fetch).mock.calls.some(([url, init]) => (
       url === "/api/v1/training/sessions/40/sets/71" && init?.method === undefined
     ))).toBe(true);
   });
 
-  it("reports known stale versus not-run publication after a committed historical delete error", async () => {
+  it("shows the ordinary delete result after a committed historical delete error", async () => {
     for (const status of ["stale", "not-run"] as const) {
       cleanup();
       const user = userEvent.setup();
@@ -1861,10 +2152,7 @@ describe("Session edit exercise pager", () => {
       await user.click(within(historySet).getByRole("button", { name: "Delete set 1" }));
 
       await waitFor(() => expect(within(historyRegion).queryByTestId("history-set-40-71")).toBeNull());
-      const expected = status === "stale"
-        ? "The set is absent and history is refreshed, but the model is not current."
-        : "The set is absent and history is refreshed; model currentness could not be confirmed.";
-      expect(screen.getByText(expected).getAttribute("role")).toBe("status");
+      expect(screen.getByText("The set is absent; the current history is shown.").getAttribute("role")).toBe("status");
     }
   });
 
@@ -1880,7 +2168,7 @@ describe("Session edit exercise pager", () => {
     await user.click(within(historySet).getByRole("button", { name: "Delete set 1" }));
 
     await waitFor(() => expect(within(historyRegion).queryByTestId("history-set-40-71")).toBeNull());
-    expect(screen.getByText("Set deleted; model publication status could not be confirmed.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Set deleted.").getAttribute("role")).toBe("status");
     expect(vi.mocked(fetch).mock.calls.some(([url, init]) => (
       url === "/api/v1/training/sessions/40/sets/71" && init?.method === undefined
     ))).toBe(true);
@@ -1903,7 +2191,7 @@ describe("Session edit exercise pager", () => {
       "/api/v1/training/sessions/40/sets/71",
       expect.objectContaining({ method: "DELETE" }),
     );
-    const announcement = screen.getByText("Set deleted, but the model is not current.");
+    const announcement = screen.getByText("Set deleted.");
     expect(announcement.getAttribute("role")).toBe("status");
     await waitFor(() => expect(document.activeElement).toBe(announcement));
   });

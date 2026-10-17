@@ -470,8 +470,9 @@ describe("HistoryClient workout cell interaction", () => {
   });
 
   it("keeps a newer range read loading when a pending delete fails", async () => {
-    const oldDate = "2026-10-14";
-    const newDate = "2026-10-10";
+    const utcToday = new Date().toISOString().slice(0, 10);
+    const oldDate = shiftDate(utcToday, -1);
+    const newDate = shiftDate(utcToday, -2);
     let rejectDelete!: (reason: Error) => void;
     const pendingDelete = new Promise<Response>((_resolve, reject) => { rejectDelete = reject; });
     let resolveRangeRead!: (response: Response) => void;

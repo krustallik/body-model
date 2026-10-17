@@ -11,6 +11,8 @@ import { forecastQaNow } from "./qa-now";
 import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
 import { latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
+import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
+import { prisma } from "@/lib/db/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +21,9 @@ const DEFAULT_RECOVERY_SEED = 20_260_824;
 
 async function ensurePersistedModelDays(now?: Date): Promise<void> {
   try {
+    // The Training worker owns publication while its durable generation is
+    // pending. Do not let forecast bootstrap publish an intermediate graph.
+    if (isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, 1))) return;
     let status = await getModelStatus();
     const latestCompletedDate = status.timezone
       ? latestCompletedLocalDate(now ?? new Date(), status.timezone)

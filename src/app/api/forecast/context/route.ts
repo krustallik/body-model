@@ -8,6 +8,12 @@ import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { calculateGlycogenAssociatedMassKg } from "@/model/body-composition/state";
 import {
+  isTrainingRefreshPending,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+  trainingRefreshWorkerOwnsGeneration,
+} from "@/modules/training/training-refresh-queue";
+import {
   dataQualityChip,
   nutritionSourceChip,
   physiologyV7CacheChip,
@@ -34,6 +40,7 @@ export function GET(): Promise<Response>;
 export function GET(request: Request): Promise<Response>;
 export async function GET(request: Request = new Request("http://localhost")): Promise<Response> {
   try {
+    const trainingFence = await readTrainingRefreshVisibilityFence(prisma, 1);
     const locale = new URL(request.url).searchParams.get("locale") === "uk" ? "uk" : "en";
     const status = await getModelStatus();
     const history = await getModelHistory({
@@ -62,6 +69,15 @@ export async function GET(request: Request = new Request("http://localhost")): P
     const v7 = latestDate === null
       ? null
       : await new PhysiologyV7PersistenceRepository().readDay(1, latestDate).catch(() => null);
+    const workerOwnsGeneration = await trainingRefreshWorkerOwnsGeneration(
+      prisma,
+      1,
+      trainingFence?.requestedGeneration,
+    );
+    if ((isTrainingRefreshPending(trainingFence) && !workerOwnsGeneration)
+        || await trainingRefreshFenceChanged(prisma, 1, trainingFence)) {
+      return Response.json({ error: "training_refresh_pending" }, { status: 503 });
+    }
     const v7Status = v7 === null ? "missing" as const : v7.status;
     const v7Result = v7?.result ?? null;
     return Response.json({

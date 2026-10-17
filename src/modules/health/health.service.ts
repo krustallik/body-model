@@ -19,6 +19,7 @@ import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-p
 import { persistStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { prisma } from "@/lib/db/prisma";
+import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
 
 export async function reconcileHealthUnifiedPublicationBlocksV1(input: {
   dates: readonly string[];
@@ -213,6 +214,7 @@ export async function syncHealthData(
 
   // A request can carry up to one calendar month; each day deserves the same
   // post-sync reconciliation instead of only processing the final array item.
+  let trainingRefreshPending = false;
   for (const date of chronologicalDates) {
   const dateTimezone = options.timezoneByDate?.get(date.date) ?? timezone;
   try {
@@ -227,6 +229,18 @@ export async function syncHealthData(
     });
   }
 
+  // A delayed match can create a Training generation above. Health must still
+  // finish its own durable child dependencies so the two workers cannot
+  // deadlock on each other's publication blocks. The Training generation gate
+  // prevents serving an intermediate result until its owner completes.
+  if (healthPublicationLifecycle !== null && !trainingRefreshPending) {
+    const trainingJob = await prisma.trainingRefreshJob.findUnique({
+      where: { profileId: 1 },
+      select: { requestedGeneration: true, completedGeneration: true },
+    });
+    trainingRefreshPending = trainingJob !== null && trainingJob !== undefined
+      && trainingJob.requestedGeneration > trainingJob.completedGeneration;
+  }
   // Unit callers inject an isolated health repository.  Shadow writers use
   // the production Prisma client, so running them there leaks outside the
   // harness and can neither validate nor affect the injected sync result.
@@ -255,17 +269,29 @@ export async function syncHealthData(
     });
   }
 
-  try {
-    await stageTimer.run("strength-active-energy-shadow", () => recordExperimentalStrengthShadowsForWeightDate({
-      date: date.date,
-      refreshHistoricalAsOfFallback: date.weightSourceChanged === true,
-    }));
-  } catch (error) {
-    markRequiredFailure(date.date);
-    logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
+  if (trainingRefreshPending) {
+    // Training's durable generation owns strength Active Energy and the full
+    // downstream suffix rebuild. Letting Health write this shared candidate
+    // while the Training lease is pending would either violate that fence or
+    // keep Health retrying on the Training worker guard. Its generation gate
+    // keeps readers stale until the Training worker republishes the suffix.
+    logEvent("info", "health_strength_active_energy_refresh_deferred", {
       stage: "strength-active-energy-shadow-refresh",
-      ...errorDiagnosticFields(error),
+      reason: "training-refresh-pending",
     });
+  } else {
+    try {
+      await stageTimer.run("strength-active-energy-shadow", () => recordExperimentalStrengthShadowsForWeightDate({
+        date: date.date,
+        refreshHistoricalAsOfFallback: date.weightSourceChanged === true,
+      }));
+    } catch (error) {
+      markRequiredFailure(date.date);
+      logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
+        stage: "strength-active-energy-shadow-refresh",
+        ...errorDiagnosticFields(error),
+      });
+    }
   }
 
   try {
@@ -381,7 +407,8 @@ export async function syncHealthData(
         // Another source may still have an unresolved durable fence. The
         // Health dependencies are now refreshed and its exact fence is safe
         // to clear; let the remaining source retry the shared candidate.
-        if (await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)) {
+        if (await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)
+            || isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, 1))) {
           modelPublicationStatus = "stale";
         } else {
           // Publish only after all batch mutations, reconciliation, and

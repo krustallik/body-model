@@ -13,22 +13,26 @@ model HealthCheck {
 }
 
 model Profile {
-  id                          Int                          @id @default(1)
-  locale                      String                       @default("uk") @db.VarChar(2)
-  sex                         String                       @db.VarChar(6)
-  dateOfBirth                 DateTime                     @db.Date
-  heightCm                    Decimal                      @db.Decimal(6, 2)
-  targetWeightKg              Decimal?                     @db.Decimal(6, 2)
-  targetDate                  DateTime?                    @db.Date
-  autoAdvanceExercises        Boolean                      @default(false)
-  createdAt                   DateTime                     @default(now())
-  updatedAt                   DateTime                     @updatedAt
-  modelEpisodes               ModelEpisode[]
+  id                                    Int                                    @id @default(1)
+  locale                                String                                 @default("uk") @db.VarChar(2)
+  sex                                   String                                 @db.VarChar(6)
+  dateOfBirth                           DateTime                               @db.Date
+  heightCm                              Decimal                                @db.Decimal(6, 2)
+  targetWeightKg                        Decimal?                               @db.Decimal(6, 2)
+  targetDate                            DateTime?                              @db.Date
+  autoAdvanceExercises                  Boolean                                @default(false)
+  createdAt                             DateTime                               @default(now())
+  updatedAt                             DateTime                               @updatedAt
+  modelEpisodes                         ModelEpisode[]
   unifiedExperimentalPhysiologyStatesV2 UnifiedExperimentalPhysiologyStateV2[]
-  stepperEquipmentAssignments StepperEquipmentAssignment[]
-  strengthDiarySessions       StrengthDiarySession[]
-  unifiedPublicationBlocks    UnifiedPublicationBlock[]
-  healthSyncRefreshJob        HealthSyncRefreshJob?
+  stepperEquipmentAssignments           StepperEquipmentAssignment[]
+  strengthDiarySessions                 StrengthDiarySession[]
+  unifiedPublicationBlocks              UnifiedPublicationBlock[]
+  healthSyncRefreshJob                  HealthSyncRefreshJob?
+  trainingRefreshJob                    TrainingRefreshJob?
+  trainingSourceChanges                 TrainingSourceChange[]
+  trainingSetCreateOperations           TrainingSetCreateOperation[]
+  stepperCreateOperations               StepperCreateOperation[]
 }
 
 /// Durable source-refresh work that must finish before Unified can be published current.
@@ -38,6 +42,8 @@ model UnifiedPublicationBlock {
   sourceKey String   @db.VarChar(100)
   fromDate  String   @db.VarChar(10)
   revision  Int      @default(1)
+  ownerToken String? @db.VarChar(36)
+  ownerLeaseUntil DateTime? @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
@@ -97,21 +103,25 @@ model DailyHealthData {
   metricSamples           HealthMetricSample[]
 }
 
-/** Individual timestamped measurements from the Shortcut range payload. */
+/**
+ * Individual timestamped measurements from the Shortcut range payload.
+ */
 model HealthMetricSample {
-  id                Int             @id @default(autoincrement())
+  id                Int              @id @default(autoincrement())
   dailyHealthDataId Int?
-  date              String          @db.VarChar(10)
-  metric            String          @db.VarChar(64)
-  /** Set by authenticated Apple Shortcut ingestion or an explicitly approved legacy provenance correction. */
-  source            String?         @db.VarChar(40)
-  timestamp         DateTime        @db.Timestamptz(3)
-  value             Decimal         @db.Decimal(18, 10)
-  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  date              String           @db.VarChar(10)
+  metric            String           @db.VarChar(64)
+  /**
+   * Set by authenticated Apple Shortcut ingestion or an explicitly approved legacy provenance correction.
+   */
+  source            String?          @db.VarChar(40)
+  timestamp         DateTime         @db.Timestamptz(3)
+  value             Decimal          @db.Decimal(18, 10)
+  createdAt         DateTime         @default(now()) @db.Timestamptz(3)
   dailyHealthData   DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: SetNull)
 
-  @@index([date, metric, timestamp])
   @@unique([metric, timestamp])
+  @@index([date, metric, timestamp])
   @@index([dailyHealthDataId])
 }
 
@@ -213,7 +223,9 @@ model HealthSyncSnapshot {
   @@index([dailyHealthDataId])
 }
 
-/** Raw inbound health-sync audit trail. Retained for 30 days only. */
+/**
+ * Raw inbound health-sync audit trail. Retained for 30 days only.
+ */
 model HealthSyncAudit {
   id          Int      @id @default(autoincrement())
   receivedAt  DateTime @default(now()) @db.Timestamptz(3)
@@ -251,6 +263,102 @@ model HealthSyncRefreshJob {
   @@index([nextAttemptAt, leaseUntil])
 }
 
+/// Durable Training lane for historical physiology work. Raw Training source
+/// values remain in the diary tables; this row contains only queue metadata.
+model TrainingRefreshJob {
+  profileId           Int       @id
+  requestedGeneration Int       @default(0)
+  completedGeneration Int       @default(0)
+  dueAt               DateTime? @db.Timestamptz(3)
+  dirtyFromDate       String?   @db.VarChar(10)
+  dirtyToDate         String?   @db.VarChar(10)
+  affectedSessionIds  Int[]     @default([])
+  leaseToken          String?   @db.VarChar(36)
+  leaseUntil          DateTime? @db.Timestamptz(3)
+  nextAttemptAt       DateTime  @default(now()) @db.Timestamptz(3)
+  attemptCount        Int       @default(0)
+  lastAttemptAt       DateTime? @db.Timestamptz(3)
+  lastErrorType       String?   @db.VarChar(100)
+  lastErrorAt         DateTime? @db.Timestamptz(3)
+  lastProgressStage   String?   @db.VarChar(80)
+  lastProgressAt      DateTime? @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  profile             Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([dueAt, nextAttemptAt, leaseUntil])
+  @@index([requestedGeneration, completedGeneration])
+}
+
+/// Append-only recovery evidence written with a relevant Training mutation.
+/// IDs and dates are scalar metadata without cascading source-row relations so
+/// deletes and relocations remain reconstructable after restart.
+model TrainingSourceChange {
+  sourceChangeId             String    @id @db.VarChar(36)
+  profileId                  Int
+  generation                 Int
+  operationKind              String    @db.VarChar(50)
+  schemaVersion              Int       @default(1)
+  evidenceComplete           Boolean   @default(true)
+  affectedSessionIds         Int[]     @default([])
+  affectedExerciseIds        Int[]     @default([])
+  affectedSetIds             Int[]     @default([])
+  affectedWorkoutIds         Int[]     @default([])
+  publicationBlockSourceKeys String[]  @default([]) @db.VarChar(100)
+  oldSourceIdentity          Json?
+  newSourceIdentity          Json?
+  oldEventInstants           Json?
+  newEventInstants           Json?
+  oldModelDates              String[]  @default([]) @db.VarChar(10)
+  newModelDates              String[]  @default([]) @db.VarChar(10)
+  createdAt                  DateTime  @default(now()) @db.Timestamptz(3)
+  acknowledgedAt             DateTime? @db.Timestamptz(3)
+  profile                    Profile   @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@index([profileId, generation, acknowledgedAt])
+  @@index([profileId, createdAt])
+}
+
+/// Idempotency record for one user-intended Stepper create. No Workout FK is
+/// intentional: a later deletion leaves a durable tombstone for lost-response
+/// reconciliation and prevents the same key from recreating the source.
+model StepperCreateOperation {
+  profileId      Int
+  operationId    String   @db.VarChar(36)
+  payloadVersion Int      @default(1)
+  payloadDigest  String   @db.VarChar(64)
+  workoutId      Int?
+  state          String   @default("PENDING") @db.VarChar(16)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+  profile        Profile  @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@id([profileId, operationId])
+  @@index([profileId, workoutId])
+}
+
+/// Correlates one user-intended set create to its canonical committed row.
+/// It intentionally has no FK to session/exercise/set so deletion can leave a
+/// durable tombstone. REJECTED records a known pre-write failure so a stale
+/// same-key retry cannot later become a successful create.
+model TrainingSetCreateOperation {
+  profileId      Int
+  operationId    String   @db.VarChar(36)
+  payloadVersion Int      @default(1)
+  payloadDigest  String   @db.VarChar(64)
+  sessionId      Int
+  exerciseId     Int
+  canonicalSetId Int?
+  state          String   @default("PENDING") @db.VarChar(16)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+  profile        Profile  @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@id([profileId, operationId])
+  @@index([profileId, sessionId, state])
+  @@index([profileId, canonicalSetId])
+}
+
 /**
  * Apple Health quantity samples for one local calendar day.
  * A three-day Shortcut replay is applied per synced day, replacing that day's
@@ -271,52 +379,60 @@ model HealthActivityInterval {
 }
 
 model Workout {
-  id                  Int                   @id @default(autoincrement())
-  dailyHealthDataId   Int
-  externalId          String?
+  id                                      Int                                      @id @default(autoincrement())
+  dailyHealthDataId                       Int
+  externalId                              String?
   /**
    * Deterministic source identity for stable reconciliation across syncs.
    * Prefer ext:{externalId}; otherwise fp:{type}|{startIso}|{endIso}.
    */
-  sourceIdentity      String                @db.VarChar(320)
-  type                String
-  startAt             DateTime
-  endAt               DateTime
-  durationMinutes     Float?
+  sourceIdentity                          String                                   @db.VarChar(320)
+  type                                    String
+  startAt                                 DateTime
+  endAt                                   DateTime
+  durationMinutes                         Float?
   /**
    * Legacy workout energy field; semantics are not guaranteed to be active-only.
    */
-  energyKcal          Float?
+  energyKcal                              Float?
   /**
    * Garmin/device active workout calories excluding resting component.
    */
-    activeEnergyKcal    Float?
-    /** User edited/deleted this imported row; health sync must preserve it. */
-    syncProtected       Boolean               @default(false)
-    /** Soft deletion keeps a sync tombstone while hiding the row from users. */
-    hiddenFromHistory   Boolean               @default(false)
-    /** Declared MS100 steps. Absent is distinct from zero. Not a Garmin observation. */
-    manualStepCount     Int?
-    /** Declared MS100 active kcal. Absent is distinct from zero. */
-    manualActiveEnergyKcal Float?
-    supersededByWorkoutId Int?
-    supersededAt        DateTime?             @db.Timestamptz(3)
-    supersessionReason  String?               @db.VarChar(80)
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
+  activeEnergyKcal                        Float?
+  /**
+   * User edited/deleted this imported row; health sync must preserve it.
+   */
+  syncProtected                           Boolean                                  @default(false)
+  /**
+   * Soft deletion keeps a sync tombstone while hiding the row from users.
+   */
+  hiddenFromHistory                       Boolean                                  @default(false)
+  /**
+   * Declared MS100 steps. Absent is distinct from zero. Not a Garmin observation.
+   */
+  manualStepCount                         Int?
+  /**
+   * Declared MS100 active kcal. Absent is distinct from zero.
+   */
+  manualActiveEnergyKcal                  Float?
+  supersededByWorkoutId                   Int?
+  supersededAt                            DateTime?                                @db.Timestamptz(3)
+  supersessionReason                      String?                                  @db.VarChar(80)
+  createdAt                               DateTime                                 @default(now())
+  updatedAt                               DateTime                                 @updatedAt
   /**
    * Restrict: accidental DailyHealthData delete must not silently wipe workout history.
    */
-  dailyHealthData     DailyHealthData       @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
-  supersededByWorkout Workout?              @relation("WorkoutSupersession", fields: [supersededByWorkoutId], references: [id], onDelete: SetNull)
-  supersedingWorkouts Workout[]             @relation("WorkoutSupersession")
-  matchedDiarySession StrengthDiarySession?
-  reconciliationAsManual StepperReconciliationCandidate[] @relation("ReconciliationManual")
-  reconciliationAsGarmin StepperReconciliationCandidate[] @relation("ReconciliationGarmin")
-  provisionalForGroups StepperReconciliationGroup[] @relation("ReconciliationProvisional")
-  experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
+  dailyHealthData                         DailyHealthData                          @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
+  supersededByWorkout                     Workout?                                 @relation("WorkoutSupersession", fields: [supersededByWorkoutId], references: [id], onDelete: SetNull)
+  supersedingWorkouts                     Workout[]                                @relation("WorkoutSupersession")
+  matchedDiarySession                     StrengthDiarySession?
+  reconciliationAsManual                  StepperReconciliationCandidate[]         @relation("ReconciliationManual")
+  reconciliationAsGarmin                  StepperReconciliationCandidate[]         @relation("ReconciliationGarmin")
+  provisionalForGroups                    StepperReconciliationGroup[]             @relation("ReconciliationProvisional")
+  experimentalStepperActiveEnergyShadow   ExperimentalStepperActiveEnergyShadow?
   experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
-  activeEnergyAliases ActiveEnergyEventAlias[]
+  activeEnergyAliases                     ActiveEnergyEventAlias[]
 
   @@unique([dailyHealthDataId, sourceIdentity])
   @@index([dailyHealthDataId])
@@ -329,41 +445,43 @@ model Workout {
  * Names are data — not frontend hardcoding.
  */
 model ExerciseCatalog {
-  id               Int                       @id @default(autoincrement())
-  profileId        Int                       @default(1)
-  name             String                    @db.VarChar(200)
+  id                            Int                         @id @default(autoincrement())
+  profileId                     Int                         @default(1)
+  name                          String                      @db.VarChar(200)
   /**
    * Portable immutable identity for supported model mappings; null for custom rows.
    */
-  stableKey        String?                   @db.VarChar(80)
-  currentLoadAccountingConfigId Int? @unique
-  isActive         Boolean                   @default(true)
-  archivedAt       DateTime?                 @db.Timestamptz(3)
+  stableKey                     String?                     @db.VarChar(80)
+  currentLoadAccountingConfigId Int?                        @unique
+  isActive                      Boolean                     @default(true)
+  archivedAt                    DateTime?                   @db.Timestamptz(3)
   /**
    * Future-ready muscle mapping structure. Scientifically sensitive
    * coefficients stay unpopulated until approved v7 research lands.
    */
-  muscleMapping    Json?
-  createdAt        DateTime                  @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime                  @updatedAt @db.Timestamptz(3)
-  programExercises ProgramExercise[]
-  sessionExercises StrengthSessionExercise[]
-  loadAccountingConfigurations ExerciseLoadConfiguration[] @relation("CatalogLoadConfigurations")
-  currentLoadAccountingConfig ExerciseLoadConfiguration? @relation("CurrentCatalogLoadConfiguration", fields: [currentLoadAccountingConfigId], references: [id], onDelete: SetNull)
+  muscleMapping                 Json?
+  createdAt                     DateTime                    @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime                    @updatedAt @db.Timestamptz(3)
+  programExercises              ProgramExercise[]
+  sessionExercises              StrengthSessionExercise[]
+  loadAccountingConfigurations  ExerciseLoadConfiguration[] @relation("CatalogLoadConfigurations")
+  currentLoadAccountingConfig   ExerciseLoadConfiguration?  @relation("CurrentCatalogLoadConfiguration", fields: [currentLoadAccountingConfigId], references: [id], onDelete: SetNull)
 
   @@unique([profileId, name])
   @@unique([profileId, stableKey])
   @@index([profileId, isActive])
 }
 
-/** Append-only, explicitly versioned exercise load configuration. */
+/**
+ * Append-only, explicitly versioned exercise load configuration.
+ */
 model ExerciseLoadConfiguration {
-  id                Int             @id @default(autoincrement())
+  id                Int              @id @default(autoincrement())
   exerciseCatalogId Int
-  configVersion     String          @db.VarChar(80)
+  configVersion     String           @db.VarChar(80)
   configuration     Json
-  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
-  exerciseCatalog   ExerciseCatalog @relation("CatalogLoadConfigurations", fields: [exerciseCatalogId], references: [id], onDelete: Cascade)
+  createdAt         DateTime         @default(now()) @db.Timestamptz(3)
+  exerciseCatalog   ExerciseCatalog  @relation("CatalogLoadConfigurations", fields: [exerciseCatalogId], references: [id], onDelete: Cascade)
   currentFor        ExerciseCatalog? @relation("CurrentCatalogLoadConfiguration")
 
   @@unique([exerciseCatalogId, configVersion])
@@ -400,21 +518,23 @@ model TrainingProgramVersion {
 }
 
 model ProgramExercise {
-  id                Int                    @id @default(autoincrement())
-  programVersionId  Int
-  exerciseCatalogId Int
-  sortOrder         Int
-  plannedSets       Int
+  id                           Int                    @id @default(autoincrement())
+  programVersionId             Int
+  exerciseCatalogId            Int
+  sortOrder                    Int
+  plannedSets                  Int
   /**
    * EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT
    */
-  resistanceType    String                 @db.VarChar(32)
-  /** Immutable validated accounting config copied when this program version is created. */
+  resistanceType               String                 @db.VarChar(32)
+  /**
+   * Immutable validated accounting config copied when this program version is created.
+   */
   loadAccountingConfigSnapshot Json?
-  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
-  programVersion    TrainingProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: Cascade)
-  exerciseCatalog   ExerciseCatalog        @relation(fields: [exerciseCatalogId], references: [id], onDelete: Restrict)
+  createdAt                    DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt                    DateTime               @updatedAt @db.Timestamptz(3)
+  programVersion               TrainingProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: Cascade)
+  exerciseCatalog              ExerciseCatalog        @relation(fields: [exerciseCatalogId], references: [id], onDelete: Restrict)
 
   @@unique([programVersionId, sortOrder])
   @@index([programVersionId])
@@ -422,89 +542,97 @@ model ProgramExercise {
 }
 
 model StrengthDiarySession {
-  id               Int                          @id @default(autoincrement())
-  profileId        Int                          @default(1)
-  programId        Int?
-  programVersionId Int?
+  id                                       Int                                       @id @default(autoincrement())
+  profileId                                Int                                       @default(1)
+  programId                                Int?
+  programVersionId                         Int?
   /**
    * ACTIVE | COMPLETED | CANCELLED
    */
-  status           String                       @db.VarChar(20)
+  status                                   String                                    @db.VarChar(20)
   /**
    * LIVE = started from web "Start Workout".
    * RETROSPECTIVE = created from an existing Garmin Workout (historical backfill).
    */
-  entryMode        String                       @default("LIVE") @db.VarChar(20)
+  entryMode                                String                                    @default("LIVE") @db.VarChar(20)
   /**
    * Live web session timestamps. Null for RETROSPECTIVE — occurrence time comes
    * from matchedWorkout, not a faked Start Workout press.
    */
-  webStartedAt     DateTime?                    @db.Timestamptz(3)
-  webEndedAt       DateTime?                    @db.Timestamptz(3)
+  webStartedAt                             DateTime?                                 @db.Timestamptz(3)
+  webEndedAt                               DateTime?                                 @db.Timestamptz(3)
   /**
    * Monotonic diary source revision. Increments on meaningful historical edits
    * (program change, exercise/set mutations) for future rebuild fingerprints.
    */
-  revision         Int                          @default(1)
-  /** Monotonic revision of inputs consumed by persisted Stage 02 accounting. */
-  accountingInputRevision Int                   @default(1)
-  /** Canonical event instant; never derived dynamically from a mutable Workout join. */
-  effectiveAccountingAt DateTime?                @db.Timestamptz(3)
-  /** Validated IANA timezone captured for accounting; null is legacy-only. */
-  accountingTimeZone String?                     @db.VarChar(80)
-  accountingTimeZoneProvenance String?            @db.VarChar(40)
-  /** Current snapshot pointer. Composite FK is added by the additive migration. */
-  currentSnapshotRevision Int?
-  matchedWorkoutId Int?                         @unique
+  revision                                 Int                                       @default(1)
+  /**
+   * Monotonic revision of inputs consumed by persisted Stage 02 accounting.
+   */
+  accountingInputRevision                  Int                                       @default(1)
+  /**
+   * Canonical event instant; never derived dynamically from a mutable Workout join.
+   */
+  effectiveAccountingAt                    DateTime?                                 @db.Timestamptz(3)
+  /**
+   * Validated IANA timezone captured for accounting; null is legacy-only.
+   */
+  accountingTimeZone                       String?                                   @db.VarChar(80)
+  accountingTimeZoneProvenance             String?                                   @db.VarChar(40)
+  /**
+   * Current snapshot pointer. Composite FK is added by the additive migration.
+   */
+  currentSnapshotRevision                  Int?
+  matchedWorkoutId                         Int?                                      @unique
   /**
    * PENDING | MATCHED | AMBIGUOUS | UNMATCHED
    */
-  matchStatus      String                       @default("PENDING") @db.VarChar(20)
+  matchStatus                              String                                    @default("PENDING") @db.VarChar(20)
   /**
    * AUTO | MANUAL | DIRECT_BACKFILL — null while still PENDING without a decision
    */
-  matchMethod      String?                      @db.VarChar(20)
-  matchedAt        DateTime?                    @db.Timestamptz(3)
-  createdAt        DateTime                     @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime                     @updatedAt @db.Timestamptz(3)
-  profile          Profile?                     @relation(fields: [profileId], references: [id], onDelete: Restrict)
-  program          TrainingProgram?             @relation(fields: [programId], references: [id], onDelete: Restrict)
-  programVersion   TrainingProgramVersion?      @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
-  matchedWorkout   Workout?                     @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
-  exercises        StrengthSessionExercise[]
-  programChanges   StrengthDiaryProgramChange[]
-  experimentalStrengthEnergyShadow ExperimentalStrengthEnergyShadow?
+  matchMethod                              String?                                   @db.VarChar(20)
+  matchedAt                                DateTime?                                 @db.Timestamptz(3)
+  createdAt                                DateTime                                  @default(now()) @db.Timestamptz(3)
+  updatedAt                                DateTime                                  @updatedAt @db.Timestamptz(3)
+  profile                                  Profile?                                  @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  program                                  TrainingProgram?                          @relation(fields: [programId], references: [id], onDelete: Restrict)
+  programVersion                           TrainingProgramVersion?                   @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
+  matchedWorkout                           Workout?                                  @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
+  exercises                                StrengthSessionExercise[]
+  programChanges                           StrengthDiaryProgramChange[]
+  experimentalStrengthEnergyShadow         ExperimentalStrengthEnergyShadow?
   experimentalStrengthGlycogenDemandShadow ExperimentalStrengthGlycogenDemandShadow?
   experimentalTransientExerciseWaterShadow ExperimentalTransientExerciseWaterShadow?
-  accountingSnapshots StrengthSessionAccountingSnapshot[] @relation("SessionAccountingSnapshots")
-  currentAccountingSnapshot StrengthSessionAccountingSnapshot? @relation("CurrentSessionAccountingSnapshot", fields: [id, currentSnapshotRevision], references: [sessionId, snapshotRevision], onDelete: NoAction, onUpdate: NoAction)
-  accountingOperations StrengthSessionAccountingOperation[]
+  accountingSnapshots                      StrengthSessionAccountingSnapshot[]       @relation("SessionAccountingSnapshots")
+  currentAccountingSnapshot                StrengthSessionAccountingSnapshot?        @relation("CurrentSessionAccountingSnapshot", fields: [id, currentSnapshotRevision], references: [sessionId, snapshotRevision], onDelete: NoAction, onUpdate: NoAction)
+  accountingOperations                     StrengthSessionAccountingOperation[]
 
+  @@unique([id, currentSnapshotRevision])
   @@index([profileId, status])
   @@index([profileId, webStartedAt])
   @@index([profileId, entryMode])
   @@index([matchStatus])
-  @@unique([id, currentSnapshotRevision])
 }
 
 model StrengthSessionAccountingSnapshot {
-  id                         Int                  @id @default(autoincrement())
-  sessionId                  Int
-  snapshotRevision           Int
-  accountingInputRevision    Int
-  inputFingerprint           String               @db.VarChar(64)
-  effectiveLocalDate         String               @db.VarChar(10)
-  timeZone                   String               @db.VarChar(80)
-  timeZoneProvenance         String               @db.VarChar(40)
-  accountingMethodVersion    String               @db.VarChar(80)
-  massResolutionMethodVersion String              @db.VarChar(80)
-  massResolutionIdentity     String               @db.VarChar(160)
-  payloadVersion             String               @db.VarChar(80)
-  payload                    Json
-  createdAt                  DateTime             @default(now()) @db.Timestamptz(3)
-  session                    StrengthDiarySession @relation("SessionAccountingSnapshots", fields: [sessionId], references: [id], onDelete: Cascade)
-  currentFor                 StrengthDiarySession? @relation("CurrentSessionAccountingSnapshot")
-  operations                 StrengthSessionAccountingOperation[]
+  id                          Int                                  @id @default(autoincrement())
+  sessionId                   Int
+  snapshotRevision            Int
+  accountingInputRevision     Int
+  inputFingerprint            String                               @db.VarChar(64)
+  effectiveLocalDate          String                               @db.VarChar(10)
+  timeZone                    String                               @db.VarChar(80)
+  timeZoneProvenance          String                               @db.VarChar(40)
+  accountingMethodVersion     String                               @db.VarChar(80)
+  massResolutionMethodVersion String                               @db.VarChar(80)
+  massResolutionIdentity      String                               @db.VarChar(160)
+  payloadVersion              String                               @db.VarChar(80)
+  payload                     Json
+  createdAt                   DateTime                             @default(now()) @db.Timestamptz(3)
+  session                     StrengthDiarySession                 @relation("SessionAccountingSnapshots", fields: [sessionId], references: [id], onDelete: Cascade)
+  currentFor                  StrengthDiarySession?                @relation("CurrentSessionAccountingSnapshot")
+  operations                  StrengthSessionAccountingOperation[]
 
   @@unique([sessionId, snapshotRevision])
   @@index([sessionId, accountingInputRevision])
@@ -512,16 +640,16 @@ model StrengthSessionAccountingSnapshot {
 }
 
 model StrengthSessionAccountingOperation {
-  id                      Int                  @id @default(autoincrement())
-  sessionId               Int
-  idempotencyKey          String               @db.VarChar(160)
-  requestDigest           String               @db.VarChar(64)
-  status                  StrengthAccountingOperationStatus
-  resultSnapshotRevision  Int?
-  createdAt               DateTime             @default(now()) @db.Timestamptz(3)
-  updatedAt               DateTime             @updatedAt @db.Timestamptz(3)
-  session                 StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  resultSnapshot          StrengthSessionAccountingSnapshot? @relation(fields: [sessionId, resultSnapshotRevision], references: [sessionId, snapshotRevision], onDelete: NoAction, onUpdate: NoAction)
+  id                     Int                                @id @default(autoincrement())
+  sessionId              Int
+  idempotencyKey         String                             @db.VarChar(160)
+  requestDigest          String                             @db.VarChar(64)
+  status                 StrengthAccountingOperationStatus
+  resultSnapshotRevision Int?
+  createdAt              DateTime                           @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                           @updatedAt @db.Timestamptz(3)
+  session                StrengthDiarySession               @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  resultSnapshot         StrengthSessionAccountingSnapshot? @relation(fields: [sessionId, resultSnapshotRevision], references: [sessionId, snapshotRevision], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([sessionId, idempotencyKey])
   @@index([sessionId, status, createdAt])
@@ -551,32 +679,34 @@ model StrengthDiaryProgramChange {
 }
 
 model StrengthSessionExercise {
-  id                      Int                  @id @default(autoincrement())
-  sessionId               Int
-  sourceExerciseCatalogId Int?
-  snapshotExerciseName    String               @db.VarChar(200)
-  sortOrder               Int
-  plannedSets             Int
+  id                           Int                  @id @default(autoincrement())
+  sessionId                    Int
+  sourceExerciseCatalogId      Int?
+  snapshotExerciseName         String               @db.VarChar(200)
+  sortOrder                    Int
+  plannedSets                  Int
   /**
    * EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT — copied from program at start
    */
-  resistanceType          String               @db.VarChar(32)
+  resistanceType               String               @db.VarChar(32)
   /**
    * PLANNED = from assigned program snapshot.
    * EXTRA = session-level addition or orphan retained after program change.
    */
-  origin                  String               @default("PLANNED") @db.VarChar(20)
+  origin                       String               @default("PLANNED") @db.VarChar(20)
   /**
    * Snapshot of future muscle-mapping reference; coefficients deferred.
    */
-  muscleMappingSnapshot   Json?
-  /** Immutable Stage 02 load interpretation for this session exercise. */
+  muscleMappingSnapshot        Json?
+  /**
+   * Immutable Stage 02 load interpretation for this session exercise.
+   */
   loadAccountingConfigSnapshot Json?
-  createdAt               DateTime             @default(now()) @db.Timestamptz(3)
-  updatedAt               DateTime             @updatedAt @db.Timestamptz(3)
-  session                 StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  sourceExerciseCatalog   ExerciseCatalog?     @relation(fields: [sourceExerciseCatalogId], references: [id], onDelete: SetNull)
-  sets                    StrengthSet[]
+  createdAt                    DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt                    DateTime             @updatedAt @db.Timestamptz(3)
+  session                      StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourceExerciseCatalog        ExerciseCatalog?     @relation(fields: [sourceExerciseCatalogId], references: [id], onDelete: SetNull)
+  sets                         StrengthSet[]
 
   @@unique([sessionId, sortOrder])
   @@index([sessionId])
@@ -599,7 +729,9 @@ model StrengthSet {
    * Optional short note for this set (form feel, band used, etc.).
    */
   comment                 String?                 @db.VarChar(280)
-  /** Optional, strictly versioned per-set execution deviations. */
+  /**
+   * Optional, strictly versioned per-set execution deviations.
+   */
   loadAccountingOverride  Json?
   completedAt             DateTime?               @db.Timestamptz(3)
   createdAt               DateTime                @default(now()) @db.Timestamptz(3)
@@ -723,25 +855,25 @@ model WorkInterval {
 }
 
 model ModelEpisode {
-  id                                       Int                    @id @default(autoincrement())
-  profileId                                Int                    @default(1)
-  startDate                                String                 @db.VarChar(10)
-  timezone                                 String                 @db.VarChar(100)
-  modelVersion                             String                 @db.VarChar(100)
-  active                                   Boolean                @default(true)
-  deactivatedAt                            DateTime?              @db.Timestamptz(3)
-  ecfPolicy                                String                 @db.VarChar(40)
+  id                                       Int                                     @id @default(autoincrement())
+  profileId                                Int                                     @default(1)
+  startDate                                String                                  @db.VarChar(10)
+  timezone                                 String                                  @db.VarChar(100)
+  modelVersion                             String                                  @db.VarChar(100)
+  active                                   Boolean                                 @default(true)
+  deactivatedAt                            DateTime?                               @db.Timestamptz(3)
+  ecfPolicy                                String                                  @db.VarChar(40)
   baselineEnergyIntakeKcalPerDay           Float
   baselineCarbIntakeG                      Float
-  baselineWindowStartDate                  String                 @db.VarChar(10)
-  baselineWindowEndDate                    String                 @db.VarChar(10)
+  baselineWindowStartDate                  String                                  @db.VarChar(10)
+  baselineWindowEndDate                    String                                  @db.VarChar(10)
   baselineNutritionDayCount                Int
   baselineWeightObservationCount           Int
   baselineWeightTrendKgPerWeek             Float
   baselineWeightTrendPercentPerWeek        Float
-  baselineDerivationMethod                 String                 @db.VarChar(100)
+  baselineDerivationMethod                 String                                  @db.VarChar(100)
   baselineNutritionFallback                Json?
-  nutritionMaxBridgeDays                   Int                    @default(2)
+  nutritionMaxBridgeDays                   Int                                     @default(2)
   initialFatMassKg                         Float
   initialLeanTissueKg                      Float
   initialGlycogenKg                        Float
@@ -758,20 +890,20 @@ model ModelEpisode {
   adaptiveThermogenesisTimeConstantDays    Float
   weightProcessNoiseVarianceKg2PerDay      Float
   weightMeasurementNoiseVarianceKg2        Float
-  personalOffsetKcalPerDay                 Float                  @default(0)
-  activityCalibration                      Float                  @default(1)
-  calibrationStatus                        String                 @default("insufficient-history") @db.VarChar(40)
+  personalOffsetKcalPerDay                 Float                                   @default(0)
+  activityCalibration                      Float                                   @default(1)
+  calibrationStatus                        String                                  @default("insufficient-history") @db.VarChar(40)
   calibrationDiagnostics                   Json
   observedReferenceNutrition               Json?
   energyHomeostasisReferenceKcalPerDay     Float?
   glycogenReferenceCarbIntakeG             Float?
   initialPersonalOffsetKcalPerDay          Float?
-  initializationStatus                     String?                @db.VarChar(40)
+  initializationStatus                     String?                                 @db.VarChar(40)
   initializationDiagnostics                Json?
-  latestModeledDate                        String?                @db.VarChar(10)
-  createdAt                                DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt                                DateTime               @updatedAt @db.Timestamptz(3)
-  profile                                  Profile                @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  latestModeledDate                        String?                                 @db.VarChar(10)
+  createdAt                                DateTime                                @default(now()) @db.Timestamptz(3)
+  updatedAt                                DateTime                                @updatedAt @db.Timestamptz(3)
+  profile                                  Profile                                 @relation(fields: [profileId], references: [id], onDelete: Restrict)
   dailyStates                              DailyModelState[]
   unknownIntervals                         ModelUnknownInterval[]
   recoveryRuns                             ModelRecoveryRun[]
@@ -905,25 +1037,25 @@ model PhysiologyV7DailyResult {
 /// Profile-level invalidation watermark for the v7 derived cache. Generation
 /// increases in the same transaction as each scientific source mutation.
 model PhysiologyV7Lifecycle {
-  profileId                  Int      @id
-  staleFromDate              String?  @db.VarChar(10)
-  invalidationGeneration     Int      @default(0)
-  currentThroughDate         String?  @db.VarChar(10)
-  productionStaleFromDate    String?  @db.VarChar(10)
-  productionPublishedGeneration Int?
-  unifiedPublishedGeneration   Int?
-  unifiedTargetRevision        String   @default("unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics") @db.VarChar(100)
-  unifiedRolloutEpoch           Int      @default(0)
-  unifiedPublishedRolloutEpoch  Int?
+  profileId                         Int      @id
+  staleFromDate                     String?  @db.VarChar(10)
+  invalidationGeneration            Int      @default(0)
+  currentThroughDate                String?  @db.VarChar(10)
+  productionStaleFromDate           String?  @db.VarChar(10)
+  productionPublishedGeneration     Int?
+  unifiedPublishedGeneration        Int?
+  unifiedTargetRevision             String   @default("unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics") @db.VarChar(100)
+  unifiedRolloutEpoch               Int      @default(0)
+  unifiedPublishedRolloutEpoch      Int?
   unifiedPublicationBlockedFromDate String?  @db.VarChar(10)
   unifiedPublicationBlockedSource   String?  @db.VarChar(20)
-  stateVersion               String   @db.VarChar(100)
-  sourceNormalizationVersion String   @db.VarChar(100)
-  dailyRuntimeVersion        String   @db.VarChar(100)
-  rangeRebuildVersion        String   @db.VarChar(100)
-  rebuildServiceVersion      String   @db.VarChar(100)
-  createdAt                  DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt                  DateTime @updatedAt @db.Timestamptz(3)
+  stateVersion                      String   @db.VarChar(100)
+  sourceNormalizationVersion        String   @db.VarChar(100)
+  dailyRuntimeVersion               String   @db.VarChar(100)
+  rangeRebuildVersion               String   @db.VarChar(100)
+  rebuildServiceVersion             String   @db.VarChar(100)
+  createdAt                         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt                         DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([staleFromDate])
   @@index([productionStaleFromDate])
@@ -932,11 +1064,11 @@ model PhysiologyV7Lifecycle {
 /// Operational shadow-only comparison. It is derived from persisted v7 and
 /// legacy model output; neither source data nor user-facing output reads it.
 model PhysiologyV7ShadowDiagnostic {
-  id                    Int      @id @default(autoincrement())
-  profileId             Int      @default(1)
-  date                  String   @db.VarChar(10)
-  productionEpisodeId   Int?
-  productionModelVersion String? @db.VarChar(100)
+  id                     Int      @id @default(autoincrement())
+  profileId              Int      @default(1)
+  date                   String   @db.VarChar(10)
+  productionEpisodeId    Int?
+  productionModelVersion String?  @db.VarChar(100)
   productionOutput       Json
   v7Status               String   @db.VarChar(20)
   v7ResultFingerprint    String?  @db.VarChar(64)
@@ -956,14 +1088,15 @@ model PhysiologyV7ShadowDiagnostic {
 }
 
 model FatWeightShadowV1Result {
-  id Int @id @default(autoincrement())
-  profileId Int @default(1)
-  date String @db.VarChar(10)
-  sourceFingerprint String @db.VarChar(64)
-  modelVersion String @db.VarChar(100)
-  result Json
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  id                Int      @id @default(autoincrement())
+  profileId         Int      @default(1)
+  date              String   @db.VarChar(10)
+  sourceFingerprint String   @db.VarChar(64)
+  modelVersion      String   @db.VarChar(100)
+  result            Json
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
   @@unique([profileId, date])
   @@index([profileId, updatedAt])
 }
@@ -1049,17 +1182,17 @@ model ExperimentalGlycogenStateShadow {
  * TDEE, physiology, forecast, or GREEN scientific validation.
  */
 model ExperimentalSkeletalMuscleDeltaShadow {
-  id                Int      @id @default(autoincrement())
-  profileId         Int      @default(1)
+  id                Int           @id @default(autoincrement())
+  profileId         Int           @default(1)
   modelEpisodeId    Int?
-  date              String   @db.VarChar(10)
-  sourceFingerprint String   @db.VarChar(64)
-  modelRevision     String   @db.VarChar(100)
+  date              String        @db.VarChar(10)
+  sourceFingerprint String        @db.VarChar(64)
+  modelRevision     String        @db.VarChar(100)
   features          Json
   result            Json
-  isStale           Boolean  @default(false)
-  createdAt         DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  isStale           Boolean       @default(false)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
   modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict, map: "RelMuscleDelta_episode_profile_fkey")
 
   @@unique([profileId, modelEpisodeId, date], map: "RelMuscleDelta_episode_date_key")
@@ -1092,17 +1225,17 @@ model ExperimentalLocalHypertrophyResponseShadow {
  * physiology, forecast, or GREEN scientific validation. Not skeletalMuscleKg.
  */
 model ExperimentalCessationDetrainingShadow {
-  id                Int      @id @default(autoincrement())
-  profileId         Int      @default(1)
+  id                Int           @id @default(autoincrement())
+  profileId         Int           @default(1)
   modelEpisodeId    Int?
-  date              String   @db.VarChar(10)
-  sourceFingerprint String   @db.VarChar(64)
-  modelRevision     String   @db.VarChar(100)
+  date              String        @db.VarChar(10)
+  sourceFingerprint String        @db.VarChar(64)
+  modelRevision     String        @db.VarChar(100)
   features          Json
   result            Json
-  isStale           Boolean  @default(false)
-  createdAt         DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  isStale           Boolean       @default(false)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
   modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict, map: "RelMuscleCessation_episode_profile_fkey")
 
   @@unique([profileId, modelEpisodeId, date], map: "RelMuscleCessation_episode_date_key")
@@ -1195,18 +1328,18 @@ model UnifiedExperimentalPhysiologyStateV2 {
 
 /// Staged Garmin/manual stepper reconciliation. Does not hide Workout rows by itself.
 model StepperReconciliationGroup {
-  id                   Int      @id @default(autoincrement())
-  profileId            Int      @default(1)
-  status               String   @db.VarChar(20)
-  evaluationRevision   Int      @default(0)
+  id                   Int                              @id @default(autoincrement())
+  profileId            Int                              @default(1)
+  status               String                           @db.VarChar(20)
+  evaluationRevision   Int                              @default(0)
   provisionalWorkoutId Int?
-  policyVersion        String   @db.VarChar(80)
-  localDate            String   @db.VarChar(10)
-  sourceRevision       String?  @db.VarChar(80)
-  createdAt            DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt            DateTime @updatedAt @db.Timestamptz(3)
+  policyVersion        String                           @db.VarChar(80)
+  localDate            String                           @db.VarChar(10)
+  sourceRevision       String?                          @db.VarChar(80)
+  createdAt            DateTime                         @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime                         @updatedAt @db.Timestamptz(3)
   candidates           StepperReconciliationCandidate[]
-  provisionalWorkout   Workout? @relation("ReconciliationProvisional", fields: [provisionalWorkoutId], references: [id], onDelete: SetNull)
+  provisionalWorkout   Workout?                         @relation("ReconciliationProvisional", fields: [provisionalWorkoutId], references: [id], onDelete: SetNull)
 
   @@index([profileId, status])
   @@index([profileId, localDate])

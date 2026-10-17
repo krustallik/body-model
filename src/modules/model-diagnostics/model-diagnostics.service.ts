@@ -4,10 +4,24 @@ import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.r
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { ModelRecoveryRepository } from "@/modules/model-recovery/model-recovery.repository";
+import {
+  isTrainingRefreshPending,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+  trainingRefreshWorkerOwnsGeneration,
+} from "@/modules/training/training-refresh-queue";
 import { buildDiagnosticsDto, MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS } from "./model-diagnostics";
 import { ModelDiagnosticsRepository } from "./model-diagnostics.repository";
 
+export class TrainingRefreshPendingDiagnosticsError extends Error {
+  constructor() {
+    super("Training model refresh is pending");
+    this.name = "TrainingRefreshPendingDiagnosticsError";
+  }
+}
+
 export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) {
+  const trainingFence = await readTrainingRefreshVisibilityFence(client, 1);
   const episodes = new ModelEpisodeRepository(client);
   const episode = await episodes.getActive();
   if (!episode) throw new NoActiveModelEpisodeError();
@@ -48,5 +62,17 @@ export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) 
       : Promise.resolve(emptyEvidence),
     new ModelRecoveryRepository(client).latestStatus(episode.id),
   ]);
+  const workerOwnsGeneration = await trainingRefreshWorkerOwnsGeneration(
+    client,
+    1,
+    trainingFence?.requestedGeneration,
+  );
+  if ((isTrainingRefreshPending(trainingFence) && !workerOwnsGeneration)
+      || await trainingRefreshFenceChanged(client, 1, trainingFence)) {
+    // Deterministic and recovery snapshots form one composed current-state
+    // response. A partial fallback could still expose the previous generation's
+    // posterior or calibration as current, so fail closed for the whole read.
+    throw new TrainingRefreshPendingDiagnosticsError();
+  }
   return buildDiagnosticsDto({ episode, status, evidence, windowStartDate, recovery });
 }

@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { FULL_INTEGRATION_CLEAN_DATABASE_NAME, FULL_INTEGRATION_REAUDIT_DATABASE_NAME, HEALTH_REAUDIT_TEST_DATABASE_NAME, REAUDIT_TEST_DATABASE_NAME, requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
 import {
   TransientExerciseWaterConcurrentSourceChangeError,
   rebuildExperimentalTransientExerciseWaterV2,
@@ -144,7 +144,8 @@ async function seed(options: { equalAbsoluteStart?: boolean; staleInactiveAfterA
 
 describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", () => {
   beforeAll(() => {
-    expect(isolated.databaseName).toBe("bodycast_training_history_stage01_test");
+    expect(["bodycast_training_history_stage01_test", "bodycast_training_postcommit_test", REAUDIT_TEST_DATABASE_NAME, HEALTH_REAUDIT_TEST_DATABASE_NAME, FULL_INTEGRATION_REAUDIT_DATABASE_NAME, FULL_INTEGRATION_CLEAN_DATABASE_NAME])
+      .toContain(isolated.databaseName);
   });
 
   afterAll(async () => {
@@ -154,12 +155,14 @@ describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", (
 
   it("persists one V2 impulse per Strength session and uses matched Workout.startAt as event time", async () => {
     const sessionIds = await seed();
-    const first = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+    const candidateProgress = vi.fn(async () => undefined);
+    const first = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client, onProgress: candidateProgress });
     const rows = await client.experimentalTransientExerciseWaterShadow.findMany({
       where: { profileId, modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION },
       orderBy: { sessionId: "asc" },
     });
     expect(first.impulseCount).toBe(3);
+    expect(candidateProgress).toHaveBeenCalledTimes(3);
     expect(first.earliestModelDate).toBe(boundaryDate);
     expect(rows.map((row) => row.sessionId).sort((a, b) => a - b)).toEqual([...sessionIds].sort((a, b) => a - b));
     expect(new Set(rows.map((row) => row.sessionId)).size).toBe(3);

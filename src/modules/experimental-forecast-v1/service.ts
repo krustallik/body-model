@@ -1,5 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import {
+  isTrainingRefreshPending,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+} from "@/modules/training/training-refresh-queue";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { latestCompletedLocalDate, addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
@@ -348,6 +353,8 @@ export async function experimentalForecastModelEpisode(
     if (request.episodeId !== undefined) return null;
     return null;
   }
+  const trainingFence = await readTrainingRefreshVisibilityFence(client, episode.profileId);
+  if (isTrainingRefreshPending(trainingFence)) return null;
   const now = request.now ?? new Date();
   const latestDate = latestCompletedLocalDate(now, episode.timezone);
   const lifecycle = await client.physiologyV7Lifecycle.findUnique({
@@ -449,7 +456,9 @@ export async function experimentalForecastModelEpisode(
   if (!isUnifiedGenerationCurrentV1(finalLifecycle)
       || finalLifecycle.invalidationGeneration !== expectedGeneration
       || finalLifecycle.productionPublishedGeneration !== expectedGeneration
-      || finalLifecycle.unifiedPublishedGeneration !== expectedGeneration) return null;
+      || finalLifecycle.unifiedPublishedGeneration !== expectedGeneration
+      || isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(client, episode.profileId))
+      || await trainingRefreshFenceChanged(client, episode.profileId, trainingFence)) return null;
   return mapExperimentalForecastToLegacy(experimental, episode.modelVersion);
 }
 

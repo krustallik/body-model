@@ -102,7 +102,7 @@ describe("Training retrospective API contracts", () => {
 
   describe("POST /sessions/from-workout", () => {
     it("creates a retrospective session", async () => {
-      trainingService.createSessionFromWorkout.mockResolvedValue({ ...session, modelPublicationStatus: "stale" });
+      trainingService.createSessionFromWorkout.mockResolvedValue(session);
       const response = await FromWorkoutRoute.POST(jsonRequest(
         "http://localhost/api/v1/training/sessions/from-workout",
         "POST",
@@ -116,7 +116,7 @@ describe("Training retrospective API contracts", () => {
       const body = await response.json();
       expect(body.session.entryMode).toBe(ENTRY_MODE.RETROSPECTIVE);
       expect(body.session.matchedWorkoutId).toBe(501);
-      expect(body.modelPublicationStatus).toBe("stale");
+      expect(body.modelPublicationStatus).toBeUndefined();
     });
 
     it("rejects invalid body without mutation", async () => {
@@ -233,7 +233,7 @@ describe("Training retrospective API contracts", () => {
 
   describe("session exercise edits", () => {
     it("adds an exercise", async () => {
-      trainingService.addSessionExercise.mockResolvedValue({ ...session, modelPublicationStatus: "stale" });
+      trainingService.addSessionExercise.mockResolvedValue(session);
       const response = await SessionExercisesRoute.POST(
         jsonRequest("http://localhost/api/v1/training/sessions/88/exercises", "POST", {
           catalogId: 4,
@@ -243,7 +243,7 @@ describe("Training retrospective API contracts", () => {
         idCtx("88"),
       );
       expect(response.status).toBe(201);
-      await expect(response.json()).resolves.toMatchObject({ session, modelPublicationStatus: "stale" });
+      await expect(response.json()).resolves.toEqual({ session });
       expect(trainingService.addSessionExercise).toHaveBeenCalled();
     });
 
@@ -259,7 +259,7 @@ describe("Training retrospective API contracts", () => {
     });
 
     it("patches an exercise", async () => {
-      trainingService.updateSessionExercise.mockResolvedValue({ ...session, modelPublicationStatus: "stale" });
+      trainingService.updateSessionExercise.mockResolvedValue(session);
       const response = await SessionExerciseRoute.PATCH(
         jsonRequest("http://localhost/api/v1/training/sessions/88/exercises/1", "PATCH", {
           plannedSets: 4,
@@ -267,12 +267,12 @@ describe("Training retrospective API contracts", () => {
         exerciseCtx("88", "1"),
       );
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({ session, modelPublicationStatus: "stale" });
+      await expect(response.json()).resolves.toEqual({ session });
       expect(trainingService.updateSessionExercise).toHaveBeenCalledWith(88, 1, { plannedSets: 4 });
     });
 
     it("deletes an exercise with confirm", async () => {
-      trainingService.deleteSessionExercise.mockResolvedValue({ ...session, modelPublicationStatus: "stale" });
+      trainingService.deleteSessionExercise.mockResolvedValue(session);
       const response = await SessionExerciseRoute.DELETE(
         jsonRequest("http://localhost/api/v1/training/sessions/88/exercises/1", "DELETE", {
           confirm: true,
@@ -280,12 +280,12 @@ describe("Training retrospective API contracts", () => {
         exerciseCtx("88", "1"),
       );
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({ session, modelPublicationStatus: "stale" });
+      await expect(response.json()).resolves.toEqual({ session });
       expect(trainingService.deleteSessionExercise).toHaveBeenCalledWith(88, 1, { confirm: true });
     });
 
     it("reorders exercises", async () => {
-      trainingService.reorderSessionExercises.mockResolvedValue({ ...session, modelPublicationStatus: "stale" });
+      trainingService.reorderSessionExercises.mockResolvedValue(session);
       const response = await SessionExercisesRoute.PATCH(
         jsonRequest("http://localhost/api/v1/training/sessions/88/exercises", "PATCH", {
           exerciseIds: [2, 1],
@@ -293,7 +293,7 @@ describe("Training retrospective API contracts", () => {
         idCtx("88"),
       );
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({ session, modelPublicationStatus: "stale" });
+      await expect(response.json()).resolves.toEqual({ session });
     });
   });
 
@@ -351,18 +351,14 @@ describe("Training retrospective API contracts", () => {
       await expect(response.json()).resolves.toEqual({ deleted: true, matchedWorkoutId: 501 });
     });
 
-    it("surfaces stale derived publication after a committed diary deletion", async () => {
-      trainingService.deleteDiarySession.mockResolvedValue({ matchedWorkoutId: null, modelPublicationStatus: "stale" });
+    it("returns the committed diary deletion without waiting for derived publication", async () => {
+      trainingService.deleteDiarySession.mockResolvedValue({ matchedWorkoutId: null });
       const response = await SessionRoute.DELETE(
         new Request("http://localhost/api/v1/training/sessions/88", { method: "DELETE" }),
         idCtx("88"),
       );
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({
-        deleted: true,
-        matchedWorkoutId: null,
-        modelPublicationStatus: "stale",
-      });
+      await expect(response.json()).resolves.toEqual({ deleted: true, matchedWorkoutId: null });
     });
 
     it("maps missing session to 404", async () => {

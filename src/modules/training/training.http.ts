@@ -10,8 +10,12 @@ import {
   SessionNotEditableError,
   SessionNotFoundError,
   SetNotFoundError,
+  SetCreateOperationConflictError,
+  SetCreateOperationTombstonedError,
+  SetCreateOperationUnresolvedError,
   SetValidationError,
   StaleStrengthEnergySourceError,
+  TrainingConcurrentMutationError,
   WorkoutAlreadyMatchedError,
   WorkoutNotEligibleError,
   WorkoutNotFoundError,
@@ -32,11 +36,21 @@ export function trainingErrorResponse(error: unknown): Response | null {
     error instanceof WorkoutAlreadyMatchedError
     || error instanceof ExerciseHasSetsError
     || error instanceof ResistanceChangeBlockedError
+    || error instanceof TrainingConcurrentMutationError
   ) {
     return Response.json({ error: error.code }, { status: 409 });
   }
+  if (error instanceof SetCreateOperationConflictError) {
+    return Response.json({ error: error.code }, { status: 409 });
+  }
+  if (error instanceof SetCreateOperationTombstonedError) {
+    return Response.json({ error: error.code }, { status: 410 });
+  }
+  if (error instanceof SetCreateOperationUnresolvedError) {
+    return Response.json({ error: error.code, outcome: "unknown" }, { status: 503 });
+  }
   if (error instanceof StaleStrengthEnergySourceError) {
-    return Response.json({ error: error.code, modelPublicationStatus: "stale" }, { status: 409 });
+    return Response.json({ error: error.code }, { status: 409 });
   }
   if (
     error instanceof ProgramNotFoundError

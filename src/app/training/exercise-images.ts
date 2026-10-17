@@ -17,6 +17,11 @@ const EXERCISE_IMAGE_BY_CATALOG_NAME: Record<string, string> = {
   "Згинання однієї руки від коліна": "/training/exercises/one-arm-curl-from-knee.jpg",
   "Згинання рук з розворотом сидячи на похилій лаві": "/training/exercises/incline-dumbbell-curl.jpg",
   "Згинання кисті з гантеллю в упорі": "/training/exercises/wrist-curl-on-bench.jpg",
+  "Болгарські присідання з упором задньої ноги на лаву": "/training/exercises/bulgarian-split-squat.png",
+  "Випади вперед": "/training/exercises/forward-dumbbell-lunge.png",
+  "Присідання з гантеллю в руках": "/training/exercises/goblet-squat.png",
+  "Прямі скручування з гантеллю на прес": "/training/exercises/dumbbell-crunch.png",
+  "Бокові скручування з гантеллю на прес": "/training/exercises/dumbbell-russian-twist.png",
 };
 
 export function resolveExerciseImageSrc(input: {

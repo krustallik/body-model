@@ -292,6 +292,9 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 0 \
       && "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" \
       && "$BODYCAST_MARKER_STATE" == "app-ready" ) \
     || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
+      && "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
+      && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ) \
+    || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
       && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ) \
   ) ]]; then
   node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \

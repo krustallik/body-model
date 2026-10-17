@@ -64,6 +64,27 @@ export class SetValidationError extends TrainingError {
   }
 }
 
+export class SetCreateOperationConflictError extends TrainingError {
+  constructor() {
+    super("operation ID was already used for a different set create", "set_create_operation_conflict");
+    this.name = "SetCreateOperationConflictError";
+  }
+}
+
+export class SetCreateOperationTombstonedError extends TrainingError {
+  constructor() {
+    super("the set created by this operation was deleted", "set_create_operation_tombstoned");
+    this.name = "SetCreateOperationTombstonedError";
+  }
+}
+
+export class SetCreateOperationUnresolvedError extends TrainingError {
+  constructor() {
+    super("the set create operation is not yet resolved", "set_create_operation_unresolved");
+    this.name = "SetCreateOperationUnresolvedError";
+  }
+}
+
 export class WorkoutNotEligibleError extends TrainingError {
   constructor(message = "workout is not an eligible strength match candidate") {
     super(message, "workout_not_eligible");
@@ -110,6 +131,13 @@ export class ExerciseHasSetsError extends TrainingError {
   constructor() {
     super("session exercise has actual sets; confirm deletion", "exercise_has_sets");
     this.name = "ExerciseHasSetsError";
+  }
+}
+
+export class TrainingConcurrentMutationError extends TrainingError {
+  constructor() {
+    super("Training inputs changed while this request was being prepared", "training_concurrent_mutation");
+    this.name = "TrainingConcurrentMutationError";
   }
 }
 

@@ -15,6 +15,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { calculateGlycogenAssociatedWaterKg } from "@/model/body-composition/state";
 import { physicalGlycogenWaterDeltaV4 } from "@/model/body-composition/physical-glycogen-water-v4";
 import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
+import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
 import {
   buildUnifiedRangeCandidatesV1,
   rebuildUnifiedExperimentalPhysiologyStateV1,
@@ -145,7 +146,7 @@ async function assertRevisionCoverage(input: {
   if (rows.length !== range.days.length) {
     throw new Error(`postflight coverage mismatch: expected ${range.days.length}, found ${rows.length}`);
   }
-  const expectedResults = buildUnifiedRangeCandidatesV1({ profileId, days: range.days, targetRevision: revision });
+  const expectedResults = await buildUnifiedRangeCandidatesV1({ profileId, days: range.days, targetRevision: revision });
   for (let index = 0; index < range.days.length; index += 1) {
     const day = range.days[index]!;
     const row = rows[index]!;
@@ -207,6 +208,10 @@ export async function verifyPublishedV4Current(client: PrismaClient, profileId: 
   const capturedToken = unifiedRangeToken(profileId, captured.fromInstant, captured.throughInstant, captured.days);
   await client.$transaction(async (tx) => {
     await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+    const trainingFence = await readTrainingRefreshVisibilityFence(tx, profileId);
+    if (isTrainingRefreshPending(trainingFence)) {
+      throw new Error("Forecast V2 serving is blocked until Unified V4 is current");
+    }
     const lifecycle = await tx.physiologyV7Lifecycle.findUnique({ where: { profileId } });
     if (!lifecycle || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
         || lifecycle.unifiedRolloutEpoch !== rolloutEpoch

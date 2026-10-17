@@ -1,4 +1,5 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
+import { randomInt, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HealthDayInput } from "@/modules/health/health.types";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
@@ -6,6 +7,7 @@ import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
 // Application modules create the shared Prisma client from DATABASE_URL.
 process.env.DATABASE_URL = databaseUrl;
+process.env.IOS_SHORTCUT_API_KEY ??= "integration-test-secret";
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const { prisma: applicationPrisma } = await import("@/lib/db/prisma");
 const { POST } = await import("@/app/api/v1/health/sync/route");
@@ -17,10 +19,14 @@ const { DailyMetricRepository } = await import("@/modules/days/day.repository");
 const { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX } = await import("@/modules/health/workout-source-identity");
 const { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } = await import("@/model/unified-experimental-physiology-v1/contracts");
 const { addCalendarDays } = await import("@/modules/model-episodes/model-calendar");
-const { initializeNewModelEpisode, recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
+const { getModelStatus, initializeNewModelEpisode, recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
 const { currentPhysiologyV7Versions } = await import("@/modules/model-episodes/physiology-v7-persistence");
 const { PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE, PhysiologyV7PersistenceRepository } = await import("@/modules/model-episodes/physiology-v7-persistence.repository");
 const { deleteDailyHealthRows } = await import("../helpers/delete-daily-health");
+const { processNextTrainingRefreshJob, reconcileLegacyStepperPublicationBlocksForRecovery } = await import("@/modules/training/training-refresh-worker");
+const { trainingRepository } = await import("@/modules/training/training.repository");
+const { trainingService } = await import("@/modules/training/training.service");
+const { ENTRY_MODE, RESISTANCE, SESSION_STATUS } = await import("@/modules/training/training.constants");
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
 const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08", "2040-01-09", "2040-01-10", "2040-01-11", "2040-01-12", "2043-01-07"];
 
@@ -60,6 +66,26 @@ async function saveHealthState() {
     lifecycle: await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 } }),
     blocks: await prisma.unifiedPublicationBlock.findMany({ where: { profileId: 1 } }),
   };
+}
+
+async function saveTrainingRefreshState() {
+  return {
+    queue: await prisma.trainingRefreshJob.findUnique({ where: { profileId: 1 } }),
+    sourceChanges: await prisma.trainingSourceChange.findMany({ where: { profileId: 1 } }),
+  };
+}
+
+async function restoreTrainingRefreshState(state: Awaited<ReturnType<typeof saveTrainingRefreshState>>): Promise<void> {
+  await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+  await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+  if (state.sourceChanges.length > 0) await prisma.trainingSourceChange.createMany({ data: state.sourceChanges.map((row) => ({
+    ...row,
+    oldSourceIdentity: row.oldSourceIdentity === null ? Prisma.DbNull : row.oldSourceIdentity as Prisma.InputJsonValue,
+    newSourceIdentity: row.newSourceIdentity === null ? Prisma.DbNull : row.newSourceIdentity as Prisma.InputJsonValue,
+    oldEventInstants: row.oldEventInstants === null ? Prisma.DbNull : row.oldEventInstants as Prisma.InputJsonValue,
+    newEventInstants: row.newEventInstants === null ? Prisma.DbNull : row.newEventInstants as Prisma.InputJsonValue,
+  })) });
+  if (state.queue) await prisma.trainingRefreshJob.create({ data: state.queue });
 }
 
 async function restoreHealthState(state: Awaited<ReturnType<typeof saveHealthState>>): Promise<void> {
@@ -184,16 +210,46 @@ async function preparePublishedModelForHealthWorker(date: string): Promise<{ epi
   await prisma.dailyHealthData.createMany({ data: rows });
   const now = new Date(`${addCalendarDays(endDate, 1)}T12:00:00.000Z`);
   const episode = await initializeNewModelEpisode({ startDate: date, now });
+  // Previous Health integration cases may leave older synthetic dirty dates.
+  // This helper establishes an already-current baseline before rebuilding its
+  // new episode, so the fixture does not trigger an unrelated historical suffix.
+  await markUnifiedV4Current();
+  await prisma.physiologyV7Lifecycle.update({ where: { profileId: 1 }, data: { staleFromDate: date } });
   await recalculateModelEpisode({ episodeId: episode.id, now });
   await markUnifiedV4Current();
   return { episodeId: episode.id, dates: rows.map(({ date: rowDate }) => rowDate), now };
 }
 
+async function assertPublishedModelRangeIsEmpty(startDate: string, endDate: string): Promise<void> {
+  // removePublishedModelForHealthWorker deletes profile-wide derived rows by
+  // date. Refuse to seed the fixture if this range contains data that cleanup
+  // could not restore; this keeps a reused isolated database fail-closed.
+  const range = { gte: startDate, lte: endDate };
+  const [healthRows, activeEnergy, fatWeight, glycogenRepletion, glycogenWater, glycogenState,
+    localHypertrophy, ffmRetention, unifiedState, v7DailyResult] = await Promise.all([
+    prisma.dailyHealthData.count({ where: { date: range } }),
+    prisma.activeEnergyCanonicalEvent.count({ where: { profileId: 1, modelDate: range } }),
+    prisma.experimentalFatWeightUncertaintyShadow.count({ where: { profileId: 1, date: range } }),
+    prisma.experimentalGlycogenRepletionShadow.count({ where: { profileId: 1, date: range } }),
+    prisma.experimentalGlycogenAssociatedWaterShadow.count({ where: { profileId: 1, date: range } }),
+    prisma.experimentalGlycogenStateShadow.count({ where: { profileId: 1, date: range } }),
+    prisma.experimentalLocalHypertrophyResponseShadow.count({ where: { profileId: 1, weekStartDate: range } }),
+    prisma.experimentalFfmRetentionShadow.count({ where: { profileId: 1, date: range } }),
+    prisma.unifiedExperimentalPhysiologyState.count({ where: { profileId: 1, date: range } }),
+    prisma.physiologyV7DailyResult.count({ where: { profileId: 1, date: range } }),
+  ]);
+  const existing = { healthRows, activeEnergy, fatWeight, glycogenRepletion, glycogenWater, glycogenState,
+    localHypertrophy, ffmRetention, unifiedState, v7DailyResult };
+  if (Object.values(existing).some((count) => count !== 0)) {
+    throw new Error(`Refusing to run health worker fixture over existing rows in ${startDate}..${endDate}: ${JSON.stringify(existing)}`);
+  }
+}
+
 async function removePublishedModelForHealthWorker(fixture: { episodeId: number; dates: string[] }): Promise<void> {
   const range = { gte: fixture.dates[0], lte: fixture.dates.at(-1) };
   await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { modelEpisodeId: fixture.episodeId } });
-  await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { profileId: 1, date: range } });
-  await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { profileId: 1, date: range } });
+  await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { profileId: 1, modelEpisodeId: fixture.episodeId } });
+  await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { profileId: 1, modelEpisodeId: fixture.episodeId } });
   await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, modelDate: range } });
   await prisma.experimentalFatWeightUncertaintyShadow.deleteMany({ where: { profileId: 1, date: range } });
   await prisma.experimentalGlycogenRepletionShadow.deleteMany({ where: { profileId: 1, date: range } });
@@ -315,6 +371,153 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(stored.rawPayload).toEqual(day);
     expect(stored.workouts).toHaveLength(1);
     expect(stored.workouts[0]?.startAt.toISOString()).toBe("2040-01-01T15:00:00.000Z");
+  });
+
+  it("journals linked Health edits with episode-local dates from the canonical workout instant", async () => {
+    const date = "2044-01-07";
+    const sourceId = `health-journal-boundary-${Date.now()}`;
+    const oldStartAt = new Date("2044-01-06T23:30:00.000Z");
+    const newStartAt = new Date("2044-01-07T00:30:00.000Z");
+    const repository = new PrismaHealthSyncRepository(prisma);
+    const healthState = await saveHealthState();
+    const trainingJobBefore = await prisma.trainingRefreshJob.findUnique({ where: { profileId: 1 } });
+    let workoutId: number | null = null;
+    let sessionId: number | null = null;
+    let episodeId: number | null = null;
+    try {
+      const episode = await prisma.modelEpisode.create({
+        data: {
+          profileId: 1,
+          startDate: "2044-01-01",
+          timezone: "UTC",
+          modelVersion: "health-journal-boundary-integration",
+          active: true,
+          ecfPolicy: "hold-ecf",
+          baselineEnergyIntakeKcalPerDay: 2_400,
+          baselineCarbIntakeG: 220,
+          baselineWindowStartDate: "2044-01-01",
+          baselineWindowEndDate: "2044-01-01",
+          baselineNutritionDayCount: 1,
+          baselineWeightObservationCount: 1,
+          baselineWeightTrendKgPerWeek: 0,
+          baselineWeightTrendPercentPerWeek: 0,
+          baselineDerivationMethod: sourceId,
+          initialFatMassKg: 16,
+          initialLeanTissueKg: 55,
+          initialGlycogenKg: 0.5,
+          baselineExtracellularFluidLiters: 18,
+          initialExtracellularFluidDeviationLiters: 0,
+          initialAdaptiveThermogenesisKcalPerDay: 0,
+          initialFilteredWeightKg: 80,
+          initialWeightFilterVarianceKg2: 1,
+          initialRmrKcalPerDay: 1_700,
+          dynamicRmrFatCoefficient: 3.2,
+          dynamicRmrLeanCoefficient: 22,
+          dynamicRmrCalibrationOffsetKcalPerDay: 0,
+          adaptiveThermogenesisBeta: 0.14,
+          adaptiveThermogenesisTimeConstantDays: 14,
+          weightProcessNoiseVarianceKg2PerDay: 0.01,
+          weightMeasurementNoiseVarianceKg2: 0.25,
+          calibrationDiagnostics: {},
+        },
+        select: { id: true },
+      });
+      episodeId = episode.id;
+
+      const oldWorkout = {
+        externalId: sourceId,
+        type: "strength_training",
+        startAt: oldStartAt.toISOString(),
+        endAt: new Date(oldStartAt.getTime() + 60 * 60_000).toISOString(),
+        durationMinutes: 60,
+        energyKcal: 300,
+      };
+      await repository.syncDay(
+        { date, workouts: [oldWorkout] },
+        { date, workouts: [oldWorkout] },
+        { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
+      );
+      const workout = await prisma.workout.findFirstOrThrow({
+        where: { externalId: sourceId }, select: { id: true },
+      });
+      workoutId = workout.id;
+      const session = await prisma.strengthDiarySession.create({
+        data: {
+          profileId: 1,
+          status: "COMPLETED",
+          entryMode: "RETROSPECTIVE",
+          // Deliberately diverge the session accounting override from the
+          // linked source instant; the Training journal must use Workout.startAt.
+          effectiveAccountingAt: new Date("2044-01-05T18:30:00.000Z"),
+          accountingTimeZone: "America/Los_Angeles",
+          accountingTimeZoneProvenance: "integration-fixture",
+          matchedWorkoutId: workout.id,
+          matchStatus: "MATCHED",
+          matchMethod: "MANUAL",
+          matchedAt: new Date(),
+        },
+        select: { id: true },
+      });
+      sessionId = session.id;
+
+      const updatedWorkout = {
+        ...oldWorkout,
+        startAt: newStartAt.toISOString(),
+        endAt: new Date(newStartAt.getTime() + 60 * 60_000).toISOString(),
+      };
+      await repository.syncDay(
+        { date, workouts: [updatedWorkout] },
+        { date, workouts: [updatedWorkout] },
+        { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
+      );
+
+      const journal = await prisma.trainingSourceChange.findFirstOrThrow({
+        where: { profileId: 1, affectedSessionIds: { has: session.id }, operationKind: "health-linked-workout-reconciled" },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(journal.oldEventInstants).toMatchObject({ workoutStartAt: oldStartAt.toISOString() });
+      expect(journal.newEventInstants).toMatchObject({ workoutStartAt: newStartAt.toISOString() });
+      expect(journal.oldModelDates).toEqual(["2044-01-06"]);
+      expect(journal.newModelDates).toEqual(["2044-01-07"]);
+
+      // Same-start corrections still affect model inputs and must be journaled;
+      // the unchanged accounting instant must not take an early-continue path.
+      const correctedWorkout = {
+        ...updatedWorkout,
+        endAt: new Date(newStartAt.getTime() + 45 * 60_000).toISOString(),
+        durationMinutes: 45,
+        energyKcal: 420,
+      };
+      await repository.syncDay(
+        { date, workouts: [correctedWorkout] },
+        { date, workouts: [correctedWorkout] },
+        { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
+      );
+      const changes = await prisma.trainingSourceChange.findMany({
+        where: { profileId: 1, affectedSessionIds: { has: session.id }, operationKind: "health-linked-workout-reconciled" },
+        orderBy: { generation: "asc" },
+      });
+      expect(changes).toHaveLength(2);
+      expect(changes[1]?.oldModelDates).toEqual(["2044-01-07"]);
+      expect(changes[1]?.newModelDates).toEqual(["2044-01-07"]);
+      expect(changes[1]?.oldEventInstants).toMatchObject({ workoutStartAt: newStartAt.toISOString() });
+      expect(changes[1]?.newEventInstants).toMatchObject({ workoutStartAt: newStartAt.toISOString() });
+      const correctedStoredWorkout = await prisma.workout.findUniqueOrThrow({ where: { id: workout.id } });
+      expect(Number(correctedStoredWorkout.energyKcal)).toBe(420);
+      expect(correctedStoredWorkout.durationMinutes).toBe(45);
+      const correctedJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(correctedJob.requestedGeneration).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (sessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (workoutId !== null) await prisma.workout.deleteMany({ where: { id: workoutId } });
+      if (episodeId !== null) await prisma.modelEpisode.deleteMany({ where: { id: episodeId } });
+      if (sessionId !== null) {
+        await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1, affectedSessionIds: { has: sessionId } } });
+      }
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+      if (trainingJobBefore) await prisma.trainingRefreshJob.create({ data: trainingJobBefore });
+      await releaseHealthState(healthState, date);
+    }
   });
 
   it("retries idempotently and replaces rather than duplicates workouts", async () => {
@@ -1121,6 +1324,191 @@ describe("Apple Health sync with PostgreSQL", () => {
     }
   }, 60_000);
 
+  it("completes Training edits through Health coordination, stale-worker fencing, and restart recovery", async () => {
+    const date = "2026-10-01";
+    const priorHealth = await saveHealthState();
+    const priorTraining = await saveTrainingRefreshState();
+    const priorActiveEpisodes = await prisma.modelEpisode.findMany({
+      where: { active: true }, select: { id: true, deactivatedAt: true },
+    });
+    let modelFixture: Awaited<ReturnType<typeof preparePublishedModelForHealthWorker>> | null = null;
+    let sessionId: number | null = null;
+    let activeSessionId: number | null = null;
+    const operationId = randomUUID();
+    try {
+      await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId: 1 } });
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+      await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1 } });
+      await assertPublishedModelRangeIsEmpty(addCalendarDays(date, -89), addCalendarDays(date, 10));
+      modelFixture = await preparePublishedModelForHealthWorker(date);
+
+      const session = await trainingRepository.createSessionSnapshot({
+        profileId: 1,
+        programId: null,
+        programVersionId: null,
+        status: SESSION_STATUS.COMPLETED,
+        entryMode: ENTRY_MODE.RETROSPECTIVE,
+        webStartedAt: null,
+        webEndedAt: null,
+        effectiveAccountingAt: new Date(`${date}T15:00:00.000Z`),
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "integration-test",
+        exercises: [{
+          sourceExerciseCatalogId: null,
+          snapshotExerciseName: "Synthetic Bodyweight Press",
+          sortOrder: 0,
+          plannedSets: 1,
+          resistanceType: RESISTANCE.BODYWEIGHT,
+          origin: "EXTRA",
+          muscleMappingSnapshot: Prisma.JsonNull,
+          loadAccountingConfigSnapshot: null,
+        }],
+      });
+      sessionId = session.id;
+      const exerciseId = session.exercises[0]!.id;
+      const createdSet = await trainingService.createSet(session.id, exerciseId, { reps: 10 }, 1, operationId);
+      const initialRawSet = await prisma.strengthSet.findUniqueOrThrow({ where: { id: createdSet.id } });
+
+      await trainingService.updateSet(session.id, createdSet.id, { reps: 2 }, 1);
+      const primaryCommit = await prisma.strengthSet.findUniqueOrThrow({ where: { id: createdSet.id } });
+      expect(primaryCommit.reps).toBe(2);
+      expect(primaryCommit.weightKg).toEqual(initialRawSet.weightKg);
+      expect(primaryCommit.loadAccountingOverride).toEqual(initialRawSet.loadAccountingOverride);
+      const pendingSessionRead = await trainingRepository.getSession(session.id, 1);
+      expect(pendingSessionRead?.selectedActiveEnergy).toMatchObject({
+        kcal: null,
+        source: "unavailable",
+        fullCoverage: false,
+        resolutionRevision: null,
+      });
+      // This fixture has never materialized a load-accounting snapshot, so its
+      // correct snapshot state is missing; the pending Training generation is
+      // asserted separately below. Both derived load DTOs remain unavailable.
+      expect(pendingSessionRead?.materializationState).toBe("missing");
+      expect(pendingSessionRead?.loadAccountingV1).toBeUndefined();
+      expect(pendingSessionRead?.loadAccountingBreakdown).toBeUndefined();
+      expect(pendingSessionRead?.activeEnergyMassReference).toBeNull();
+      let trainingQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(trainingQueue.requestedGeneration).toBeGreaterThan(trainingQueue.completedGeneration);
+      expect(trainingQueue.dueAt?.getTime()).toBeGreaterThan(Date.now() + 100_000);
+      expect(await getModelStatus(modelFixture.episodeId)).toMatchObject({ productionCurrent: false, latestModeledDate: null });
+      const trainingDueAtBeforeHealth = trainingQueue.dueAt;
+
+      // Health can finish its own dependencies while Training owns final
+      // publication, avoiding a mutual wait on their durable source blocks.
+      const healthResponse = await POST(syncRequest([{ date, steps: 9_321 }]));
+      expect(healthResponse.status).toBe(200);
+      await prisma.healthSyncRefreshJob.update({ where: { profileId: 1 }, data: { nextAttemptAt: new Date(0) } });
+      await expect(processNextHealthSyncRefreshJob()).resolves.toBe(true);
+      const completedHealthQueue = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(completedHealthQueue.completedGeneration).toBe(completedHealthQueue.requestedGeneration);
+      expect(await prisma.unifiedPublicationBlock.count({ where: { profileId: 1, source: "health" } })).toBe(0);
+      trainingQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(trainingQueue.completedGeneration).toBeLessThan(trainingQueue.requestedGeneration);
+      expect(trainingQueue.dueAt).toEqual(trainingDueAtBeforeHealth);
+
+      const activeSession = await trainingRepository.createSessionSnapshot({
+        profileId: 1,
+        programId: null,
+        programVersionId: null,
+        status: SESSION_STATUS.ACTIVE,
+        entryMode: ENTRY_MODE.LIVE,
+        webStartedAt: new Date(`${date}T16:00:00.000Z`),
+        webEndedAt: null,
+        effectiveAccountingAt: new Date(`${date}T16:00:00.000Z`),
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "integration-test",
+        exercises: [{
+          sourceExerciseCatalogId: null,
+          snapshotExerciseName: "Synthetic Active Bodyweight Press",
+          sortOrder: 0,
+          plannedSets: 1,
+          resistanceType: RESISTANCE.BODYWEIGHT,
+          origin: "EXTRA",
+          muscleMappingSnapshot: Prisma.JsonNull,
+          loadAccountingConfigSnapshot: null,
+        }],
+      });
+      activeSessionId = activeSession.id;
+      trainingQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      const pendingActiveSessionRead = await trainingRepository.getActiveSession(1);
+      expect(pendingActiveSessionRead?.id).toBe(activeSession.id);
+      expect(pendingActiveSessionRead?.selectedActiveEnergy?.source).toBe("unavailable");
+      // This active session also has no accounting snapshot yet; its snapshot
+      // state is missing while shared model-derived energy is gated separately.
+      expect(pendingActiveSessionRead?.materializationState).toBe("missing");
+
+      await prisma.trainingRefreshJob.update({ where: { profileId: 1 }, data: {
+        dueAt: new Date(0), nextAttemptAt: new Date(0),
+      } });
+      const claimReached = deferred<void>();
+      const releaseClaim = deferred<void>();
+      const staleAttempt = processNextTrainingRefreshJob({
+        afterClaim: async () => {
+          claimReached.resolve();
+          await releaseClaim.promise;
+        },
+      });
+      await claimReached.promise;
+      await trainingService.updateSet(session.id, createdSet.id, { reps: 3 }, 1);
+      releaseClaim.resolve();
+      await expect(staleAttempt).resolves.toBe(true);
+      trainingQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(trainingQueue.completedGeneration).toBeLessThan(trainingQueue.requestedGeneration);
+      expect(trainingQueue.leaseToken).toBeNull();
+      expect(await getModelStatus(modelFixture.episodeId)).toMatchObject({ productionCurrent: false, latestModeledDate: null });
+      let currentTrainingQueue = trainingQueue;
+
+      // A crash after claim leaves the overdue dueAt intact. Lease expiry lets
+      // a restarted poller reclaim it immediately without a fresh debounce.
+      await trainingService.updateSet(session.id, createdSet.id, { reps: 4 }, 1);
+      await prisma.trainingRefreshJob.update({ where: { profileId: 1 }, data: {
+        dueAt: new Date(0), nextAttemptAt: new Date(0),
+      } });
+      await expect(processNextTrainingRefreshJob({
+        afterClaim: async () => { throw new Error("synthetic process crash after claim"); },
+      })).rejects.toThrow("synthetic process crash after claim");
+      const crashedLease = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(crashedLease.completedGeneration).toBeLessThan(crashedLease.requestedGeneration);
+      expect(crashedLease.dueAt?.getTime()).toBe(0);
+      await prisma.trainingRefreshJob.update({ where: { profileId: 1 }, data: {
+        leaseUntil: new Date(Date.now() - 1_000), nextAttemptAt: new Date(0),
+      } });
+      await expect(processNextTrainingRefreshJob()).resolves.toBe(true);
+      currentTrainingQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      for (let recoveryAttempt = 0;
+          recoveryAttempt < 3 && currentTrainingQueue.completedGeneration < currentTrainingQueue.requestedGeneration;
+          recoveryAttempt += 1) {
+        await prisma.trainingRefreshJob.update({ where: { profileId: 1 }, data: {
+          dueAt: new Date(0), nextAttemptAt: new Date(0), leaseUntil: new Date(0),
+        } });
+        await expect(processNextTrainingRefreshJob()).resolves.toBe(true);
+        currentTrainingQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      }
+      expect(currentTrainingQueue.completedGeneration, JSON.stringify({
+        requestedGeneration: currentTrainingQueue.requestedGeneration,
+        lastProgressStage: currentTrainingQueue.lastProgressStage,
+        lastErrorType: currentTrainingQueue.lastErrorType,
+        lastErrorAt: currentTrainingQueue.lastErrorAt,
+      })).toBe(currentTrainingQueue.requestedGeneration);
+      expect(currentTrainingQueue.completedGeneration).toBe(currentTrainingQueue.requestedGeneration);
+      expect((await prisma.strengthSet.findUniqueOrThrow({ where: { id: createdSet.id } })).reps).toBe(4);
+      expect(await getModelStatus(modelFixture.episodeId)).toMatchObject({ productionCurrent: true });
+      expect(await prisma.unifiedPublicationBlock.count({ where: { profileId: 1 } })).toBe(0);
+    } finally {
+      if (activeSessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: activeSessionId, profileId: 1 } });
+      if (sessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId, profileId: 1 } });
+      await prisma.trainingSetCreateOperation.deleteMany({ where: { profileId: 1, operationId } });
+      if (modelFixture) await removePublishedModelForHealthWorker(modelFixture);
+      for (const episode of priorActiveEpisodes) {
+        await prisma.modelEpisode.update({ where: { id: episode.id }, data: { active: true, deactivatedAt: episode.deactivatedAt } });
+      }
+      await releaseHealthState(priorHealth, date);
+      await restoreTrainingRefreshState(priorTraining);
+    }
+  }, 900_000);
+
   it("rejects a stale worker mutation after recovery currentness passes under the profile fence", async () => {
     const date = "2050-02-01";
     const prior = await saveHealthState();
@@ -1572,4 +1960,87 @@ describe("Apple Health sync with PostgreSQL", () => {
     await expect(response.json()).resolves.toEqual({ error: "workout_conflict" });
     expect(await prisma.workout.count({ where: { dailyHealthDataId: day.id } })).toBe(2);
   });
+
+  it("rebuilds and clears an acknowledged legacy Stepper block only after stable publication", async () => {
+    const date = "2026-10-01";
+    const oldDate = date;
+    const sourceKey = String(1_950_000_000 + randomInt(1, 40_000_000));
+    const journalId = randomUUID();
+    const priorHealth = await saveHealthState();
+    const priorTraining = await saveTrainingRefreshState();
+    const priorActiveEpisodes = await prisma.modelEpisode.findMany({
+      where: { active: true }, select: { id: true, deactivatedAt: true },
+    });
+    let modelFixture: Awaited<ReturnType<typeof preparePublishedModelForHealthWorker>> | null = null;
+    let durableSessionId: number | null = null;
+    try {
+      await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId: 1 } });
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+      await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1 } });
+      await assertPublishedModelRangeIsEmpty(addCalendarDays(date, -89), addCalendarDays(date, 10));
+      modelFixture = await preparePublishedModelForHealthWorker(date);
+
+      const durableSession = await prisma.strengthDiarySession.create({
+        data: { profileId: 1, status: "CANCELLED", entryMode: "RETROSPECTIVE", matchStatus: "UNMATCHED" },
+        select: { id: true },
+      });
+      durableSessionId = durableSession.id;
+      await prisma.unifiedPublicationBlock.create({
+        data: { profileId: 1, source: "stepper", sourceKey, fromDate: oldDate },
+      });
+      await prisma.trainingSourceChange.create({
+        data: {
+          sourceChangeId: journalId,
+          profileId: 1,
+          generation: 1,
+          operationKind: "stepper_workout_legacy_history",
+          publicationBlockSourceKeys: [sourceKey],
+          affectedWorkoutIds: [Number(sourceKey)],
+          affectedSessionIds: [durableSession.id],
+          oldModelDates: [oldDate],
+          newModelDates: [],
+          acknowledgedAt: new Date(),
+        },
+      });
+
+      await expect(getModelStatus(modelFixture.episodeId)).resolves.toMatchObject({ productionCurrent: true });
+      await reconcileLegacyStepperPublicationBlocksForRecovery();
+      const recoveredQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(recoveredQueue).toMatchObject({
+        completedGeneration: 0,
+        dirtyFromDate: oldDate,
+        affectedSessionIds: [durableSession.id],
+      });
+      await expect(getModelStatus(modelFixture.episodeId)).resolves.toMatchObject({ productionCurrent: false });
+      expect(await prisma.unifiedPublicationBlock.findUnique({
+        where: { profileId_source_sourceKey: { profileId: 1, source: "stepper", sourceKey } },
+      })).not.toBeNull();
+
+      await prisma.trainingRefreshJob.update({ where: { profileId: 1 }, data: { dueAt: new Date(0), nextAttemptAt: new Date(0) } });
+      await expect(processNextTrainingRefreshJob()).resolves.toBe(true);
+
+      const completedQueue = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(completedQueue.completedGeneration).toBe(completedQueue.requestedGeneration);
+      expect(completedQueue.leaseToken).toBeNull();
+      expect(await prisma.unifiedPublicationBlock.findUnique({
+        where: { profileId_source_sourceKey: { profileId: 1, source: "stepper", sourceKey } },
+      })).toBeNull();
+      expect(await prisma.trainingSourceChange.findUniqueOrThrow({
+        where: { sourceChangeId: journalId }, select: { acknowledgedAt: true },
+      })).toEqual({ acknowledgedAt: expect.any(Date) });
+      await expect(getModelStatus(modelFixture.episodeId)).resolves.toMatchObject({ productionCurrent: true });
+    } finally {
+      if (durableSessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: durableSessionId } });
+      await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+      if (modelFixture) await removePublishedModelForHealthWorker(modelFixture);
+      else await prisma.dailyHealthData.deleteMany({ where: { date: { gte: addCalendarDays(date, -89), lte: addCalendarDays(date, 10) }, rawPayload: { path: ["source"], equals: "health-sync-worker-integration" } } });
+      for (const episode of priorActiveEpisodes) {
+        await prisma.modelEpisode.update({ where: { id: episode.id }, data: { active: true, deactivatedAt: episode.deactivatedAt } });
+      }
+      await releaseHealthState(priorHealth, date);
+      await restoreTrainingRefreshState(priorTraining);
+    }
+  }, 900_000);
 });

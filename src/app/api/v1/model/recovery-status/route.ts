@@ -5,7 +5,11 @@ import {
 } from "@/modules/model-episodes/model-episode.errors";
 import { modelAuthorizationError } from "@/modules/model-episodes/model-http";
 import { RecoveryStatusQuerySchema } from "@/modules/model-recovery/model-recovery.schema";
-import { getModelRecoveryStatus } from "@/modules/model-recovery/model-recovery.service";
+import {
+  getModelRecoveryStatus,
+  ModelRefreshVisibilityPendingError,
+  TrainingRefreshVisibilityPendingError,
+} from "@/modules/model-recovery/model-recovery.service";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +23,12 @@ export async function GET(request: Request): Promise<Response> {
   try {
     return Response.json(await getModelRecoveryStatus(parsed.data.episodeId));
   } catch (error) {
+    if (error instanceof TrainingRefreshVisibilityPendingError) {
+      return Response.json({ error: "training_refresh_pending" }, { status: 503 });
+    }
+    if (error instanceof ModelRefreshVisibilityPendingError) {
+      return Response.json({ error: "model_refresh_pending" }, { status: 503 });
+    }
     if (error instanceof NoActiveModelEpisodeError) {
       return Response.json({ error: "no_active_episode" }, { status: 404 });
     }

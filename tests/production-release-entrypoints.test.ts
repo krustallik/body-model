@@ -52,6 +52,19 @@ describe("active production release entrypoints", () => {
     expect(inspector).not.toMatch(/(^|\n)\s*(?:psql|caddy|prisma)\s/m);
   });
 
+  it("routes the Training ledger manifest through only the standard owner-gated migration path", () => {
+    const migration = readFileSync(resolve(workflowDir, "production-migrate.yml"), "utf8");
+    const preflight = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const runner = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
+    const marker = readFileSync(resolve("scripts/production-release-marker.mjs"), "utf8");
+    for (const source of [migration, preflight, runner, marker]) {
+      expect(source).toContain("training-mutation-ledger-refresh-queue-v1");
+    }
+    expect(migration).toContain("standard exact-SHA execution");
+    expect(preflight).toContain("do not accept historical resume evidence");
+    expect(runner).toContain("accepts standard exact-SHA execution only");
+  });
+
   it("requires pinned owner, exact current main, and shared serialization on every production dispatch", () => {
     for (const name of releaseWorkflows) {
       const source = readFileSync(resolve(workflowDir, name), "utf8");

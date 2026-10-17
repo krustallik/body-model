@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => {
     dailyHealthData: { findFirst: vi.fn() },
     strengthDiarySession: { findMany: vi.fn() },
     physiologyV7Lifecycle: { findUnique: vi.fn(), updateMany: vi.fn() },
+    trainingRefreshJob: { findUnique: vi.fn() },
     unifiedExperimentalPhysiologyStateV2: { findMany: vi.fn() },
     $transaction: vi.fn(),
   };
@@ -195,6 +196,7 @@ function prepare() {
   }]);
   mocks.prisma.dailyHealthData.findFirst.mockResolvedValue({ date });
   mocks.prisma.strengthDiarySession.findMany.mockResolvedValue([]);
+  mocks.prisma.trainingRefreshJob.findUnique.mockResolvedValue(null);
   mocks.prisma.physiologyV7Lifecycle.findUnique.mockImplementation(async () => (
     mocks.state.lifecycle ? { ...mocks.state.lifecycle } : null
   ));
@@ -276,6 +278,18 @@ describe("Unified V3/V4 rollout verification", () => {
     expect(result).toEqual({ profileId: 17, rolloutEpoch: 2, dayCount: 1 });
     expect(mocks.lockProfile).toHaveBeenCalledWith(17);
     expect(mocks.prisma.unifiedExperimentalPhysiologyStateV2.findMany).toHaveBeenCalled();
+  });
+
+  it("blocks serving readiness while the durable Training generation is pending", async () => {
+    mocks.prisma.trainingRefreshJob.findUnique.mockResolvedValue({
+      requestedGeneration: 9,
+      completedGeneration: 8,
+      dirtyFromDate: date,
+      dirtyToDate: date,
+    });
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId: 17, client: mocks.prisma as never }))
+      .rejects.toThrow("Forecast V2 serving is blocked until Unified V4 is current");
+    expect(mocks.lockProfile).toHaveBeenCalledWith(17);
   });
 
   it("fails closed for missing, stale, unpublished, or non-V4 lifecycle", async () => {

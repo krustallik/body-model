@@ -22,9 +22,17 @@ import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qu
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { TrainingRepository } from "@/modules/training/training.repository";
-import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import {
+  PhysiologyV7ConcurrentSourceChangeError,
+  PhysiologyV7PersistenceRepository,
+} from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { addCalendarDays } from "./model-calendar";
+import {
+  assertTrainingRefreshWorkerLeaseInTransaction,
+  getTrainingRefreshWorkerLease,
+  TrainingRefreshWorkerLeaseLostError,
+} from "@/modules/training/training-refresh-worker-context";
 
 const CORE_FINGERPRINT_VERSION = "relative-muscle-episode-core-input-v1" as const;
 export const RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE = 1_886_417_000;
@@ -139,32 +147,60 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
   fromDate?: string;
   fromInstant?: Date;
   client?: PrismaClient;
+  onCandidateProcessed?: () => Promise<void> | void;
 }): Promise<void> {
   const client = input.client ?? prisma;
   const profileId = input.profileId ?? 1;
+  const trainingWorker = getTrainingRefreshWorkerLease();
   try {
     await client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
+      const persistence = new PhysiologyV7PersistenceRepository(transaction);
+      // Serialize rebuilds with one lock order: Relative Muscle first, then
+      // the shared source/job profile fence at the final publication boundary.
+      // Source writers take only the latter, so they remain free to commit
+      // during this replay and cannot deadlock against a rebuild holding the
+      // Relative Muscle lock.
       await transaction.$executeRaw`
         SELECT pg_advisory_xact_lock(CAST(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))
       `;
+      await assertTrainingRefreshWorkerLeaseInTransaction(transaction, profileId);
+      const initialLifecycle = await transaction.physiologyV7Lifecycle.findUnique({
+        where: { profileId }, select: { invalidationGeneration: true, updatedAt: true },
+      });
+      if (trainingWorker !== undefined && initialLifecycle === null) {
+        throw new Error("Training refresh lifecycle is missing before Relative Muscle replay");
+      }
       await rebuildRelativeMuscleEpisodeTrajectoriesInTransaction({
         ...input,
         profileId,
         client: transaction,
+        onCandidateProcessed: input.onCandidateProcessed,
       });
+      await persistence.lockProfile(profileId);
+      await assertTrainingRefreshWorkerLeaseInTransaction(transaction, profileId);
+      const currentLifecycle = await transaction.physiologyV7Lifecycle.findUnique({
+        where: { profileId }, select: { invalidationGeneration: true, updatedAt: true },
+      });
+      if (currentLifecycle?.invalidationGeneration !== initialLifecycle?.invalidationGeneration
+          || currentLifecycle?.updatedAt.toISOString() !== initialLifecycle?.updatedAt.toISOString()) {
+        throw new PhysiologyV7ConcurrentSourceChangeError();
+      }
       await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(profileId);
+      await assertTrainingRefreshWorkerLeaseInTransaction(transaction, profileId);
     }, { maxWait: 10_000, timeout: 120_000 });
   } catch (rebuildError) {
+    if (rebuildError instanceof TrainingRefreshWorkerLeaseLostError) throw rebuildError;
     // The rebuild transaction also contains the stale markers. If it aborts,
     // those markers roll back too, so invalidate under the same profile lock
     // before returning the failure to the caller.
     try {
       await client.$transaction(async (transaction) => {
-        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
         await transaction.$executeRaw`
           SELECT pg_advisory_xact_lock(CAST(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))
         `;
+        await assertTrainingRefreshWorkerLeaseInTransaction(transaction, profileId);
+        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
+        await assertTrainingRefreshWorkerLeaseInTransaction(transaction, profileId);
         await Promise.all([
           transaction.experimentalSkeletalMuscleDeltaShadow.updateMany({
             where: { profileId }, data: { isStale: true },
@@ -176,6 +212,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
         await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(profileId);
       }, { maxWait: 10_000, timeout: 30_000 });
     } catch (invalidationError) {
+      if (invalidationError instanceof TrainingRefreshWorkerLeaseLostError) throw rebuildError;
       throw new AggregateError(
         [rebuildError, invalidationError],
         "Relative Muscle rebuild failed and its persisted candidates could not be invalidated",
@@ -190,6 +227,7 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
   fromDate?: string;
   fromInstant?: Date;
   client: RelativeMuscleDatabaseClient;
+  onCandidateProcessed?: () => Promise<void> | void;
 }): Promise<void> {
   const client = input.client;
   const profileId = input.profileId;
@@ -247,7 +285,8 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
       orderBy: [{ id: "asc" }],
       select: {
         id: true, profileId: true, status: true, revision: true, updatedAt: true,
-        webStartedAt: true, matchedWorkoutId: true, matchStatus: true, matchMethod: true,
+        webStartedAt: true, effectiveAccountingAt: true, accountingTimeZone: true, createdAt: true,
+        matchedWorkoutId: true, matchStatus: true, matchMethod: true,
         matchedWorkout: { select: { startAt: true } },
       },
     }),
@@ -266,8 +305,10 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
     workoutsByEpisodeDate.set(key, [...(workoutsByEpisodeDate.get(key) ?? []), workout]);
   }
   for (const session of sessions) {
-    const instant = session.matchedWorkout?.startAt ?? session.webStartedAt;
-    if (!instant) continue;
+    const instant = session.matchedWorkout?.startAt
+      ?? session.effectiveAccountingAt
+      ?? session.webStartedAt
+      ?? session.createdAt;
     const time = episodeForInstant(partitions, instant);
     if (!time) continue;
     const key = `${time.episode.id}|${time.date}`;
@@ -344,6 +385,7 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
         const session = await trainingRepository.getSession(sessionRow.id, profileId);
         if (!session) {
           sessionEvidence.push({ id: sessionRow.id, revision: sessionRow.revision, unavailable: true });
+          await input.onCandidateProcessed?.();
           continue;
         }
         const canonicalInput = buildCanonicalStrengthTrainingInputV7({ session, heartRateSamples: null });
@@ -360,7 +402,10 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
           matchStatus: session.matchStatus,
           matchMethod: session.matchMethod,
           matchedWorkoutId: session.matchedWorkoutId,
-          eventAt: session.matchedWorkout?.startAt ?? session.webStartedAt,
+          eventAt: session.matchedWorkout?.startAt
+            ?? session.effectiveAccountingAt
+            ?? session.webStartedAt
+            ?? session.createdAt,
           exercises: canonicalInput.exercises.map((exercise) => ({
             id: exercise.strengthDiarySessionExerciseId,
             order: exercise.order,
@@ -382,6 +427,7 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
             muscleGroups: dose.availability === "available" ? dose.muscleGroups : null,
           },
         });
+        await input.onCandidateProcessed?.();
       }
       const canonicalStrengthObserved = dayWorkouts.some((workout) => (
         canonicalizeWorkoutType(workout.type).classification === "traditional-strength-training"
@@ -459,6 +505,7 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
           sourceFingerprint: stableSha256({ contract: CORE_FINGERPRINT_VERSION, sourceInput }),
         },
       });
+      await input.onCandidateProcessed?.();
     }
 
     let requestedDate = input.fromDate ?? episode.startDate;
@@ -594,6 +641,7 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
       cessationState = cessation.state;
       previousDeltaSourceFingerprint = deltaSourceFingerprint;
       previousCessationSourceFingerprint = cessationSourceFingerprint;
+      await input.onCandidateProcessed?.();
     }
   }
 }

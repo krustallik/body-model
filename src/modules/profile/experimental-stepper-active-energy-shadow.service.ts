@@ -16,6 +16,7 @@ import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-s
 import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import type { ActiveEnergyConvergenceOwnerToken } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   resolveStepperHistoricalMassV1,
   stableStepperMassProvenanceV1,
@@ -115,8 +116,9 @@ async function loadStepperModelMassContextV1(
 export async function recordExperimentalStepperActiveEnergyShadow(input: {
   workoutId: number;
   profileId?: number;
+  activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
   /** Return the exact lifecycle fence committed with a shadow-triggered invalidation. */
-  onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+  onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   const reconciliationCandidates = await prisma.stepperReconciliationCandidate.findMany({
@@ -368,6 +370,9 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
   const lifecycleFence = await prisma.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
     await lifecycle.lockProfile(profileId);
+    if (input.activeEnergyConvergenceOwner) {
+      await lifecycle.assertActiveEnergyConvergenceOwner(profileId, input.activeEnergyConvergenceOwner);
+    }
     const existingShadow = await tx.experimentalStepperActiveEnergyShadow.findUnique({
       where: { workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true },
     });
@@ -492,7 +497,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     }
     return null;
   });
-  if (lifecycleFence !== null) input.onLifecycleFenceChanged?.(lifecycleFence);
+  if (lifecycleFence !== null) await input.onLifecycleFenceChanged?.(lifecycleFence);
 }
 
 export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(input: {

@@ -402,7 +402,7 @@ export function ForecastClient() {
     ?? context?.status.currentFilteredWeightKg
     ?? context?.status.currentPredictedWeightKg
     ?? null;
-  const quality = result ? qualityPresentation(result, context?.status.calibrationStatus, locale) : null;
+  const quality = result ? qualityPresentation(result, context?.status.calibrationStatus ?? undefined, locale) : null;
   const metricLabel = metrics.find((item) => item.key === metric)?.label ?? "Estimate";
   const completedMode = result?.scenarioProvenance.mode ?? submittedRun?.mode;
   const assumptions = completedMode && completedMode !== "recent-behavior" && submittedRun

@@ -359,9 +359,9 @@ export type ModelStatusDto = {
   productionDirtyFromDate: string | null;
   latestModeledDate: string | null;
   modelVersion: string;
-  calibrationStatus: PersonalizationCalibrationStatus;
-  personalOffsetKcalPerDay: number;
-  activityCalibration: number;
+  calibrationStatus: PersonalizationCalibrationStatus | null;
+  personalOffsetKcalPerDay: number | null;
+  activityCalibration: number | null;
   daysModeled: number;
   incompleteDays: number;
   observedNutritionDays: number;

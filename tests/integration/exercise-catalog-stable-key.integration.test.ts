@@ -19,11 +19,12 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     await prisma.$disconnect();
   });
 
-  it("exposes all thirteen migrated canonical rows through the catalog repository surface", async () => {
+  it("exposes all eighteen canonical rows through the catalog repository surface", async () => {
+    await trainingRepository.ensureCanonicalExerciseCatalog(1);
     const rows = (await trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
       .filter((row) => CANONICAL_EXERCISE_IDENTITIES.some((exercise) => exercise.displayName === row.name));
 
-    expect(rows).toHaveLength(13);
+    expect(rows).toHaveLength(18);
     expect(new Map(rows.map((row) => [row.name, row.stableKey]))).toEqual(new Map(
       CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.displayName, exercise.stableKey]),
     ));
@@ -72,7 +73,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
 
     const ensured = await trainingRepository.ensureCanonicalExerciseCatalog(profileSeed);
     const keyed = ensured.filter((row) => row.stableKey != null);
-    expect(keyed).toHaveLength(13);
+    expect(keyed).toHaveLength(18);
     expect(new Map(keyed.map((row) => [row.stableKey, row.name]))).toEqual(new Map(
       CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.stableKey, exercise.displayName]),
     ));
@@ -80,8 +81,9 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     const secondProfile = profileSeed + 1;
     await clean([secondProfile]);
     await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
+    await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
     const fresh = await trainingRepository.listCatalog({ profileId: secondProfile, activeOnly: false });
-    expect(fresh).toHaveLength(13);
+    expect(fresh).toHaveLength(18);
     expect(new Set(fresh.map((row) => row.stableKey))).toEqual(
       new Set(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey)),
     );
@@ -149,6 +151,6 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     expect(await prisma.trainingProgram.count()).toBe(beforePrograms);
     expect(await prisma.programExercise.count()).toBe(beforeProgramExercises);
     expect(await prisma.strengthSet.count()).toBe(beforeSets);
-    expect(beforeCatalog).toHaveLength(13);
+    expect(beforeCatalog).toHaveLength(18);
   });
 });

@@ -40,6 +40,32 @@ export type SetDraft = {
 
 export const CAROUSEL_MANUAL_MS = 220;
 export const CAROUSEL_AUTOMATIC_MS = 440;
+const TRAINING_HISTORY_REQUEST_TIMEOUT_MS = 8_000;
+
+async function fetchWithHistoryTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  let rejectDeadline!: (reason: Error) => void;
+  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  const timeout = window.setTimeout(() => {
+    controller.abort();
+    rejectDeadline(new Error("Training history request timed out"));
+  }, TRAINING_HISTORY_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      deadline,
+    ]);
+    const readJson = response.json.bind(response);
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: () => Promise.race([readJson(), deadline]).finally(() => window.clearTimeout(timeout)),
+    });
+    return response;
+  } catch (error) {
+    window.clearTimeout(timeout);
+    throw error;
+  }
+}
 
 /** Manual=220ms, automatic=440ms; reduced-motion disables movement (0ms). */
 export function carouselDurationMs(
@@ -70,6 +96,7 @@ type TrainingExerciseWorkspaceProps = {
   error: string | null;
   notice?: string | null;
   mutationUncertain?: boolean;
+  mutationActionLabel?: string;
   onVerifyPendingMutation?: () => void;
   menuOpen: boolean;
   clockStartedAt?: string | null;
@@ -175,6 +202,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     error,
     notice = null,
     mutationUncertain = false,
+    mutationActionLabel,
     onVerifyPendingMutation,
     menuOpen,
     clockStartedAt = null,
@@ -475,7 +503,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   }
 
   async function readHistoricalSet(sessionId: number, setId: number): Promise<StrengthSetDto | null> {
-    const response = await fetch(`/api/v1/training/sessions/${sessionId}/sets/${setId}`, { cache: "no-store" });
+    const response = await fetchWithHistoryTimeout(`/api/v1/training/sessions/${sessionId}/sets/${setId}`, { cache: "no-store" });
     if (response.status === 404) return null;
     if (!response.ok) throw new Error("historical session verification failed");
     const body = await response.json() as { set?: StrengthSetDto };
@@ -515,7 +543,6 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     entry: ExerciseHistoryEntryDto,
     original: ExerciseHistorySetDto,
     payload: UpdateSetInput,
-    publicationStatus?: string,
   ): Promise<void> {
     const refreshedSet = await readHistoricalSet(entry.sessionId, original.id);
     if (!refreshedSet || !historySetMatchesPayload(refreshedSet, payload)) {
@@ -525,13 +552,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     const alreadyCurrent = historySetMatchesPayload(original, payload);
     announceHistory(alreadyCurrent
       ? (uk ? "Підхід уже має ці значення; показано актуальний запис." : "The set already had these values; the current record is shown.")
-      : publicationStatus === "stale"
-        ? (uk ? "Підхід збережено, але модель ще не актуальна." : "Set saved, but the model is not current.")
-        : publicationStatus === "not-run"
-          ? (uk ? "Підхід збережено; актуальність моделі не підтверджено." : "Set saved; model currentness could not be confirmed.")
-        : publicationStatus === "current"
-          ? (uk ? "Підхід збережено; модель актуальна." : "Set saved; model publication is current.")
-          : (uk ? "Підхід збережено; стан публікації моделі не вдалося підтвердити." : "Set saved; model publication status could not be confirmed."));
+      : (uk ? "Підхід збережено." : "Set saved."));
   }
 
   function announceHistory(message: string, focus = false) {
@@ -541,9 +562,8 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   async function updateHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput): Promise<void> {
     if (busy || mutationUncertain) throw new Error("set mutations are blocked until the pending write is verified");
-    let response: Response | null = null;
     try {
-      response = await fetch(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, {
+      await fetchWithHistoryTimeout(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -551,55 +571,23 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     } catch {
       // A transport error can arrive after the server has committed the edit.
     }
-    let publicationStatus: string | undefined;
-    try {
-      const body = await response?.clone().json() as { modelPublicationStatus?: unknown };
-      if (typeof body?.modelPublicationStatus === "string") publicationStatus = body.modelPublicationStatus;
-    } catch {
-      // The authoritative set GET below determines whether the edit persisted.
-    }
-    await reconcileHistoricalUpdate(exerciseId, entry, set, payload, publicationStatus);
+    await reconcileHistoricalUpdate(exerciseId, entry, set, payload);
   }
 
   async function deleteHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto): Promise<void> {
     if (busy || mutationUncertain) throw new Error("set mutations are blocked until the pending write is verified");
     let response: Response | null = null;
     try {
-      response = await fetch(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, { method: "DELETE" });
+      response = await fetchWithHistoryTimeout(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, { method: "DELETE" });
     } catch {
       // Reconcile the postcondition before telling the user to retry a timed-out mutation.
-    }
-    let modelPublicationStatus: "current" | "stale" | "not-run" | undefined;
-    let responseStatusKnown = response?.status === 204;
-    if (!responseStatusKnown && response) {
-      try {
-        const body = await response.json() as { modelPublicationStatus?: unknown };
-        if (body.modelPublicationStatus === "current" || body.modelPublicationStatus === "stale" || body.modelPublicationStatus === "not-run") {
-          modelPublicationStatus = body.modelPublicationStatus;
-          responseStatusKnown = true;
-        }
-      } catch {
-        // The authoritative set GET below determines whether the delete persisted.
-      }
     }
     const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
     if (refreshedSet !== null) throw new Error("historical set deletion could not be confirmed");
     removeCachedHistorySet(exerciseId, entry, set.id);
-    announceHistory(!response?.ok
-      ? modelPublicationStatus === "stale"
-        ? (uk ? "Підхід відсутній; історію оновлено, але модель ще не актуальна." : "The set is absent and history is refreshed, but the model is not current.")
-        : modelPublicationStatus === "not-run"
-          ? (uk ? "Підхід відсутній; історію оновлено, але актуальність моделі не підтверджено." : "The set is absent and history is refreshed; model currentness could not be confirmed.")
-        : !responseStatusKnown
-          ? (uk ? "Підхід відсутній; історію оновлено, але стан публікації моделі не вдалося підтвердити." : "The set is absent and history is refreshed; model publication status could not be confirmed.")
-          : (uk ? "Підхід відсутній; показано актуальну історію." : "The set is absent; the current history is shown.")
-      : modelPublicationStatus === "stale"
-        ? (uk ? "Підхід видалено, але модель ще не актуальна." : "Set deleted, but the model is not current.")
-        : modelPublicationStatus === "not-run"
-          ? (uk ? "Підхід видалено; актуальність моделі не підтверджено." : "Set deleted; model currentness could not be confirmed.")
-        : !responseStatusKnown
-          ? (uk ? "Підхід видалено; стан публікації моделі не вдалося підтвердити." : "Set deleted; model publication status could not be confirmed.")
-          : (uk ? "Підхід видалено." : "Set deleted."), true);
+    announceHistory(response?.ok
+      ? (uk ? "Підхід видалено." : "Set deleted.")
+      : (uk ? "Підхід відсутній; показано актуальну історію." : "The set is absent; the current history is shown."), true);
   }
 
   const exerciseCountLabel = uk
@@ -724,7 +712,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
             {error}
             {mutationUncertain && onVerifyPendingMutation && (
               <button type="button" className={styles.liveSecondary} disabled={busy} onClick={onVerifyPendingMutation}>
-                {uk ? "Перевірити стан" : "Check status"}
+                {mutationActionLabel ?? (uk ? "Перевірити стан" : "Check status")}
               </button>
             )}
           </div>

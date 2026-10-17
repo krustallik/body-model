@@ -52,12 +52,20 @@ import {
 import { SessionAccountingPanel } from "../../session-accounting-panel";
 import { safeTrainingReturnHref } from "../../training-url-state";
 import styles from "../../training.module.css";
+import {
+  listSetCreateOperations,
+  removeSetCreateOperation,
+  storeSetCreateOperation,
+  replaceSetCreateOperation,
+  markSetCreateOperationTerminal,
+  type StoredSetCreateOperation,
+} from "../../set-create-operation-store";
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right));
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
     return "{" + entries.map(([key, item]) => JSON.stringify(key) + ":" + stableJson(item)).join(",") + "}";
   }
   return JSON.stringify(value) ?? "undefined";
@@ -65,7 +73,69 @@ function stableJson(value: unknown): string {
 
 function setMatchesSavePayload(set: StrengthSetDto, payload: Record<string, unknown>): boolean {
   const persisted = set as unknown as Record<string, unknown>;
-  return Object.entries(payload).every(([key, value]) => stableJson(persisted[key]) === stableJson(value));
+  return Object.entries(payload).every(([key, value]) => {
+    const actual = key === "loadAccountingOverride" ? persisted[key] ?? null : persisted[key];
+    return stableJson(actual) === stableJson(value);
+  });
+}
+
+export async function setCreatePayloadDigest(
+  operation: Pick<StoredSetCreateOperation, "sessionId" | "exerciseId" | "payload">,
+): Promise<string> {
+  const payload = operation.payload;
+  const canonical = {
+    version: 1,
+    sessionId: operation.sessionId,
+    exerciseId: operation.exerciseId,
+    requestedSetNumber: payload.setNumber ?? null,
+    reps: payload.reps,
+    weightKg: payload.weightKg ?? null,
+    bandNominalResistanceKg: payload.bandNominalResistanceKg ?? null,
+    rir: payload.rir ?? null,
+    comment: typeof payload.comment === "string" ? payload.comment.trim() || null : null,
+    completedAt: payload.completedAt ?? null,
+    loadAccountingOverride: payload.loadAccountingOverride ?? null,
+  };
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stableJson(canonical)));
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function readTrainingErrorCode(response: Response): Promise<string | null> {
+  try {
+    const body = await response.clone().json() as { error?: unknown };
+    return typeof body.error === "string" ? body.error : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWithTrainingTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs = 8_000,
+): Promise<Response> {
+  const controller = new AbortController();
+  let rejectDeadline!: (reason: Error) => void;
+  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  const timeout = window.setTimeout(() => {
+    controller.abort();
+    rejectDeadline(new Error("Training request timed out"));
+  }, timeoutMs);
+  try {
+    const response = await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      deadline,
+    ]);
+    const readJson = response.json.bind(response);
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: () => Promise.race([readJson(), deadline]).finally(() => window.clearTimeout(timeout)),
+    });
+    return response;
+  } catch (error) {
+    window.clearTimeout(timeout);
+    throw error;
+  }
 }
 
 export function SessionClient({ sessionId }: { sessionId: number }) {
@@ -84,6 +154,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [candidates, setCandidates] = useState<MatchCandidateDto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingCreateOperation, setPendingCreateOperation] = useState<StoredSetCreateOperation | null>(null);
+  const [createRecoveryReady, setCreateRecoveryReady] = useState(false);
   const [refreshingAccounting, setRefreshingAccounting] = useState(false);
   const [accountingError, setAccountingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,7 +183,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     const requestId = ++detailRequestIdRef.current;
     setError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
       if (!response.ok) {
         if (requestId !== detailRequestIdRef.current || saveInFlightRef.current) return;
         const apiError = await readApiError(response, uk);
@@ -150,6 +222,42 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     };
   }, [load]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void listSetCreateOperations(sessionId).then((operations) => {
+      if (cancelled) return;
+      setCreateRecoveryReady(true);
+      const pending = operations.sort((a, b) => a.createdAt - b.createdAt)[0];
+      if (!pending) return;
+      setPendingCreateOperation(pending);
+      setDraft(pending.draft as ReturnType<typeof emptySetDraft>);
+      setError(uk
+        ? "Попереднє додавання підходу ще не підтверджене. Перевірте його стан."
+        : "A previous set create is not confirmed yet. Check its status.");
+    }).catch(() => {
+      if (!cancelled) {
+        setCreateRecoveryReady(false);
+        setError(uk
+          ? "Не вдалося відкрити локальне сховище чернеток. Створення підходу заблоковано."
+          : "Could not open local draft storage. Set creation is disabled.");
+      }
+    });
+    return () => { cancelled = true; };
+  }, [sessionId, uk]);
+
+  async function readAuthoritativeSessionAfterUnknownWrite(): Promise<StrengthSessionDto | null | undefined> {
+    try {
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" }, 2_000);
+      if (response.status === 404) return null;
+      if (!response.ok) return undefined;
+      const body = await response.json() as { session: StrengthSessionDto };
+      setSession(body.session);
+      return body.session;
+    } catch {
+      return undefined;
+    }
+  }
+
   const exercises = useMemo(
     () => (session?.exercises ?? []).slice().sort((a, b) => a.order - b.order),
     [session],
@@ -159,6 +267,298 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const previousExercise = exerciseIndex > 0 ? exercises[exerciseIndex - 1] ?? null : null;
   const nextExercise = exerciseIndex < exercises.length - 1 ? exercises[exerciseIndex + 1] ?? null : null;
   const completion = sessionPlanCompletion(exercises);
+
+  async function persistTerminalCreateOperation(
+    operation: StoredSetCreateOperation,
+  ): Promise<StoredSetCreateOperation | null> {
+    if (operation.terminalState !== "new-intent-required") return null;
+    try {
+      const canonical = await markSetCreateOperationTerminal(operation);
+      if (!canonical) throw new Error("The saved set operation is missing.");
+      setPendingCreateOperation(canonical);
+      setCreateRecoveryReady(true);
+      setDraft(canonical.draft as ReturnType<typeof emptySetDraft>);
+      return canonical;
+    } catch {
+      setPendingCreateOperation(operation);
+      setCreateRecoveryReady(false);
+      setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+      return null;
+    }
+  }
+
+  async function readSetCreateResult(operation: StoredSetCreateOperation): Promise<StrengthSetDto | "TOMBSTONED" | "REJECTED" | null> {
+    let digest: string;
+    try {
+      digest = await setCreatePayloadDigest(operation);
+    } catch {
+      return null;
+    }
+    for (const delayMs of [0, 100, 250]) {
+      if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      try {
+        const response = await fetchWithTrainingTimeout(
+          `/api/v1/training/set-create-operations/${operation.operationId}?digest=${digest}`,
+          { cache: "no-store" },
+          2_000,
+        );
+        if (response.status === 404 || response.status === 202) continue;
+        if (response.status === 410) {
+          const terminalOperation: StoredSetCreateOperation = {
+            ...operation,
+            terminalState: "new-intent-required",
+            terminalReason: "tombstoned",
+          };
+          const canonical = await persistTerminalCreateOperation(terminalOperation);
+          if (canonical && canonical.operationId !== operation.operationId) {
+            setError(uk
+              ? "Інша вкладка вже замінила цю чернетку. Перевірте поточну операцію перед продовженням."
+              : "Another tab already replaced this draft. Check the current operation before continuing.");
+            return "TOMBSTONED";
+          }
+          setError(uk
+            ? "Цей підхід був збережений і потім видалений. Чернетку залишено; натисніть «Створити знову», якщо хочете новий запис."
+            : "This set was saved and later deleted. Your draft is kept; choose “Create again” to make a new record.");
+          return "TOMBSTONED";
+        }
+        if (response.status === 409) {
+          const body = await response.json().catch(() => null) as { state?: string; error?: string } | null;
+          if (body?.state === "REJECTED") {
+            const terminalOperation: StoredSetCreateOperation = {
+              ...operation,
+              terminalState: "new-intent-required",
+              terminalReason: "not-committed",
+            };
+            const canonical = await persistTerminalCreateOperation(terminalOperation);
+            setError(canonical && canonical.operationId !== operation.operationId
+              ? (uk
+                ? "Інша вкладка вже замінила цю чернетку. Перевірте поточну операцію перед продовженням."
+                : "Another tab already replaced this draft. Check the current operation before continuing.")
+              : (uk
+                ? "Запит не було збережено. Чернетку залишено; натисніть «Створити знову», якщо хочете новий запит."
+                : "The request was not saved. Your draft is kept; choose “Create again” if you want a new request."));
+            return "REJECTED";
+          }
+          continue;
+        }
+        if (!response.ok) continue;
+        const body = await response.json() as { state?: string; set?: StrengthSetDto };
+        if (body.state === "COMMITTED" && body.set) {
+          // The status endpoint is keyed by operation ID only. Never accept a
+          // canonical row for a different exercise or payload as this draft's
+          // successful create.
+          if (body.set.sessionExerciseId !== operation.exerciseId
+              || !setMatchesSavePayload(body.set, operation.payload)) return null;
+          return body.set;
+        }
+      } catch {
+        // The stored operation remains unresolved and can be retried with the same key.
+      }
+    }
+    return null;
+  }
+
+  async function refreshPendingCreateOperations(): Promise<StoredSetCreateOperation | null> {
+    try {
+      const remaining = await listSetCreateOperations(sessionId);
+      const nextPending = remaining.sort((a, b) => a.createdAt - b.createdAt)[0] ?? null;
+      setPendingCreateOperation(nextPending);
+      setCreateRecoveryReady(true);
+      if (nextPending) setDraft(nextPending.draft as ReturnType<typeof emptySetDraft>);
+      return nextPending;
+    } catch {
+      setCreateRecoveryReady(false);
+      setError(uk
+        ? "Не вдалося оновити локальне сховище. Створення підходів заблоковано."
+        : "Could not update local recovery storage. Set creation is disabled.");
+      return null;
+    }
+  }
+
+  async function applyCreatedSet(operation: StoredSetCreateOperation, saved: StrengthSetDto) {
+    const currentSession = session;
+    setSession((previous) => previous ? {
+      ...previous,
+      exercises: previous.exercises.map((exercise) => exercise.id !== operation.exerciseId ? exercise : {
+        ...exercise,
+        sets: [...exercise.sets.filter((set) => set.id !== saved.id), saved],
+      }),
+    } : previous);
+    setDraft(emptySetDraft());
+    setEditingSetId(null);
+    setAdditionalLoadDirtySetId(null);
+    let nextPending: StoredSetCreateOperation | null = null;
+    let recoveryStored = true;
+    try {
+      await removeSetCreateOperation(operation.operationId);
+      const remaining = await listSetCreateOperations(operation.sessionId);
+      nextPending = remaining.sort((a, b) => a.createdAt - b.createdAt)[0] ?? null;
+      setPendingCreateOperation(nextPending);
+      setCreateRecoveryReady(true);
+      if (nextPending) setDraft(nextPending.draft as ReturnType<typeof emptySetDraft>);
+    } catch {
+      recoveryStored = false;
+      setPendingCreateOperation(operation);
+      setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+      setCreateRecoveryReady(false);
+      setError(uk
+        ? "Підхід збережено, але локальну чернетку не вдалося оновити. Створення заблоковано до перевірки."
+        : "The set was saved, but local recovery storage could not be updated. Further creates are blocked until checked.");
+    }
+    if (!recoveryStored) return;
+    if (nextPending) {
+      setDraft(nextPending.draft as ReturnType<typeof emptySetDraft>);
+      setError(uk
+        ? "Є ще одне непідтверджене додавання. Перевірте його стан."
+        : "Another set create is unresolved. Check its status.");
+    } else {
+      setError(null);
+      setCreateRecoveryReady(true);
+    }
+    if (!currentSession) return;
+    const exercise = currentSession.exercises.find((item) => item.id === operation.exerciseId);
+    const lastExercise = indexOfExerciseId(exercises, operation.exerciseId) >= exercises.length - 1;
+    const completedPlannedExercise = exercise !== undefined
+      && exercise.origin === "PLANNED"
+      && exercise.plannedSets > 0
+      && exercise.sets.length + 1 >= exercise.plannedSets
+      && exercise.sets.length < exercise.plannedSets;
+    if (shouldAutoAdvanceAfterSet({
+      enabled: currentSession.autoAdvanceExercises === true,
+      adding: true,
+      exerciseOrigin: exercise?.origin ?? "EXTRA",
+      plannedSets: exercise?.plannedSets ?? 0,
+      previousSetCount: exercise?.sets.length ?? 0,
+      isLastExercise: lastExercise,
+    })) {
+      setAutoAdvanceNonce((value) => value + 1);
+    } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
+      finishOfferedRef.current = true;
+      setFinishOffer(true);
+    }
+  }
+
+  async function retryPendingSetCreate() {
+    if (!pendingCreateOperation || busy || saveInFlightRef.current) return;
+    if (pendingCreateOperation.replacementOperationId || pendingCreateOperation.terminalState === "replaced") {
+      await refreshPendingCreateOperations();
+      setError(uk
+        ? "Інша вкладка вже змінила чернетку. Перевірте поточну операцію перед продовженням."
+        : "Another tab already changed this draft. Check the current operation before continuing.");
+      return;
+    }
+    saveInFlightRef.current = true;
+    setBusy(true);
+    try {
+      let operation = pendingCreateOperation;
+      if (operation.terminalState === "new-intent-required") {
+        const replacement: StoredSetCreateOperation = {
+          ...operation,
+          operationId: crypto.randomUUID(),
+          createdAt: Date.now(),
+          terminalState: undefined,
+          terminalReason: undefined,
+        };
+        try {
+          const selected = await replaceSetCreateOperation(operation.operationId, replacement);
+          if (!selected) throw new Error("The terminal intent changed before replacement.");
+          if (selected.operationId !== replacement.operationId
+              || selected.replacementOperationId
+              || selected.terminalState === "replaced") {
+            setPendingCreateOperation(selected);
+            setCreateRecoveryReady(true);
+            setDraft(selected.draft as ReturnType<typeof emptySetDraft>);
+            setError(uk
+              ? "Інша вкладка вже змінила чернетку. Перевірте поточну операцію перед продовженням."
+              : "Another tab already changed this draft. Check the current operation before continuing.");
+            return;
+          }
+          operation = selected;
+        } catch {
+          setCreateRecoveryReady(false);
+          setError(uk
+            ? "Не вдалося надійно оновити чернетку. Вона залишилася збереженою; новий запит не надіслано."
+            : "Could not safely update the saved draft. It remains stored; no new request was sent.");
+          return;
+        }
+        if (operation.terminalState === "new-intent-required") {
+          setPendingCreateOperation(operation);
+          setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+          setError(uk
+            ? "Інша вкладка вже змінила чернетку. Перевірте її стан перед повторенням."
+            : "Another tab already replaced this draft. Review its state before trying again.");
+          return;
+        }
+        setPendingCreateOperation(operation);
+        setCreateRecoveryReady(true);
+        setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+      }
+      let postResponse: Response | null = null;
+      if (operation.replacementOperationId || operation.terminalState === "replaced") {
+        await refreshPendingCreateOperations();
+        setError(uk
+          ? "Ця чернетка вже замінена. Перевірте поточну операцію перед продовженням."
+          : "This draft has already been replaced. Check the current operation before continuing.");
+        return;
+      }
+      try {
+        postResponse = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${operation.sessionId}/exercises/${operation.exerciseId}/sets`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "Idempotency-Key": operation.operationId },
+          body: JSON.stringify(operation.payload),
+        });
+      } catch {
+        // The same key serializes with the original request; resolve by operation ID below.
+      }
+      if (postResponse?.status === 409) {
+        const code = await readTrainingErrorCode(postResponse);
+        if (code === "training_concurrent_mutation") {
+          const authoritative = await readAuthoritativeSessionAfterUnknownWrite();
+          if (authoritative) setSession(authoritative);
+          const terminalOperation: StoredSetCreateOperation = {
+            ...operation,
+            terminalState: "new-intent-required",
+            terminalReason: "not-committed",
+          };
+          const canonical = await persistTerminalCreateOperation(terminalOperation);
+          if (canonical && canonical.operationId !== operation.operationId) {
+            setError(uk
+              ? "Інша вкладка вже замінила цю чернетку. Перевірте поточну операцію перед продовженням."
+              : "Another tab already replaced this draft. Check the current operation before continuing.");
+            return;
+          }
+          setError(uk
+            ? "Опір вправи змінився до збереження. Сесію оновлено; чернетку збережено. Натисніть «Створити знову», щоб повторити як новий запит."
+            : "The exercise resistance changed before the set was saved. The session was refreshed and the draft kept. Choose “Create again” to submit a new intent.");
+          return;
+        }
+        setPendingCreateOperation(operation);
+        setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+        setError(uk
+          ? "Операція конфліктує з поточним станом підходу. Чернетку збережено; результат не позначено як успішний."
+          : "The operation conflicts with the current set state. Your draft is saved and was not marked successful.");
+        return;
+      }
+      const saved = await readSetCreateResult(operation);
+      if (saved === "TOMBSTONED" || saved === "REJECTED") return;
+      if (saved) await applyCreatedSet(operation, saved);
+      else if (postResponse?.status === 400) {
+        await removeSetCreateOperation(operation.operationId).catch(() => undefined);
+        await refreshPendingCreateOperations();
+        setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+            setError(await readApiError(postResponse, uk));
+      } else {
+        setPendingCreateOperation(operation);
+        setDraft(operation.draft as ReturnType<typeof emptySetDraft>);
+        setError(uk
+          ? "Результат залишається невідомим. Чернетку збережено."
+          : "The operation is still unresolved. Your draft is saved.");
+      }
+    } finally {
+      setBusy(false);
+      saveInFlightRef.current = false;
+    }
+  }
 
   useEffect(() => {
     if (exercisePickerOpen) {
@@ -197,7 +597,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     let cancelled = false;
     async function loadCandidates() {
       try {
-        const response = await fetch(`/api/v1/training/sessions/${sessionId}/match-candidates`, { cache: "no-store" });
+        const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${sessionId}/match-candidates`, { cache: "no-store" });
         if (!response.ok || cancelled) return;
         const body = await response.json() as { candidates: MatchCandidateDto[] };
         if (!cancelled) setCandidates(body.candidates);
@@ -213,6 +613,12 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   async function saveSet() {
     if (!session || !current || saveInFlightRef.current) return;
+    if (!createRecoveryReady || pendingCreateOperation) {
+      setError(uk
+        ? "Спочатку перевірте попереднє додавання підходу."
+        : "Check the previous set create before starting another one.");
+      return;
+    }
     const reps = Number(draft.reps);
     if (!Number.isFinite(reps) || reps < 1) {
       setError(uk ? "Вкажіть кількість повторень." : "Enter reps.");
@@ -332,10 +738,6 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       payload.bandNominalResistanceKg = null;
     }
     const adding = editingSetId === null;
-    const nextSetNumber = adding
-      ? Math.max(0, ...current.sets.map((set) => set.setNumber)) + 1
-      : undefined;
-    if (nextSetNumber !== undefined) payload.setNumber = nextSetNumber;
     const lastExercise = exerciseIndex >= exercises.length - 1;
     const completedPlannedExercise = adding
       && current.origin === "PLANNED"
@@ -347,32 +749,99 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     detailRequestIdRef.current += 1;
     setBusy(true);
     setError(null);
+    let createOperation: StoredSetCreateOperation | null = null;
     try {
-      const response = editingSetId === null
-        ? await fetch(`/api/v1/training/sessions/${session.id}/exercises/${current.id}/sets`, {
+      if (adding) {
+        createOperation = {
+          operationId: crypto.randomUUID(),
+          sessionId: session.id,
+          exerciseId: current.id,
+          payload,
+          draft: { ...draft },
+          createdAt: Date.now(),
+        };
+        try {
+          await storeSetCreateOperation(createOperation);
+        } catch {
+          setError(uk
+            ? "Не вдалося надійно зберегти чернетку. Підхід не надіслано."
+            : "Could not safely save the draft. The set was not sent.");
+          return;
+        }
+        setPendingCreateOperation(createOperation);
+      }
+      const response = adding
+        ? await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/exercises/${current.id}/sets`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "Idempotency-Key": createOperation!.operationId },
           body: JSON.stringify(payload),
         })
-        : await fetch(`/api/v1/training/sessions/${session.id}/sets/${editingSetId}`, {
+        : await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/sets/${editingSetId}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
       if (!response.ok) {
+        const createConflictCode = adding && createOperation && response.status === 409
+          ? await readTrainingErrorCode(response)
+          : null;
         const apiError = await readApiError(response, uk);
+        if (adding && createOperation) {
+          if (response.status === 409) {
+            const code = createConflictCode;
+            if (code === "training_concurrent_mutation") {
+              const authoritative = await readAuthoritativeSessionAfterUnknownWrite();
+              if (authoritative) setSession(authoritative);
+              const terminalOperation: StoredSetCreateOperation = {
+                ...createOperation,
+                terminalState: "new-intent-required",
+                terminalReason: "not-committed",
+              };
+              const canonical = await persistTerminalCreateOperation(terminalOperation);
+              if (canonical && canonical.operationId !== createOperation.operationId) {
+                setError(uk
+                  ? "Інша вкладка вже замінила цю чернетку. Перевірте поточну операцію перед продовженням."
+                  : "Another tab already replaced this draft. Check the current operation before continuing.");
+                return;
+              }
+              setError(uk
+                ? "Опір вправи змінився до збереження. Сесію оновлено; чернетку збережено. Натисніть «Створити знову», щоб повторити як новий запит."
+                : "The exercise resistance changed before the set was saved. The session was refreshed and the draft kept. Choose “Create again” to submit a new intent.");
+              return;
+            }
+            setPendingCreateOperation(createOperation);
+            setDraft(createOperation.draft as ReturnType<typeof emptySetDraft>);
+            setError(uk
+              ? "Операція конфліктує з поточним станом підходу. Чернетку збережено; результат не позначено як успішний."
+              : "The operation conflicts with the current set state. Your draft is saved and was not marked successful.");
+            return;
+          }
+          if (response.status === 400) {
+            // Route/schema validation runs before the source transaction.
+            await removeSetCreateOperation(createOperation.operationId).catch(() => undefined);
+            await refreshPendingCreateOperations();
+            setError(apiError);
+            return;
+          }
+          const saved = await readSetCreateResult(createOperation);
+          if (saved === "TOMBSTONED" || saved === "REJECTED") return;
+          if (saved) {
+            await applyCreatedSet(createOperation, saved);
+            return;
+          }
+          setError(uk
+            ? "Результат додавання невідомий. Чернетку збережено; перевірте стан перед продовженням."
+            : "The create result is unknown. Your draft is saved; check its status before continuing.");
+          return;
+        }
         if (response.status === 409 || response.status >= 500) {
-          const detail = await fetch("/api/v1/training/sessions/" + session.id, { cache: "no-store" });
+          const detail = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" }, 2_000);
           if (detail.ok) {
             const body = await detail.json() as { session: StrengthSessionDto };
             setSession(body.session);
             const refreshedExercise = body.session.exercises.find((exercise) => exercise.id === current.id);
             const candidates = refreshedExercise?.sets ?? [];
-            const persisted = adding
-              ? candidates.find((set) => !current.sets.some((prior) => prior.id === set.id)
-                && set.setNumber === nextSetNumber
-                && setMatchesSavePayload(set, payload)) ?? null
-              : candidates.find((set) => set.id === editingSetId
+            const persisted = candidates.find((set) => set.id === editingSetId
                 && set.updatedAt !== editingSet?.updatedAt
                 && setMatchesSavePayload(set, payload)) ?? null;
             if (persisted) {
@@ -396,6 +865,10 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         set: StrengthSetDto;
       };
       if (!body.set || !Number.isSafeInteger(body.set.id)) throw new Error("training_set_response_missing");
+      if (adding && createOperation) {
+        await applyCreatedSet(createOperation, body.set);
+        return;
+      }
       setSession((previous) => previous ? {
         ...previous,
         exercises: previous.exercises.map((exercise) => exercise.id !== current.id ? exercise : {
@@ -416,17 +889,13 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       }
     } catch {
       try {
-        const detail = await fetch("/api/v1/training/sessions/" + session.id, { cache: "no-store" });
+        const detail = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" }, 2_000);
         if (detail.ok) {
           const body = await detail.json() as { session: StrengthSessionDto };
           setSession(body.session);
           const refreshedExercise = body.session.exercises.find((exercise) => exercise.id === current.id);
           const candidates = refreshedExercise?.sets ?? [];
-          const persisted = adding
-            ? candidates.find((set) => !current.sets.some((prior) => prior.id === set.id)
-              && set.setNumber === nextSetNumber
-              && setMatchesSavePayload(set, payload)) ?? null
-            : candidates.find((set) => set.id === editingSetId
+          const persisted = candidates.find((set) => set.id === editingSetId
               && set.updatedAt !== editingSet?.updatedAt
               && setMatchesSavePayload(set, payload)) ?? null;
           if (persisted) {
@@ -444,6 +913,20 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         }
       } catch {
         // Keep the draft and never repeat the mutation automatically.
+      }
+      if (adding) {
+        if (createOperation) {
+          const saved = await readSetCreateResult(createOperation);
+          if (saved === "TOMBSTONED" || saved === "REJECTED") return;
+          if (saved) {
+            await applyCreatedSet(createOperation, saved);
+            return;
+          }
+        }
+        if (createOperation) {
+          setPendingCreateOperation(createOperation);
+          setDraft(createOperation.draft as ReturnType<typeof emptySetDraft>);
+        }
       }
       setError(uk
         ? "Не вдалося підтвердити збереження підходу. Перевірте сесію перед повторною спробою."
@@ -474,7 +957,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
     setLoadingExerciseCatalog(true);
     try {
-      const response = await fetch("/api/v1/training/exercises", { cache: "no-store" });
+      const response = await fetchWithTrainingTimeout("/api/v1/training/exercises", { cache: "no-store" });
       if (!response.ok) {
         const message = await readApiError(response, uk);
         if (requestId !== exercisePickerRequestIdRef.current) return;
@@ -525,8 +1008,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setBusy(true);
     setError(null);
     try {
-      const before = new Set(session.exercises.map((exercise) => exercise.id));
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/exercises`, {
+      const beforeIds = new Set(session.exercises.map((exercise) => exercise.id));
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/exercises`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -541,12 +1024,17 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       }
       const body = await response.json() as { session: StrengthSessionDto };
       setSession(body.session);
-      const added = body.session.exercises.find((exercise) => !before.has(exercise.id));
+      const added = body.session.exercises.find((exercise) => !beforeIds.has(exercise.id));
       setFocusedExerciseId(added?.id ?? body.session.exercises[0]?.id ?? null);
       closeExercisePicker();
       setCatalogExerciseId("");
     } catch {
-      setError(uk ? "Не вдалося додати вправу." : "Could not add the exercise.");
+      const current = await readAuthoritativeSessionAfterUnknownWrite();
+      setError(current
+        ? (uk
+          ? "Не вдалося підтвердити додавання. Оновлений стан сесії завантажено; перевірте його перед повтором."
+          : "Could not confirm the exercise addition. The latest session is loaded; check it before trying again.")
+        : (uk ? "Не вдалося підтвердити додавання вправи." : "Could not confirm whether the exercise was added."));
     } finally {
       setBusy(false);
     }
@@ -558,14 +1046,28 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/sets/${setId}`, { method: "DELETE" });
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/sets/${setId}`, { method: "DELETE" });
       if (!response.ok) {
+        if (response.status >= 500 || response.status === 404) {
+          const current = await readAuthoritativeSessionAfterUnknownWrite();
+          if (current && !current.exercises.some((exercise) => exercise.sets.some((set) => set.id === setId))) {
+            setError(null);
+            return;
+          }
+        }
         setError(await readApiError(response, uk));
         return;
       }
       await load();
     } catch {
-      setError(uk ? "Не вдалося видалити підхід." : "Could not delete the set.");
+      const current = await readAuthoritativeSessionAfterUnknownWrite();
+      if (current && !current.exercises.some((exercise) => exercise.sets.some((set) => set.id === setId))) {
+        setError(null);
+        return;
+      }
+      setError(uk
+        ? "Не вдалося підтвердити видалення. Оновлений стан сесії завантажено; перевірте його перед повтором."
+        : "Could not confirm the deletion. The latest session is loaded; check it before trying again.");
     } finally {
       setBusy(false);
     }
@@ -600,39 +1102,33 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setFinishOffer(false);
     setBusy(true);
     setError(null);
-    const completedReturnHref = (publicationStatus?: string): string => {
+    const completedReturnHref = (): string => {
       const destination = new URL(returnHref, window.location.origin);
       destination.searchParams.delete("finishPublication");
       if (destination.pathname === "/training") {
         destination.searchParams.set("programsRefresh", String(Date.now()));
       }
-      if (publicationStatus === "stale" || publicationStatus === "not-run") {
-        destination.searchParams.set("finishPublication", "stale");
-      } else if (publicationStatus === "unknown") {
-        destination.searchParams.set("finishPublication", "unknown");
-      }
       return `${destination.pathname}${destination.search}${destination.hash}`;
     };
-    const routeToCompletedSession = (completed: StrengthSessionDto, publicationStatus?: string): boolean => {
+    const routeToCompletedSession = (completed: StrengthSessionDto): boolean => {
       if (completed.status !== SESSION_STATUS.COMPLETED) return false;
       setSession(completed);
-      router.push(completedReturnHref(publicationStatus));
+      router.push(completedReturnHref());
       return true;
     };
-    const readCompletedSession = async (publicationStatus?: string): Promise<boolean> => {
-      const detail = await fetch(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" });
+    const readCompletedSession = async (): Promise<boolean> => {
+      const detail = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" }, 2_000);
       if (!detail.ok) return false;
-      const body = await detail.json() as { session?: StrengthSessionDto; modelPublicationStatus?: string };
-      return body.session ? routeToCompletedSession(body.session, publicationStatus ?? body.modelPublicationStatus ?? "unknown") : false;
+      const body = await detail.json() as { session?: StrengthSessionDto };
+      return body.session ? routeToCompletedSession(body.session) : false;
     };
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/finish`, { method: "POST" });
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/finish`, { method: "POST" });
       if (!response.ok) {
-        const errorBody = await response.clone().json().catch(() => null) as { modelPublicationStatus?: string } | null;
         const apiError = await readApiError(response, uk);
         if (response.status === 409 || response.status >= 500) {
           try {
-            if (await readCompletedSession(errorBody?.modelPublicationStatus)) return;
+            if (await readCompletedSession()) return;
           } catch {
             // A read failure cannot establish that the finish committed.
           }
@@ -640,8 +1136,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setError(apiError);
         return;
       }
-      const body = await response.json() as { session?: StrengthSessionDto; modelPublicationStatus?: string };
-      if (body.session && routeToCompletedSession(body.session, body.modelPublicationStatus ?? "unknown")) return;
+      const body = await response.json() as { session?: StrengthSessionDto };
+      if (body.session && routeToCompletedSession(body.session)) return;
       if (await readCompletedSession()) return;
       setError(uk
         ? "Не вдалося підтвердити завершення. Перевірте стан тренування перед повторною спробою."
@@ -666,7 +1162,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setRefreshingAccounting(true);
     setAccountingError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/accounting/${mode}`, {
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/accounting/${mode}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ idempotencyKey: `ui-${mode}-${session.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
@@ -697,14 +1193,34 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/cancel`, { method: "POST" });
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/cancel`, { method: "POST" });
       if (!response.ok) {
+        if (response.status >= 500) {
+          const current = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" }, 2_000).catch(() => null);
+          if (current?.ok) {
+            const body = await current.json() as { session: StrengthSessionDto };
+            setSession(body.session);
+            if (body.session.status === SESSION_STATUS.CANCELLED) {
+              router.push(returnHref);
+              return;
+            }
+          }
+        }
         setError(await readApiError(response, uk));
         return;
       }
       router.push(returnHref);
     } catch {
-      setError(uk ? "Не вдалося скасувати тренування." : "Could not cancel the workout.");
+      const current = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" }, 2_000).catch(() => null);
+      if (current?.ok) {
+        const body = await current.json() as { session: StrengthSessionDto };
+        setSession(body.session);
+        if (body.session.status === SESSION_STATUS.CANCELLED) {
+          router.push(returnHref);
+          return;
+        }
+      }
+      setError(uk ? "Не вдалося підтвердити скасування тренування." : "Could not confirm whether the workout was cancelled.");
     } finally {
       setBusy(false);
     }
@@ -720,14 +1236,35 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}`, { method: "DELETE" });
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { method: "DELETE" });
       if (!response.ok) {
+        if (response.status >= 500 || response.status === 404) {
+          const current = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" })
+            .catch(() => null);
+          if (current?.status === 404) {
+            router.push(returnHref);
+            return;
+          }
+          if (current?.ok) {
+            const body = await current.json() as { session: StrengthSessionDto };
+            setSession(body.session);
+          }
+        }
         setError(await readApiError(response, uk));
         return;
       }
       router.push(returnHref);
     } catch {
-      setError(uk ? "Не вдалося видалити скасоване тренування." : "Could not delete the cancelled workout.");
+      const current = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" })
+        .catch(() => null);
+      if (current?.status === 404) router.push(returnHref);
+      else {
+        if (current?.ok) {
+          const body = await current.json() as { session: StrengthSessionDto };
+          setSession(body.session);
+        }
+        setError(uk ? "Не вдалося підтвердити видалення скасованого тренування." : "Could not confirm the cancelled workout deletion.");
+      }
     } finally {
       setBusy(false);
     }
@@ -738,7 +1275,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/match`, {
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}/match`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ workoutId }),
@@ -749,7 +1286,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       }
       await load();
     } catch {
-      setError(uk ? "Не вдалося зіставити." : "Could not match.");
+      const current = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${session.id}`, { cache: "no-store" }, 2_000).catch(() => null);
+      if (current?.ok) {
+        const body = await current.json() as { session: StrengthSessionDto };
+        setSession(body.session);
+      }
+      setError(uk
+        ? "Не вдалося підтвердити зіставлення. Поточний стан сесії оновлено."
+        : "Could not confirm the match. The current session state was refreshed.");
     } finally {
       setBusy(false);
     }
@@ -883,6 +1427,11 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         editingSetId={editingSetId}
         busy={busy}
         error={error}
+        mutationUncertain={pendingCreateOperation !== null}
+        mutationActionLabel={pendingCreateOperation?.terminalState === "new-intent-required"
+          ? (uk ? "Створити знову" : "Create again")
+          : undefined}
+        onVerifyPendingMutation={() => void retryPendingSetCreate()}
         clockStartedAt={session.webStartedAt}
         clockEndedAt={session.webEndedAt}
         clockTicking

@@ -5,6 +5,7 @@ import {
 } from "@/modules/training/training.schema";
 import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
+import { z } from "zod";
 
 export const dynamic = "force-dynamic";
 
@@ -20,15 +21,24 @@ export async function POST(
 
   const parsed = CreateSetSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
+  const rawOperationId = request.headers.get("Idempotency-Key");
+  if (rawOperationId === null) {
+    return Response.json({ error: "idempotency_key_required" }, { status: 428 });
+  }
+  const operationId = z.string().uuid().safeParse(rawOperationId);
+  if (!operationId.success) {
+    return Response.json({ error: "invalid_idempotency_key" }, { status: 400 });
+  }
 
   try {
     const set = await trainingService.createSet(
       routeParams.data.id,
       routeParams.data.exerciseId,
       parsed.data,
+      undefined,
+      operationId.data,
     );
-    const { modelPublicationStatus, ...setDto } = set;
-    return Response.json({ set: setDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) }, { status: 201 });
+    return Response.json({ operationId: operationId.data, state: "COMMITTED", set }, { status: 201 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

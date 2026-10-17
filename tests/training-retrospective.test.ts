@@ -21,6 +21,7 @@ import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
 import * as relativeMuscleShadowService from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import * as unifiedPublicationService from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 
 type MockDb = ReturnType<typeof buildDb>;
 
@@ -69,23 +70,36 @@ function buildDb() {
     strengthSessionExercise: {
       findFirst: vi.fn(),
       findUnique: vi.fn().mockResolvedValue({ sessionId: 50 }),
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
     },
     strengthSet: {
       findFirst: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
+      aggregate: vi.fn().mockResolvedValue({ _max: { setNumber: 0 } }),
       create: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
       delete: vi.fn(),
     },
+    trainingSetCreateOperation: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
+      update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    trainingSourceChange: { create: vi.fn().mockResolvedValue({}) },
     workout: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
     },
     activeEnergyEventAlias: {
       findMany: vi.fn().mockResolvedValue([]),
+    },
+    activeEnergyCanonicalEvent: {
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     $transaction: vi.fn(),
   };
@@ -349,7 +363,7 @@ describe("retrospective diary creation from historical workouts", () => {
     ]);
   });
 
-  it("does not publish Unified when retrospective Relative Muscle refresh fails", async () => {
+  it("does not run physiology publication inline when creating a retrospective session", async () => {
     db.workout.findUnique.mockResolvedValue(strengthWorkout());
     arrangeProgram();
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
@@ -364,23 +378,25 @@ describe("retrospective diary creation from historical workouts", () => {
       matchedWorkout: { startAt: workoutStartAt },
     });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
+    db.$queryRaw.mockResolvedValue([{ requestedGeneration: 1 }]);
     const relativeMuscleRefresh = vi.spyOn(
       relativeMuscleShadowService,
       "rebuildAuthoritativeRelativeMuscleTrajectory",
-    ).mockRejectedValueOnce(new Error("relative muscle refresh failed"));
+    );
     const unifiedRebuild = vi.spyOn(
       unifiedPublicationService,
       "rebuildUnifiedExperimentalPhysiologyStateV1",
     ).mockResolvedValueOnce({} as never);
     const repository = new TrainingRepository(db as never);
     vi.spyOn(repository, "materializeAccounting").mockResolvedValue(1);
+    const refreshDependencies = vi.fn(async () => {
+      await relativeMuscleShadowService.rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: "2026-08-12" });
+      await unifiedPublicationService.rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1 });
+    });
     service = new TrainingService(
       db as never,
       repository,
-      async () => {
-        await relativeMuscleShadowService.rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: "2026-08-12" });
-        await unifiedPublicationService.rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1 });
-      },
+      refreshDependencies,
     );
 
     await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 })).resolves.toMatchObject({
@@ -388,7 +404,8 @@ describe("retrospective diary creation from historical workouts", () => {
       entryMode: ENTRY_MODE.RETROSPECTIVE,
     });
 
-    expect(relativeMuscleRefresh).toHaveBeenCalledTimes(1);
+    expect(refreshDependencies).not.toHaveBeenCalled();
+    expect(relativeMuscleRefresh).not.toHaveBeenCalled();
     expect(unifiedRebuild).not.toHaveBeenCalled();
     expect(db.unifiedPublicationBlock.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { profileId_source_sourceKey: { profileId: 1, source: "training", sourceKey: "50" } },
@@ -575,6 +592,27 @@ describe("historical program reassignment", () => {
 
   beforeEach(() => {
     db = buildDb();
+    // Prisma transaction clients intentionally omit `$transaction`; production
+    // code uses that distinction to avoid opening a nested transaction.
+    db.$transaction.mockImplementation(async (callback) => {
+      const transaction = Object.fromEntries(
+        Object.entries(db).filter(([key]) => key !== "$transaction"),
+      );
+      return callback(transaction as MockDb);
+    });
+    db.physiologyV7Lifecycle.upsert.mockResolvedValue({
+      profileId: 1,
+      ...currentPhysiologyV7Versions,
+    });
+    db.$queryRaw.mockResolvedValue([{
+      profileId: 1,
+      staleFromDate: "2026-08-12",
+      invalidationGeneration: 2,
+      currentThroughDate: null,
+      productionStaleFromDate: "2026-08-12",
+      productionPublishedGeneration: null,
+      unifiedPublishedGeneration: null,
+    }]);
     service = makeService(db);
   });
 
@@ -584,6 +622,22 @@ describe("historical program reassignment", () => {
     plannedSets: number;
     resistanceType: string;
   }>) {
+    // The repository re-reads the source session inside its locked write
+    // transaction before recording old/new provenance. Keep that transactional
+    // read explicit instead of relying only on the service's preflight read.
+    db.strengthDiarySession.findUnique.mockResolvedValue({
+      id: 50,
+      profileId: 1,
+      status: SESSION_STATUS.COMPLETED,
+      programId: 10,
+      programVersionId: 101,
+      revision: 1,
+      matchedWorkoutId: 77,
+      effectiveAccountingAt: null,
+      webStartedAt: null,
+      createdAt: new Date("2026-09-17T12:00:00Z"),
+      matchedWorkout: { sourceIdentity: "garmin:g-1", startAt: workoutStartAt },
+    });
     db.strengthDiarySession.findFirst
       .mockResolvedValueOnce(sessionForEdit())
       .mockResolvedValueOnce(retrospectiveDetail({ programId: 20, programVersionId: 201 }));
@@ -834,7 +888,7 @@ describe("set edits on a completed retrospective session", () => {
     matchedWorkout: { startAt: workoutStartAt },
   };
 
-  it("bumps the diary revision when a completed set is edited", async () => {
+  it("bumps the accounting input revision when a completed set is edited", async () => {
     db.strengthSet.findFirst.mockResolvedValue({
       id: 900,
       reps: 10,
@@ -844,6 +898,7 @@ describe("set edits on a completed retrospective session", () => {
       completedAt: workoutStartAt,
       sessionExercise: {
         id: 501,
+        sessionId: 50,
         resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
         session: completedSession,
       },
@@ -866,8 +921,12 @@ describe("set edits on a completed retrospective session", () => {
     expect(updated.reps).toBe(8);
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith({
       where: { id: 50 },
-      data: { revision: { increment: 1 } },
-      select: { revision: true },
+      data: {
+        revision: { increment: 1 },
+        accountingInputRevision: { increment: 1 },
+        currentSnapshotRevision: null,
+      },
+      select: { accountingInputRevision: true },
     });
   });
 
@@ -881,6 +940,7 @@ describe("set edits on a completed retrospective session", () => {
       completedAt: workoutStartAt,
       sessionExercise: {
         id: 501,
+        sessionId: 50,
         resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
         session: { ...completedSession, status: SESSION_STATUS.CANCELLED },
       },
@@ -901,12 +961,16 @@ describe("set edits on a completed retrospective session", () => {
     await expect(service.updateSet(50, 900, { reps: 8 })).resolves.toMatchObject({ reps: 8 });
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith({
       where: { id: 50 },
-      data: { revision: { increment: 1 } },
-      select: { revision: true },
+      data: {
+        revision: { increment: 1 },
+        accountingInputRevision: { increment: 1 },
+        currentSnapshotRevision: null,
+      },
+      select: { accountingInputRevision: true },
     });
   });
 
-  it("does not bump the revision while logging a live ACTIVE session", async () => {
+  it("bumps both revisions while logging a live ACTIVE session", async () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail({
       status: SESSION_STATUS.ACTIVE,
       entryMode: ENTRY_MODE.LIVE,
@@ -942,12 +1006,10 @@ describe("set edits on a completed retrospective session", () => {
     await service.createSet(50, 501, { reps: 12, weightKg: 30 });
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
+        revision: { increment: 1 },
         accountingInputRevision: { increment: 1 },
         currentSnapshotRevision: null,
       }),
-    }));
-    expect(db.strengthDiarySession.update).not.toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ revision: expect.anything() }),
     }));
   });
 

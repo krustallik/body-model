@@ -41,6 +41,12 @@ const clientMock = {
     $queryRaw: vi.fn().mockResolvedValue([]),
     $executeRaw: vi.fn().mockResolvedValue(1),
     physiologyV7Lifecycle: {
+      findUnique: vi.fn().mockResolvedValue({
+        profileId: 1,
+        invalidationGeneration: 1,
+        productionStaleFromDate: null,
+        updatedAt: new Date("2026-08-22T12:00:00.000Z"),
+      }),
       upsert: vi.fn().mockResolvedValue({
         profileId: 1,
         staleFromDate: null,

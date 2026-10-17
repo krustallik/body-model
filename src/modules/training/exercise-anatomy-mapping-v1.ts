@@ -1,4 +1,7 @@
-import type { CanonicalExerciseStableKey } from "./canonical-exercise-identity";
+import {
+  CANONICAL_EXERCISES_WITHOUT_V7_MAPPING,
+  type CanonicalExerciseStableKey,
+} from "./canonical-exercise-identity";
 import { CANONICAL_MUSCLE_GROUPS_V7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import {
   buildExerciseMuscleMappingSnapshotV7,
@@ -6,6 +9,11 @@ import {
   parseExerciseMuscleMappingSnapshotV7,
   type ExerciseMuscleMappingSnapshotV7,
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
+import {
+  buildExerciseAnatomySnapshotV2,
+  EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY,
+  type ExerciseAnatomySnapshotV2,
+} from "./exercise-anatomy-mapping-v2";
 
 /** Descriptive exercise-to-anatomy mapping. This is not a physiology/dose model. */
 export const EXERCISE_ANATOMY_MAPPING_V1_VERSION =
@@ -851,7 +859,8 @@ export function validateExerciseAnatomyRegistryV1(
   for (const anatomyId of nodeById.keys()) {
     if (!visualIds.has(anatomyId)) errors.push(`missing visual representation: ${anatomyId}`);
   }
-  const expected = new Set(expectedStableKeys);
+  const explicitlyUnmapped = new Set<string>(CANONICAL_EXERCISES_WITHOUT_V7_MAPPING);
+  const expected = new Set(expectedStableKeys.filter((key) => !explicitlyUnmapped.has(key)));
   for (const key of expected) if (!EXERCISE_ANATOMY_MAPPING_REGISTRY_V1.has(key as CanonicalExerciseStableKey)) errors.push(`missing canonical exercise mapping ${key}`);
   for (const key of EXERCISE_ANATOMY_MAPPING_REGISTRY_V1.keys()) if (!expected.has(key)) errors.push(`noncanonical exercise mapping ${key}`);
   if (EXERCISE_ANATOMY_MAPPING_REGISTRY_V1.size !== expected.size) errors.push("canonical exercise mapping count does not match expected count");
@@ -967,6 +976,7 @@ export function aggregateExerciseAnatomyExposureV1(
 /** V7 contract plus an additive, versioned anatomy extension for new diary rows. */
 export type ExerciseMappingSnapshotWithAnatomyV1 = ExerciseMuscleMappingSnapshotV7 & {
   [EXERCISE_ANATOMY_SNAPSHOT_PROPERTY]: ExerciseAnatomySnapshotV1;
+  [EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY]: ExerciseAnatomySnapshotV2 | null;
 };
 
 export function exerciseMappingSnapshotWithAnatomyV1(
@@ -975,5 +985,6 @@ export function exerciseMappingSnapshotWithAnatomyV1(
   return {
     ...buildExerciseMuscleMappingSnapshotV7(stableKey),
     [EXERCISE_ANATOMY_SNAPSHOT_PROPERTY]: buildExerciseAnatomySnapshotV1(stableKey),
+    [EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY]: buildExerciseAnatomySnapshotV2(stableKey),
   };
 }

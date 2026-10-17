@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
   CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+  calculateLoadAccountingWithBreakdownV1,
   calculateLoadAccountingV1,
   LEGACY_LOAD_CONFIGS_V1,
   loadConfigV1Schema,
@@ -127,7 +128,7 @@ describe("Stage 01 literal load accounting golden", () => {
 
 describe("versioned config and execution semantics", () => {
   it("accepts per-hand pairs, one implement across both hands, bars, and unilateral work", () => {
-    expect(Object.keys(LEGACY_LOAD_CONFIGS_V1)).toHaveLength(13);
+    expect(Object.keys(LEGACY_LOAD_CONFIGS_V1)).toHaveLength(18);
     expect(loadConfigV1Schema.safeParse(LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg).success).toBe(true);
     expect(LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg).toMatchObject({
       inventoryCount: 2, loadedSides: 2, loadInput: "per-implement-kg", repsMeaning: "per-side",
@@ -135,6 +136,49 @@ describe("versioned config and execution semantics", () => {
     expect(LEGACY_LOAD_CONFIGS_V1.hyperextension).toMatchObject({
       inventoryCount: 1, loadedSides: 2, implementsPerMovement: 1, repsMeaning: "per-movement",
     });
+    for (const stableKey of [
+      "bulgarian_split_squat", "forward_dumbbell_lunge", "goblet_squat",
+      "dumbbell_crunch", "dumbbell_russian_twist",
+    ] as const) {
+      expect(loadConfigV1Schema.safeParse(LEGACY_LOAD_CONFIGS_V1[stableKey]).success).toBe(true);
+    }
+    expect(LEGACY_LOAD_CONFIGS_V1.bulgarian_split_squat).toMatchObject({
+      accountingKind: "external-per-implement-pair-per-side", execution: "unilateral", repsMeaning: "per-side",
+    });
+    expect(LEGACY_LOAD_CONFIGS_V1.forward_dumbbell_lunge).toMatchObject({
+      accountingKind: "external-per-implement-pair-per-side", execution: "unilateral", repsMeaning: "per-side",
+    });
+    for (const stableKey of ["bulgarian_split_squat", "forward_dumbbell_lunge"] as const) {
+      expect(LEGACY_LOAD_CONFIGS_V1[stableKey]).toMatchObject({ inventoryCount: 2, loadedSides: 2 });
+      const accounted = calculateLoadAccountingV1({
+        localDate: "2026-09-24",
+        exercises: [{
+          identity: identity(stableKey),
+          resistanceHint: "external",
+          sets: [{ reps: 5, weightKg: 10, bandNominalResistanceKg: null }],
+        }],
+      });
+      expect(accounted.externalLoadVolume.value).toBe(200);
+      const detailed = calculateLoadAccountingWithBreakdownV1({
+        localDate: "2026-09-24",
+        sessionId: 10,
+        exercises: [{
+          identity: identity(stableKey),
+          resistanceHint: "external",
+          sessionExerciseId: 20,
+          exerciseOrder: 0,
+          exerciseName: stableKey,
+          sets: [{ strengthSetId: 30, setNumber: 1, reps: 5, weightKg: 10, bandNominalResistanceKg: null }],
+        }],
+      });
+      expect(detailed.breakdown.rows[0]?.mechanics).toMatchObject({ inventoryCount: 2, loadedSides: 2, effectiveMultiplier: 2 });
+      expect(detailed.breakdown.rows[0]?.contributions).toContainEqual(expect.objectContaining({ category: "externalLoadVolume", value: 200 }));
+    }
+    for (const stableKey of ["goblet_squat", "dumbbell_crunch", "dumbbell_russian_twist"] as const) {
+      expect(LEGACY_LOAD_CONFIGS_V1[stableKey]).toMatchObject({
+        accountingKind: "external-per-implement-per-movement", implementsPerMovement: 1, repsMeaning: "per-movement",
+      });
+    }
     const bar = {
       schemaVersion: 1, configVersion: "bar-v1", inventoryCount: 1, loadedSides: 2,
       execution: "simultaneous", equipment: { equipmentId: "barbell", setupId: "full-bar" },

@@ -44,7 +44,7 @@ describe("Training hub UI", () => {
     expect(container.querySelectorAll(`.${styles.trainingHubGrid}`).length).toBeGreaterThan(0);
   });
 
-  it("shows stale publication status passed through a completed-workout return URL", async () => {
+  it("does not show model publication status for a stale completed-workout return URL", async () => {
     window.history.replaceState(null, "", "/training?programsRefresh=123&finishPublication=stale");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
       const url = String(input);
@@ -58,8 +58,8 @@ describe("Training hub UI", () => {
 
     render(<TrainingClient />);
 
-    expect((await screen.findByRole("status")).textContent).toContain("Workout finished. Model publication is still updating");
-    await waitFor(() => expect(new URLSearchParams(window.location.search).has("finishPublication")).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/model publication|energy|glycogen|unified recalculation/i)).toBeNull();
   });
 
   it("starts a free workout without requiring a program", async () => {
@@ -186,7 +186,8 @@ describe("Training hub UI", () => {
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("sets, and accounting snapshots"));
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Garmin and Apple Health"));
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/training/sessions/12", { method: "DELETE" });
-    expect((await screen.findByRole("status")).textContent).toContain("Model publication is still updating");
+    expect((await screen.findByRole("status")).textContent).toContain("Session deleted.");
+    expect(screen.queryByText(/model publication|energy|glycogen|unified recalculation/i)).toBeNull();
     expect(recentReads).toBeGreaterThanOrEqual(2);
   });
 

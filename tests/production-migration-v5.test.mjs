@@ -7,7 +7,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
 import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
 import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
@@ -275,8 +275,14 @@ function validV4RepublicationPreflightReport() {
   return report;
 }
 
-const dynamicWorkoutDirs = execFileSync("git", ["ls-tree", "-d", "--name-only", "HEAD:prisma/migrations"],
-  { cwd: process.cwd(), encoding: "utf8" }).trim().split(/\r?\n/).sort();
+const dynamicWorkoutDirs = [
+  ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations,
+  ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations,
+].map(({ name }) => name).sort();
+const trainingMutationLedgerDirs = [
+  ...TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations,
+  ...TRAINING_MUTATION_LEDGER_MANIFEST.migrations,
+].map(({ name }) => name).sort();
 
 function validDynamicWorkoutPreflightReport({ applied = false } = {}) {
   const report = validPreflightReport();
@@ -306,6 +312,35 @@ function validDynamicWorkoutPreflightReport({ applied = false } = {}) {
   }
   report.tables = { ...report.tables, StrengthDiarySession: { exists: true, estimatedRows: 1, totalBytes: 128 } };
   report.programlessSessionCount = 0;
+  return report;
+}
+
+function validTrainingMutationLedgerPreflightReport({ applied = false } = {}) {
+  const report = validDynamicWorkoutPreflightReport({ applied: true });
+  report.migrations = [
+    ...TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations.map((migration) => migrationRow(migration)),
+    ...(applied ? TRAINING_MUTATION_LEDGER_MANIFEST.migrations.map((migration) => migrationRow(migration)) : []),
+  ];
+  for (const name of TRAINING_MUTATION_LEDGER_MANIFEST.postflightObjects.filter((candidate) =>
+    Object.hasOwn(TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals, candidate))) {
+    const object = report.objects.find((candidate) => candidate.name === name);
+    if (!object) throw new Error(`Missing reviewed schema object fixture: ${name}`);
+    const signature = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
+    object.present = applied || !TRAINING_MUTATION_LEDGER_MANIFEST.partialObjects.includes(name);
+    object.kind = !object.present ? "missing"
+      : name.includes(".") ? "column"
+      : name === "TrainingRefreshJob" || name === "TrainingSourceChange" || name === "TrainingSetCreateOperation" || name === "StepperCreateOperation" ? "table"
+          : name.endsWith("_idx") ? "index" : "constraint";
+    object.signature = object.present
+      ? name === "UnifiedPublicationBlock_source_check" && !applied
+        ? TRAINING_MUTATION_LEDGER_MANIFEST.requiredObjectSignatureEquals[name]
+        : signature
+      : null;
+  }
+  report.tables = {
+    ...report.tables,
+    HealthSyncRefreshJob: { exists: true, estimatedRows: 1, totalBytes: 128 },
+  };
   return report;
 }
 
@@ -543,6 +578,18 @@ describe("V5 closed migration manifest and full pending set", () => {
     for (const migration of V4_REPUBLICATION_MANIFEST.migrations) {
       expect(runbook).toContain(`| \`${migration.name}\` | \`${migration.sha256}\` |`);
     }
+  });
+
+  it("keeps all seven Training release migration hashes bound to the runbook", async () => {
+    const runbook = await readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8");
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(7);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.cutbackSupported).toBe(false);
+    for (const migration of TRAINING_MUTATION_LEDGER_MANIFEST.migrations) {
+      expect(runbook).toContain(`| \`${migration.name}\` | \`${migration.sha256}\` |`);
+    }
+    expect(runbook).toContain("there is no automatic forward-resume or rollback");
+    expect(runbook).toContain("Do not retry `migrate deploy`, run `prisma migrate resolve`");
+    expect(runbook).toContain("The Training manifest has `cutbackSupported: false`");
   });
 
   it("renders the canonical preflight SQL template before the PostgreSQL backup/restore smoke executes it", async () => {
@@ -908,6 +955,73 @@ describe("V5 closed migration manifest and full pending set", () => {
       expect((await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha: execFileSync("git", ["rev-parse", "HEAD"],
         { cwd: process.cwd(), encoding: "utf8" }).trim(), migration })).matchesManifest).toBe(true);
     }
+  });
+
+  it("admits only the complete Training ledger/queue migration set and exact postflight schema", async () => {
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requireCompleteReleaseTree).toBe(true);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.cutbackSupported).toBe(false);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations.map(({ name }) => name)).toEqual(dynamicWorkoutDirs);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations.map(({ name }) => name)).toEqual([
+      "20261016120000_training_mutation_ledger_queue",
+      "20261016130000_training_rejected_set_create_operations",
+      "20261016140000_training_refresh_publication_block_keys",
+      "20261017120000_add_five_training_exercises",
+      "20261017130000_stepper_operation_recovery",
+      "20261017140000_active_energy_convergence_fence",
+      "20261017150000_active_energy_convergence_owner_lease",
+    ]);
+    for (const migration of TRAINING_MUTATION_LEDGER_MANIFEST.migrations) {
+      const bytes = await readFile(new URL(`../prisma/migrations/${migration.name}/migration.sql`, import.meta.url));
+      expect(sha256(bytes), migration.name).toBe(migration.sha256);
+    }
+
+    const report = validTrainingMutationLedgerPreflightReport();
+    for (const name of [
+      "UnifiedPublicationBlock.ownerToken",
+      "UnifiedPublicationBlock.ownerLeaseUntil",
+      "UnifiedPublicationBlock_ownerLeaseUntil_idx",
+    ]) {
+      expect(report.objects.find((object) => object.name === name)).toMatchObject({ present: false, signature: null });
+    }
+    expect(report.objects.find((object) => object.name === "UnifiedPublicationBlock_source_check")?.signature)
+      .toBe(TRAINING_MUTATION_LEDGER_MANIFEST.requiredObjectSignatureEquals.UnifiedPublicationBlock_source_check);
+    const preflight = evaluateProductionPreflight(report, trainingMutationLedgerDirs, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    expect(preflight.readyForOwnerAuthorization, preflight.blockers.join(" | ")).toBe(true);
+    expect(preflight.pending).toEqual(TRAINING_MUTATION_LEDGER_MANIFEST.migrations.map(({ name }) => name).sort());
+
+    const missingDirectory = evaluateProductionPreflight(report,
+      trainingMutationLedgerDirs.filter((name) => name !== TRAINING_MUTATION_LEDGER_MANIFEST.migrations[2].name),
+      TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    expect(missingDirectory.blockers.join(" ")).toContain("Reviewed manifest migrations are missing");
+    const partialLedger = structuredClone(report);
+    partialLedger.objects.find((object) => object.name === "TrainingSetCreateOperation").present = true;
+    expect(evaluateProductionPreflight(partialLedger, trainingMutationLedgerDirs,
+      TRAINING_MUTATION_LEDGER_MANIFEST.id).blockers.join(" "))
+      .toContain("already exist while the exact migration set is pending");
+
+    const post = validTrainingMutationLedgerPreflightReport({ applied: true });
+    post.identity = { ...post.identity, database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverAddress: "172.20.0.3" };
+    const postflight = evaluateProductionPostflight(post, trainingMutationLedgerDirs,
+      TRAINING_MUTATION_LEDGER_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" });
+    expect(postflight.ready, postflight.blockers.join(" | ")).toBe(true);
+    expect(post.objects.find((object) => object.name === "UnifiedPublicationBlock_source_check")?.signature)
+      .toBe(TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals.UnifiedPublicationBlock_source_check);
+
+    const changedRejectedCheck = structuredClone(post);
+    changedRejectedCheck.objects.find((object) => object.name === "TrainingSetCreateOperation_result_check").signature += " OR TRUE";
+    expect(evaluateProductionPostflight(changedRejectedCheck, trainingMutationLedgerDirs,
+      TRAINING_MUTATION_LEDGER_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" "))
+      .toContain("exact reviewed contract");
+    const changedStepperIndex = structuredClone(post);
+    changedStepperIndex.objects.find((object) => object.name === "StepperCreateOperation_profileId_workoutId_idx").signature += " WHERE TRUE";
+    expect(evaluateProductionPostflight(changedStepperIndex, trainingMutationLedgerDirs,
+      TRAINING_MUTATION_LEDGER_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" "))
+      .toContain("exact reviewed contract");
+    const changedMigrationChecksum = structuredClone(post);
+    changedMigrationChecksum.migrations.find((row) => row.name === TRAINING_MUTATION_LEDGER_MANIFEST.migrations[1].name).checksum = "0".repeat(64);
+    expect(evaluateProductionPostflight(changedMigrationChecksum, trainingMutationLedgerDirs,
+      TRAINING_MUTATION_LEDGER_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" "))
+      .toContain("checksum differs");
   });
 
   it.each([
@@ -2182,7 +2296,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       expect(run.status).toBe(1);
       expect(JSON.parse(run.stdout).readyForOwnerAuthorization).toBe(false);
       expect(run.stderr).toContain("blocker-count=");
-      expect(run.stderr).toContain("categories=database-identity,migration-history");
+      expect(run.stderr).toContain("categories=database-identity,database-locks,migration-history");
       expect(run.stderr).not.toContain("Connected database/role identity");
       expect(run.stderr).not.toContain(injectedMigrationName);
       expect(run.stderr).not.toContain("::add-mask::");

@@ -188,6 +188,47 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
     expect(after.every(({ status }) => status === "current")).toBe(true);
   });
 
+  it("reads V7 rows and the publication gate from one PostgreSQL snapshot", async () => {
+    await service.rebuild(request);
+    const before = (await persistence.readRange(1, dates[0]!, dates[0]!))[0]!;
+    expect(before.status).toBe("current");
+
+    let publisherReady!: () => void;
+    let allowPublisherCommit!: () => void;
+    const ready = new Promise<void>((resolve) => { publisherReady = resolve; });
+    const mayCommit = new Promise<void>((resolve) => { allowPublisherCommit = resolve; });
+    const publisher = prisma.$transaction(async (tx) => {
+      await tx.physiologyV7DailyResult.update({
+        where: { profileId_date: { profileId: 1, date: dates[0]! } },
+        data: { resultFingerprint: "f".repeat(64) },
+      });
+      await tx.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          invalidationGeneration: { increment: 1 },
+          staleFromDate: dates[0]!,
+        },
+      });
+      publisherReady();
+      await mayCommit;
+    });
+
+    try {
+      await ready;
+      // While a publisher has written both halves but not committed, the
+      // reader must observe the previous complete publication.
+      const during = (await persistence.readRange(1, dates[0]!, dates[0]!))[0]!;
+      expect(during).toMatchObject({ status: "current", resultFingerprint: before.resultFingerprint });
+      allowPublisherCommit();
+      await publisher;
+      const after = (await persistence.readRange(1, dates[0]!, dates[0]!))[0]!;
+      expect(after).toMatchObject({ status: "stale", resultFingerprint: "f".repeat(64) });
+    } finally {
+      allowPublisherCommit();
+      await publisher;
+    }
+  });
+
   it("merges invalidations atomically and transaction rollback cannot lose freshness state", async () => {
     await service.rebuild(request);
     await Promise.all([

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const tx = {
     physiologyV7Lifecycle: { findUnique: vi.fn(), updateMany: vi.fn() },
+    $executeRaw: vi.fn(),
     unifiedExperimentalPhysiologyStateV2: { upsert: vi.fn() },
     experimentalTransientExerciseWaterShadow: { findMany: vi.fn() },
   };
@@ -86,7 +87,7 @@ function sourceDay(overrides: Record<string, unknown> = {}) {
 
 function prepare() {
   vi.clearAllMocks();
-  const tx = mocks.tx as typeof mocks.tx & { $executeRaw?: ReturnType<typeof vi.fn> };
+  const tx = mocks.tx;
   mocks.prisma.modelEpisode.findMany.mockResolvedValue([{
     id: 9,
     startDate: "2026-10-01",
@@ -103,7 +104,8 @@ function prepare() {
   mocks.prisma.unifiedExperimentalPhysiologyStateV2.findUnique.mockResolvedValue(null);
   tx.physiologyV7Lifecycle.findUnique.mockResolvedValue(publication);
   tx.physiologyV7Lifecycle.updateMany.mockResolvedValue({ count: 1 });
-  tx.unifiedExperimentalPhysiologyStateV2.upsert.mockResolvedValue({});
+  mocks.tx.$executeRaw.mockResolvedValue(1);
+  mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert.mockResolvedValue({});
   tx.experimentalTransientExerciseWaterShadow.findMany.mockResolvedValue([]);
   mocks.prisma.$transaction.mockImplementation(async (callback: (transaction: typeof mocks.tx) => Promise<unknown>) => callback(mocks.tx));
   mocks.loadRange.mockResolvedValue({
@@ -242,19 +244,34 @@ describe("Unified V2 rebuild publication", () => {
     }));
     expect(mocks.rebuildTransient).toHaveBeenCalledWith(expect.objectContaining({ profileId: 4, client: mocks.prisma }));
     expect(mocks.loadRange).toHaveBeenCalledTimes(2);
-    expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).toHaveBeenCalledOnce();
-    const persisted = mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert.mock.calls[0]![0].create;
-    expect(persisted).toMatchObject({
-      profileId: 4,
-      modelEpisodeId: 9,
-      date: "2026-10-01",
-      modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
-      qualityStatus: "unavailable",
-      energyLedger: { quality: "partial" },
-    });
+    expect(mocks.tx.$executeRaw).toHaveBeenCalledOnce();
+    const query = mocks.tx.$executeRaw.mock.calls[0]![0] as { sql: string; values: unknown[] };
+    expect(query.sql).toContain('INSERT INTO "UnifiedExperimentalPhysiologyStateV2"');
+    expect(query.sql).toContain('ON CONFLICT ("profileId", "modelEpisodeId", "date") DO UPDATE SET');
+    expect(query.values.slice(0, 10)).toEqual(expect.arrayContaining([
+      4, 9, "2026-10-01", UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION, "unavailable",
+    ]));
+    expect(JSON.parse(String(query.values[14]))).toMatchObject({ quality: "partial" });
     expect(mocks.tx.physiologyV7Lifecycle.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ profileId: 4, invalidationGeneration: 5, productionPublishedGeneration: 5 }),
       data: { unifiedPublishedGeneration: 5, unifiedPublishedRolloutEpoch: 0 },
+    }));
+  });
+
+  it("forwards progress into transient-water candidate computation", async () => {
+    const onProgress = vi.fn(async () => undefined);
+    mocks.rebuildTransient.mockImplementationOnce(async (input: { onProgress?: () => Promise<void> }) => {
+      await input.onProgress?.();
+      return { earliestModelDate: null, sourceToken: "transient-token", impulseCount: 1 };
+    });
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4, onProgress });
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(mocks.rebuildTransient).toHaveBeenCalledWith(expect.objectContaining({
+      profileId: 4,
+      client: mocks.prisma,
+      onProgress: expect.any(Function),
     }));
   });
 
@@ -272,8 +289,8 @@ describe("Unified V2 rebuild publication", () => {
 
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 });
 
-    const persisted = mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert.mock.calls[0]![0].create;
-    expect(persisted.modelRevision).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION);
+    const query = mocks.tx.$executeRaw.mock.calls[0]![0] as { values: unknown[] };
+    expect(query.values[4]).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION);
     expect(mocks.tx.physiologyV7Lifecycle.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         profileId: 4,
@@ -304,7 +321,10 @@ describe("Unified V2 rebuild publication", () => {
 
     expect(mocks.prisma.physiologyV7Lifecycle.findUnique).toHaveBeenCalledTimes(2);
     expect(mocks.readSourceToken).toHaveBeenCalledTimes(1);
-    expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).not.toHaveBeenCalled();
+    // The candidate is staged inside the final transaction before its source
+    // fence is re-read; the thrown fence error rolls that transaction back.
+    // The externally visible publication pointer must not advance.
+    expect(mocks.tx.$executeRaw).toHaveBeenCalledOnce();
     expect(mocks.tx.physiologyV7Lifecycle.updateMany).not.toHaveBeenCalled();
   });
 

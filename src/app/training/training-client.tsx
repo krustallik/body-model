@@ -9,14 +9,74 @@ import { useI18n } from "@/i18n/i18n-provider";
 import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
 import type { StrengthSessionDto, TrainingProgramSummaryDto } from "@/modules/training/training.types";
 import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperList } from "./training-paginated-sections";
-import { TrainingFinishPublicationNotice } from "./training-finish-publication-notice";
 import {
   formatDateTime,
   readApiError,
   trainingSessionTitle,
 } from "./training-labels";
 import { currentTrainingHref, useTrainingSearchParam } from "./training-url-state";
+import {
+  listStepperCreateOperations,
+  markStepperCreateOperationRejected,
+  markStepperCreateOperationTombstoned,
+  removeStepperCreateOperation,
+  replaceStepperCreateOperation,
+  storeStepperCreateOperation,
+  type StoredStepperCreateOperation,
+} from "@/app/training/set-create-operation-store";
 import styles from "./training.module.css";
+
+type StepperCreatePayload = {
+  startAt: string;
+  durationMinutes: number;
+  manualStepCount: number | null;
+  manualActiveEnergyKcal: number | null;
+};
+
+const STEPPER_REQUEST_TIMEOUT_MS = 15_000;
+
+async function stepperCreateOperationStatusUrl(operation: StoredStepperCreateOperation): Promise<string> {
+  const payload = operation.payload as StepperCreatePayload;
+  // Keep this canonical shape in sync with stepperCreatePayloadDigest in the
+  // repository. Property order is the repository's sorted canonical JSON order.
+  const canonicalPayload = {
+    durationMinutes: payload.durationMinutes,
+    manualActiveEnergyKcal: payload.manualActiveEnergyKcal ?? null,
+    manualStepCount: payload.manualStepCount ?? null,
+    startAt: new Date(payload.startAt).toISOString(),
+    version: 1,
+  };
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(canonicalPayload)));
+  const digest = Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `/api/v1/training/stepper-create-operations/${operation.operationId}?payloadDigest=${digest}`;
+}
+
+async function withStepperRequestTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(controller.signal),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("stepper_request_timeout"));
+        }, STEPPER_REQUEST_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function applyStepperPayload(payload: StepperCreatePayload) {
+  return {
+    startAt: workoutLocalDateTime(payload.startAt),
+    duration: String(payload.durationMinutes),
+    steps: payload.manualStepCount === null ? "" : String(payload.manualStepCount),
+    kcal: payload.manualActiveEnergyKcal === null ? "" : String(payload.manualActiveEnergyKcal),
+  };
+}
 
 function nowLocalDateTime(): string {
   const { date, time } = instantToLocalDateTime(new Date(), DEFAULT_TIME_ZONE);
@@ -42,6 +102,12 @@ export function TrainingClient() {
   const [stepperSteps, setStepperSteps] = useState("");
   const [stepperKcal, setStepperKcal] = useState("");
   const [stepperBusy, setStepperBusy] = useState(false);
+  const [pendingStepperCreate, setPendingStepperCreate] = useState<StoredStepperCreateOperation | null>(null);
+  const [stepperCreateQueue, setStepperCreateQueue] = useState<StoredStepperCreateOperation[]>([]);
+  const [tombstonedStepperCreates, setTombstonedStepperCreates] = useState<StoredStepperCreateOperation[]>([]);
+  const [rejectedStepperCreates, setRejectedStepperCreates] = useState<StoredStepperCreateOperation[]>([]);
+  const [stepperOperationRecoveryReady, setStepperOperationRecoveryReady] = useState(false);
+  const [stepperRecoveryError, setStepperRecoveryError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -50,6 +116,141 @@ export function TrainingClient() {
   const [reconBusyId, setReconBusyId] = useState<number | null>(null);
   const { value: programsRefresh, ready: programsRefreshReady } = useTrainingSearchParam("programsRefresh");
   const hubReturnHref = programsRefreshReady ? currentTrainingHref() : "/training";
+
+  const recoverStepperCreateOperations = useCallback(async () => {
+    try {
+      const operations = await listStepperCreateOperations();
+      const unresolved = operations.filter((operation) => operation.terminalState === undefined);
+      const tombstoned = operations.filter((operation) => operation.terminalState === "tombstoned" && !operation.replacementOperationId);
+      const rejected = operations.filter((operation) => operation.terminalState === "rejected" && !operation.replacementOperationId);
+      const pending = unresolved[0] ?? null;
+      setStepperCreateQueue(unresolved);
+      setTombstonedStepperCreates(tombstoned);
+      setRejectedStepperCreates(rejected);
+      if (pending) {
+        const draft = applyStepperPayload(pending.payload as StepperCreatePayload);
+        setPendingStepperCreate(pending);
+        setStepperStartAt(draft.startAt);
+        setStepperDuration(draft.duration);
+        setStepperSteps(draft.steps);
+        setStepperKcal(draft.kcal);
+        setStepperFormOpen(true);
+      } else if (tombstoned[0]) {
+        const draft = applyStepperPayload(tombstoned[0].payload as StepperCreatePayload);
+        setStepperStartAt(draft.startAt);
+        setStepperDuration(draft.duration);
+        setStepperSteps(draft.steps);
+        setStepperKcal(draft.kcal);
+        setStepperFormOpen(true);
+      } else if (rejected[0]) {
+        const draft = applyStepperPayload(rejected[0].payload as StepperCreatePayload);
+        setPendingStepperCreate(null);
+        setStepperStartAt(draft.startAt);
+        setStepperDuration(draft.duration);
+        setStepperSteps(draft.steps);
+        setStepperKcal(draft.kcal);
+        setStepperFormOpen(true);
+      }
+      setStepperOperationRecoveryReady(true);
+      setStepperRecoveryError(false);
+    } catch {
+      setError(uk ? "Не вдалося відновити незавершений запис степера." : "Could not restore an unresolved Stepper draft.");
+      setStepperRecoveryError(true);
+      setStepperOperationRecoveryReady(false);
+    }
+  }, [uk]);
+
+  useEffect(() => {
+    const recoveryTimer = window.setTimeout(() => {
+      void recoverStepperCreateOperations();
+    }, 0);
+    return () => window.clearTimeout(recoveryTimer);
+  }, [recoverStepperCreateOperations]);
+
+  async function activateNextStepperCreate(resolvedOperationId?: string) {
+    if (resolvedOperationId) await removeStepperCreateOperation(resolvedOperationId);
+    const operations = await listStepperCreateOperations();
+    const unresolved = operations.filter((operation) => operation.terminalState === undefined);
+    const tombstoned = operations.filter((operation) => operation.terminalState === "tombstoned" && !operation.replacementOperationId);
+    const rejected = operations.filter((operation) => operation.terminalState === "rejected" && !operation.replacementOperationId);
+    const next = unresolved[0] ?? null;
+    setStepperCreateQueue(unresolved);
+    setTombstonedStepperCreates(tombstoned);
+    setRejectedStepperCreates(rejected);
+    setPendingStepperCreate(next);
+    if (next) {
+      const draft = applyStepperPayload(next.payload as StepperCreatePayload);
+      setStepperStartAt(draft.startAt);
+      setStepperDuration(draft.duration);
+      setStepperSteps(draft.steps);
+      setStepperKcal(draft.kcal);
+      setStepperFormOpen(true);
+    } else if (tombstoned[0]) {
+      const draft = applyStepperPayload(tombstoned[0].payload as StepperCreatePayload);
+      setStepperStartAt(draft.startAt);
+      setStepperDuration(draft.duration);
+      setStepperSteps(draft.steps);
+      setStepperKcal(draft.kcal);
+      setStepperFormOpen(true);
+    } else if (rejected[0]) {
+      const draft = applyStepperPayload(rejected[0].payload as StepperCreatePayload);
+      setStepperFormOpen(true);
+      setStepperStartAt(draft.startAt);
+      setStepperDuration(draft.duration);
+      setStepperSteps(draft.steps);
+      setStepperKcal(draft.kcal);
+    } else {
+      setStepperFormOpen(false);
+      setEditingStepper(null);
+      setStepperStartAt(nowLocalDateTime());
+      setStepperDuration("20");
+      setStepperSteps("");
+      setStepperKcal("");
+    }
+    return next;
+  }
+
+  async function beginFreshStepperIntent() {
+    const prior = tombstonedStepperCreates[0] ?? rejectedStepperCreates[0];
+    if (!prior || pendingStepperCreate) return;
+    const confirmMessage = prior.terminalState === "tombstoned"
+      ? (uk
+        ? "Старий запис має підтверджений статус видаленого. Перевірте журнал і підтвердьте створення нового наміру зі збереженою чернеткою."
+        : "The prior operation is confirmed deleted. Verify the diary and confirm a new intent from the preserved draft.")
+      : (uk
+        ? "Попередній запит відхилено до запису. Перевірте або виправте чернетку та підтвердьте створення з новим ключем."
+        : "The prior request was rejected before writing. Review or edit the draft and confirm a new create with a fresh key.");
+    if (!window.confirm(confirmMessage)) return;
+    setStepperBusy(true);
+    setError(null);
+    try {
+      const [date, time] = stepperStartAt.split("T");
+      const payload: StepperCreatePayload = {
+        startAt: localDateTimeToInstant(date!, time!, DEFAULT_TIME_ZONE).toISOString(),
+        durationMinutes: Number(stepperDuration),
+        manualStepCount: stepperSteps.trim() === "" ? null : Number(stepperSteps),
+        manualActiveEnergyKcal: stepperKcal.trim() === "" ? null : Number(stepperKcal),
+      };
+      const operation = { operationId: crypto.randomUUID(), payload, createdAt: Date.now() };
+      await replaceStepperCreateOperation(prior.operationId, operation);
+      setPendingStepperCreate(operation);
+      setStepperCreateQueue((current) => [...current, operation]);
+      setTombstonedStepperCreates((current) => current.filter(({ operationId }) => operationId !== prior.operationId));
+      setRejectedStepperCreates((current) => current.filter(({ operationId }) => operationId !== prior.operationId));
+      setStepperFormOpen(true);
+    } catch {
+      try {
+        const canonical = await activateNextStepperCreate();
+        if (canonical && canonical.operationId !== prior.operationId) {
+          setError(uk ? "Інша вкладка вже створила новий намір. Відновлено його той самий ключ." : "Another tab already created the new intent. Its canonical key has been restored.");
+          return;
+        }
+      } catch { /* Keep this tab fail-closed; the next recovery attempt may adopt the winner. */ }
+      setError(uk ? "Не вдалося зберегти нову чернетку. Запис не надсилався." : "Could not persist the new draft. No create request was sent.");
+    } finally {
+      setStepperBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +276,33 @@ export function TrainingClient() {
 
   function openNewStepperForm() {
     setEditingStepper(null);
+    if (pendingStepperCreate) {
+      const draft = applyStepperPayload(pendingStepperCreate.payload as StepperCreatePayload);
+      setStepperStartAt(draft.startAt);
+      setStepperDuration(draft.duration);
+      setStepperSteps(draft.steps);
+      setStepperKcal(draft.kcal);
+      setStepperFormOpen(true);
+      return;
+    }
+    if (tombstonedStepperCreates[0]) {
+      const draft = applyStepperPayload(tombstonedStepperCreates[0].payload as StepperCreatePayload);
+      setStepperStartAt(draft.startAt);
+      setStepperDuration(draft.duration);
+      setStepperSteps(draft.steps);
+      setStepperKcal(draft.kcal);
+      setStepperFormOpen(true);
+      return;
+    }
+    if (rejectedStepperCreates[0]) {
+      const draft = applyStepperPayload(rejectedStepperCreates[0].payload as StepperCreatePayload);
+      setStepperStartAt(draft.startAt);
+      setStepperDuration(draft.duration);
+      setStepperSteps(draft.steps);
+      setStepperKcal(draft.kcal);
+      setStepperFormOpen(true);
+      return;
+    }
     setStepperStartAt(nowLocalDateTime());
     setStepperDuration("20");
     setStepperSteps("");
@@ -83,6 +311,10 @@ export function TrainingClient() {
   }
 
   function openEditStepperForm(workout: StepperWorkoutDto) {
+    if (pendingStepperCreate) {
+      setError(uk ? "Спершу підтвердьте або відновіть незавершений запис степера." : "Resolve the pending Stepper create before editing another workout.");
+      return;
+    }
     setEditingStepper(workout);
     setStepperStartAt(workoutLocalDateTime(workout.startAt));
     setStepperDuration(String(workout.durationMinutes ?? 20));
@@ -93,32 +325,111 @@ export function TrainingClient() {
 
   async function saveStepperWorkout(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!editingStepper && pendingStepperCreate === null && (tombstonedStepperCreates.length > 0 || rejectedStepperCreates.length > 0)) {
+      setError(uk ? "Підтвердіть окремою кнопкою створення нового наміру. Попередній запит не буде повторено." : "Use the explicit new-intent action. The prior operation will not be retried.");
+      return;
+    }
     setStepperBusy(true);
     setError(null);
+    let operation = pendingStepperCreate;
+    let operationPersisted = pendingStepperCreate !== null;
+    let postAttempted = false;
     try {
       const [date, time] = stepperStartAt.split("T");
       const instant = localDateTimeToInstant(date!, time!, DEFAULT_TIME_ZONE).toISOString();
-      const response = await fetch(editingStepper
-        ? `/api/v1/training/stepper-workouts/${editingStepper.id}`
-        : "/api/v1/training/stepper-workouts", {
-        method: editingStepper ? "PUT" : "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          startAt: instant,
-          durationMinutes: Number(stepperDuration),
-          manualStepCount: stepperSteps.trim() === "" ? null : Number(stepperSteps),
-          manualActiveEnergyKcal: stepperKcal.trim() === "" ? null : Number(stepperKcal),
-        }),
-      });
+      const payload: StepperCreatePayload = {
+        startAt: instant,
+        durationMinutes: Number(stepperDuration),
+        manualStepCount: stepperSteps.trim() === "" ? null : Number(stepperSteps),
+        manualActiveEnergyKcal: stepperKcal.trim() === "" ? null : Number(stepperKcal),
+      };
+      if (!editingStepper && operation === null) {
+        operation = {
+          operationId: crypto.randomUUID(),
+          payload,
+          createdAt: Date.now(),
+        };
+        await storeStepperCreateOperation(operation);
+        operationPersisted = true;
+        setPendingStepperCreate(operation);
+      }
+      const response = editingStepper
+        ? await withStepperRequestTimeout((signal) => fetch(`/api/v1/training/stepper-workouts/${editingStepper.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+          signal,
+        }))
+        : await (async () => {
+          const statusUrl = await stepperCreateOperationStatusUrl(operation!);
+          const resolved = await withStepperRequestTimeout((signal) => fetch(statusUrl, { cache: "no-store", signal }));
+          if (resolved.status === 200) return resolved;
+          if (resolved.status === 410) throw new Error("stepper_operation_tombstoned");
+          if (resolved.status !== 404) throw new Error("stepper_operation_status_unavailable");
+          postAttempted = true;
+          return withStepperRequestTimeout((signal) => fetch("/api/v1/training/stepper-workouts", {
+            method: "POST",
+            headers: { "content-type": "application/json", "Idempotency-Key": operation!.operationId },
+            body: JSON.stringify(operation!.payload),
+            signal,
+          }));
+        })();
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        if (!editingStepper && response.status === 410) {
+          await markStepperCreateOperationTombstoned(operation!);
+          await activateNextStepperCreate();
+          setError(uk ? "Цей запис підтверджено як видалений. Чернетку збережено; перевірте журнал, потім підтвердьте новий намір." : "This operation is confirmed deleted. The draft is preserved; verify the diary, then confirm a new intent.");
+          return;
+        }
+        if (!editingStepper && postAttempted && response.status === 400) {
+          await markStepperCreateOperationRejected(operation!);
+          await activateNextStepperCreate();
+          setError(uk
+            ? "Сервер відхилив запит до запису. Чернетку збережено; виправте її та підтвердіть створення нового наміру."
+            : "The server rejected the request before writing. The draft is preserved; edit it and confirm a new create intent.");
+          return;
+        }
+        setError(await withStepperRequestTimeout(() => readApiError(response, uk)));
+        return;
+      }
+      if (!editingStepper && operation && operationPersisted) {
+        const result = await withStepperRequestTimeout(() => response.json()) as { state?: string };
+        if (result.state !== "COMMITTED") throw new Error("stepper_operation_unresolved");
+        await activateNextStepperCreate(operation.operationId);
+        setListsRevision((current) => current + 1);
         return;
       }
       setStepperFormOpen(false);
       setEditingStepper(null);
       setListsRevision((current) => current + 1);
-    } catch {
-      setError(uk ? "Перевірте дату й час тренування." : "Check the workout date and time.");
+    } catch (error) {
+      if (!editingStepper && operation && operationPersisted) {
+        const operationId = operation.operationId;
+        try {
+          const statusUrl = await stepperCreateOperationStatusUrl(operation);
+          const status = await withStepperRequestTimeout((signal) => fetch(statusUrl, { cache: "no-store", signal }));
+          if (status.status === 200) {
+            const result = await withStepperRequestTimeout(() => status.json()) as { state?: string };
+            if (result.state === "COMMITTED") {
+              await activateNextStepperCreate(operationId);
+              setListsRevision((current) => current + 1);
+              return;
+            }
+          } else if (status.status === 410) {
+            await markStepperCreateOperationTombstoned(operation);
+            await activateNextStepperCreate();
+            setError(uk ? "Цей запис підтверджено як видалений. Чернетку збережено; перевірте журнал, потім підтвердьте новий намір." : "This operation is confirmed deleted. The draft is preserved; verify the diary, then confirm a new intent.");
+            return;
+          }
+        } catch { /* Keep the exact key and draft for later reconciliation. */ }
+        setError(error instanceof Error && error.message === "stepper_operation_tombstoned"
+          ? (uk ? "Цей запис уже видалено. Чернетку збережено; перевірте журнал перед новим наміром." : "This operation was deleted. The draft is preserved; verify the diary before creating a new intent.")
+          : (uk ? "Результат запису не підтверджений. Чернетку збережено; повторна спроба використає той самий ключ." : "The save outcome is unresolved. The draft is preserved; retry will use the same operation key."));
+      } else {
+        setError(postAttempted
+          ? (uk ? "Не вдалося зберегти тренування." : "Could not save the workout.")
+          : (uk ? "Не вдалося зберегти чернетку. Запис не надсилався." : "Could not persist the draft. No create request was sent."));
+      }
     } finally {
       setStepperBusy(false);
     }
@@ -129,9 +440,9 @@ export function TrainingClient() {
     setStepperBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/v1/training/stepper-workouts/${workout.id}`, { method: "DELETE" });
+      const response = await withStepperRequestTimeout((signal) => fetch(`/api/v1/training/stepper-workouts/${workout.id}`, { method: "DELETE", signal }));
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        setError(await withStepperRequestTimeout(() => readApiError(response, uk)));
         return;
       }
       if (editingStepper?.id === workout.id) setStepperFormOpen(false);
@@ -153,7 +464,7 @@ export function TrainingClient() {
     setReconBusyId(workout.id);
     setError(null);
     try {
-      const response = await fetch("/api/v1/training/stepper-reconciliation/confirm", {
+      const response = await withStepperRequestTimeout((signal) => fetch("/api/v1/training/stepper-reconciliation/confirm", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -162,9 +473,10 @@ export function TrainingClient() {
           // Confirm only. Authorized activation is a separate operator step.
           activateVisibility: false,
         }),
-      });
+        signal,
+      }));
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        setError(await withStepperRequestTimeout(() => readApiError(response, uk)));
         return;
       }
       setListsRevision((current) => current + 1);
@@ -183,13 +495,14 @@ export function TrainingClient() {
     setReconBusyId(workout.id);
     setError(null);
     try {
-      const response = await fetch("/api/v1/training/stepper-reconciliation/reject", {
+      const response = await withStepperRequestTimeout((signal) => fetch("/api/v1/training/stepper-reconciliation/reject", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ groupId: workout.reconciliationGroupId }),
-      });
+        signal,
+      }));
       if (!response.ok) {
-        setError(await readApiError(response, uk));
+        setError(await withStepperRequestTimeout(() => readApiError(response, uk)));
         return;
       }
       setListsRevision((current) => current + 1);
@@ -328,7 +641,6 @@ export function TrainingClient() {
     setError(null);
     try {
       const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { method: "DELETE" });
-      const publicationStatus = await response.clone().json().then((body: { modelPublicationStatus?: unknown }) => body.modelPublicationStatus).catch(() => undefined);
       if (!response.ok) {
         const apiError = await readApiError(response, uk);
         try {
@@ -336,9 +648,7 @@ export function TrainingClient() {
           if (current.status === 404) {
             setListsRevision((revision) => revision + 1);
             setError(null);
-            setNotice(publicationStatus === "stale"
-              ? (uk ? "Тренування видалено, але публікація моделі ще не актуальна." : "Session deleted, but model publication is not current yet.")
-              : (uk ? "Запис тренування відсутній; журнал показує актуальний стан." : "The workout record is absent; the diary shows the current state."));
+            setNotice(uk ? "Запис тренування відсутній; журнал оновлено." : "The workout record is absent; the diary is up to date.");
             return;
           }
         } catch {
@@ -348,9 +658,7 @@ export function TrainingClient() {
         return;
       }
       setListsRevision((current) => current + 1);
-      setNotice(publicationStatus === "stale"
-        ? (uk ? "Запис видалено. Публікація моделі ще оновлюється; дані можуть тимчасово бути неактуальними." : "Session deleted. Model publication is still updating, so derived data may be temporarily stale.")
-        : null);
+      setNotice(uk ? "Тренування видалено." : "Session deleted.");
     } catch {
       setListsRevision((current) => current + 1);
       try {
@@ -375,8 +683,6 @@ export function TrainingClient() {
         <strong>BodyCast</strong>
         <AppNav active="training" />
       </div>
-      <TrainingFinishPublicationNotice />
-
       <header className={styles.header}>
         <div>
           <p className={styles.eyebrow}>{uk ? "Щоденник тренувань" : "Training diary"}</p>
@@ -428,7 +734,7 @@ export function TrainingClient() {
                 </div>
               </article>
           </div>
-        </section> : !loading && !error && <section className={`${styles.panel} ${styles.panelActive} ${styles.panelStartDynamic}`} aria-label={uk ? "Почати тренування" : "Start a workout"}>
+        </section> : !loading && <section className={`${styles.panel} ${styles.panelActive} ${styles.panelStartDynamic}`} aria-label={uk ? "Почати тренування" : "Start a workout"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Почати без програми" : "Start without a program"}</h2>
@@ -522,11 +828,26 @@ export function TrainingClient() {
               <h2>{uk ? "Тренування на степері" : "Stepper workouts"}</h2>
               <p>{uk ? "Apple Health і власні записи · час, тривалість, діагностика" : "Apple Health and manual entries · time, duration, diagnostics"}</p>
             </div>
-            <button className={styles.primaryButton} type="button" onClick={openNewStepperForm}>
+            <button className={styles.primaryButton} type="button" disabled={!stepperOperationRecoveryReady || stepperBusy} onClick={openNewStepperForm}>
               {uk ? "Додати степер" : "Add stepper"}
             </button>
           </div>
           <div className={styles.panelBody}>
+            {stepperRecoveryError && <div role="alert" className={styles.cardMeta}>
+              <span>{uk ? "Чернетки не перевірені. Створення заблоковано до успішного відновлення." : "Saved drafts could not be checked. Creating is disabled until recovery succeeds."}</span>
+              <button className={styles.secondaryButton} type="button" disabled={stepperBusy} onClick={() => void recoverStepperCreateOperations()}>
+                {uk ? "Повторити відновлення" : "Retry draft recovery"}
+              </button>
+            </div>}
+            {stepperCreateQueue.length > 0 && <p className={styles.cardMeta} role="status">
+              {uk ? `Збережено незавершених намірів: ${stepperCreateQueue.length}. Вони будуть перевірені послідовно.` : `${stepperCreateQueue.length} saved unresolved intents will be reconciled in order.`}
+            </p>}
+            {tombstonedStepperCreates.length > 0 && <p className={styles.cardMeta} role="status">
+              {uk ? `Є підтверджені видалені наміри зі збереженими чернетками: ${tombstonedStepperCreates.length}.` : `${tombstonedStepperCreates.length} confirmed deleted intents remain archived with their drafts.`}
+            </p>}
+            {rejectedStepperCreates.length > 0 && <p className={styles.cardMeta} role="status">
+              {uk ? `Є відхилені до запису наміри зі збереженими чернетками: ${rejectedStepperCreates.length}. Нове створення потребує окремого підтвердження.` : `${rejectedStepperCreates.length} pre-write rejected intents remain archived with their drafts. A fresh create requires separate confirmation.`}
+            </p>}
             {stepperFormOpen && (
               <form className={`${styles.exerciseRow} ${styles.stepperForm}`} onSubmit={(event) => void saveStepperWorkout(event)}>
                 <div className={styles.exerciseRowHeader}>
@@ -543,25 +864,30 @@ export function TrainingClient() {
                 <div className={`${styles.exerciseFields} ${styles.stepperFields}`}>
                   <label className={styles.field}>
                     <span>{uk ? "Дата й час · Europe/Bratislava" : "Date and time · Europe/Bratislava"}</span>
-                    <input aria-label={uk ? "Дата й час степера" : "Stepper date and time"} type="datetime-local" required value={stepperStartAt} onChange={(event) => setStepperStartAt(event.target.value)} />
+                    <input aria-label={uk ? "Дата й час степера" : "Stepper date and time"} type="datetime-local" required disabled={pendingStepperCreate !== null} value={stepperStartAt} onChange={(event) => setStepperStartAt(event.target.value)} />
                   </label>
                   <label className={styles.field}>
                     <span>{uk ? "Тривалість · хвилини" : "Duration · minutes"}</span>
-                    <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
+                    <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required disabled={pendingStepperCreate !== null} value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
                   </label>
                   <label className={styles.field}>
                     <span>{uk ? "Кроки MS100 · необов’язково" : "MS100 steps · optional"}</span>
-                    <input aria-label={uk ? "Кроки степера" : "Stepper steps"} type="number" min="0" step="1" value={stepperSteps} onChange={(event) => setStepperSteps(event.target.value)} />
+                    <input aria-label={uk ? "Кроки степера" : "Stepper steps"} type="number" min="0" max="2147483647" step="1" disabled={pendingStepperCreate !== null} value={stepperSteps} onChange={(event) => setStepperSteps(event.target.value)} />
                   </label>
                   <label className={styles.field}>
                     <span>{uk ? "Активні ккал · необов’язково" : "Active kcal · optional"}</span>
-                    <input aria-label={uk ? "Активні ккал степера" : "Stepper active kcal"} type="number" min="0" step="1" value={stepperKcal} onChange={(event) => setStepperKcal(event.target.value)} />
+                    <input aria-label={uk ? "Активні ккал степера" : "Stepper active kcal"} type="number" min="0" step="1" disabled={pendingStepperCreate !== null} value={stepperKcal} onChange={(event) => setStepperKcal(event.target.value)} />
                   </label>
                 </div>
                 <div className={styles.denseCardActions}>
                   <button className={styles.primaryButton} type="submit" disabled={stepperBusy}>
-                    {stepperBusy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}
+                    {stepperBusy ? (uk ? "Збереження…" : "Saving…") : pendingStepperCreate
+                      ? (uk ? "Перевірити / повторити запис" : "Check / retry save")
+                      : (uk ? "Зберегти" : "Save")}
                   </button>
+                  {!pendingStepperCreate && !editingStepper && (tombstonedStepperCreates.length > 0 || rejectedStepperCreates.length > 0) && <button className={styles.secondaryButton} type="button" disabled={stepperBusy} onClick={() => void beginFreshStepperIntent()}>
+                    {uk ? "Підтвердити новий намір із чернетки" : "Confirm new intent from draft"}
+                  </button>}
                   {editingStepper && <button className={styles.secondaryButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(editingStepper)}>{uk ? "Видалити" : "Delete"}</button>}
                 </div>
               </form>

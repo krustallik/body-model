@@ -61,7 +61,10 @@ export async function invalidateActiveEnergyResolutionDatesV1(profileId: number,
 
 export async function materializeActiveEnergyCandidatesV1(
   profileId = 1,
-  options: { onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void } = {},
+  options: {
+    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+    skipTrainingAccountingMaterialization?: boolean;
+  } = {},
 ): Promise<{
   stepperWorkoutIds: number[];
   strengthSessionIds: number[];
@@ -85,6 +88,7 @@ export async function materializeActiveEnergyCandidatesV1(
     await recordExperimentalStrengthEnergyShadowBySessionId({
       sessionId: session.id,
       profileId,
+      ...(options.skipTrainingAccountingMaterialization ? { skipAccountingMaterialization: true } : {}),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
   }
@@ -236,7 +240,10 @@ export async function refreshStepperCandidatesV1(profileId: number, workoutIds: 
 export async function refreshCandidatesAfterProductionV1(
   profileId: number,
   replayFromDate: string,
-  options: { onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void } = {},
+  options: {
+    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+    skipTrainingAccountingMaterialization?: boolean;
+  } = {},
 ): Promise<string[]> {
   const before = await readResolutionSnapshot(profileId);
   const [episodes, sessions, workouts] = await Promise.all([
@@ -286,6 +293,7 @@ export async function refreshCandidatesAfterProductionV1(
     await recordExperimentalStrengthEnergyShadowBySessionId({
       sessionId: session.id,
       profileId,
+      ...(options.skipTrainingAccountingMaterialization ? { skipAccountingMaterialization: true } : {}),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
   }

@@ -19,6 +19,8 @@ export type ActiveEnergyPublicationStatusV1 = "current" | "stale" | "not-run";
 /** Rebuild production Active Energy without publishing the dependent Unified snapshot. */
 export async function recalculateActiveEnergyChangesV1(input: {
   now?: Date;
+  /** Recovery-only: keep legacy accounting fields byte-for-byte unchanged. */
+  skipTrainingAccountingMaterialization?: boolean;
   onLifecycleFenceChanged?: (fence: ProductionPublicationFenceV1) => void;
 } = {}): Promise<CurrentActiveEnergyPublicationWindowV1 | null> {
   let status;
@@ -31,6 +33,8 @@ export async function recalculateActiveEnergyChangesV1(input: {
   await recalculateModelEpisode({
     episodeId: status.episodeId,
     ...(input.now === undefined ? {} : { now: input.now }),
+    ...(input.skipTrainingAccountingMaterialization === undefined
+      ? {} : { skipTrainingAccountingMaterialization: input.skipTrainingAccountingMaterialization }),
     ...(input.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: input.onLifecycleFenceChanged }),
   });
   const current = await getModelStatus(status.episodeId);

@@ -559,6 +559,7 @@ export async function recalculateModelEpisode(
   input: {
     episodeId?: number;
     now?: Date;
+    skipTrainingAccountingMaterialization?: boolean;
     onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
   } = {},
   client: PrismaClient = prisma,
@@ -578,7 +579,10 @@ export async function recalculateModelEpisode(
   }
   const status = await getModelStatus(input.episodeId, client);
   const profileId = 1;
-  const materialized = await materializeActiveEnergyCandidatesV1(profileId, { onLifecycleFenceChanged: input.onLifecycleFenceChanged });
+  const materialized = await materializeActiveEnergyCandidatesV1(profileId, {
+    onLifecycleFenceChanged: input.onLifecycleFenceChanged,
+    skipTrainingAccountingMaterialization: input.skipTrainingAccountingMaterialization,
+  });
   await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates);
   await publishLifecycleFence();
   const eligibleRefreshes = materialized.stepperWorkoutIds.length
@@ -592,6 +596,7 @@ export async function recalculateModelEpisode(
     await publishLifecycleFence();
     const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate, {
       onLifecycleFenceChanged: input.onLifecycleFenceChanged,
+      skipTrainingAccountingMaterialization: input.skipTrainingAccountingMaterialization,
     });
     if (changedDates.length === 0) {
       await publishLifecycleFence();

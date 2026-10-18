@@ -1,24 +1,30 @@
 import { prisma } from "@/lib/db/prisma";
 import { runOwnerAuthorizedFullHistoryRecalculation } from "@/modules/model-episodes/full-history-recalculation.service";
+import { recoverUnifiedV4FromPersistedSourcesV1 } from "@/modules/model-episodes/unified-v4-derived-recovery.service";
 
-function args(): { profileId: number } {
-  if (!process.argv.includes("--full-history-recalculate") || !process.argv.includes("--owner-authorized")) {
-    throw new Error(
-      "Full-history recalculation requires explicit --full-history-recalculate --owner-authorized flags",
-    );
+function args(): { profileId: number; mode: "full-history" | "derived-v4" } {
+  const fullHistory = process.argv.includes("--full-history-recalculate");
+  const derivedV4 = process.argv.includes("--derived-v4-recovery");
+  if (fullHistory === derivedV4 || !process.argv.includes("--owner-authorized")) {
+    throw new Error("Choose exactly one owner-authorized recalculation operation");
   }
   const index = process.argv.indexOf("--profile-id");
   const profileId = index < 0 ? NaN : Number(process.argv[index + 1]);
   if (!Number.isInteger(profileId) || profileId <= 0) {
     throw new Error(
-      "Usage: node production-full-history-recalculate.mjs --full-history-recalculate --owner-authorized --profile-id <positive integer>",
+      "Usage: node production-full-history-recalculate.mjs (--full-history-recalculate | --derived-v4-recovery) --owner-authorized --profile-id <positive integer>",
     );
   }
-  return { profileId };
+  return { profileId, mode: derivedV4 ? "derived-v4" : "full-history" };
 }
 
 async function main(): Promise<void> {
-  const { profileId } = args();
+  const { profileId, mode } = args();
+  if (mode === "derived-v4") {
+    const result = await recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true });
+    process.stdout.write(JSON.stringify({ command: "unified-v4-derived-recovery", ...result, current: true }) + "\n");
+    return;
+  }
   const result = await runOwnerAuthorizedFullHistoryRecalculation({
     profileId,
     ownerAuthorized: true,

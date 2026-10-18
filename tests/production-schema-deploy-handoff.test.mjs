@@ -14,6 +14,7 @@ import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "../scripts/production-migr
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
 const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
+const V4_COMPATIBLE_TEST_CANDIDATE_SHA = "f910d2a45dfa676fada5fab42c9e8946c97872b1";
 const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
@@ -32,8 +33,9 @@ function ensureHandoffHistory() {
 }
 
 function v4TestCandidateSha() {
-  // PR-only changes must not alter positive cases for the trusted V4 handoff tree.
-  return execFileSync("git", ["rev-parse", "origin/main"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+  // Keep positive V4 handoff cases pinned to a known compatible descendant.
+  // origin/main may later include schema migrations that this V4 handoff must reject.
+  return V4_COMPATIBLE_TEST_CANDIDATE_SHA;
 }
 
 function markerText(overrides = {}) {

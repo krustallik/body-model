@@ -67,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
@@ -155,7 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -174,6 +174,9 @@ jobs:
       NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
       IOS_SHORTCUT_API_KEY: integration-test-secret
+      BODYCAST_STAGE01_MODE: test
+      BODYCAST_GLYCOGEN_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
+      BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -196,28 +199,16 @@ jobs:
       - name: Apply test database migrations
         run: npm run prisma:migrate:deploy
 
-      - name: PostgreSQL integration tests — balanced shards 1 and 2
+      - name: PostgreSQL integration tests (balanced shards 1 and 2)
         if: matrix.shard <= 2
-        env:
-          BODYCAST_STAGE01_MODE: test
-          BODYCAST_GLYCOGEN_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
-          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
         run: npm run test:integration -- --shard=${{ matrix.shard }}/2 --testNamePattern='^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$'
 
-      - name: PostgreSQL integration — Health coordination recovery
+      - name: PostgreSQL integration (Health coordination recovery)
         if: matrix.shard == 3
-        env:
-          BODYCAST_STAGE01_MODE: test
-          BODYCAST_GLYCOGEN_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
-          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
         run: npm run test:integration -- tests/integration/health-sync.integration.test.ts --testNamePattern='completes Training edits through Health coordination, stale-worker fencing, and restart recovery'
 
-      - name: PostgreSQL integration — legacy Stepper publication recovery
+      - name: PostgreSQL integration (legacy Stepper publication recovery)
         if: matrix.shard == 4
-        env:
-          BODYCAST_STAGE01_MODE: test
-          BODYCAST_GLYCOGEN_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
-          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
         run: npm run test:integration -- tests/integration/health-sync.integration.test.ts --testNamePattern='rebuilds and clears an acknowledged legacy Stepper block only after stable publication'
 
   next-build:

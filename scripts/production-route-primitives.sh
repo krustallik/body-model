@@ -141,7 +141,7 @@ EOF
 
 bodycast_verify_exact_maintenance_route() {
   bodycast_maintenance_marker_from_route >/dev/null || return 1
-  docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null
+  timeout 8s docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null
 }
 
 bodycast_verify_exact_serving_route() {
@@ -154,7 +154,7 @@ bodycast_verify_exact_serving_route() {
     echo "Live Caddy route is not the exact fixed serving route." >&2
     return 1
   fi
-  docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null
+  timeout 8s docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null
 }
 
 bodycast_probe_public_maintenance() {

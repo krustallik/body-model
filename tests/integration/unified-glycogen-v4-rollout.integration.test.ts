@@ -1,5 +1,5 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -438,6 +438,141 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
     })).updatedAt.toISOString()).toBe(updatedAt);
   });
 
+  it("holds the PostgreSQL V4 currentness fence until the SSH route acknowledgment", async () => {
+    const previousJob = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
+    const job = await prisma.trainingRefreshJob.upsert({
+      where: { profileId },
+      create: {
+        profileId,
+        requestedGeneration: 1,
+        completedGeneration: 0,
+        dueAt: new Date(),
+        dirtyFromDate: modelDate,
+        dirtyToDate: modelDate,
+        nextAttemptAt: new Date(),
+      },
+      update: {},
+    });
+    const pendingGeneration = job.requestedGeneration + 1;
+    let child: ReturnType<typeof spawn> | undefined;
+    let childClosed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
+    let writer: Promise<void> | undefined;
+
+    try {
+      await prisma.trainingRefreshJob.update({
+        where: { profileId },
+        data: {
+          requestedGeneration: pendingGeneration,
+          completedGeneration: job.completedGeneration,
+          dueAt: new Date(),
+          dirtyFromDate: modelDate,
+          dirtyToDate: modelDate,
+        },
+      });
+
+      await expect(verifyUnifiedV4ReadyForTraffic({ profileId, client: prisma }))
+        .rejects.toThrow(/blocked/);
+      await expect(verifyUnifiedV4ReadyForTraffic({
+        profileId,
+        client: prisma,
+        checkTrainingRefreshQueue: false,
+      })).resolves.toMatchObject({ profileId, dayCount: 1 });
+
+      await prisma.trainingRefreshJob.update({
+        where: { profileId },
+        data: {
+          completedGeneration: pendingGeneration,
+          dueAt: null,
+          dirtyFromDate: null,
+          dirtyToDate: null,
+          leaseToken: null,
+          leaseUntil: null,
+          lastErrorType: null,
+          lastErrorAt: null,
+        },
+      });
+
+      child = spawn(process.execPath, [
+        path.join(migratorArtifactRoot, "scripts", "unified-v4-traffic-check.mjs"),
+        "--profile-id", String(profileId),
+        "--hold-currentness-fence",
+      ], {
+        cwd: process.cwd(),
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const childStdin = child.stdin;
+      const childStdout = child.stdout;
+      const childStderr = child.stderr;
+      if (!childStdin || !childStdout || !childStderr) {
+        throw new Error("held currentness fence did not expose its configured stdio pipes");
+      }
+      childStdout.setEncoding("utf8");
+      childStderr.setEncoding("utf8");
+      let stdout = "";
+      let stderr = "";
+      let readyObserved = false;
+      childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        child!.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      const ready = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("held currentness fence did not become ready")), 10_000);
+        childStdout.on("data", (chunk: string) => {
+          stdout += chunk;
+          if (stdout.includes("BODYCAST_UNIFIED_V4_FENCE_READY ")) {
+            readyObserved = true;
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        childStderr.on("data", (chunk: string) => { stderr += chunk; });
+        child!.once("close", (code, signal) => {
+          if (!readyObserved) {
+            clearTimeout(timer);
+            reject(new Error("held currentness fence exited before readiness (code="
+              + code + ", signal=" + signal + "): " + stderr));
+          }
+        });
+      });
+
+      await ready;
+      let writerAcquiredFence = false;
+      writer = secondClient.$transaction(async (tx) => {
+        await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+        writerAcquiredFence = true;
+      }, { maxWait: 10_000, timeout: 20_000 });
+      await waitForAdvisoryLockWait();
+      expect(writerAcquiredFence).toBe(false);
+
+      childStdin.write("route-committed\n");
+      const result = await childClosed;
+      expect(result).toEqual({ code: 0, signal: null });
+      expect(stdout).toContain("BODYCAST_UNIFIED_V4_FENCE_COMMITTED");
+      await writer;
+      expect(writerAcquiredFence).toBe(true);
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        try {
+          child.stdin?.write("abort\n");
+          child.stdin?.end();
+        } catch {}
+        const closeResult = childClosed
+          ? await Promise.race([
+            childClosed,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+          ])
+          : null;
+        if (closeResult === null) child.kill("SIGTERM");
+      }
+      if (writer) await Promise.allSettled([writer]);
+      if (previousJob) {
+        const { profileId: _profileId, ...previousJobData } = previousJob;
+        await prisma.trainingRefreshJob.update({ where: { profileId }, data: previousJobData });
+      } else {
+        await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+      }
+    }
+  }, 15_000);
   it("aborts a derived candidate whose lifecycle source fence became stale", async () => {
     const expected = await readUnifiedSourceFenceV1(prisma, profileId);
     expect(expected).not.toBeNull();

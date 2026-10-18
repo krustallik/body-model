@@ -9,13 +9,17 @@ import {
   applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
   readGitCompatibility, renderSchemaDeployTransition,
 } from "../scripts/production-schema-deploy-handoff.mjs";
-import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import {
+  DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST,
+  TRAINING_MUTATION_LEDGER_MANIFEST,
+} from "../scripts/production-migration-manifests.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
 const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
 const V4_COMPATIBLE_TEST_CANDIDATE_SHA = "f910d2a45dfa676fada5fab42c9e8946c97872b1";
 const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
+const TRAINING_MIGRATION_SHA = "73f0e49aa2fbb4595f7acfc00d16f76bfa2e2da1";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -116,6 +120,32 @@ function dynamicWorkoutMarkerText(releaseSha, overrides = {}) {
   ].join("\n");
 }
 
+function trainingMutationMarkerText(overrides = {}) {
+  const marker = {
+    manifestId: TRAINING_MUTATION_LEDGER_MANIFEST.id,
+    releaseSha: TRAINING_MIGRATION_SHA,
+    state: "schema-applied",
+    workflowRunId: "40123456790",
+    workflowRunAttempt: 1,
+    authorizationId: "training-migration-authorization-01",
+    lineageDigest: "b".repeat(64),
+    spawnState: "started",
+    ...overrides,
+  };
+  return [
+    "schemaVersion=2",
+    `manifestId=${marker.manifestId}`,
+    `releaseSha=${marker.releaseSha}`,
+    `state=${marker.state}`,
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    `spawnState=${marker.spawnState}`,
+    "",
+  ].join("\n");
+}
+
 async function createDynamicWorkoutHandoffRepository() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-dynamic-handoff-"));
   directories.push(directory);
@@ -131,6 +161,20 @@ async function createDynamicWorkoutHandoffRepository() {
     "commit", "--quiet", "-m", "compatible follow-up"]);
   const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   return { repository, originSha, candidateSha };
+}
+
+async function createTrainingMutationHandoffRepository({ file, contents }) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-training-handoff-"));
+  directories.push(directory);
+  const repository = path.join(directory, "repo");
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+  execFileSync("git", ["-C", repository, "checkout", "--quiet", "--detach", TRAINING_MIGRATION_SHA]);
+  await writeFile(path.join(repository, file), contents);
+  execFileSync("git", ["-C", repository, "add", file]);
+  execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+    "commit", "--quiet", "-m", "training handoff compatibility fixture"]);
+  const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return { repository, candidateSha };
 }
 
 const compatible = {
@@ -640,6 +684,153 @@ describe("schema deploy compatibility handoff", () => {
     expect(await readFile(markerPath, "utf8")).toBe(concurrentMarker);
     expect((await readdir(directory)).sort()).toEqual(["marker"]);
   }, 30_000);
+
+  it("converts an exact Training schema-applied marker to V3 and replays idempotently", () => {
+    const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    expect(compatibility.changedPaths).toEqual([]);
+    expect(compatibility.criticalObjects).toHaveProperty("src");
+    expect(compatibility.criticalObjects).toHaveProperty(".github/workflows");
+
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: trainingMutationMarkerText(),
+      deploySha: TRAINING_MIGRATION_SHA,
+      ...compatibility,
+    });
+    expect(plan.action).toBe("write");
+    expect(plan.marker).toMatchObject({
+      manifestId: TRAINING_MUTATION_LEDGER_MANIFEST.id,
+      migrationOriginSha: TRAINING_MIGRATION_SHA,
+      deploySha: TRAINING_MIGRATION_SHA,
+      state: "schema-applied",
+      workflowRunId: "40123456790",
+      workflowRunAttempt: 1,
+      authorizationId: "training-migration-authorization-01",
+      lineageDigest: "b".repeat(64),
+      spawnState: "started",
+    });
+    const replay = evaluateSchemaDeployHandoff({
+      markerText: plan.bytes,
+      deploySha: TRAINING_MIGRATION_SHA,
+      ...compatibility,
+    });
+    expect(replay.action).toBe("replay");
+    expect(parseSchemaDeployMarker(renderSchemaDeployTransition(plan.bytes, "app-ready")).marker)
+      .toMatchObject({ manifestId: TRAINING_MUTATION_LEDGER_MANIFEST.id, state: "app-ready" });
+  });
+
+  it("validates and checks a Training V3 app-ready marker through the deployed CLI", async () => {
+    const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    const schemaApplied = evaluateSchemaDeployHandoff({
+      markerText: trainingMutationMarkerText(),
+      deploySha: TRAINING_MIGRATION_SHA,
+      ...compatibility,
+    });
+    const appReady = renderSchemaDeployTransition(schemaApplied.bytes, "app-ready");
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-training-v3-cli-"));
+    directories.push(directory);
+    const markerPath = path.join(directory, "marker");
+    await writeFile(markerPath, appReady);
+    const script = path.resolve("scripts/production-schema-deploy-handoff.mjs");
+
+    execFileSync(process.execPath, [script, "--validate-marker", markerPath], { cwd: process.cwd() });
+    execFileSync(process.execPath, [script, "--check", markerPath, TRAINING_MIGRATION_SHA, process.cwd()], { cwd: process.cwd() });
+  });
+
+  it.each([
+    ["wrong manifest", { manifestId: "unified-v4-republication-v1" }],
+    ["wrong release SHA", { releaseSha: "f".repeat(40) }],
+    ["wrong marker state", { state: "app-ready" }],
+    ["missing run ID", { workflowRunId: "0" }],
+    ["invalid attempt", { workflowRunAttempt: 0 }],
+    ["malformed authorization", { authorizationId: "bad" }],
+    ["malformed lineage", { lineageDigest: "not-a-digest" }],
+    ["unacknowledged DDL spawn", { spawnState: "not-started" }],
+  ])("fails closed for Training marker with %s", (_label, overrides) => {
+    const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: trainingMutationMarkerText(overrides),
+      deploySha: TRAINING_MIGRATION_SHA,
+      ...compatibility,
+    })).toThrow();
+  });
+
+  it("rejects a Training app SHA that differs from the migration SHA", () => {
+    const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: trainingMutationMarkerText(),
+      deploySha: "e".repeat(40),
+      ...compatibility,
+    })).toThrow(/deploy SHA to equal the exact migration release SHA/);
+  });
+
+  it("rejects an altered Training migration checksum at the declared origin", async () => {
+    const migration = TRAINING_MUTATION_LEDGER_MANIFEST.migrations[0];
+    const migrationPath = `prisma/migrations/${migration.name}/migration.sql`;
+    const original = await readFile(path.join(process.cwd(), migrationPath), "utf8");
+    const altered = await createTrainingMutationHandoffRepository({
+      file: migrationPath,
+      contents: `${original}\n-- altered release fixture\n`,
+    });
+    expect(() => readGitCompatibility(altered.repository, altered.candidateSha,
+      altered.candidateSha, TRAINING_MUTATION_LEDGER_MANIFEST.id)).toThrow(/differs from its reviewed checksum/);
+  });
+
+  it("rejects a Training runtime change between migration and app SHA", async () => {
+    const runtimePath = "src/modules/training/training.service.ts";
+    const original = await readFile(path.join(process.cwd(), runtimePath), "utf8");
+    const altered = await createTrainingMutationHandoffRepository({
+      file: runtimePath,
+      contents: `${original}\n// compatibility fixture\n`,
+    });
+    expect(() => readGitCompatibility(altered.repository, altered.candidateSha,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id)).toThrow(/src differs from the migration origin/);
+  });
+
+  it("rejects a V3 Training marker whose deploy SHA was changed", () => {
+    const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: trainingMutationMarkerText(),
+      deploySha: TRAINING_MIGRATION_SHA,
+      ...compatibility,
+    });
+    const tampered = plan.bytes.toString("utf8").replace(
+      `deploySha=${TRAINING_MIGRATION_SHA}`,
+      `deploySha=${"e".repeat(40)}`,
+    );
+    expect(() => renderSchemaDeployTransition(tampered, "app-ready")).toThrow(/provenance is not admitted/);
+  });
+
+  it("rejects V3 Training provenance fields changed without changing the source marker digest", () => {
+    const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,
+      TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: trainingMutationMarkerText(),
+      deploySha: TRAINING_MIGRATION_SHA,
+      ...compatibility,
+    });
+    const tamperedFields = [
+      ["workflowRunId", "40123456791"],
+      ["workflowRunAttempt", "2"],
+      ["authorizationId", "training-migration-authorization-02"],
+      ["lineageDigest", "c".repeat(64)],
+    ];
+    for (const [field, replacement] of tamperedFields) {
+      const original = plan.bytes.toString("utf8");
+      const prefix = `${field}=`;
+      const tampered = original.replace(new RegExp(`^${field}=.*$`, "m"), `${prefix}${replacement}`);
+      expect(tampered).not.toBe(original);
+      expect(() => evaluateSchemaDeployHandoff({
+        markerText: tampered,
+        deploySha: TRAINING_MIGRATION_SHA,
+        ...compatibility,
+      })).toThrow(/provenance is malformed/);
+    }
+  });
 
   it.skipIf(process.platform === "win32")("writes once, replays the same candidate, and blocks a concurrent lock", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-schema-handoff-"));

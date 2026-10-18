@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "./production-migration-manifests.mjs";
+import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST } from "./production-migration-manifests.mjs";
 import { PROGRAMLESS_STRENGTH_SESSIONS_CAPABILITY, readProductionAppCapabilitiesAtSha } from "./production-app-capabilities.mjs";
 
 export const SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA = "62b6961dde7036100c8af7281e7bfab75bb662db";
@@ -29,6 +29,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const DYNAMIC_WORKOUT_MANIFEST_ID = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id;
+const TRAINING_MUTATION_LEDGER_MANIFEST_ID = TRAINING_MUTATION_LEDGER_MANIFEST.id;
 const DYNAMIC_WORKOUT_NON_RUNTIME_PATH = /^(?:tests\/|docs\/development\/)/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
@@ -211,6 +212,17 @@ const DYNAMIC_WORKOUT_CRITICAL_FILES = Object.freeze([
   "scripts/production-app-capabilities.mjs",
   "scripts/production-app-capabilities.json",
 ]);
+const TRAINING_MUTATION_LEDGER_CRITICAL_TREES = Object.freeze(["prisma", "src", ".github/workflows"]);
+const TRAINING_MUTATION_LEDGER_CRITICAL_FILES = Object.freeze([
+  "docker-compose.prod.yml",
+  "package.json",
+  "package-lock.json",
+  "scripts/deploy.sh",
+  "scripts/production-release-marker.mjs",
+  "scripts/production-release-marker.sh",
+  "scripts/production-migration-manifests.mjs",
+  "scripts/production-schema-deploy-handoff.mjs",
+]);
 
 function reject(message) {
   throw new Error(`Schema deploy handoff blocked: ${message}`);
@@ -292,6 +304,34 @@ function dynamicWorkoutSourceMarkerMatches(marker) {
     && marker.spawnState === "started";
 }
 
+function trainingMutationSourceMarkerMatches(marker) {
+  return marker.schemaVersion === 2
+    && marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID
+    && SHA.test(String(marker.releaseSha ?? ""))
+    && marker.state === "schema-applied"
+    && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+    && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+    && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+    && DIGEST.test(String(marker.lineageDigest ?? ""))
+    && marker.spawnState === "started";
+}
+
+function trainingMutationSourceDigest(marker) {
+  const sourceText = [
+    "schemaVersion=2",
+    `manifestId=${TRAINING_MUTATION_LEDGER_MANIFEST_ID}`,
+    `releaseSha=${marker.migrationOriginSha}`,
+    "state=schema-applied",
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    "spawnState=started",
+    "",
+  ].join("\n");
+  return sha256(Buffer.from(sourceText, "utf8"));
+}
+
 function admittedV3Marker(marker) {
   if (marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
     return SHA.test(String(marker.migrationOriginSha ?? ""))
@@ -299,6 +339,16 @@ function admittedV3Marker(marker) {
       && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
       && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
       && DIGEST.test(String(marker.lineageDigest ?? ""));
+  }
+  if (marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID) {
+    return SHA.test(String(marker.migrationOriginSha ?? ""))
+      && marker.deploySha === marker.migrationOriginSha
+      && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+      && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+      && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+      && DIGEST.test(String(marker.lineageDigest ?? ""))
+      && DIGEST.test(String(marker.sourceMarkerDigest ?? ""))
+      && trainingMutationSourceDigest(marker) === marker.sourceMarkerDigest;
   }
   if (marker.migrationOriginSha === SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
     return marker.manifestId === SCHEMA_DEPLOY_HANDOFF_PROVENANCE.manifestId
@@ -492,6 +542,33 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       unboundNonRuntimePath: DYNAMIC_WORKOUT_NON_RUNTIME_PATH,
     });
   }
+  if (marker.schemaVersion === 2 && marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID) {
+    if (!trainingMutationSourceMarkerMatches(marker)) {
+      reject("Training migration marker run, attempt, authorization lineage, release SHA, or state is not admitted");
+    }
+    if (deploySha !== marker.releaseSha) {
+      reject("Training schema handoff requires the app deploy SHA to equal the exact migration release SHA");
+    }
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, Object.freeze({}));
+    assertCriticalObjects(criticalObjects, TRAINING_MUTATION_LEDGER_CRITICAL_TREES, TRAINING_MUTATION_LEDGER_CRITICAL_FILES);
+    if (isAncestor !== true) reject("Training app deploy is not the exact migration release commit");
+    return buildHandoffWrite({
+      observed,
+      migrationOriginSha: marker.releaseSha,
+      deploySha,
+      state: "schema-applied",
+      changedPaths,
+      changedPathObjects,
+      criticalObjects,
+      workflowRunId: marker.workflowRunId,
+      workflowRunAttempt: marker.workflowRunAttempt,
+      authorizationId: marker.authorizationId,
+      lineageDigest: marker.lineageDigest,
+      spawnState: marker.spawnState,
+      provenance: { manifestId: TRAINING_MUTATION_LEDGER_MANIFEST_ID },
+      contentBoundPaths: Object.freeze({}),
+    });
+  }
   if (marker.schemaVersion === 2 && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
     && marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
     && marker.releaseSha === deploySha && marker.state === "schema-applied"
@@ -530,15 +607,21 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       reject("existing handoff provenance is malformed");
     }
     const dynamicWorkoutRelease = marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID;
-    const contentBoundPaths = dynamicWorkoutRelease ? Object.freeze({})
+    const trainingRelease = marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID;
+    const contentBoundPaths = dynamicWorkoutRelease || trainingRelease ? Object.freeze({})
       : marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
     const unboundNonRuntimePath = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_NON_RUNTIME_PATH
       : marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_UNBOUND_NON_RUNTIME_PATH : undefined;
     assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths, unboundNonRuntimePath);
     assertCriticalObjects(criticalObjects,
-      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES : CRITICAL_TREES,
-      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES : CRITICAL_FILES);
+      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES
+        : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_TREES : CRITICAL_TREES,
+      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES
+        : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_FILES : CRITICAL_FILES);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
+    if (trainingRelease && marker.migrationOriginSha !== deploySha) {
+      reject("Training handoff replay requires the exact same migration and app deploy SHA");
+    }
     if (marker.deploySha === deploySha) {
       const recomputed = compatibilityDigest({
         migrationOriginSha: marker.migrationOriginSha,
@@ -671,10 +754,35 @@ function assertDynamicWorkoutOriginContract(repo, originSha) {
   }
 }
 
+function assertTrainingMutationOriginContract(repo, originSha) {
+  const manifest = TRAINING_MUTATION_LEDGER_MANIFEST;
+  const migrations = [...manifest.requiredAppliedMigrations, ...manifest.migrations];
+  const expectedDirectories = migrations.map(({ name }) => name).sort();
+  let directories;
+  try {
+    directories = git(repo, ["ls-tree", "-d", "--name-only", `${originSha}:prisma/migrations`]).split("\n").filter(Boolean).sort();
+  } catch {
+    reject("Training migration origin does not contain its reviewed Prisma migration tree");
+  }
+  if (JSON.stringify(directories) !== JSON.stringify(expectedDirectories)) {
+    reject("Training migration origin does not match the exact predecessor-plus-seven migration directory set");
+  }
+  for (const migration of migrations) {
+    let bytes;
+    try { bytes = execFileSync("git", ["cat-file", "blob", `${originSha}:prisma/migrations/${migration.name}/migration.sql`], { cwd: repo }); }
+    catch { reject(`Training migration ${migration.name} is unavailable at the migration origin`); }
+    if (sha256(bytes) !== migration.sha256) reject(`Training migration ${migration.name} differs from its reviewed checksum`);
+  }
+  for (const objectPath of [...TRAINING_MUTATION_LEDGER_CRITICAL_TREES, ...TRAINING_MUTATION_LEDGER_CRITICAL_FILES]) {
+    objectId(repo, originSha, objectPath);
+  }
+}
+
 export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA, manifestId = null) {
   if (!SHA.test(deploySha)) reject("deploy candidate SHA is malformed");
   const origin = migrationOriginSha;
   const dynamicWorkoutRelease = manifestId === DYNAMIC_WORKOUT_MANIFEST_ID;
+  const trainingRelease = manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID;
   try {
     git(repo, ["cat-file", "-e", `${origin}^{commit}`]);
     git(repo, ["cat-file", "-e", `${deploySha}^{commit}`]);
@@ -682,6 +790,7 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
     reject("migration origin or deploy candidate commit is unavailable");
   }
   if (dynamicWorkoutRelease) assertDynamicWorkoutOriginContract(repo, origin);
+  if (trainingRelease) assertTrainingMutationOriginContract(repo, origin);
   let isAncestor = false;
   try {
     git(repo, ["merge-base", "--is-ancestor", origin, deploySha]);
@@ -700,8 +809,10 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
       }
     });
   const criticalObjects = {};
-  const criticalTrees = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES : CRITICAL_TREES;
-  const criticalFiles = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES : CRITICAL_FILES;
+  const criticalTrees = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES
+    : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_TREES : CRITICAL_TREES;
+  const criticalFiles = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES
+    : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_FILES : CRITICAL_FILES;
   for (const objectPath of [...criticalTrees, ...criticalFiles]) {
     const originId = objectId(repo, origin, objectPath);
     const deployId = objectId(repo, deploySha, objectPath);
@@ -729,6 +840,14 @@ function readCompatibilityForMarker(repo, marker, deploySha) {
     && admittedV3Marker(marker)) {
     assertDynamicWorkoutOriginContract(repo, marker.migrationOriginSha);
     return readGitCompatibility(repo, deploySha, marker.migrationOriginSha, DYNAMIC_WORKOUT_MANIFEST_ID);
+  }
+  if (marker.schemaVersion === 2 && marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID
+    && trainingMutationSourceMarkerMatches(marker)) {
+    return readGitCompatibility(repo, deploySha, marker.releaseSha, TRAINING_MUTATION_LEDGER_MANIFEST_ID);
+  }
+  if (marker.schemaVersion === 3 && marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID
+    && admittedV3Marker(marker)) {
+    return readGitCompatibility(repo, deploySha, marker.migrationOriginSha, TRAINING_MUTATION_LEDGER_MANIFEST_ID);
   }
   if (marker.schemaVersion === 2 && v4SourceMarkerMatches(marker)) {
     return readGitCompatibility(repo, deploySha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);

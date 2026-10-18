@@ -203,14 +203,21 @@ async function assertRevisionCoverage(input: {
   }
 }
 
-export async function verifyPublishedV4Current(client: PrismaClient, profileId: number, rolloutEpoch: number): Promise<number> {
+export async function verifyPublishedV4Current(
+  client: DbClient,
+  profileId: number,
+  rolloutEpoch: number,
+  options: { checkTrainingRefreshQueue?: boolean } = {},
+): Promise<number> {
   const captured = await expectedRange(client, profileId);
   const capturedToken = unifiedRangeToken(profileId, captured.fromInstant, captured.throughInstant, captured.days);
-  await client.$transaction(async (tx) => {
+  const verify = async (tx: Prisma.TransactionClient) => {
     await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
-    const trainingFence = await readTrainingRefreshVisibilityFence(tx, profileId);
-    if (isTrainingRefreshPending(trainingFence)) {
-      throw new Error("Forecast V2 serving is blocked until Unified V4 is current");
+    if (options.checkTrainingRefreshQueue !== false) {
+      const trainingFence = await readTrainingRefreshVisibilityFence(tx, profileId);
+      if (isTrainingRefreshPending(trainingFence)) {
+        throw new Error("Forecast V2 serving is blocked until Unified V4 is current");
+      }
     }
     const lifecycle = await tx.physiologyV7Lifecycle.findUnique({ where: { profileId } });
     if (!lifecycle || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
@@ -227,13 +234,16 @@ export async function verifyPublishedV4Current(client: PrismaClient, profileId: 
       throw new PhysiologyV7ConcurrentSourceChangeError();
     }
     await assertRevisionCoverage({ client: tx, profileId, revision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION, range: finalRange });
-  });
+  };
+  if ("$transaction" in client) await client.$transaction(verify);
+  else await verify(client);
   return captured.days.length;
 }
 
 export async function verifyUnifiedV4ReadyForTraffic(input: {
   profileId?: number;
-  client?: PrismaClient;
+  client?: DbClient;
+  checkTrainingRefreshQueue?: boolean;
 } = {}): Promise<{ profileId: number; rolloutEpoch: number; dayCount: number }> {
   const client = input.client ?? prisma;
   const profileId = input.profileId ?? 1;
@@ -247,7 +257,9 @@ export async function verifyUnifiedV4ReadyForTraffic(input: {
       || lifecycle.unifiedPublicationBlockedFromDate !== null) {
     throw new Error("Forecast V2 serving is blocked until Unified V4 is current");
   }
-  const dayCount = await verifyPublishedV4Current(client, profileId, lifecycle.unifiedRolloutEpoch);
+  const dayCount = await verifyPublishedV4Current(client, profileId, lifecycle.unifiedRolloutEpoch, {
+    checkTrainingRefreshQueue: input.checkTrainingRefreshQueue,
+  });
   return { profileId, rolloutEpoch: lifecycle.unifiedRolloutEpoch, dayCount };
 }
 

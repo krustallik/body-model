@@ -413,15 +413,38 @@ resume_pre_ddl_previous_release() {
 }
 
 publish_candidate_route() {
-  local temporary marker reload_failed=false route_file maintenance_backup expected_marker_sha="${1:-}" expected_marker_digest="${2:-}"
+  local temporary marker reload_failed=false reload_unknown=false route_file maintenance_backup marker_status
+  local expected_marker_sha="${1:-}" expected_marker_digest="${2:-}" expected_marker_state="${3:-v4-ready}"
+  local staged_route="${4:-}" main_sha_already_refreshed="${5:-false}"
+  local fence_pid="${6:-}" defer_fence_finalize="${7:-false}"
   marker="$(bodycast_maintenance_marker_from_route)" || return 1
   bodycast_verify_exact_maintenance_route || return 1
-  bodycast_probe_public_maintenance "$marker" || return 1
-  bodycast_stage_serving_route_config || return 1
-  temporary="$BODYCAST_ROUTE_STAGE_PATH"
+  if [[ -n "$staged_route" ]]; then
+    [[ "$staged_route" == "${BODYCAST_ROUTE_STAGE_PATH:-}" && -f "$staged_route" && ! -L "$staged_route" ]] || {
+      echo "Prevalidated serving route staging path changed before publication." >&2
+      return 1
+    }
+    temporary="$staged_route"
+  else
+    bodycast_stage_serving_route_config || return 1
+    temporary="$BODYCAST_ROUTE_STAGE_PATH"
+  fi
+  bodycast_probe_public_maintenance "$marker" || { rm -f -- "$temporary"; return 1; }
   # Staged bytes are validated before the final canonical-main fence. No route
   # mutation occurs unless this mode's required exact SHA remains current.
-  if ! bodycast_assert_current_main_sha "$expected_release_sha"; then
+  if [[ "$main_sha_already_refreshed" == "true" ]]; then
+    local cached_main_sha
+    cached_main_sha="$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')" || {
+      rm -f -- "$temporary"
+      echo "Canonical origin/main is unavailable after its bounded refresh." >&2
+      return 1
+    }
+    if [[ "$cached_main_sha" != "$expected_release_sha" ]]; then
+      rm -f -- "$temporary"
+      echo "Refusing stale release SHA after the fenced currentness check." >&2
+      return 1
+    fi
+  elif ! bodycast_assert_current_main_sha "$expected_release_sha"; then
     rm -f -- "$temporary"
     return 1
   fi
@@ -436,8 +459,16 @@ publish_candidate_route() {
       echo "Route resume marker compare is incomplete." >&2
       return 1
     }
-    assert_bodycast_release_marker_matches "$expected_marker_sha" "v4-ready" "$expected_marker_digest" || {
+    assert_bodycast_release_marker_matches "$expected_marker_sha" "$expected_marker_state" "$expected_marker_digest" || {
       rm -f -- "$temporary"
+      return 1
+    }
+    marker_status=0
+  else
+    if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
+    [[ "$marker_status" -eq 0 || "$marker_status" -eq 1 ]] || {
+      rm -f -- "$temporary"
+      echo "Production release marker is unreadable before route publication." >&2
       return 1
     }
   fi
@@ -445,54 +476,332 @@ publish_candidate_route() {
     rm -f -- "$temporary"
     return 1
   }
-  cp -- "$route_file" "$maintenance_backup"
-  chmod 0644 "$maintenance_backup"
+  if ! cp -- "$route_file" "$maintenance_backup" || ! chmod 0644 "$maintenance_backup" \
+    || ! sync -f "$maintenance_backup" || ! sync -f "$(dirname "$route_file")"; then
+    rm -f -- "$temporary" "$maintenance_backup"
+    echo "Maintenance-route recovery copy could not be made durable before publication." >&2
+    return 1
+  fi
+  if [[ -n "$fence_pid" ]] && ! kill -0 "$fence_pid" 2>/dev/null; then
+    rm -f -- "$temporary" "$maintenance_backup"
+    echo "Unified V4 database fence exited before the atomic route swap." >&2
+    return 1
+  fi
+  # Recheck the externally visible maintenance response immediately before
+  # the first serving effect. The earlier probe may be separated from this
+  # point by the bounded canonical-main refresh and durable backup write.
+  if ! bodycast_probe_public_maintenance "$marker"; then
+    rm -f -- "$temporary" "$maintenance_backup"
+    echo "Maintenance 503 was not confirmed immediately before route publication." >&2
+    return 1
+  fi
   if ! bodycast_publish_staged_route "$temporary"; then
     rm -f -- "$temporary"
     rm -f -- "$maintenance_backup"
     echo "Serving-route replacement failed before serving commit." >&2
     return 1
   fi
-  # The live rename is the first possible serving effect. Treat success as the
-  # Treat publication as committed only after reload, public probe, and marker
-  # validation all pass; otherwise restore the maintenance route and verify it.
+  if ! sync -f "$(dirname "$route_file")"; then
+    reload_failed=true
+    echo "Serving route rename could not be durably synchronized." >&2
+  fi
+  # The live rename is the first possible serving effect. Training keeps a
+  # durable maintenance-route backup until the database fence commits.
   SERVING_COMMIT_OCCURRED=true
   set +e
-  if ! docker exec gymbeam-caddy caddy reload \
-    --address unix//run/caddy-admin/admin.sock \
-    --config /etc/caddy/Caddyfile; then
-    reload_failed=true
+  if [[ "$reload_failed" == "false" ]]; then
+    if [[ -n "$fence_pid" ]] && ! kill -0 "$fence_pid" 2>/dev/null; then
+      reload_failed=true
+      echo "Unified V4 database fence exited during the route transition." >&2
+    elif ! timeout 8s docker exec gymbeam-caddy caddy reload \
+      --address unix//run/caddy-admin/admin.sock \
+      --config /etc/caddy/Caddyfile; then
+      reload_failed=true
+      reload_unknown=true
+      echo "Caddy serving reload returned a non-success status; its server-side completion is unknown." >&2
+    fi
   fi
   if [[ "$reload_failed" == "false" ]] && ! bodycast_probe_public_candidate_observational; then
     reload_failed=true
     echo "POST-COMMIT VERIFICATION FAILED: candidate health probe failed." >&2
   fi
-  if [[ "$reload_failed" == "false" && "$marker_status" -eq 0 ]]; then
+  if [[ "$reload_failed" == "false" && -n "$fence_pid" ]] && ! kill -0 "$fence_pid" 2>/dev/null; then
+    reload_failed=true
+    echo "Unified V4 database fence exited before route verification completed." >&2
+  fi
+  if [[ "$reload_failed" == "false" && "$marker_status" -eq 0 && "$defer_fence_finalize" != "true" ]]; then
     if [[ -n "$expected_marker_sha" ]]; then
-      clear_bodycast_release_marker "$expected_marker_sha" "v4-ready" "$expected_marker_digest" || reload_failed=true
+      clear_bodycast_release_marker "$expected_marker_sha" "$expected_marker_state" "$expected_marker_digest" || reload_failed=true
     else
       clear_bodycast_release_marker || reload_failed=true
     fi
   fi
   if [[ "$reload_failed" == "true" ]]; then
     set -e
-    if mv -f -- "$maintenance_backup" "$route_file"; then
-      if ! docker exec gymbeam-caddy caddy reload \
+    if [[ "$defer_fence_finalize" == "true" ]]; then
+      BODYCAST_TRAINING_MAINTENANCE_BACKUP="$maintenance_backup"
+      if [[ "$reload_unknown" == "true" ]]; then
+        contain_ambiguous_training_reload "$maintenance_backup" || true
+      else
+        restore_training_maintenance_after_fence_failure || true
+      fi
+      echo "Training serving did not finalize; the release marker is retained. Follow the route recovery status above before any further action." >&2
+      return 1
+    fi
+    local recovery_route
+    recovery_route="$(mktemp "$(dirname "$route_file")/.bodycast-maintenance-recovery.XXXXXX")" || recovery_route=""
+    if [[ -n "$recovery_route" ]] && cp -- "$maintenance_backup" "$recovery_route" \
+      && chmod 0644 "$recovery_route" && mv -f -- "$recovery_route" "$route_file"; then
+      if ! timeout 8s docker exec gymbeam-caddy caddy reload \
         --address unix//run/caddy-admin/admin.sock \
         --config /etc/caddy/Caddyfile; then
         echo "ROUTE RECOVERY WARNING: maintenance config was restored on disk but Caddy reload failed." >&2
       fi
       if ! bodycast_probe_public_maintenance "$marker"; then
-        echo "ROUTE RECOVERY UNRESOLVED: public maintenance 503 could not be confirmed after rollback; serving state requires operator inspection." >&2
+        echo "ROUTE RECOVERY UNRESOLVED: public maintenance 503 could not be confirmed after rollback; serving state requires operator inspection. Backup retained at $maintenance_backup." >&2
+      else
+        SERVING_COMMIT_OCCURRED=false
+        rm -f -- "$maintenance_backup"
+        BODYCAST_TRAINING_MAINTENANCE_BACKUP=""
       fi
     else
+      [[ -z "$recovery_route" ]] || rm -f -- "$recovery_route"
       echo "ROUTE RECOVERY FAILURE: could not restore maintenance config; release marker is retained." >&2
     fi
     echo "Serving-route verification failed; maintenance marker is retained for safe recovery." >&2
     return 1
   fi
   set -e
-  rm -f -- "$maintenance_backup"
+  if [[ "$defer_fence_finalize" == "true" ]]; then
+    BODYCAST_TRAINING_MAINTENANCE_BACKUP="$maintenance_backup"
+  elif ! rm -f -- "$maintenance_backup"; then
+    echo "POST-COMMIT CLEANUP WARNING: maintenance backup remains at $maintenance_backup." >&2
+  fi
+}
+
+write_training_maintenance_route_from_backup() {
+  local backup="$1" routes_dir route_file temporary
+  bodycast_assert_safe_routes_location || return 1
+  routes_dir="$CADDY_ROUTES_PATH"
+  route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy"
+  [[ "$backup" == "$routes_dir"/.bodycast-maintenance-backup.* && -f "$backup" && ! -L "$backup" ]] || {
+    echo "Training maintenance backup path is unsafe or unavailable." >&2
+    return 1
+  }
+  temporary="$(mktemp "$routes_dir/.bodycast-maintenance-recovery.XXXXXX")" || return 1
+  if ! cp -- "$backup" "$temporary" || ! chmod 0644 "$temporary" || ! mv -f -- "$temporary" "$route_file"; then
+    rm -f -- "$temporary"
+    echo "Training maintenance route could not be atomically restored; backup retained at $backup." >&2
+    return 1
+  fi
+  if ! sync -f "$routes_dir"; then
+    echo "Training maintenance route rename did not confirm directory durability." >&2
+  fi
+  bodycast_maintenance_marker_from_route >/dev/null
+}
+
+contain_ambiguous_training_reload() {
+  local backup="$1"
+  BODYCAST_TRAINING_MAINTENANCE_BACKUP="$backup"
+  if restore_training_maintenance_after_fence_failure; then
+    echo "Ambiguous Caddy reload reconciled: the maintenance reload completed and the exact public 503 was confirmed. The candidate remains running; the release marker is retained." >&2
+    return 0
+  fi
+  echo "Caddy state remains UNKNOWN; the candidate remains running, and the release marker plus route backup require operator inspection. Maintenance is not confirmed." >&2
+  return 1
+}
+
+restore_training_maintenance_after_fence_failure() {
+  local route_file backup routes_dir temporary maintenance_marker
+  backup="${BODYCAST_TRAINING_MAINTENANCE_BACKUP:-}"
+  [[ -n "$backup" ]] || {
+    echo "Training route backup is missing; maintenance recovery cannot be proven." >&2
+    return 1
+  }
+  bodycast_assert_safe_routes_location || return 1
+  routes_dir="$CADDY_ROUTES_PATH"
+  route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy"
+  [[ "$backup" == "$routes_dir"/.bodycast-maintenance-backup.* && -f "$backup" && ! -L "$backup" ]] || {
+    echo "Training maintenance backup path is unsafe or unavailable." >&2
+    return 1
+  }
+  maintenance_marker="$(sed -n 's/^[[:space:]]*X-BodyCast-Deploy-Maintenance "\([A-Za-z0-9][A-Za-z0-9._-]*\)"[[:space:]]*$/\1/p' "$backup")"
+  [[ "$maintenance_marker" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
+    echo "Training maintenance backup does not contain a valid maintenance route marker." >&2
+    return 1
+  }
+  write_training_maintenance_route_from_backup "$backup" || return 1
+  if ! timeout 8s docker exec gymbeam-caddy caddy reload \
+    --address unix//run/caddy-admin/admin.sock \
+    --config /etc/caddy/Caddyfile; then
+    echo "Training maintenance reload outcome is UNKNOWN; candidate remains running and marker/backup are retained. Maintenance is not confirmed." >&2
+    return 1
+  fi
+  if ! bodycast_probe_public_maintenance "$maintenance_marker"; then
+    echo "Training recovery unresolved: external maintenance 503 was not confirmed; candidate remains running and marker/backup are retained. Maintenance is not confirmed." >&2
+    return 1
+  fi
+  SERVING_COMMIT_OCCURRED=false
+  if ! rm -f -- "$backup"; then
+    echo "Training maintenance is confirmed, but its extra recovery backup remains at $backup." >&2
+  fi
+  BODYCAST_TRAINING_MAINTENANCE_BACKUP=""
+}
+
+serve_training_release() {
+  local expected_release_sha="$1" marker_digest app_image_id latest_image_id maintenance_marker staged_route
+  local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
+  local fence_status fence_route_budget_ms
+
+  [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
+    echo "Training serving requires an exact requested release SHA." >&2; return 1;
+  }
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  git cat-file -e "$expected_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null || {
+    echo "The exact requested SHA does not contain the Training queue migration." >&2; return 1;
+  }
+  require_ready_release_marker
+  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+    && "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
+    && "$BODYCAST_MARKER_STATE" == "app-ready" \
+    && "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" == "$expected_release_sha" \
+    && "$BODYCAST_MARKER_DEPLOY_SHA" == "$expected_release_sha" ]] || {
+    echo "Training serving requires the exact V3 app-ready marker bound to the migration and deploy SHA." >&2
+    return 1
+  }
+  node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
+    "$BODYCAST_MARKER_FILE_PATH" "$expected_release_sha" "$ROOT_DIR"
+  marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+  [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training V3 marker digest is invalid." >&2; return 1; }
+
+  app_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+  latest_image_id="$(docker image inspect --format '{{.Id}}' bodycast-app:latest)"
+  [[ "$app_image_id" =~ ^sha256:[a-f0-9]{64}$ && "$latest_image_id" == "$app_image_id" ]] || {
+    echo "Training serving requires the exact healthy app's immutable image to match bodycast-app:latest." >&2
+    return 1
+  }
+  bodycast_verify_exact_maintenance_route
+  maintenance_marker="$(bodycast_maintenance_marker_from_route)"
+  bodycast_probe_public_maintenance "$maintenance_marker"
+  compose --profile tools build migrate
+  bodycast_stage_serving_route_config
+  staged_route="$BODYCAST_ROUTE_STAGE_PATH"
+  # Hold the same profile advisory transaction lock used by Training/Health
+  # mutations until the route and its health postcondition pass.
+  coproc BODYCAST_TRAINING_V4_FENCE {
+    timeout 95s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
+      --entrypoint node migrate /app/scripts/unified-v4-traffic-check.mjs \
+      --profile-id 1 --hold-currentness-fence
+  }
+  fence_pid="$BODYCAST_TRAINING_V4_FENCE_PID"
+  exec {fence_output_fd}<&"${BODYCAST_TRAINING_V4_FENCE[0]}"
+  exec {fence_input_fd}>&"${BODYCAST_TRAINING_V4_FENCE[1]}"
+  fence_deadline=$((SECONDS + 95))
+  while (( SECONDS < fence_deadline )); do
+    fence_remaining=$((fence_deadline - SECONDS))
+    if IFS= read -r -t "$fence_remaining" -u "$fence_output_fd" fence_line; then
+      if [[ "$fence_line" == BODYCAST_UNIFIED_V4_FENCE_READY\ * ]]; then
+        fence_route_budget_ms="${fence_line#BODYCAST_UNIFIED_V4_FENCE_READY }"
+        [[ "$fence_route_budget_ms" =~ ^[0-9]+$ && "$fence_route_budget_ms" -ge 75000 ]] || {
+          printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+          exec {fence_input_fd}>&-
+          if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+          exec {fence_output_fd}<&-
+          rm -f -- "$staged_route"
+          echo "Training serve blocked: the fenced currentness check left too little time for a bounded route transition." >&2
+          return 1
+        }
+        fence_ready=true
+        break
+      fi
+      printf '%s\n' "$fence_line" >&2
+    else
+      break
+    fi
+  done
+  if [[ "$fence_ready" != true ]]; then
+    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    exec {fence_input_fd}>&-
+    if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+    exec {fence_output_fd}<&-
+    rm -f -- "$staged_route"
+    echo "Training serve blocked: Unified V4 did not establish a currentness fence." >&2
+    return 1
+  fi
+
+  SERVING_COMMIT_OCCURRED=false
+  if ! bodycast_assert_current_main_sha "$expected_release_sha"; then
+    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    exec {fence_input_fd}>&-
+    if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+    exec {fence_output_fd}<&-
+    rm -f -- "$staged_route"
+    echo "Training serve blocked: canonical-main freshness could not be confirmed within the fenced route budget." >&2
+    return 1
+  fi
+  if ! publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true; then
+    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    exec {fence_input_fd}>&-
+    if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+    exec {fence_output_fd}<&-
+    return 1
+  fi
+  if ! printf 'route-committed\n' >&"$fence_input_fd"; then
+    exec {fence_input_fd}>&-
+    if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+    exec {fence_output_fd}<&-
+    echo "Serving route committed, but the bounded Unified V4 fence acknowledgement was lost; restoring maintenance." >&2
+    restore_training_maintenance_after_fence_failure || true
+    return 1
+  fi
+  exec {fence_input_fd}>&-
+  if wait "$fence_pid"; then
+    fence_status=0
+  else
+    fence_status=$?
+  fi
+  while IFS= read -r -t 1 -u "$fence_output_fd" fence_line; do printf '%s\n' "$fence_line" >&2; done
+  exec {fence_output_fd}<&-
+  [[ "$fence_status" -eq 0 ]] || {
+    echo "Serving route committed, but the PostgreSQL currentness fence did not complete cleanly; restoring maintenance." >&2
+    restore_training_maintenance_after_fence_failure || true
+    return 1
+  }
+  if ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest" \
+    || ! bodycast_verify_exact_serving_route; then
+    echo "Training serving was committed by the PostgreSQL fence, but final marker/route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
+    return 1
+  fi
+  local marker_backup marker_directory marker_tmp
+  marker_directory="$(dirname "$BODYCAST_MARKER_FILE_PATH")"
+  marker_backup="$(mktemp "$marker_directory/.bodycast-training-marker-backup.XXXXXX")"
+  chmod 0600 "$marker_backup"
+  if ! cp -- "$BODYCAST_MARKER_FILE_PATH" "$marker_backup" || ! sync -f "$marker_backup"; then
+    rm -f -- "$marker_backup"
+    echo "Training serving was committed by the PostgreSQL fence, but marker cleanup could not be prepared; the serving route and release marker are retained for operator inspection." >&2
+    return 1
+  fi
+  if ! clear_bodycast_release_marker "$expected_release_sha" "app-ready" "$marker_digest"; then
+    if [[ ! -f "$BODYCAST_MARKER_FILE_PATH" || -L "$BODYCAST_MARKER_FILE_PATH" ]]; then
+      marker_tmp="$(mktemp "$marker_directory/.bodycast-training-marker-restore.XXXXXX")"
+      cp -- "$marker_backup" "$marker_tmp"
+      chmod 0600 "$marker_tmp"
+      mv -f -- "$marker_tmp" "$BODYCAST_MARKER_FILE_PATH"
+      sync -f "$marker_directory"
+    fi
+    rm -f -- "$marker_backup"
+    echo "Training serving was committed by the PostgreSQL fence, but release marker cleanup failed; the serving route and recovery evidence are retained for operator inspection." >&2
+    return 1
+  fi
+  rm -f -- "$marker_backup"
+  if [[ -n "${BODYCAST_TRAINING_MAINTENANCE_BACKUP:-}" ]]; then
+    if ! rm -f -- "$BODYCAST_TRAINING_MAINTENANCE_BACKUP"; then
+      echo "Training is serving, but the prior maintenance route backup remains at $BODYCAST_TRAINING_MAINTENANCE_BACKUP." >&2
+    fi
+    BODYCAST_TRAINING_MAINTENANCE_BACKUP=""
+  fi
+  cleanup_pre_ddl_recovery_pin_after_serving_commit "$expected_release_sha"
+  echo "Training exact-SHA route is serving after V3 marker, immutable image, and fenced Unified V4 currentness checks."
 }
 
 cleanup_pre_ddl_recovery_pin_after_serving_commit() {
@@ -838,6 +1147,21 @@ if [[ "$MODE" == "activate-v4-and-serve" ]]; then
   activate_v4_and_serve
   echo "Unified V4 activation/replay, currentness gates, and exact-SHA serve completed under one production lock."
   exit 0
+fi
+
+if [[ "$MODE" == "serve" ]]; then
+  requested_release_sha="$BODYCAST_DEPLOY_SHA"
+  [[ -n "$requested_release_sha" ]] || requested_release_sha="$DEPLOY_SHA"
+  [[ "$requested_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
+    echo "Serving requires an exact requested release SHA for migration-tree classification." >&2; exit 1;
+  }
+  git cat-file -e "$requested_release_sha^{commit}" 2>/dev/null || {
+    echo "Serving is blocked because the exact release tree is unavailable; migration lineage cannot be classified." >&2; exit 1;
+  }
+  if git cat-file -e "$requested_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null; then
+    serve_training_release "$requested_release_sha"
+    exit $?
+  fi
 fi
 
 app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"

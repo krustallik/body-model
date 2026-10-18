@@ -4,6 +4,7 @@ import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+import { ensureDefaultTestProfile } from "../helpers/ensure-default-profile";
 
 const prisma = new PrismaClient();
 const repository = new PrismaHealthSyncRepository(prisma);
@@ -45,7 +46,10 @@ async function clean(): Promise<void> {
 }
 
 describe("Workout stable reconciliation with PostgreSQL", () => {
-  beforeAll(clean);
+  beforeAll(async () => {
+    await ensureDefaultTestProfile(prisma);
+    await clean();
+  });
   afterAll(async () => {
     await clean();
     await prisma.$disconnect();

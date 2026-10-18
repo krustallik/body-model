@@ -6,6 +6,7 @@ import { StepperWorkoutRepository } from "@/modules/training/stepper-workout.rep
 import type { StepperWorkoutInput } from "@/modules/training/stepper-workout.schema";
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+import { ensureDefaultTestProfile } from "../helpers/ensure-default-profile";
 
 const prisma = new PrismaClient();
 const stepperWorkouts = new StepperWorkoutRepository(prisma);
@@ -28,7 +29,10 @@ const syncMeta = (receivedAt: string) => ({
 });
 
 describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => {
-  beforeAll(clean);
+  beforeAll(async () => {
+    await ensureDefaultTestProfile(prisma);
+    await clean();
+  });
   afterAll(async () => { await clean(); await prisma.$disconnect(); });
 
   it("creates manual workouts and preserves edited or deleted Health workouts across sync", async () => {

@@ -328,7 +328,10 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
         return mapped?.episode.id === episode.id ? [mapped.date] : [];
       }),
       ...sessions.flatMap((row) => {
-        const instant = row.matchedWorkout?.startAt ?? row.webStartedAt;
+        const instant = row.matchedWorkout?.startAt
+          ?? row.effectiveAccountingAt
+          ?? row.webStartedAt
+          ?? row.createdAt;
         const mapped = instant ? episodeForInstant(partitions, instant) : null;
         return mapped?.episode.id === episode.id ? [mapped.date] : [];
       }),

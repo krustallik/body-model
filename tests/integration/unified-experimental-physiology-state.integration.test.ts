@@ -51,9 +51,9 @@ const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const profileId = 1;
 const fixtureMethod = "unified-state-v1-verification";
 const healthSnapshotFixtureTag = `${fixtureMethod}-snapshot`;
-const dates = ["2071-01-01", "2071-01-02", "2071-01-03"];
-const futureDate = "2071-01-04";
-const dateLineDates = ["2100-01-01", "2100-01-02", "2100-01-03", "2100-01-04"];
+const dates = ["2027-01-01", "2027-01-02", "2027-01-03"];
+const futureDate = "2027-01-04";
+const dateLineDates = ["2028-01-01", "2028-01-02", "2028-01-03", "2028-01-04"];
 let lifecycleBeforeSuite: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle.findUnique>> | null = null;
 let lifecycleSnapshotCaptured = false;
 let episodeId: number | null = null;
@@ -144,6 +144,7 @@ async function clean(): Promise<void> {
       profileId,
       OR: [
         { source: { in: ["health", "day"] }, sourceKey: { in: allDates } },
+        { source: "active_energy", sourceKey: "convergence" },
         { source: "training", sourceKey: { in: fixtureTrainingSessionIds } },
         ...fixtureTrainingSessionIds.flatMap((id) => [
           { source: "training", sourceKey: { startsWith: `training-delete-set:${id}:` } },
@@ -159,7 +160,7 @@ async function clean(): Promise<void> {
   });
   const persistence = new PhysiologyV7PersistenceRepository(prisma);
   for (const block of fixturePublicationBlocks) {
-    if (!(["health", "training", "day", "stepper"] as const).includes(block.source as "health" | "training" | "day" | "stepper")) {
+    if (!(["health", "training", "day", "stepper", "active_energy"] as const).includes(block.source as "health" | "training" | "day" | "stepper" | "active_energy")) {
       throw new Error(`Unexpected Unified publication block source in fixture cleanup: ${block.source}`);
     }
     const cleared = await persistence.clearUnifiedPublicationBlock({
@@ -1486,11 +1487,15 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 3 });
   }, 60_000);
 
-  it("restores the retry fence after a candidate self-invalidation commits before a later refresh failure", async () => {
+  it("keeps the convergence retry fence after candidate self-invalidation and recovers it with the worker", async () => {
     await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     await verifyAndPublishUnifiedV3Postflight({ profileId });
     await activateAndReplayUnifiedV4({ profileId });
+    await prisma.modelEpisode.update({
+      where: { id: episodeId! },
+      data: { latestModeledDate: dates[2] },
+    });
 
     const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] }, select: { id: true } });
     const workout = await prisma.workout.create({
@@ -1531,17 +1536,31 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     expect(status).toBe("stale");
     const fencedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
-    const blocks = await prisma.unifiedPublicationBlock.findMany({ where: { profileId, source: "health" } });
-    expect(blocks.length).toBeGreaterThan(0);
+    const convergenceBlock = await prisma.unifiedPublicationBlock.findUnique({
+      where: { profileId_source_sourceKey: { profileId, source: "active_energy", sourceKey: "convergence" } },
+      select: { fromDate: true, ownerLeaseUntil: true },
+    });
+    expect(convergenceBlock).toMatchObject({ fromDate: dates[0] });
+    expect(convergenceBlock?.ownerLeaseUntil).toBeInstanceOf(Date);
     expect(fencedLifecycle.productionPublishedGeneration).toBe(fencedLifecycle.invalidationGeneration);
     expect(fencedLifecycle.unifiedPublishedGeneration).toBeNull();
     expect(fencedLifecycle.unifiedPublicationBlockedFromDate).not.toBeNull();
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
-    const recovery = await syncHealthWeightThroughService(
-      dates[1]!, 79.4, `${dates[1]}T19:00:00.000Z`,
-    );
-    expect(recovery.modelPublicationStatus).toBe("current");
+    await prisma.$executeRaw`
+      UPDATE "UnifiedPublicationBlock"
+      SET "ownerLeaseUntil" = TIMESTAMPTZ '2000-01-01 00:00:00+00'
+      WHERE "profileId" = ${profileId}
+        AND "source" = 'active_energy'
+        AND "sourceKey" = 'convergence'
+    `;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixtureNow);
+    try {
+      await expect(processNextTrainingRefreshJob()).resolves.toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(await prisma.unifiedPublicationBlock.findMany({ where: { profileId } })).toEqual([]);
     const recoveredLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
     expect(recoveredLifecycle).toMatchObject({
@@ -3301,7 +3320,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       startDate: dateLineDates[0]!,
       timezone: "Pacific/Kiritimati",
       active: false,
-      deactivatedAt: new Date("2100-01-03T12:00:00.000Z"),
+      deactivatedAt: new Date(`${dateLineDates[2]}T12:00:00.000Z`),
     } });
     const episodeTwo = await prisma.modelEpisode.create({ data: {
       ...episodeBaseline,
@@ -3352,7 +3371,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const program = await prisma.trainingProgram.create({ data: { profileId, name: `${fixtureMethod}-date-line-program` } });
     const programVersion = await prisma.trainingProgramVersion.create({ data: { programId: program.id, versionNumber: 1 } });
     await prisma.trainingProgram.update({ where: { id: program.id }, data: { currentVersionId: programVersion.id } });
-    const eventAt = new Date("2100-01-03T11:00:00.000Z");
+    const eventAt = new Date(`${dateLineDates[2]}T11:00:00.000Z`);
     const session = await prisma.strengthDiarySession.create({ data: {
       profileId,
       programId: program.id,
@@ -3384,7 +3403,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const hypertrophyBeforeUnlinked = await prisma.experimentalLocalHypertrophyResponseShadow.findUniqueOrThrow({
       where: { profileId_weekStartDate: { profileId, weekStartDate } }, select: { result: true },
     });
-    const unlinkedSessionAt = new Date("2100-01-03T13:00:00.000Z");
+    const unlinkedSessionAt = new Date(`${dateLineDates[2]}T13:00:00.000Z`);
     const unlinkedSession = await prisma.strengthDiarySession.create({ data: {
       profileId,
       status: "COMPLETED",
@@ -3472,9 +3491,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       || (row.modelEpisodeId === episodeTwo.id && row.date === dateLineDates[2])
     ));
     expect(requestedSequence.map(({ modelEpisodeId, date, boundaryAt }) => [modelEpisodeId, date, boundaryAt.toISOString()])).toEqual([
-      [episodeOne.id, dateLineDates[2], "2100-01-02T10:00:00.000Z"],
-      [episodeOne.id, dateLineDates[3], "2100-01-03T10:00:00.000Z"],
-      [episodeTwo.id, dateLineDates[2], "2100-01-03T12:00:00.000Z"],
+      [episodeOne.id, dateLineDates[2], `${dateLineDates[1]}T10:00:00.000Z`],
+      [episodeOne.id, dateLineDates[3], `${dateLineDates[2]}T10:00:00.000Z`],
+      [episodeTwo.id, dateLineDates[2], `${dateLineDates[2]}T12:00:00.000Z`],
     ]);
     expect(new Set(allEpisodeRows.map((row) => `${row.modelEpisodeId}|${row.date}`)).size).toBe(allEpisodeRows.length);
 
@@ -3492,7 +3511,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const forecastDonor = await readLatestUnifiedExperimentalPhysiologyV2ForEpisode(prisma, {
       profileId, modelEpisodeId: episodeTwo.id, throughDate: dateLineDates[2]!,
     });
-    expect(forecastDonor).toMatchObject({ modelEpisodeId: episodeTwo.id, date: dateLineDates[2]!, boundaryAt: new Date("2100-01-03T12:00:00.000Z") });
+    expect(forecastDonor).toMatchObject({ modelEpisodeId: episodeTwo.id, date: dateLineDates[2]!, boundaryAt: new Date(`${dateLineDates[2]}T12:00:00.000Z`) });
 
     const duplicate = Object.fromEntries(Object.entries(requestedSequence[0]!).filter(([key]) => key !== "id"));
     await expect(prisma.unifiedExperimentalPhysiologyStateV2.create({

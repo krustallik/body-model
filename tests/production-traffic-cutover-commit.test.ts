@@ -52,7 +52,7 @@ function prepareTrainingServeFixture() {
     "previousImagePin=bodycast-app:rollback",
     "",
   ].join("\n"));
-  writeFileSync(fixture.env.IMAGE_ROLLBACK!, `${fixture.env.PREVIOUS_IMAGE_ID}\n`);
+  writeFileSync(path.join(fixture.root, "image-rollback"), `${fixture.env.PREVIOUS_IMAGE_ID}\n`);
   return { fixture, trainingReleaseSha, advancedMainSha, markerPath };
 }
 
@@ -120,7 +120,7 @@ describe("serving-route commit boundary", () => {
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy bodycast-app-prod:3000");
     expect(existsSync(markerPath)).toBe(false);
     expect(existsSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release"))).toBe(false);
-    expect(existsSync(fixture.env.IMAGE_ROLLBACK!)).toBe(false);
+    expect(existsSync(path.join(fixture.root, "image-rollback"))).toBe(false);
     expect(readdirSync(fixture.routes).some((name) => name.startsWith(".bodycast-maintenance-backup."))).toBe(false);
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
     const fenceReady = events.indexOf("unified-v4-fence-ready");
@@ -161,31 +161,147 @@ describe("serving-route commit boundary", () => {
     expect(events).not.toContain("caddy-reload:serving");
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("retains Training recovery evidence when a serving reload times out ambiguously", async () => {
+  it.skipIf(!bashAvailable)("serially reconciles an ambiguous Training reload before confirming maintenance", async () => {
     const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
     const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
       BODYCAST_DEPLOY_SHA: trainingReleaseSha,
       DEPLOY_SHA: trainingReleaseSha,
       CANDIDATE_SHA: trainingReleaseSha,
       AMBIGUOUS_SERVING_RELOAD: "1",
+      AMBIGUOUS_RELOAD_DELAY_MS: "1500",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Ambiguous Caddy reload reconciled");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readdirSync(fixture.routes).filter((name) => name.startsWith(".bodycast-maintenance-backup."))).toHaveLength(0);
+    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("healthy");
+    expect(readFileSync(path.join(fixture.root, "app-restart"), "utf8").trim()).toBe("always");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    expect(events).toContain("caddy-reload-timeout:serving");
+    expect(events).toContain("late-caddy-serving-config");
+    expect(events).toContain("caddy-maintenance-waits-for-prior-load");
+    expect(events.filter((event) => event === "public-probe:503:https://bodycast.example.test/")).toHaveLength(4);
+    const lateApply = events.indexOf("late-caddy-serving-config");
+    const reloadTimeout = events.indexOf("caddy-reload-timeout:serving");
+    const maintenanceReload = events.lastIndexOf("caddy-reload:maintenance");
+    const maintenanceWait = events.lastIndexOf("caddy-maintenance-waits-for-prior-load");
+    const maintenanceApply = events.lastIndexOf("caddy-active-config:maintenance");
+    const confirmedPublic503 = events.lastIndexOf("public-probe:503:https://bodycast.example.test/");
+    expect(reloadTimeout).toBeLessThan(lateApply);
+    expect(maintenanceReload).toBeLessThan(maintenanceWait);
+    expect(maintenanceWait).toBeLessThan(lateApply);
+    expect(lateApply).toBeLessThan(maintenanceApply);
+    expect(maintenanceApply).toBeLessThan(confirmedPublic503);
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("update --restart=no bodycast-app-prod");
+    expect(dockerLog).not.toContain("stop --time 5 bodycast-app-prod");
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("healthy");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the Training candidate running when maintenance reload remains UNKNOWN", async () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      AMBIGUOUS_SERVING_RELOAD: "1",
+      AMBIGUOUS_RELOAD_DELAY_MS: "250",
+      FAIL_MAINTENANCE_RELOAD: "1",
     });
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Caddy state remains UNKNOWN");
+    expect(result.stderr).toContain("Maintenance is not confirmed");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
     expect(existsSync(markerPath)).toBe(true);
     expect(readdirSync(fixture.routes).filter((name) => name.startsWith(".bodycast-maintenance-backup."))).toHaveLength(1);
-    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("exited");
-    expect(readFileSync(path.join(fixture.root, "app-restart"), "utf8").trim()).toBe("no");
-    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
-    expect(events).toContain("caddy-reload-timeout:serving");
-    expect(events.filter((event) => event === "public-probe:503:https://bodycast.example.test/")).toHaveLength(3);
-    expect(events).not.toContain("caddy-reload:maintenance");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("update --restart=no bodycast-app-prod");
+    expect(dockerLog).not.toContain("stop --time 5 bodycast-app-prod");
 
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("exited");
-    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("late-caddy-serving-config");
+    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("healthy");
+    expect(readFileSync(path.join(fixture.root, "app-restart"), "utf8").trim()).toBe("always");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps Training recovery evidence when public maintenance cannot be confirmed", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      AMBIGUOUS_SERVING_RELOAD: "1",
+      AMBIGUOUS_RELOAD_DELAY_MS: "100",
+      FAIL_FOURTH_MAINTENANCE_PROBE: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Caddy state remains UNKNOWN");
+    expect(result.stderr).toContain("Maintenance is not confirmed");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readdirSync(fixture.routes).filter((name) => name.startsWith(".bodycast-maintenance-backup."))).toHaveLength(1);
+    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("healthy");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("caddy-active-config:maintenance");
+    expect(events).toContain("public-probe:502:https://bodycast.example.test/");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("update --restart=no bodycast-app-prod");
+    expect(dockerLog).not.toContain("stop --time 5 bodycast-app-prod");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("reconciles a failed Training serving reload before the V4 fence commits", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      FAIL_SERVING_RELOAD: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readdirSync(fixture.routes).filter((name) => name.startsWith(".bodycast-maintenance-backup."))).toHaveLength(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("caddy-reload-failed:serving");
+    expect(events).toContain("caddy-active-config:maintenance");
+    expect(events).toContain("public-probe:503:https://bodycast.example.test/");
+    expect(events).toContain("unified-v4-fence-aborted");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("update --restart=no bodycast-app-prod");
+    expect(dockerLog).not.toContain("stop --time 5 bodycast-app-prod");
+    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("healthy");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the serving route terminal after the Training V4 fence commits", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      CORRUPT_ROUTE_AFTER_SERVING_RELOAD: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Training serving was committed by the PostgreSQL fence");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("fixture route changed");
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readdirSync(fixture.routes).filter((name) => name.startsWith(".bodycast-maintenance-backup."))).toHaveLength(1);
+    expect(readFileSync(path.join(fixture.root, "app-status"), "utf8").trim()).toBe("healthy");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    const fenceCommit = events.indexOf("unified-v4-fence-committed");
+    expect(fenceCommit).toBeGreaterThanOrEqual(0);
+    expect(events.slice(fenceCommit + 1)).not.toContain("caddy-reload:maintenance");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("stop --time 5 bodycast-app-prod");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps maintenance when the V4 fence exits after READY and before route publication", () => {
@@ -220,7 +336,7 @@ describe("serving-route commit boundary", () => {
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("unified-v4-fence-commit-failed");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("public-probe:503:https://bodycast.example.test/");
     expect(existsSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release"))).toBe(true);
-    expect(existsSync(fixture.env.IMAGE_ROLLBACK!)).toBe(true);
+    expect(existsSync(path.join(fixture.root, "image-rollback"))).toBe(true);
     expect(readdirSync(fixture.routes).some((name) => name.startsWith(".bodycast-maintenance-backup."))).toBe(false);
   }, 30_000);
 

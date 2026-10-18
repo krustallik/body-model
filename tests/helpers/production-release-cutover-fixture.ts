@@ -564,13 +564,22 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
     grep -q reverse_proxy "$ROUTE_FILE" && route_kind=serving
     event "caddy-reload:$route_kind"
     if [[ "$route_kind" == "serving" && "\${AMBIGUOUS_SERVING_RELOAD:-0}" == "1" ]]; then
+      : > "$CADDY_PENDING_RELOAD_FILE"
       (
-        sleep "\${AMBIGUOUS_RELOAD_DELAY_SECONDS:-0.25}"
+        command node -e 'setTimeout(() => process.exit(0), Number(process.argv[1]));' "\${AMBIGUOUS_RELOAD_DELAY_MS:-250}"
         printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"
         event "late-caddy-serving-config"
+        rm -f -- "$CADDY_PENDING_RELOAD_FILE"
       ) >/dev/null 2>&1 &
       event "caddy-reload-timeout:serving"
       exit 124
+    fi
+    if [[ "$route_kind" == "maintenance" && -f "$CADDY_PENDING_RELOAD_FILE" \
+        && "\${FAIL_MAINTENANCE_RELOAD:-0}" != "1" ]]; then
+      event "caddy-maintenance-waits-for-prior-load"
+      while [[ -f "$CADDY_PENDING_RELOAD_FILE" ]]; do
+        command node -e 'setTimeout(() => process.exit(0), 10);'
+      done
     fi
     if [[ "\${FAIL_CADDY_RELOAD:-0}" == "1" \
         || ( "$route_kind" == "maintenance" && "\${FAIL_MAINTENANCE_RELOAD:-0}" == "1" ) \
@@ -581,6 +590,10 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
     if [[ "$route_kind" == "serving" ]]; then
       printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"
       event "caddy-serving-sha:$(cat "$APP_SHA_FILE")"
+      if [[ "\${CORRUPT_ROUTE_AFTER_SERVING_RELOAD:-0}" == "1" ]]; then
+        printf '%s\n' '# fixture route changed after Caddy loaded serving config' >> "$ROUTE_FILE"
+        event "route-corrupted-after-serving-reload"
+      fi
     else
       printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"
     fi
@@ -649,6 +662,12 @@ if [[ "\${FAIL_CANDIDATE_PUBLIC_PROBE:-0}" == "1" && "$url" == *"/api/health" ]]
 fi
 if [[ "\${FAIL_THIRD_MAINTENANCE_PROBE:-0}" == "1" && "$url" == *"/" ]] \
     && [[ "$(grep -Fc 'public-probe:503:https://bodycast.example.test/' "$EVENT_LOG" 2>/dev/null || true)" -ge 2 ]]; then
+  status=502
+  response_body='unavailable'
+  response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
+fi
+if [[ "\${FAIL_FOURTH_MAINTENANCE_PROBE:-0}" == "1" && "$url" == *"/" ]] \
+    && [[ "$(grep -Fc 'public-probe:503:https://bodycast.example.test/' "$EVENT_LOG" 2>/dev/null || true)" -ge 3 ]]; then
   status=502
   response_body='unavailable'
   response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
@@ -862,6 +881,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     IMAGE_ROLLBACK: path.join(root, "image-rollback"),
     IMAGE_DEPLOY_ROLLBACK: path.join(root, "image-deploy-rollback"),
     ACTIVE_ROUTE_FILE: path.join(root, "active-route"),
+    CADDY_PENDING_RELOAD_FILE: path.join(root, "caddy-pending-reload"),
     DOCKER_LOG: path.join(root, "docker.log"),
     EVENT_LOG: path.join(root, "events.log"),
     STAGE_PATH_LOG: path.join(root, "stage-paths.log"),

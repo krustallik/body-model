@@ -545,7 +545,7 @@ publish_candidate_route() {
       else
         restore_training_maintenance_after_fence_failure || true
       fi
-      echo "Training serving did not finalize; maintenance marker and recovery evidence are retained." >&2
+      echo "Training serving did not finalize; the release marker is retained. Follow the route recovery status above before any further action." >&2
       return 1
     fi
     local recovery_route
@@ -600,33 +600,14 @@ write_training_maintenance_route_from_backup() {
   bodycast_maintenance_marker_from_route >/dev/null
 }
 
-stop_training_candidate_after_unknown_route() {
-  local app_state restart_policy
-  if ! timeout 8s docker update --restart=no "$APP_CONTAINER" \
-    || ! timeout 8s docker stop --time 5 "$APP_CONTAINER"; then
-    echo "Training candidate stop failed after an ambiguous Caddy reload." >&2
-    return 1
-  fi
-  app_state="$(timeout 8s docker inspect --format '{{.State.Status}}' "$APP_CONTAINER")" || return 1
-  restart_policy="$(timeout 8s docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER")" || return 1
-  [[ "$app_state" == "exited" && "$restart_policy" == "no" ]] || {
-    echo "Training candidate is not confirmed stopped with restart disabled after ambiguous Caddy reload." >&2
-    return 1
-  }
-}
-
 contain_ambiguous_training_reload() {
-  local backup="$1" route_message="maintenance config restore failed"
-  if write_training_maintenance_route_from_backup "$backup"; then
-    route_message="maintenance config restored on disk"
-  else
-    echo "Training maintenance config could not be restored on disk after ambiguous Caddy reload." >&2
+  local backup="$1"
+  BODYCAST_TRAINING_MAINTENANCE_BACKUP="$backup"
+  if restore_training_maintenance_after_fence_failure; then
+    echo "Ambiguous Caddy reload reconciled: the maintenance reload completed and the exact public 503 was confirmed. The candidate remains running; the release marker is retained." >&2
+    return 0
   fi
-  if ! stop_training_candidate_after_unknown_route; then
-    echo "Caddy state remains UNKNOWN; candidate app, marker, and route backup require operator inspection." >&2
-    return 1
-  fi
-  echo "Caddy state remains UNKNOWN; $route_message; candidate is stopped, marker retained, and backup retained at $backup." >&2
+  echo "Caddy state remains UNKNOWN; the candidate remains running, and the release marker plus route backup require operator inspection. Maintenance is not confirmed." >&2
   return 1
 }
 
@@ -653,13 +634,11 @@ restore_training_maintenance_after_fence_failure() {
   if ! timeout 8s docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
-    echo "Training maintenance reload outcome is UNKNOWN; stopping the candidate and retaining marker/backup." >&2
-    stop_training_candidate_after_unknown_route || true
+    echo "Training maintenance reload outcome is UNKNOWN; candidate remains running and marker/backup are retained. Maintenance is not confirmed." >&2
     return 1
   fi
   if ! bodycast_probe_public_maintenance "$maintenance_marker"; then
-    echo "Training recovery unresolved: external maintenance 503 was not confirmed; stopping the candidate and retaining backup." >&2
-    stop_training_candidate_after_unknown_route || true
+    echo "Training recovery unresolved: external maintenance 503 was not confirmed; candidate remains running and marker/backup are retained. Maintenance is not confirmed." >&2
     return 1
   fi
   SERVING_COMMIT_OCCURRED=false
@@ -790,8 +769,7 @@ serve_training_release() {
   }
   if ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest" \
     || ! bodycast_verify_exact_serving_route; then
-    echo "Training serving finalization failed after the PostgreSQL fence; restoring maintenance." >&2
-    restore_training_maintenance_after_fence_failure || true
+    echo "Training serving was committed by the PostgreSQL fence, but final marker/route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
     return 1
   fi
   local marker_backup marker_directory marker_tmp
@@ -800,8 +778,7 @@ serve_training_release() {
   chmod 0600 "$marker_backup"
   if ! cp -- "$BODYCAST_MARKER_FILE_PATH" "$marker_backup" || ! sync -f "$marker_backup"; then
     rm -f -- "$marker_backup"
-    echo "Training marker backup could not be made durable; restoring maintenance." >&2
-    restore_training_maintenance_after_fence_failure || true
+    echo "Training serving was committed by the PostgreSQL fence, but marker cleanup could not be prepared; the serving route and release marker are retained for operator inspection." >&2
     return 1
   fi
   if ! clear_bodycast_release_marker "$expected_release_sha" "app-ready" "$marker_digest"; then
@@ -813,8 +790,7 @@ serve_training_release() {
       sync -f "$marker_directory"
     fi
     rm -f -- "$marker_backup"
-    echo "Training release marker cleanup failed; restoring maintenance." >&2
-    restore_training_maintenance_after_fence_failure || true
+    echo "Training serving was committed by the PostgreSQL fence, but release marker cleanup failed; the serving route and recovery evidence are retained for operator inspection." >&2
     return 1
   fi
   rm -f -- "$marker_backup"

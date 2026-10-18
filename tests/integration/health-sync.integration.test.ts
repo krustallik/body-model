@@ -36,6 +36,19 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
+async function waitForWorkerBarrier<T>(barrier: Promise<T>, worker: Promise<unknown>, label: string): Promise<T> {
+  const outcome = await Promise.race([
+    barrier.then((value) => ({ type: "barrier" as const, value })),
+    worker.then(
+      () => ({ type: "worker-ended" as const }),
+      (error: unknown) => ({ type: "worker-failed" as const, error }),
+    ),
+  ]);
+  if (outcome.type === "barrier") return outcome.value;
+  const detail = outcome.type === "worker-failed" ? `: ${String(outcome.error)}` : "";
+  throw new Error(`Health worker ${outcome.type} before reaching ${label}${detail}`);
+}
+
 async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -339,8 +352,11 @@ describe("Apple Health sync with PostgreSQL", () => {
     await cleanTestRows();
   });
   afterAll(async () => {
-    await cleanTestRows();
-    await prisma.$disconnect();
+    try {
+      await cleanTestRows();
+    } finally {
+      await Promise.all([prisma.$disconnect(), applicationPrisma.$disconnect()]);
+    }
   });
 
   it("creates partial data, persists raw payload and creates workouts", async () => {
@@ -1080,15 +1096,16 @@ describe("Apple Health sync with PostgreSQL", () => {
       await prisma.healthSyncRefreshJob.update({ where: { profileId: 1 }, data: { nextAttemptAt: new Date(0) } });
       await markUnifiedV4Current();
 
-      const currentnessRead = deferred();
-      oldWorker = processNextHealthSyncRefreshJob({
+      const currentnessRead = deferred<boolean>();
+      const oldWorkerRun = processNextHealthSyncRefreshJob({
         afterCurrentnessCheck: async (_job, alreadyCurrent) => {
-          expect(alreadyCurrent).toBe(true);
-          currentnessRead.resolve();
+          currentnessRead.resolve(alreadyCurrent);
           await releaseOldWorker.promise;
+          if (!alreadyCurrent) throw new Error("Expected the stale-worker fixture to reach an already-current read.");
         },
       });
-      await currentnessRead.promise;
+      oldWorker = oldWorkerRun;
+      await expect(waitForWorkerBarrier(currentnessRead.promise, oldWorkerRun, "currentness hook")).resolves.toBe(true);
 
       expect((await POST(syncRequest([secondBody]))).status).toBe(200);
       const afterNewSync = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
@@ -1111,15 +1128,16 @@ describe("Apple Health sync with PostgreSQL", () => {
       await prisma.healthSyncRefreshJob.update({ where: { profileId: 1 }, data: { nextAttemptAt: new Date(0) } });
       const beforeGeneration = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
       const beforeAttemptCount = (await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } })).attemptCount;
-      const staleWorkerCurrent = deferred();
-      staleWorker = processNextHealthSyncRefreshJob({
+      const staleWorkerCurrent = deferred<boolean>();
+      const staleWorkerRun = processNextHealthSyncRefreshJob({
         afterCurrentnessCheck: async (_job, alreadyCurrent) => {
-          expect(alreadyCurrent).toBe(true);
-          staleWorkerCurrent.resolve();
+          staleWorkerCurrent.resolve(alreadyCurrent);
           await releaseStaleWorker.promise;
+          if (!alreadyCurrent) throw new Error("Expected the stale-worker fixture to reach an already-current recovery read.");
         },
       });
-      await staleWorkerCurrent.promise;
+      staleWorker = staleWorkerRun;
+      await expect(waitForWorkerBarrier(staleWorkerCurrent.promise, staleWorkerRun, "recovery currentness hook")).resolves.toBe(true);
       await prisma.healthSyncRefreshJob.update({ where: { profileId: 1 }, data: {
         leaseUntil: new Date(Date.now() - 1_000), nextAttemptAt: new Date(0),
       } });

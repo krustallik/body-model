@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { EXPECTED_MS100_V1, EXPECTED_GOLDEN_V1 } from "../fixtures/training-history-stage01/expected-v1";
 import {
   STAGE01_GOLDEN_TOTALS_V1,
@@ -26,6 +26,38 @@ const SENTINEL_SESSION_EXERCISE_ID = 15_000_004;
 const SENTINEL_PROGRAM_VERSION_ID = 15_000_005;
 const SENTINEL_PROGRAM_CHANGE_ID = 15_000_006;
 const SENTINEL_SUPERSEDED_WORKOUT_ID = 15_000_007;
+
+type TrainingRefreshState = {
+  queue: Awaited<ReturnType<PrismaClient["trainingRefreshJob"]["findUnique"]>>;
+  sourceChanges: Awaited<ReturnType<PrismaClient["trainingSourceChange"]["findMany"]>>;
+};
+
+async function readTrainingRefreshState(db: PrismaClient): Promise<TrainingRefreshState> {
+  const profileId = TRAINING_HISTORY_STAGE01_PROFILE_ID;
+  const [queue, sourceChanges] = await Promise.all([
+    db.trainingRefreshJob.findUnique({ where: { profileId } }),
+    db.trainingSourceChange.findMany({ where: { profileId } }),
+  ]);
+  return { queue, sourceChanges };
+}
+
+async function restoreTrainingRefreshState(db: PrismaClient, state: TrainingRefreshState): Promise<void> {
+  const profileId = TRAINING_HISTORY_STAGE01_PROFILE_ID;
+  await db.$transaction(async (transaction) => {
+    await transaction.trainingSourceChange.deleteMany({ where: { profileId } });
+    await transaction.trainingRefreshJob.deleteMany({ where: { profileId } });
+    if (state.sourceChanges.length > 0) {
+      await transaction.trainingSourceChange.createMany({ data: state.sourceChanges.map((row) => ({
+        ...row,
+        oldSourceIdentity: row.oldSourceIdentity === null ? Prisma.DbNull : row.oldSourceIdentity as Prisma.InputJsonValue,
+        newSourceIdentity: row.newSourceIdentity === null ? Prisma.DbNull : row.newSourceIdentity as Prisma.InputJsonValue,
+        oldEventInstants: row.oldEventInstants === null ? Prisma.DbNull : row.oldEventInstants as Prisma.InputJsonValue,
+        newEventInstants: row.newEventInstants === null ? Prisma.DbNull : row.newEventInstants as Prisma.InputJsonValue,
+      })) });
+    }
+    if (state.queue) await transaction.trainingRefreshJob.create({ data: state.queue });
+  });
+}
 
 async function clearFixtureUnifiedPublicationBlocks(input: {
   db: PrismaClient;
@@ -61,6 +93,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
   let prisma: import("@prisma/client").PrismaClient | undefined;
   let persistence: typeof import("../../src/modules/training/testing/stage01-persistence") | undefined;
   let seededCounts: Awaited<ReturnType<NonNullable<typeof persistence>["seedStage01Namespace"]>> | undefined;
+  let priorTrainingRefreshState: TrainingRefreshState | undefined;
 
   beforeAll(async () => {
     requireIsolatedStage01Database(process.env.DATABASE_URL, process.env.BODYCAST_STAGE01_MODE, "test");
@@ -68,14 +101,17 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL });
     await prisma.$connect();
     persistence = await import("../../src/modules/training/testing/stage01-persistence");
+    priorTrainingRefreshState = await readTrainingRefreshState(prisma);
+    await restoreTrainingRefreshState(prisma, { queue: null, sourceChanges: [] });
     await persistence.cleanupStage01Namespace(prisma);
     seededCounts = await persistence.seedStage01Namespace(prisma);
   }, 60_000);
 
   afterAll(async () => {
-    if (!prisma || !persistence) return;
+    if (!prisma) return;
     try {
-      await persistence.cleanupStage01Namespace(prisma);
+      if (priorTrainingRefreshState) await restoreTrainingRefreshState(prisma, priorTrainingRefreshState);
+      if (persistence) await persistence.cleanupStage01Namespace(prisma);
     } finally {
       await prisma.$disconnect();
     }

@@ -88,6 +88,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       prisma.physiologyV7ShadowDiagnostic.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
       prisma.fatWeightShadowV1Result.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
       prisma.experimentalFatWeightUncertaintyShadow.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
+      prisma.physiologyV7DailyResult.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
     ]);
     if (existingFixtureCounts.some((count) => count !== 0)) {
       throw new Error("V4 recovery disposable database contains pre-existing fixture identities.");
@@ -251,6 +252,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         await prisma.physiologyV7ShadowDiagnostic.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
         await prisma.fatWeightShadowV1Result.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
         await prisma.experimentalFatWeightUncertaintyShadow.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
+        await prisma.physiologyV7DailyResult.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
         await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
         if (profileCreated) await prisma.profile.delete({ where: { id: profileId } });
       }

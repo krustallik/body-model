@@ -3,6 +3,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.BODYCAST_V4_RECOVERY_TEST_DATABASE_URL);
+if (decodeURIComponent(new URL(databaseUrl).pathname.slice(1)).toLowerCase() !== "bodycast_v4_recovery_test") {
+  throw new Error("V4 recovery integration requires its dedicated bodycast_v4_recovery_test database.");
+}
+const originalDatabaseUrl = process.env.DATABASE_URL;
 process.env.DATABASE_URL = databaseUrl;
 
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
@@ -10,6 +14,8 @@ const profileId = 1;
 const fromDate = "2026-10-01";
 const trainingDate = "2026-10-09";
 const healthDates = Array.from({ length: 8 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
+const localHypertrophyWeekStarts = ["2026-09-28", "2026-10-05"];
+const recoveryDerivedDates = [...healthDates, trainingDate];
 const episodeFixture = {
   profileId,
   startDate: fromDate,
@@ -50,14 +56,54 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
   let programId: number;
   let episodeId: number;
   let workoutId: number;
+  let healthSnapshotId: number;
+  let healthAuditId: number;
+  let healthMetricSampleId: number;
+  let sessionCreated = false;
+  let profileCreated = false;
+  let fixtureNamespaceReserved = false;
+  let trainingFailureFunctionCreated = false;
+  let trainingFailureTriggerCreated = false;
+  let serializationFunctionCreated = false;
+  let serializationTriggerCreated = false;
+  const dailyHealthDataIds: number[] = [];
 
   beforeAll(async () => {
     await prisma.$connect();
-    await prisma.profile.upsert({
-      where: { id: profileId },
-      create: { id: profileId, sex: "male", dateOfBirth: new Date("1990-01-01T00:00:00.000Z"), heightCm: 180 },
-      update: { sex: "male", dateOfBirth: new Date("1990-01-01T00:00:00.000Z"), heightCm: 180 },
+    const existingFixtureCounts = await Promise.all([
+      prisma.profile.count({ where: { id: profileId } }),
+      prisma.dailyHealthData.count({ where: { date: { in: healthDates } } }),
+      prisma.healthSyncSnapshot.count({ where: { date: { in: healthDates } } }),
+      prisma.healthSyncAudit.count({ where: { rawBody: { contains: "durable-health-audit" } } }),
+      prisma.healthMetricSample.count({ where: { date: { in: healthDates } } }),
+      prisma.workout.count({ where: { sourceIdentity: "recovery-fixture:garmin-1" } }),
+      prisma.strengthDiarySession.count({ where: { id: 20 } }),
+      prisma.trainingProgram.count({ where: { profileId, name: "V4 derived recovery fixture" } }),
+      prisma.modelEpisode.count({ where: { profileId, startDate: fromDate } }),
+      prisma.physiologyV7Lifecycle.count({ where: { profileId } }),
+      prisma.unifiedPublicationBlock.count({ where: { profileId } }),
+      prisma.experimentalFfmRetentionShadow.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
+      prisma.experimentalLocalHypertrophyResponseShadow.count({ where: { profileId, weekStartDate: { in: localHypertrophyWeekStarts } } }),
+      prisma.experimentalGlycogenStateShadow.count({ where: { profileId, date: { in: healthDates } } }),
+      prisma.physiologyV7ShadowDiagnostic.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
+      prisma.fatWeightShadowV1Result.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
+      prisma.experimentalFatWeightUncertaintyShadow.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
+    ]);
+    if (existingFixtureCounts.some((count) => count !== 0)) {
+      throw new Error("V4 recovery disposable database contains pre-existing fixture identities.");
+    }
+    fixtureNamespaceReserved = true;
+    const { prisma: dependencyPrisma } = await import("@/lib/db/prisma");
+    const [dependencyDatabase] = await dependencyPrisma.$queryRawUnsafe<Array<{ database_name: string }>>(
+      "SELECT current_database() AS database_name",
+    );
+    if (dependencyDatabase?.database_name !== "bodycast_v4_recovery_test") {
+      throw new Error("V4 recovery dependencies did not resolve to the dedicated disposable database.");
+    }
+    await prisma.profile.create({
+      data: { id: profileId, sex: "male", dateOfBirth: new Date("1990-01-01T00:00:00.000Z"), heightCm: 180 },
     });
+    profileCreated = true;
     const episode = await prisma.modelEpisode.create({ data: episodeFixture });
     episodeId = episode.id;
     const program = await prisma.trainingProgram.create({ data: { profileId, name: "V4 derived recovery fixture" } });
@@ -70,7 +116,8 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         rawPayload: { fixture: "persisted-source-recovery", index: 0 },
       },
     });
-    await prisma.healthSyncSnapshot.create({
+    dailyHealthDataIds.push(firstHealthDay.id);
+    const healthSnapshot = await prisma.healthSyncSnapshot.create({
       data: {
         dailyHealthDataId: firstHealthDay.id, date: healthDates[0]!, timezone: "UTC",
         receivedAt: new Date(`${healthDates[0]}T12:00:00.000Z`),
@@ -79,19 +126,22 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         rawPayload: { fixture: "durable-health-provenance", source: "shortcut", nonce: "raw-exact" },
       },
     });
-    await prisma.healthSyncAudit.create({
+    healthSnapshotId = healthSnapshot.id;
+    const healthAudit = await prisma.healthSyncAudit.create({
       data: {
         receivedAt: new Date(`${healthDates[0]}T12:02:00.000Z`), outcome: "accepted", httpStatus: 200,
         rawBody: "{\"fixture\":\"durable-health-audit\",\"source\":\"shortcut\"}",
         contentType: "application/json", errorType: null,
       },
     });
-    await prisma.healthMetricSample.create({
+    healthAuditId = healthAudit.id;
+    const healthMetricSample = await prisma.healthMetricSample.create({
       data: {
         dailyHealthDataId: firstHealthDay.id, date: healthDates[0]!, metric: "weight-kg",
         source: "apple-health-shortcut", timestamp: new Date(`${healthDates[0]}T12:00:00.000Z`), value: 80,
       },
     });
+    healthMetricSampleId = healthMetricSample.id;
     const workout = await prisma.workout.create({
       data: {
         dailyHealthDataId: firstHealthDay.id,
@@ -112,6 +162,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         // Legacy persisted session: all derived accounting columns intentionally NULL.
       },
     });
+    sessionCreated = true;
     const sessionExercise = await prisma.strengthSessionExercise.create({
       data: {
         sessionId: 20, snapshotExerciseName: "Fixture squat", sortOrder: 0,
@@ -122,13 +173,14 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       data: { sessionExerciseId: sessionExercise.id, setNumber: 1, reps: 5, weightKg: 60 },
     });
     for (const [index, date] of healthDates.slice(1).entries()) {
-      await prisma.dailyHealthData.create({
+      const healthDay = await prisma.dailyHealthData.create({
         data: {
           date, weightKg: 80 + (index + 1) / 10, bodyFatPercent: 20, caloriesKcal: 2_200, proteinG: 160,
           carbsG: 200, fatG: 70, steps: 7_000, workoutFeedObserved: true,
           rawPayload: { fixture: "persisted-source-recovery", index },
         },
       });
+      dailyHealthDataIds.push(healthDay.id);
     }
     for (const date of [...healthDates, trainingDate]) {
       await prisma.dailyModelState.create({
@@ -173,27 +225,42 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
 
   afterAll(async () => {
     try {
-      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "fixture_training_block_serialization_failure" ON public."UnifiedPublicationBlock"');
-      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS public.fixture_training_block_serialization_failure()');
-      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "fixture_training_dependent_refresh_failure" ON public."ExperimentalFfmRetentionShadow"');
-      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS public.fixture_training_dependent_refresh_failure()');
-      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId } });
-      await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { profileId } });
-      await prisma.dailyModelState.deleteMany({ where: { episodeId } });
-      await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
-      await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
-      await prisma.strengthDiarySession.deleteMany({ where: { id: 20, profileId } });
-      await prisma.workout.deleteMany({ where: { id: workoutId } });
-      await prisma.trainingProgram.deleteMany({ where: { id: programId } });
-      await prisma.dailyHealthData.deleteMany({ where: { date: { in: healthDates } } });
-      await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: healthDates } } });
-      await prisma.healthSyncAudit.deleteMany({ where: { outcome: "accepted", rawBody: { contains: "durable-health-audit" } } });
-      await prisma.healthMetricSample.deleteMany({ where: { date: { in: healthDates } } });
-      await prisma.modelEpisode.deleteMany({ where: { id: episodeId } });
-      await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
-      await prisma.profile.deleteMany({ where: { id: profileId } });
+      if (fixtureNamespaceReserved && profileCreated) {
+        if (serializationTriggerCreated) await prisma.$executeRawUnsafe('DROP TRIGGER "fixture_training_block_serialization_failure" ON public."UnifiedPublicationBlock"');
+        if (serializationFunctionCreated) await prisma.$executeRawUnsafe('DROP FUNCTION public.fixture_training_block_serialization_failure()');
+        if (trainingFailureTriggerCreated) await prisma.$executeRawUnsafe('DROP TRIGGER "fixture_training_dependent_refresh_failure" ON public."ExperimentalFfmRetentionShadow"');
+        if (trainingFailureFunctionCreated) await prisma.$executeRawUnsafe('DROP FUNCTION public.fixture_training_dependent_refresh_failure()');
+        await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId } });
+        await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { profileId } });
+        if (episodeId !== undefined) {
+          await prisma.dailyModelState.deleteMany({ where: { episodeId } });
+          await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
+          await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
+          await prisma.modelEpisode.delete({ where: { id: episodeId } });
+        }
+        if (sessionCreated) await prisma.strengthDiarySession.delete({ where: { id: 20 } });
+        if (workoutId !== undefined) await prisma.workout.delete({ where: { id: workoutId } });
+        if (programId !== undefined) await prisma.trainingProgram.delete({ where: { id: programId } });
+        if (dailyHealthDataIds.length > 0) await prisma.dailyHealthData.deleteMany({ where: { id: { in: dailyHealthDataIds } } });
+        if (healthSnapshotId !== undefined) await prisma.healthSyncSnapshot.delete({ where: { id: healthSnapshotId } });
+        if (healthAuditId !== undefined) await prisma.healthSyncAudit.delete({ where: { id: healthAuditId } });
+        if (healthMetricSampleId !== undefined) await prisma.healthMetricSample.delete({ where: { id: healthMetricSampleId } });
+        await prisma.experimentalFfmRetentionShadow.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
+        await prisma.experimentalLocalHypertrophyResponseShadow.deleteMany({ where: { profileId, weekStartDate: { in: localHypertrophyWeekStarts } } });
+        await prisma.experimentalGlycogenStateShadow.deleteMany({ where: { profileId, date: { in: healthDates } } });
+        await prisma.physiologyV7ShadowDiagnostic.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
+        await prisma.fatWeightShadowV1Result.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
+        await prisma.experimentalFatWeightUncertaintyShadow.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
+        await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+        if (profileCreated) await prisma.profile.delete({ where: { id: profileId } });
+      }
     } finally {
-      await prisma.$disconnect();
+      try {
+        await prisma.$disconnect();
+      } finally {
+        if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+        else process.env.DATABASE_URL = originalDatabaseUrl;
+      }
     }
   });
 
@@ -215,7 +282,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(before.fingerprint);
 
     await prisma.$executeRawUnsafe(`
-      CREATE OR REPLACE FUNCTION public.fixture_training_dependent_refresh_failure()
+      CREATE FUNCTION public.fixture_training_dependent_refresh_failure()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW."date" = '${trainingDate}' THEN
@@ -223,19 +290,23 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         END IF;
         RETURN NEW;
       END $$`);
+    trainingFailureFunctionCreated = true;
     await prisma.$executeRawUnsafe(`
       CREATE TRIGGER "fixture_training_dependent_refresh_failure"
       BEFORE INSERT OR UPDATE ON public."ExperimentalFfmRetentionShadow"
       FOR EACH ROW EXECUTE FUNCTION public.fixture_training_dependent_refresh_failure()`);
+    trainingFailureTriggerCreated = true;
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true })).rejects.toThrow();
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(9);
     expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(before.fingerprint);
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } })).unifiedPublishedRolloutEpoch).toBeNull();
     await prisma.$executeRawUnsafe('DROP TRIGGER "fixture_training_dependent_refresh_failure" ON public."ExperimentalFfmRetentionShadow"');
+    trainingFailureTriggerCreated = false;
     await prisma.$executeRawUnsafe('DROP FUNCTION public.fixture_training_dependent_refresh_failure()');
+    trainingFailureFunctionCreated = false;
 
     await prisma.$executeRawUnsafe(`
-      CREATE OR REPLACE FUNCTION public.fixture_training_block_serialization_failure()
+      CREATE FUNCTION public.fixture_training_block_serialization_failure()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF OLD."source" = 'training' THEN
@@ -243,15 +314,19 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         END IF;
         RETURN OLD;
       END $$`);
+    serializationFunctionCreated = true;
     await prisma.$executeRawUnsafe(`
       CREATE TRIGGER "fixture_training_block_serialization_failure"
       BEFORE DELETE ON public."UnifiedPublicationBlock"
       FOR EACH ROW EXECUTE FUNCTION public.fixture_training_block_serialization_failure()`);
+    serializationTriggerCreated = true;
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true })).rejects.toMatchObject({ code: "P2034" });
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(9);
     expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(before.fingerprint);
     await prisma.$executeRawUnsafe('DROP TRIGGER "fixture_training_block_serialization_failure" ON public."UnifiedPublicationBlock"');
+    serializationTriggerCreated = false;
     await prisma.$executeRawUnsafe('DROP FUNCTION public.fixture_training_block_serialization_failure()');
+    serializationFunctionCreated = false;
 
     const { PhysiologyV7PersistenceRepository } = await import("@/modules/model-episodes/physiology-v7-persistence.repository");
     const originalClear = PhysiologyV7PersistenceRepository.prototype.clearUnifiedPublicationBlock;

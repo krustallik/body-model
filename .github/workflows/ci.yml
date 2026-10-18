@@ -155,7 +155,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        include:
+          - shard: 1
+            testArgs: "--shard=1/2 --testNamePattern='^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$'"
+          - shard: 2
+            testArgs: "--shard=2/2 --testNamePattern='^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$'"
+          - shard: 3
+            testArgs: "tests/integration/health-sync.integration.test.ts --testNamePattern='completes Training edits through Health coordination, stale-worker fencing, and restart recovery'"
+          - shard: 4
+            testArgs: "tests/integration/health-sync.integration.test.ts --testNamePattern='rebuilds and clears an acknowledged legacy Stepper block only after stable publication'"
     services:
       postgres:
         image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -199,17 +207,8 @@ jobs:
       - name: Apply test database migrations
         run: npm run prisma:migrate:deploy
 
-      - name: PostgreSQL integration tests (balanced shards 1 and 2)
-        if: matrix.shard <= 2
-        run: npm run test:integration -- --shard=${{ matrix.shard }}/2 --testNamePattern='^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$'
-
-      - name: PostgreSQL integration (Health coordination recovery)
-        if: matrix.shard == 3
-        run: npm run test:integration -- tests/integration/health-sync.integration.test.ts --testNamePattern='completes Training edits through Health coordination, stale-worker fencing, and restart recovery'
-
-      - name: PostgreSQL integration (legacy Stepper publication recovery)
-        if: matrix.shard == 4
-        run: npm run test:integration -- tests/integration/health-sync.integration.test.ts --testNamePattern='rebuilds and clears an acknowledged legacy Stepper block only after stable publication'
+      - name: PostgreSQL integration tests
+        run: npm run test:integration -- ${{ matrix.testArgs }}
 
   next-build:
     name: Next.js production build

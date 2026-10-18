@@ -120,11 +120,19 @@ describe("schema deploy compatibility handoff", () => {
     const expectedV4Bindings = {
       "src/modules/activity/active-energy-materialization.ts": {
         migrationOriginBlob: "ec066afe744ec0de47f8c5503266764eff311608",
-        deployBlob: "f163d3116638e44a6e42e10fac261f57acd11579",
+        deployBlob: "6090fbbeaf1074eb26b1c67373479a5ef869dd59",
       },
       "src/modules/activity/active-energy-publication.ts": {
         migrationOriginBlob: "3c1fcfec0ca73ac6b599ae6a7527c067b77adb2f",
-        deployBlob: "b76617954f03b700d7a783aa2f30a11388b769c9",
+        deployBlob: "f753ce998e57b1e8777fa17ac68616484d8ab2f5",
+      },
+      "scripts/production-full-history-recalculate.ts": {
+        migrationOriginBlob: "4bce126c880af008295b4648701575c4b967da5e",
+        deployBlob: "ab4f8d3278c22178bf2dbdfcf5bdfcb529b460ad",
+      },
+      ".github/workflows/ci.yml": {
+        migrationOriginBlob: "ea1f581e1ee17e0e3ca6ed811f15ba51e94670a2",
+        deployBlob: "5d174f4045ab34a2d5698199c879fd2bc6deb92d",
       },
       "src/modules/health/health.repository.ts": {
         migrationOriginBlob: "a8040b6f8a0eede730c67ba1a4df90063570bc13",
@@ -180,7 +188,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/model-episode.service.ts": {
         migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
-        deployBlob: "0c26958724115a8af43081cb127350213ece1488",
+        deployBlob: "1aec3eca7cf973f5774eac6606dd555adbae06f4",
+      },
+      "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": {
+        migrationOriginBlob: null,
+        deployBlob: "597cb29038fe97d563091abf900018413274acbb",
       },
       "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
         migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
@@ -192,11 +204,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/training/experimental-strength-energy-shadow.service.ts": {
         migrationOriginBlob: "2f556ff6817db3dff23a09d0ff15ba8254543551",
-        deployBlob: "4e9f5da57b7b60c0c553c35f62c12d994c9f9126",
+        deployBlob: "d71feacc49ec151295f9a783acad5becdb235ffd",
       },
       "src/modules/training/training.service.ts": {
         migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",
-        deployBlob: "408efc5996e9ad701057ab7f261d0cb045541ff4",
+        deployBlob: "35491fb682d1f8424d34501cc389effeb225bd36",
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
@@ -278,7 +290,7 @@ describe("schema deploy compatibility handoff", () => {
       markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
       changedPaths: [...compatibility.changedPaths, "prisma/schema.prisma"],
     })).toThrow(/allowlist/);
-    for (const changedPath of ["Dockerfile", "scripts/production-full-history-recalculate.ts"]) {
+    for (const changedPath of ["Dockerfile"]) {
       expect(() => evaluateSchemaDeployHandoff({
         markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
         changedPaths: [...compatibility.changedPaths, changedPath],

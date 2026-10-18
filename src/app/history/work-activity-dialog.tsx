@@ -1,10 +1,8 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  OCCUPATIONAL_CATEGORIES,
-  type OccupationalCategory,
-} from "@/model/occupational-activity";
+import { OCCUPATIONAL_CATEGORIES, type OccupationalCategory } from "@/model/occupational-activity";
+import { OccupationalCategoryDescriptions, WorkCategoryHelper } from "@/components/work-category-helper";
 import { useI18n } from "@/i18n/i18n-provider";
 import {
   loadWorkActivityDay,
@@ -20,6 +18,7 @@ import {
   reconstructionQuality,
 } from "@/modules/work-intervals/work-activity-view";
 import type { WorkIntervalDto } from "@/modules/work-intervals/work-interval.repository";
+import { occupationalCategoryCopy } from "@/modules/work-intervals/occupational-category-copy";
 import styles from "./history.module.css";
 
 type Editor = { id?: number; values: WorkIntervalFormValues } | null;
@@ -30,17 +29,11 @@ const emptyValues: WorkIntervalFormValues = {
   breakMinutes: 30,
 };
 
-function categoryCopy(category: OccupationalCategory, uk: boolean): { label: string; description: string } {
-  if (!uk) return OCCUPATIONAL_CATEGORIES[category];
-  return ({
-    standingLight: { label: "Дуже легка стояча", description: "Переважно стояння, очікування та легкі рухи." },
-    manualLight: { label: "Легка ручна", description: "Легке переміщення, пакування або робота руками." },
-    standingLightModerate: { label: "Активна легка", description: "Активна стояча робота з регулярними легкими зусиллями." },
-    manualModerate: { label: "Помірна ручна", description: "Регулярне переміщення вантажів і помірні фізичні зусилля." },
-  } satisfies Record<OccupationalCategory, { label: string; description: string }>)[category];
-}
-
-export function WorkActivityDialog({ date, onClose }: { date: string; onClose: () => void }) {
+export function WorkActivityDialog({ date, onClose, onChanged }: {
+  date: string;
+  onClose: () => void;
+  onChanged?: () => void | Promise<void>;
+}) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const number = new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 0 });
@@ -89,6 +82,7 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
       await saveWorkInterval(date, editor.values, editor.id);
       setEditor(null);
       await refresh();
+      await onChanged?.();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : uk ? "Не вдалося зберегти робочий проміжок." : "Could not save work interval.");
     } finally {
@@ -103,6 +97,7 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
     try {
       await removeWorkInterval(interval.id);
       await refresh();
+      await onChanged?.();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : uk ? "Не вдалося видалити робочий проміжок." : "Could not delete work interval.");
     } finally {
@@ -112,7 +107,12 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
 
   const diagnostics = activity?.diagnostics ?? null;
   return (
-    <dialog ref={dialogRef} className={`${styles.dialog} ${styles.workDialog}`} onCancel={onClose} onClose={onClose}>
+    <dialog
+      ref={dialogRef}
+      className={`${styles.dialog} ${styles.workDialog}`}
+      onCancel={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onClose={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
       <div className={styles.workDialogBody}>
         <div className={styles.dialogHeader}>
           <div>
@@ -163,15 +163,26 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                 />
                 <small>{uk ? "Вкажіть 0, якщо перерви не було. Перерва не додає робочої активності, але базовий метаболізм враховується." : "Use 0 if there was no break. Break time adds no work activity; resting metabolism is still counted."}</small>
               </label>
-              <label className={`${styles.field} ${styles.categoryField}`}>
-                <span>{uk ? "Робота між визначеною ходьбою та перервою" : "Work between detected walking and break"}</span>
-                <select value={editor.values.category} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, category: event.target.value as OccupationalCategory } })}>
-                  {Object.entries(OCCUPATIONAL_CATEGORIES).map(([key]) => (
-                    <option key={key} value={key}>{categoryCopy(key as OccupationalCategory, uk).label}</option>
-                  ))}
-                </select>
-                <small>{uk ? "Ходьба визначається автоматично із синхронізованої дистанції." : "Walking is automatic from synced distance."} {categoryCopy(editor.values.category, uk).description}</small>
-              </label>
+              <div className={styles.categoryField}>
+                <label className={styles.field}>
+                  <span>{uk ? "Робота між визначеною ходьбою та перервою" : "Work between detected walking and break"}</span>
+                  <select value={editor.values.category} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, category: event.target.value as OccupationalCategory } })}>
+                    {Object.keys(OCCUPATIONAL_CATEGORIES).map((key) => (
+                      <option key={key} value={key}>{occupationalCategoryCopy(key as OccupationalCategory, uk ? "uk" : "en").label}</option>
+                    ))}
+                  </select>
+                </label>
+                <small>{uk ? "Ходьба визначається автоматично із синхронізованої дистанції." : "Walking is automatic from synced distance."} {occupationalCategoryCopy(editor.values.category, uk ? "uk" : "en").description}</small>
+                <div className={styles.categoryGuidance}>
+                  <WorkCategoryHelper
+                    triggerClassName={styles.secondaryButton}
+                    onRecommend={(category) => setEditor((current) => current
+                      ? { ...current, values: { ...current.values, category } }
+                      : current)}
+                  />
+                  <OccupationalCategoryDescriptions />
+                </div>
+              </div>
             </div>
             <div className={styles.dialogActions}>
               <button className={styles.secondaryButton} type="button" onClick={() => setEditor(null)} disabled={saving}>{uk ? "Скасувати" : "Cancel"}</button>
@@ -190,7 +201,7 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
         ) : (
           <div className={styles.workCards}>
             {intervals.map((interval) => {
-              const category = categoryCopy(interval.category as OccupationalCategory, uk);
+              const category = occupationalCategoryCopy(interval.category as OccupationalCategory, uk ? "uk" : "en");
               const walking = diagnostics?.walking.intervals.find(({ intervalId }) => intervalId === interval.id);
               const occupation = diagnostics?.occupationalIntervals.find(({ id }) => id === interval.id);
               const quality = walking ? reconstructionQuality(walking, locale) : null;
@@ -217,9 +228,9 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                     </div>
                   </div>
                   <div className={styles.categorySummary}>
-                    <strong>{category?.label ?? interval.category}</strong>
+                      <strong>{category.label ?? interval.category}</strong>
                     <span>{uk ? "Залишкова робота" : "Residual work"}</span>
-                    {category && <p>{category.description}</p>}
+                    <p>{category.description}</p>
                     {occupation?.method === "hybrid-walking-residual" && (
                       <p>{uk ? "Ходьба й залишкова робота не перетинаються; введену перерву виключено з обох." : "Walking and residual work are mutually exclusive; the entered break is excluded from both."}</p>
                     )}
@@ -231,7 +242,7 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                     <div><span>{uk ? "Тривалість зміни" : "Clock shift"}</span><strong>{formatDuration(durationMinutes(interval.startAt, interval.endAt), locale)}</strong></div>
                     <div><span>{uk ? "Перерва" : "Break"}</span><strong>{interval.breakMinutes === null ? (uk ? "Не вказано (старий запис)" : "Not reported (legacy)") : formatDuration(interval.breakMinutes, locale)}</strong></div>
                     <div><span>{uk ? "Визначена ходьба" : "Detected walking"}</span><strong>{occupation?.walkingMinutes === null || occupation === undefined ? (uk ? "Недоступно" : "Unavailable") : formatDuration(occupation.walkingMinutes, locale)}</strong></div>
-                    <div><span>{occupation?.method === "category-only-fallback" ? (uk ? "Резервна категорія" : "Category fallback") : (uk ? "Решта" : "Remaining")} {category?.label ?? (uk ? "роботи" : "work")}</span><strong>{remainingWorkMinutes === null ? (uk ? "Недоступно" : "Unavailable") : formatDuration(remainingWorkMinutes, locale)}</strong></div>
+                    <div><span>{occupation?.method === "category-only-fallback" ? (uk ? "Резервна категорія" : "Category fallback") : (uk ? "Решта" : "Remaining")} {category.label ?? (uk ? "роботи" : "work")}</span><strong>{remainingWorkMinutes === null ? (uk ? "Недоступно" : "Unavailable") : formatDuration(remainingWorkMinutes, locale)}</strong></div>
                   </div>
                   <div className={styles.estimateGrid}>
                     <div><span>{uk ? "Оцінені кроки" : "Estimated steps"}</span><strong>{walking?.estimatedSteps.value === null || walking === undefined ? "—" : `~${number.format(walking.estimatedSteps.value)}`}</strong></div>

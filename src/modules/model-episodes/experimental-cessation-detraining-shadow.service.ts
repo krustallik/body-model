@@ -30,6 +30,7 @@ export async function rebuildAuthoritativeRelativeMuscleTrajectory(input: {
   fromDate?: string;
   fromInstant?: Date;
   profileId?: number;
+  onCandidateProcessed?: () => Promise<void> | void;
 }): Promise<void> {
   await rebuildRelativeMuscleEpisodeTrajectories(input);
 }

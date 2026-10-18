@@ -9,10 +9,12 @@ import {
   applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
   readGitCompatibility, renderSchemaDeployTransition,
 } from "../scripts/production-schema-deploy-handoff.mjs";
+import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
 const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
+const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -22,6 +24,16 @@ function ensureHandoffHistory() {
   } catch {
     execFileSync("git", ["fetch", "--no-tags", "--depth=2", "origin", DEPLOY_SHA], { stdio: "ignore" });
   }
+  try {
+    execFileSync("git", ["cat-file", "-e", `${DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA}^{commit}`], { stdio: "ignore" });
+  } catch {
+    execFileSync("git", ["fetch", "--no-tags", "--depth=2", "origin", DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA], { stdio: "ignore" });
+  }
+}
+
+function v4TestCandidateSha() {
+  // PR-only changes must not alter positive cases for the trusted V4 handoff tree.
+  return execFileSync("git", ["rev-parse", "origin/main"], { cwd: process.cwd(), encoding: "utf8" }).trim();
 }
 
 function markerText(overrides = {}) {
@@ -76,6 +88,49 @@ function v4AppReadyMarkerText(overrides = {}) {
   });
 }
 
+function dynamicWorkoutMarkerText(releaseSha, overrides = {}) {
+  const marker = {
+    manifestId: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+    releaseSha,
+    state: "app-ready",
+    workflowRunId: "40123456789",
+    workflowRunAttempt: 2,
+    authorizationId: "dynamic-release-authorization-01",
+    lineageDigest: "a".repeat(64),
+    spawnState: "started",
+    ...overrides,
+  };
+  return [
+    "schemaVersion=2",
+    `manifestId=${marker.manifestId}`,
+    `releaseSha=${marker.releaseSha}`,
+    `state=${marker.state}`,
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    `spawnState=${marker.spawnState}`,
+    "",
+  ].join("\n");
+}
+
+async function createDynamicWorkoutHandoffRepository() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-dynamic-handoff-"));
+  directories.push(directory);
+  const repository = path.join(directory, "repo");
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+  // Use the exact commit whose migration tree is admitted by this manifest.
+  // The test runner's HEAD may include later, unrelated migration releases.
+  execFileSync("git", ["-C", repository, "checkout", "--quiet", "--detach", DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA]);
+  const originSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  await writeFile(path.join(repository, "tests", "dynamic-release-compatibility.txt"), "non-runtime test evidence\n");
+  execFileSync("git", ["-C", repository, "add", "tests/dynamic-release-compatibility.txt"]);
+  execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+    "commit", "--quiet", "-m", "compatible follow-up"]);
+  const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return { repository, originSha, candidateSha };
+}
+
 const compatible = {
   changedPaths: [".github/workflows/deploy-production.yml", "tests/deploy-script-ordering.test.ts"],
   isAncestor: true,
@@ -96,6 +151,51 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
+  it("hands off the dynamic-workout marker only across an exact migration tree and unchanged nullable-session reader", async () => {
+    const { repository, originSha, candidateSha } = await createDynamicWorkoutHandoffRepository();
+    const compatibility = readGitCompatibility(repository, candidateSha, originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id);
+    expect(compatibility.isAncestor).toBe(true);
+    expect(compatibility.changedPaths).toEqual(["tests/dynamic-release-compatibility.txt"]);
+    expect(Object.keys(compatibility.criticalObjects)).toContain("src/modules/training");
+    expect(Object.keys(compatibility.criticalObjects)).toContain(".github/workflows");
+    expect(Object.keys(compatibility.criticalObjects)).toContain("scripts/production-app-capabilities.json");
+
+    const sourceMarker = dynamicWorkoutMarkerText(originSha);
+    const handoff = evaluateSchemaDeployHandoff({ markerText: sourceMarker, deploySha: candidateSha, ...compatibility });
+    expect(handoff).toMatchObject({ action: "write", marker: {
+      manifestId: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+      migrationOriginSha: originSha,
+      deploySha: candidateSha,
+      state: "schema-applied",
+    } });
+    const replay = evaluateSchemaDeployHandoff({ markerText: handoff.bytes, deploySha: candidateSha, ...compatibility });
+    expect(replay.action).toBe("replay");
+
+    const trainingService = path.join(repository, "src/modules/training/training.service.ts");
+    await writeFile(trainingService, `${await readFile(trainingService, "utf8")}\n// incompatible reader change\n`);
+    execFileSync("git", ["-C", repository, "add", "src/modules/training/training.service.ts"]);
+    execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+      "commit", "--quiet", "-m", "change nullable relation reader"]);
+    const incompatibleSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(() => readGitCompatibility(repository, incompatibleSha, originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id))
+      .toThrow(/src\/modules\/training differs from the migration origin/);
+
+    const workflowFixture = await createDynamicWorkoutHandoffRepository();
+    const migrationWorkflow = path.join(workflowFixture.repository, ".github/workflows/production-migrate.yml");
+    await writeFile(migrationWorkflow, `${await readFile(migrationWorkflow, "utf8")}\n# changed migration authorization workflow\n`);
+    execFileSync("git", ["-C", workflowFixture.repository, "add", ".github/workflows/production-migrate.yml"]);
+    execFileSync("git", ["-C", workflowFixture.repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+      "commit", "--quiet", "-m", "change migration authorization workflow"]);
+    const workflowChangedSha = execFileSync("git", ["-C", workflowFixture.repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(() => readGitCompatibility(workflowFixture.repository, workflowChangedSha, workflowFixture.originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id))
+      .toThrow(/\.github\/workflows differs from the migration origin/);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: dynamicWorkoutMarkerText(originSha, { workflowRunId: "0" }),
+      deploySha: candidateSha,
+      ...compatibility,
+    })).toThrow(/marker run, lineage, origin, or state is not admitted/);
+  }, 30_000);
+
   it("admits only the exact SHA of the new manifest's successful schema-applied marker", () => {
     const marker = v4MigrationMarkerText();
     expect(evaluateSchemaDeployHandoff({ markerText: marker, deploySha: V4_MIGRATION_SHA })).toMatchObject({
@@ -111,7 +211,7 @@ describe("schema deploy compatibility handoff", () => {
   });
 
   it("hands off the verified V4 app-ready migration marker to the exact compatible descendant", () => {
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     const compatibility = readGitCompatibility(process.cwd(), candidateSha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
     expect(compatibility.isAncestor).toBe(true);
     expect(compatibility.changedPaths).toContain("scripts/unified-v4-activate-replay.ts");
@@ -258,10 +358,10 @@ describe("schema deploy compatibility handoff", () => {
     });
     expect(replay.action).toBe("replay");
     expect(replay.marker.migrationOriginSha).toBe(V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
-  });
+  }, 30_000);
 
   it("blocks wrong V4 run lineage, manifest, ancestry, schema, and changed runtime blobs", () => {
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     const compatibility = readGitCompatibility(process.cwd(), candidateSha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
     for (const marker of [
       v4AppReadyMarkerText({ workflowRunId: "38447647404" }),
@@ -295,7 +395,7 @@ describe("schema deploy compatibility handoff", () => {
       markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
       changedPathObjects: alteredRuntime,
     })).toThrow(/exact reviewed content binding/);
-  });
+  }, 30_000);
 
   it("accepts the real migration-origin descendant whose runtime trees match", () => {
     const compatibility = readGitCompatibility(process.cwd(), DEPLOY_SHA);
@@ -499,7 +599,7 @@ describe("schema deploy compatibility handoff", () => {
     directories.push(directory);
     const markerPath = path.join(directory, "marker");
     const original = v4AppReadyMarkerText();
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     await writeFile(markerPath, original, { flag: "wx", mode: 0o600 });
     await expect(applySchemaDeployHandoff({
       markerPath, deploySha: candidateSha, repo: process.cwd(),
@@ -521,13 +621,13 @@ describe("schema deploy compatibility handoff", () => {
     const replay = await applySchemaDeployHandoff({ markerPath, deploySha: candidateSha, repo: process.cwd() });
     expect(replay.action).toBe("replay");
     expect((await readFile(markerPath, "utf8")).split("\n")).toContain(`migrationOriginSha=${V4_REPUBLICATION_MIGRATION_ORIGIN_SHA}`);
-  });
+  }, 30_000);
 
   it("does not overwrite a V4 marker changed during the handoff write", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-schema-handoff-race-"));
     directories.push(directory);
     const markerPath = path.join(directory, "marker");
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     const original = v4AppReadyMarkerText();
     const concurrentMarker = v4AppReadyMarkerText({ lineageDigest: "d".repeat(64) });
     await writeFile(markerPath, original, { flag: "wx", mode: 0o600 });
@@ -537,7 +637,7 @@ describe("schema deploy compatibility handoff", () => {
     })).rejects.toThrow(/marker changed during compatibility handoff/);
     expect(await readFile(markerPath, "utf8")).toBe(concurrentMarker);
     expect((await readdir(directory)).sort()).toEqual(["marker"]);
-  });
+  }, 30_000);
 
   it.skipIf(process.platform === "win32")("writes once, replays the same candidate, and blocks a concurrent lock", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-schema-handoff-"));

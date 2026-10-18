@@ -27,6 +27,8 @@ const db = {
   },
   modelRecoveryRun: { updateMany: vi.fn() },
   physiologyV7Lifecycle: { findUnique: vi.fn() },
+  unifiedPublicationBlock: { findUnique: vi.fn() },
+  trainingRefreshJob: { findUnique: vi.fn() },
 };
 
 const client = db as unknown as PrismaClient;
@@ -115,6 +117,10 @@ describe("model episode repository mapping", () => {
       productionPublishedGeneration: 1,
       productionStaleFromDate: null,
     });
+    db.unifiedPublicationBlock.findUnique.mockResolvedValue(null);
+    db.trainingRefreshJob.findUnique.mockResolvedValue({
+      requestedGeneration: 1, completedGeneration: 1, dirtyFromDate: null, dirtyToDate: null,
+    });
   });
 
   it("maps profile, active episode, explicit episode, and absence", async () => {
@@ -140,6 +146,69 @@ describe("model episode repository mapping", () => {
     await expect(repository.getById(3)).resolves.toMatchObject({ id: 3 });
     db.modelEpisode.findUnique.mockResolvedValue(null);
     await expect(repository.getById(999)).resolves.toBeNull();
+  });
+
+  it("masks stale recovery status and interval history while Training publication is pending", async () => {
+    db.modelEpisode.findFirst.mockResolvedValue(record());
+    db.trainingRefreshJob.findUnique.mockResolvedValue({
+      requestedGeneration: 2, completedGeneration: 1,
+      dirtyFromDate: "2026-08-21", dirtyToDate: "2026-08-22",
+    });
+    db.dailyModelState.count.mockResolvedValue(2);
+    db.dailyModelState.findFirst.mockResolvedValue({
+      date: "2026-08-20", endWeightKg: 79, filteredWeightKg: 79,
+      fatMassKg: 16, leanTissueKg: 47, dynamicRmrKcalPerDay: 1700,
+      energyExpenditureKcal: 2400,
+    });
+    db.modelUnknownInterval.findMany.mockResolvedValue([unknownIntervalRecord({
+      id: 9, startDate: "2026-08-21", lastUnknownDate: "2026-08-21", endDate: null,
+      postGapObservationDates: ["2026-08-22"],
+    })]);
+
+    const status = await new ModelEpisodeRepository(client).status();
+    expect(status).toMatchObject({
+      productionCurrent: false,
+      latestModeledDate: null,
+      calibrationStatus: null,
+      personalOffsetKcalPerDay: null,
+      activityCalibration: null,
+      daysModeled: 0,
+      continuityStatus: "awaiting-recovery",
+      lastResolvedDate: null,
+      recoveryRequired: true,
+      unknownIntervalCount: 0,
+      unknownIntervals: [],
+    });
+    expect(status?.unknownIntervals).toEqual([]);
+
+    db.dailyModelState.findMany.mockResolvedValue([{
+      date: "2026-08-20", status: "complete", updatedAt: new Date("2026-08-21T00:00:00Z"),
+    }]);
+    const history = await new ModelEpisodeRepository(client).history({ limit: 10, offset: 0 });
+    expect(history).toMatchObject({
+      days: [],
+      unknownIntervals: [],
+      observationsAwaitingRecovery: [],
+    });
+  });
+
+  it("keeps production status and history stale while Active Energy candidates converge", async () => {
+    db.modelEpisode.findFirst.mockResolvedValue(record());
+    db.modelEpisode.findUnique.mockResolvedValue(record());
+    db.unifiedPublicationBlock.findUnique.mockResolvedValue({ revision: 4, fromDate: "2026-08-22" });
+    db.dailyModelState.findMany.mockResolvedValue([{ date: "2026-08-22" }]);
+    db.dailyModelState.count.mockResolvedValue(1);
+    db.dailyModelState.findFirst.mockResolvedValue({ date: "2026-08-22" });
+
+    const repository = new ModelEpisodeRepository(client);
+    await expect(repository.status()).resolves.toMatchObject({
+      productionCurrent: false,
+      latestModeledDate: null,
+      currentPredictedWeightKg: null,
+      recoveryRequired: true,
+    });
+    await expect(repository.history({ from: "2026-08-22", to: "2026-08-22", limit: 20, offset: 0 }))
+      .resolves.toMatchObject({ days: [], unknownIntervals: [] });
   });
 
   it("loads source records and converts Prisma decimals without mutation", async () => {

@@ -38,8 +38,15 @@ import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology
 
 const clientMock = {
   $transaction: vi.fn(async (callback: (transaction: object) => unknown) => callback({
+    $queryRaw: vi.fn().mockResolvedValue([]),
     $executeRaw: vi.fn().mockResolvedValue(1),
     physiologyV7Lifecycle: {
+      findUnique: vi.fn().mockResolvedValue({
+        profileId: 1,
+        invalidationGeneration: 1,
+        productionStaleFromDate: null,
+        updatedAt: new Date("2026-08-22T12:00:00.000Z"),
+      }),
       upsert: vi.fn().mockResolvedValue({
         profileId: 1,
         staleFromDate: null,
@@ -176,7 +183,9 @@ describe("model episode application service", () => {
       ...persistedEpisodeFixture("2026-08-18"),
       id: 8,
     });
-    repository.status.mockResolvedValue({ episodeId: 8, daysModeled: 16 });
+    repository.status.mockResolvedValue({
+      episodeId: 8, daysModeled: 16, productionCurrent: true, productionDirtyFromDate: null,
+    });
 
     const result = await recalculateModelEpisode({
       now: new Date("2026-09-16T18:00:00.000Z"),
@@ -222,7 +231,9 @@ describe("model episode application service", () => {
     repository.createPrepared.mockResolvedValue({
       ...persistedEpisodeFixture("2026-09-14"), id: 9,
     });
-    repository.status.mockResolvedValue({ episodeId: 9, daysModeled: 3 });
+    repository.status.mockResolvedValue({
+      episodeId: 9, daysModeled: 3, productionCurrent: true, productionDirtyFromDate: null,
+    });
 
     const result = await recalculateModelEpisode({
       now: new Date("2026-09-17T10:00:00.000Z"),
@@ -272,7 +283,9 @@ describe("model episode application service", () => {
       id: prepared.startDate === "2026-08-17" ? 11 : 12,
       modelVersion: "bodycast-physiology-v7",
     }));
-    repository.status.mockResolvedValue({ episodeId: 11, daysModeled: 5 });
+    repository.status.mockResolvedValue({
+      episodeId: 11, daysModeled: 5, productionCurrent: true, productionDirtyFromDate: null,
+    });
 
     repository.getActive.mockResolvedValue({
       ...persistedEpisodeFixture("2026-08-24"),

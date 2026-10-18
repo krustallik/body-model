@@ -19,9 +19,13 @@ import { RESISTANCE } from "@/modules/training/training.constants";
 const prisma = new PrismaClient();
 const repo = new TrainingRepository(prisma);
 const service = new TrainingService(prisma, repo);
-const profileId = 991101;
+const profileId = 1;
 
 async function clean(): Promise<void> {
+  await prisma.trainingSourceChange.deleteMany({ where: { profileId } });
+  await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+  await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId } });
+  await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId } });
   await prisma.strengthSet.deleteMany({
     where: { sessionExercise: { session: { profileId } } },
   });

@@ -274,6 +274,9 @@ export async function runProductionRecoveryFlowFixture({
         if (key === "databaseRoleMode") return [key, "read-only"];
         if (key === "writerMode") return [key, "enabled"];
         if (key === "activeWriterCount") return [key, 0];
+        if (key === "programlessSessionCount") return [key, 0];
+        if (key === "rollbackAppSupportsProgramlessSessions") return [key, false];
+        if (key === "programlessSessionCompatible") return [key, true];
         if (key === "containerId") return [key, artifact.rollbackContainerId];
         if (key === "topologyDigest") return [key, artifact.deployHostTopologyDigest];
         if (key.endsWith("Digest")) return [key, canonicalDigest({ key, recordDigest: record.recordDigest })];
@@ -489,7 +492,19 @@ export async function runProductionRecoveryFlowFixture({
     failLegacyDirectorySync = true;
     await expect(authority.finalizeRecovery(finalizeRequest)).rejects.toThrow(/simulated legacy marker directory fsync/);
     expect(await fs.lstat(v2MarkerPath)).toBeTruthy();
-    expect((await authority.readAuthoritativeState()).blocking).toBe(true);
+    const interruptedFinalization = await authority.readAuthoritativeState();
+    expect(interruptedFinalization.blocking).toBe(true);
+    const interruptedRecord = await authority.readFinalizedRecoveryRecord({
+      recoveryCaseId: interruptedFinalization.recoveryCaseId,
+      generation: interruptedFinalization.generation,
+      recordDigest: interruptedFinalization.recordDigest,
+    });
+    expect(interruptedRecord.nextState).toBe("recovery-finalized");
+    await expect(authority.readFinalizedRecoveryRecord({
+      recoveryCaseId: interruptedFinalization.recoveryCaseId,
+      generation: interruptedFinalization.generation,
+      recordDigest: "f".repeat(64),
+    })).rejects.toThrow(/does not match the exact authoritative journal tail/);
 
     const retryFinalizeRequest = await nextRequest(authority, "finalize-recovery", finalEvidence);
     const finalized = await authority.finalizeRecovery(retryFinalizeRequest);

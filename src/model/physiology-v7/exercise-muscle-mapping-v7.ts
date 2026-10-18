@@ -1,5 +1,8 @@
 import type { CanonicalExerciseStableKey } from "@/modules/training/canonical-exercise-identity";
-import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import {
+  CANONICAL_EXERCISES_WITHOUT_V7_MAPPING,
+  CANONICAL_EXERCISE_IDENTITIES,
+} from "@/modules/training/canonical-exercise-identity";
 
 /**
  * Smallest stable anatomical taxonomy for the current supported exercises.
@@ -226,11 +229,14 @@ export function approvedExerciseMuscleMappingCoverageV7(): {
   mapped: number;
   missingStableKeys: CanonicalExerciseStableKey[];
 } {
-  const missingStableKeys = CANONICAL_EXERCISE_IDENTITIES
+  const explicitlyUnmapped = new Set<string>(CANONICAL_EXERCISES_WITHOUT_V7_MAPPING);
+  const modelMappedIdentities = CANONICAL_EXERCISE_IDENTITIES
+    .filter(({ stableKey }) => !explicitlyUnmapped.has(stableKey));
+  const missingStableKeys = modelMappedIdentities
     .map((exercise) => exercise.stableKey)
     .filter((stableKey) => !EXERCISE_MUSCLE_MAPPING_REGISTRY_V7.has(stableKey));
   return {
-    expected: CANONICAL_EXERCISE_IDENTITIES.length,
+    expected: modelMappedIdentities.length,
     mapped: EXERCISE_MUSCLE_MAPPING_REGISTRY_V7.size,
     missingStableKeys,
   };

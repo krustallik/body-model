@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     environment: "node",
     restoreMocks: true,
-    exclude: ["tests/integration/**", "node_modules/**"],
+    exclude: ["tests/integration/**", "**/node_modules/**", "**/.next/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "html"],

@@ -37,12 +37,14 @@ describe("PhysiologyV7RuntimeService production use case", () => {
       },
     }));
     const service = new PhysiologyV7RuntimeService({ loadRangeSources });
+    const onProgress = vi.fn(async () => undefined);
     const result = await service.rebuildProfileRange({
       profileId: 7,
       fromDate: date,
       toDate: date,
       timeZone: "Europe/Bratislava",
       initialState: createUnavailablePhysiologyRuntimeStateV7(),
+      onProgress,
     });
 
     expect(loadRangeSources).toHaveBeenCalledWith({
@@ -54,6 +56,7 @@ describe("PhysiologyV7RuntimeService production use case", () => {
     });
     expect(result.persistence).toBe("none-stage-9a");
     expect(result.days).toHaveLength(1);
+    expect(onProgress).toHaveBeenCalledOnce();
     expect(result.days[0]!.fluidWater.contractVersion)
       .toBe("bodycast-fluid-water-transition-pipeline-v7-1");
     expect(result.days[0]!.observations.observedWeightKg).toMatchObject({

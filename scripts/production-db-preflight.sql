@@ -115,6 +115,7 @@ WITH expected(name) AS (
     ('Workout', 'ShareRowExclusiveLock'),
     ('Profile', 'ShareRowExclusiveLock'),
     ('ModelEpisode', 'ShareRowExclusiveLock'),
+    ('StrengthDiarySession', 'AccessExclusiveLock'),
     ('ExperimentalSkeletalMuscleDeltaShadow', 'AccessExclusiveLock'),
     ('ExperimentalCessationDetrainingShadow', 'AccessExclusiveLock'),
     -- Existing migration SQL adds columns to these relations; ALTER TABLE takes ACCESS EXCLUSIVE.
@@ -192,6 +193,11 @@ SELECT json_build_object(
     'StrengthDiarySession', json_build_object('rowCount', (SELECT count(*) FROM public."StrengthDiarySession")),
     'ExerciseCatalog', json_build_object('rowCount', (SELECT count(*) FROM public."ExerciseCatalog"))
   ),
+  -- Aggregate only. The rollback gate needs to know if old app readers would
+  -- encounter nullable program relations; no Health or workout payload is
+  -- included in production evidence.
+  'programlessSessionCount', (SELECT count(*) FROM public."StrengthDiarySession"
+    WHERE "programId" IS NULL OR "programVersionId" IS NULL),
   'conflictingLocks', COALESCE((SELECT json_agg(to_jsonb(l)) FROM conflicting_locks l), '[]'::json),
   'preparedTransactions', COALESCE((SELECT json_agg(to_jsonb(p)) FROM prepared_transactions p), '[]'::json),
   'longTransactions', COALESCE((SELECT json_agg(to_jsonb(t)) FROM long_transactions t), '[]'::json)

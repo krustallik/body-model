@@ -19,6 +19,7 @@ import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-p
 import { persistStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { prisma } from "@/lib/db/prisma";
+import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
 
 export async function reconcileHealthUnifiedPublicationBlocksV1(input: {
   dates: readonly string[];
@@ -52,6 +53,42 @@ export async function reconcileHealthUnifiedPublicationBlocksV1(input: {
   return readyToPublish;
 }
 
+type HealthSyncStageTiming = { durationMs: number; calls: number; failures: number };
+
+function createHealthSyncStageTimer(beforeStage?: () => Promise<void>) {
+  const timings = new Map<string, HealthSyncStageTiming>();
+  return {
+    async run<T>(stage: string, action: () => Promise<T>): Promise<T> {
+      if (!timings.has(stage)) logEvent("info", "health_sync_stage_started", { stage });
+      const startedAt = performance.now();
+      let failed = false;
+      try {
+        await beforeStage?.();
+        return await action();
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally {
+        const timing = timings.get(stage) ?? { durationMs: 0, calls: 0, failures: 0 };
+        timing.durationMs += performance.now() - startedAt;
+        timing.calls += 1;
+        if (failed) timing.failures += 1;
+        timings.set(stage, timing);
+      }
+    },
+    report(): void {
+      for (const [stage, timing] of timings) {
+        logEvent("info", "health_sync_stage_timing", {
+          stage,
+          durationMs: Math.round(timing.durationMs),
+          calls: timing.calls,
+          failures: timing.failures,
+        });
+      }
+    },
+  };
+}
+
 async function restoreHealthUnifiedPublicationBlocksV1(input: {
   dates: readonly string[];
   tokens: ReadonlyMap<string, { revision: number; fromDate: string } | null>;
@@ -78,6 +115,18 @@ export async function syncHealthData(
   metricSamplesByDate?: ReadonlyMap<string, readonly TimestampedHealthMetricSample[]>,
   options: {
     publicationNow?: Date;
+    /** Return after durable source writes and their refresh queue entries commit. */
+    deferDependentRefresh?: boolean;
+    /** Worker-only path: refresh already persisted dates without replaying raw input. */
+    persistedDates?: readonly import("./health.types").SyncDateResult[];
+    timezoneByDate?: ReadonlyMap<string, string>;
+    measurementDates?: readonly string[];
+    measurementInstants?: readonly Date[];
+    skipRetention?: boolean;
+    /** Worker lease fencing before each dependent stage and publication. */
+    assertRefreshLease?: () => Promise<void>;
+    /** Internal worker signal when Health dependencies complete but another source may still block publication. */
+    onHealthDependenciesComplete?: () => void;
     publicationLifecycle?: Pick<
       PhysiologyV7PersistenceRepository,
       | "readUnifiedPublicationBlockToken"
@@ -90,13 +139,30 @@ export async function syncHealthData(
   } = {},
 ): Promise<HealthSyncResult> {
   const timezone = request.timezone ?? DEFAULT_TIME_ZONE;
-  const dates = [];
-  for (const [index, day] of request.days.entries()) {
-    dates.push(await repository.syncDay(day, rawDays?.[index] ?? day, {
-      timezone,
-      receivedAt,
-      syncedAt: request.syncedAt ?? null,
-    }, metricSamplesByDate?.get(day.date)));
+  const persistenceStartedAt = performance.now();
+  const dates = options.persistedDates === undefined ? [] : [...options.persistedDates];
+  if (options.persistedDates === undefined) {
+    for (const [index, day] of request.days.entries()) {
+      const dateStartedAt = performance.now();
+      dates.push(await repository.syncDay(day, rawDays?.[index] ?? day, {
+        timezone,
+        receivedAt,
+        syncedAt: request.syncedAt ?? null,
+        ...(options.deferDependentRefresh ? { deferDependentRefresh: true } : {}),
+      }, metricSamplesByDate?.get(day.date)));
+      logEvent("info", "health_sync_stage_timing", {
+        stage: "persistence-date",
+        durationMs: Math.round(performance.now() - dateStartedAt),
+        calls: 1,
+      });
+    }
+  }
+  if (options.persistedDates === undefined) {
+    logEvent("info", "health_sync_stage_timing", {
+      stage: "persistence-total",
+      durationMs: Math.round(performance.now() - persistenceStartedAt),
+      calls: dates.length,
+    });
   }
   // Sync providers may return a historical batch in either direction.  Shadow
   // predecessors are calendar-state, not transport-order state.
@@ -114,19 +180,33 @@ export async function syncHealthData(
   let requiredPublicationRefreshFailed = false;
   const failedPublicationDates = new Set<string>();
   let modelPublicationStatus: HealthSyncResult["modelPublicationStatus"] = "not-run";
+  if (options.deferDependentRefresh) {
+    return {
+      status: "ok",
+      modelPublicationStatus: chronologicalDates.length > 0 ? "stale" : "not-run",
+      received: dates.length,
+      created,
+      updated: dates.length - created,
+      dates: dates.map(({ date, action }) => ({ date, action })),
+      retentionCutoffDate: healthRetentionCutoffDate(referenceDate.date),
+      prunedDays: 0,
+      prunedSnapshots: 0,
+    };
+  }
   const markRequiredFailure = (date: string) => {
     requiredPublicationRefreshFailed = true;
     failedPublicationDates.add(date);
   };
+  const stageTimer = createHealthSyncStageTimer(options.assertRefreshLease);
   const healthBlockTokens = new Map<string, { revision: number; fromDate: string } | null>();
   const healthPublicationLifecycle = repository === healthSyncRepository
     ? options.publicationLifecycle ?? new PhysiologyV7PersistenceRepository(prisma)
     : null;
   if (healthPublicationLifecycle !== null) {
     for (const date of chronologicalDates) {
-      const token = await healthPublicationLifecycle.readUnifiedPublicationBlockToken({
+      const token = await stageTimer.run("health-publication-block-read", () => healthPublicationLifecycle.readUnifiedPublicationBlockToken({
         profileId: 1, source: "health", sourceKey: date.date,
-      });
+      }));
       healthBlockTokens.set(date.date, token);
       if (token === null) markRequiredFailure(date.date);
     }
@@ -134,9 +214,12 @@ export async function syncHealthData(
 
   // A request can carry up to one calendar month; each day deserves the same
   // post-sync reconciliation instead of only processing the final array item.
+  let trainingRefreshPending = false;
   for (const date of chronologicalDates) {
+  const dateTimezone = options.timezoneByDate?.get(date.date) ?? timezone;
   try {
-    const matchPublicationReady = await trainingService.afterHealthSyncMatch(date.date, { timezone });
+    const matchPublicationReady = await stageTimer.run("training-match", () =>
+      trainingService.afterHealthSyncMatch(date.date, { timezone: dateTimezone }));
     if (!matchPublicationReady) markRequiredFailure(date.date);
   } catch (error) {
     markRequiredFailure(date.date);
@@ -146,13 +229,26 @@ export async function syncHealthData(
     });
   }
 
+  // A delayed match can create a Training generation above. Health must still
+  // finish its own durable child dependencies so the two workers cannot
+  // deadlock on each other's publication blocks. The Training generation gate
+  // prevents serving an intermediate result until its owner completes.
+  if (healthPublicationLifecycle !== null && !trainingRefreshPending) {
+    const trainingJob = await prisma.trainingRefreshJob.findUnique({
+      where: { profileId: 1 },
+      select: { requestedGeneration: true, completedGeneration: true },
+    });
+    trainingRefreshPending = trainingJob !== null && trainingJob !== undefined
+      && trainingJob.requestedGeneration > trainingJob.completedGeneration;
+  }
   // Unit callers inject an isolated health repository.  Shadow writers use
   // the production Prisma client, so running them there leaks outside the
   // harness and can neither validate nor affect the injected sync result.
   if (repository !== healthSyncRepository) continue;
 
   try {
-    await persistStepperReconciliationV1(prisma, { from: date.date, to: date.date, timezone });
+    await stageTimer.run("stepper-reconciliation", () =>
+      persistStepperReconciliationV1(prisma, { from: date.date, to: date.date, timezone: dateTimezone }));
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "stepper_reconciliation_after_sync_failed", {
@@ -163,7 +259,8 @@ export async function syncHealthData(
 
   try {
     // Resolve the BodyCast/device/manual precedence candidates after source reconciliation.
-    await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: date.date });
+    await stageTimer.run("stepper-active-energy-shadow", () =>
+      recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: date.date }));
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
@@ -172,22 +269,35 @@ export async function syncHealthData(
     });
   }
 
-  try {
-    await recordExperimentalStrengthShadowsForWeightDate({
-      date: date.date,
-      refreshHistoricalAsOfFallback: date.weightSourceChanged === true,
-    });
-  } catch (error) {
-    markRequiredFailure(date.date);
-    logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
+  if (trainingRefreshPending) {
+    // Training's durable generation owns strength Active Energy and the full
+    // downstream suffix rebuild. Letting Health write this shared candidate
+    // while the Training lease is pending would either violate that fence or
+    // keep Health retrying on the Training worker guard. Its generation gate
+    // keeps readers stale until the Training worker republishes the suffix.
+    logEvent("info", "health_strength_active_energy_refresh_deferred", {
       stage: "strength-active-energy-shadow-refresh",
-      ...errorDiagnosticFields(error),
+      reason: "training-refresh-pending",
     });
+  } else {
+    try {
+      await stageTimer.run("strength-active-energy-shadow", () => recordExperimentalStrengthShadowsForWeightDate({
+        date: date.date,
+        refreshHistoricalAsOfFallback: date.weightSourceChanged === true,
+      }));
+    } catch (error) {
+      markRequiredFailure(date.date);
+      logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
+        stage: "strength-active-energy-shadow-refresh",
+        ...errorDiagnosticFields(error),
+      });
+    }
   }
 
   try {
     // Shadow-only MS100 stepper glycogen demand; never feeds TDEE/forecast.
-    await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: date.date });
+    await stageTimer.run("stepper-glycogen-demand-shadow", () =>
+      recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: date.date }));
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
@@ -198,7 +308,7 @@ export async function syncHealthData(
 
   try {
     // Shadow-only FFM/slow-nonfat retention; never feeds TDEE/forecast/Hall mean.
-    await recordExperimentalFfmRetentionShadow({ date: date.date });
+    await stageTimer.run("ffm-retention-shadow", () => recordExperimentalFfmRetentionShadow({ date: date.date }));
   } catch (error) {
     logEvent("warn", "experimental_ffm_retention_shadow_failed", {
       stage: "ffm-retention-shadow",
@@ -208,7 +318,8 @@ export async function syncHealthData(
 
   try {
     // Shadow-only weekly local hypertrophy response; never feeds TDEE/forecast.
-    await recordExperimentalLocalHypertrophyResponseShadow({ date: date.date });
+    await stageTimer.run("local-hypertrophy-response-shadow", () =>
+      recordExperimentalLocalHypertrophyResponseShadow({ date: date.date }));
   } catch (error) {
     logEvent("warn", "experimental_local_hypertrophy_response_shadow_failed", {
       stage: "local-hypertrophy-response-shadow",
@@ -222,7 +333,8 @@ export async function syncHealthData(
   // redundant and makes a 30-day historical batch quadratic.
   if (healthPublicationLifecycle !== null && chronologicalDates.length > 0) {
     try {
-      await recordExperimentalGlycogenStateShadow({ date: chronologicalDates[0]!.date });
+      await stageTimer.run("glycogen-state-suffix-rebuild", () =>
+        recordExperimentalGlycogenStateShadow({ date: chronologicalDates[0]!.date }));
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
       logEvent("warn", "experimental_glycogen_state_shadow_failed", {
@@ -236,7 +348,8 @@ export async function syncHealthData(
   // the episode-local Relative Muscle trajectory once after the full batch.
   if (healthPublicationLifecycle !== null && chronologicalDates.length > 0) {
     try {
-      await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: chronologicalDates[0]!.date });
+      await stageTimer.run("relative-muscle-suffix-rebuild", () =>
+        rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: chronologicalDates[0]!.date }));
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
       logEvent("warn", "experimental_authoritative_muscle_suffix_rebuild_failed", {
@@ -251,15 +364,16 @@ export async function syncHealthData(
     let healthBlockRestoreAttempted = false;
     let healthPublicationFence: { invalidationGeneration: number; updatedAt: string } | null = null;
     try {
-      const measurementDates = request.days
+      const measurementDates = options.measurementDates ?? request.days
         .filter((day) => day.weightKg !== undefined && day.weightKg !== null)
         .map((day) => day.date);
-      const measurementInstants = [...(metricSamplesByDate?.values() ?? [])]
+      const measurementInstants = options.measurementInstants ?? [...(metricSamplesByDate?.values() ?? [])]
         .flat()
         .filter((sample) => sample.metric === "weight-kg")
         .map((sample) => new Date(sample.timestamp))
         .filter((instant) => Number.isFinite(instant.getTime()));
-      await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates, measurementInstants });
+      await stageTimer.run("stepper-mass-window-refresh", () =>
+        recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates, measurementInstants }));
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
       logEvent("warn", "experimental_stepper_mass_window_refresh_failed", {
@@ -272,12 +386,13 @@ export async function syncHealthData(
       // Reconcile successful dates even when another date failed. Otherwise a
       // successful child refresh can leave a permanent blocker after the
       // failed date is retried on its own.
-      const blocksReady = await reconcileHealthUnifiedPublicationBlocksV1({
+      const blocksReady = await stageTimer.run("health-publication-block-reconcile", () => reconcileHealthUnifiedPublicationBlocksV1({
         dates: chronologicalDates.map(({ date }) => date),
         tokens: healthBlockTokens,
         failedDates: failedPublicationDates,
         lifecycle: healthPublicationLifecycle,
-      });
+      }));
+      if (!requiredPublicationRefreshFailed && blocksReady) options.onHealthDependenciesComplete?.();
       if (requiredPublicationRefreshFailed || !blocksReady) {
         const reason = requiredPublicationRefreshFailed
           ? "required-source-shadow-refresh-failed"
@@ -292,7 +407,8 @@ export async function syncHealthData(
         // Another source may still have an unresolved durable fence. The
         // Health dependencies are now refreshed and its exact fence is safe
         // to clear; let the remaining source retry the shared candidate.
-        if (await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)) {
+        if (await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)
+            || isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, 1))) {
           modelPublicationStatus = "stale";
         } else {
           // Publish only after all batch mutations, reconciliation, and
@@ -300,10 +416,10 @@ export async function syncHealthData(
           // stale before this attempt.
           healthPublicationFence = await healthPublicationLifecycle.readUnifiedPublicationFence(1);
           if (healthPublicationFence === null) throw new Error("Health publication lifecycle is unavailable.");
-          const published = await publishActiveEnergyChangesV1({
+          const published = await stageTimer.run("active-energy-publication", () => publishActiveEnergyChangesV1({
             ...(options.publicationNow === undefined ? {} : { now: options.publicationNow }),
             onLifecycleFenceChanged: (fence) => { healthPublicationFence = fence; },
-          });
+          }));
           modelPublicationStatus = published ? "current" : "stale";
           if (!published && !await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)) {
             healthBlockRestoreAttempted = true;
@@ -354,7 +470,9 @@ export async function syncHealthData(
   let prunedSnapshots = 0;
   try {
     // Retention is a no-op for durable canonical sources (including snapshots).
-    const pruned = await repository.pruneOlderThan(retentionCutoffDate);
+    const pruned = options.skipRetention
+      ? { cutoffDate: retentionCutoffDate, deletedDays: 0, deletedSnapshots: 0 }
+      : await stageTimer.run("retention", () => repository.pruneOlderThan(retentionCutoffDate));
     prunedDays = pruned.deletedDays;
     prunedSnapshots = pruned.deletedSnapshots;
     if (prunedDays > 0 || prunedSnapshots > 0) {
@@ -372,6 +490,8 @@ export async function syncHealthData(
       errorType: errorKind(error),
     });
   }
+
+  stageTimer.report();
 
   return {
     status: "ok",

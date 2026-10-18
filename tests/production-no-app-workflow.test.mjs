@@ -106,6 +106,9 @@ describe("no-app preparation workflow boundaries", () => {
     expect(normalWorkflow).toContain("production-previous-app-provenance.mjs --verify-preflight");
     expect(safetyWorkflow).toContain('".github/workflows/production-no-app-preflight.yml"');
     expect(safetyWorkflow).toContain('"scripts/production-no-app-preflight-host.sh"');
+    expect(safetyWorkflow).toContain('"scripts/production-app-capabilities.mjs"');
+    expect(safetyWorkflow).toContain('"scripts/production-app-capabilities.json"');
+    expect(safetyWorkflow).toContain('"tests/production-app-capabilities.test.mjs"');
     expect(safetyWorkflow).toContain("tests/production-no-app-preflight.test.mjs");
     expect(safetyWorkflow).toContain("tests/production-no-app-workflow.test.mjs");
   });

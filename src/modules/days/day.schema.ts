@@ -65,15 +65,21 @@ const WorkoutEditSchema = z.object({
   activeEnergyKcal: nullableMetric("workoutActiveEnergyKcal", z.number().min(0)),
 }).strict();
 
-const WorkoutEditableFieldsSchema = z.object({
+const WorkoutUpdateSchema = WorkoutEditSchema.extend({ id: z.number().int().positive().optional() }).strict();
+
+const CreateWorkoutEditableFieldsSchema = z.object({
   workouts: z.array(WorkoutEditSchema).max(30).optional(),
 });
 
-export const CreateDailyMetricSchema = DailyMetricFieldsSchema.merge(WorkoutEditableFieldsSchema).extend({
+const UpdateWorkoutEditableFieldsSchema = z.object({
+  workouts: z.array(WorkoutUpdateSchema).max(30).optional(),
+});
+
+export const CreateDailyMetricSchema = DailyMetricFieldsSchema.merge(CreateWorkoutEditableFieldsSchema).extend({
   date: CalendarDateSchema,
 }).strict();
 
-export const UpdateDailyMetricSchema = DailyMetricFieldsSchema.merge(WorkoutEditableFieldsSchema).strict().refine(
+export const UpdateDailyMetricSchema = DailyMetricFieldsSchema.merge(UpdateWorkoutEditableFieldsSchema).strict().refine(
   (value) => Object.keys(value).length > 0,
   "at least one metric is required",
 );

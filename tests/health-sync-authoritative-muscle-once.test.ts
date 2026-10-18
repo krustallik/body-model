@@ -41,6 +41,9 @@ vi.mock("@/modules/training/training.service", () => ({
   recordExperimentalStrengthShadowsForWeightDate,
 }));
 vi.mock("@/modules/health/health.repository", () => ({ healthSyncRepository }));
+vi.mock("@/lib/db/prisma", () => ({
+  prisma: { trainingRefreshJob: { findUnique: async () => null } },
+}));
 vi.mock("@/modules/profile/experimental-stepper-active-energy-shadow.service", () => ({
   recordExperimentalStepperActiveEnergyShadowsForLocalDate,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,

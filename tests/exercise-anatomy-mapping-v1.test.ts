@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import {
+  CANONICAL_EXERCISES_WITHOUT_V7_MAPPING,
+  CANONICAL_EXERCISE_IDENTITIES,
+} from "@/modules/training/canonical-exercise-identity";
 import {
   aggregateExerciseAnatomyExposureV1,
   ANATOMY_ANALYTICS_CROSSWALK_V1,
@@ -105,6 +108,24 @@ describe("versioned exercise anatomy mapping v1", () => {
         stableKey: "pull_up",
       },
     })).toBeNull();
+  });
+
+  it("keeps the five new entries explicitly unmapped where current anatomy taxonomy has no supported categories", () => {
+    expect(CANONICAL_EXERCISES_WITHOUT_V7_MAPPING).toEqual([
+      "bulgarian_split_squat",
+      "forward_dumbbell_lunge",
+      "goblet_squat",
+      "dumbbell_crunch",
+      "dumbbell_russian_twist",
+    ]);
+    for (const stableKey of CANONICAL_EXERCISES_WITHOUT_V7_MAPPING) {
+      expect(buildExerciseAnatomySnapshotV1(stableKey)).toMatchObject({
+        availability: "unavailable",
+        stableKey,
+        reason: "unregistered-stable-key",
+        targets: [],
+      });
+    }
   });
 
   it("adds an immutable anatomy snapshot while V7 readers see the exact prior mapping", () => {

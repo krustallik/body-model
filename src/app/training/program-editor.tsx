@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
@@ -13,6 +13,7 @@ import {
 import type { ExerciseCatalogDto, TrainingProgramDto } from "@/modules/training/training.types";
 import { ExerciseLoadConfigEditor } from "./exercise-load-config-editor";
 import { readApiError, resistanceLabel } from "./training-labels";
+import { safeTrainingReturnHref } from "./training-url-state";
 import styles from "./training.module.css";
 
 type DraftExercise = {
@@ -35,6 +36,17 @@ export function ProgramEditorClient({
   const { locale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnHref = safeTrainingReturnHref(searchParams.get("returnTo"), "/training");
+
+  function returnToHubAfterMutation() {
+    const target = new URL(returnHref, "https://bodycast.invalid");
+    if (target.pathname === "/training" || target.pathname.startsWith("/training/")) {
+      target.searchParams.set("programsRefresh", String(Date.now()));
+    }
+    router.push(`${target.pathname}${target.search}${target.hash}`);
+    router.refresh();
+  }
   const isEdit = programId !== undefined;
 
   const [name, setName] = useState("");
@@ -173,8 +185,7 @@ export function ProgramEditorClient({
         setError(await readApiError(response, uk));
         return;
       }
-      router.push("/training");
-      router.refresh();
+      returnToHubAfterMutation();
     } catch {
       setError(uk ? "Не вдалося зберегти програму." : "Could not save the program.");
     } finally {
@@ -193,8 +204,7 @@ export function ProgramEditorClient({
         setError(await readApiError(response, uk));
         return;
       }
-      router.push("/training");
-      router.refresh();
+      returnToHubAfterMutation();
     } catch {
       setError(uk ? "Не вдалося архівувати." : "Could not archive.");
     } finally {
@@ -219,7 +229,7 @@ export function ProgramEditorClient({
               : "Exercises come from the catalog API. Reorder with up/down."}
           </p>
         </div>
-        <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+        <Link className={styles.secondaryButton} href={returnHref}>{uk ? "Назад" : "Back"}</Link>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}

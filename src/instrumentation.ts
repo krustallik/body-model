@@ -6,4 +6,15 @@ export async function register(): Promise<void> {
   ]);
   const environment = getEnv();
   logEvent("info", "application_startup", { environment: environment.NODE_ENV });
+  if (environment.NODE_ENV === "production") {
+    const [
+      { startHealthSyncRefreshWorker },
+      { startTrainingRefreshWorker },
+    ] = await Promise.all([
+      import("@/modules/health/health-sync-refresh-worker"),
+      import("@/modules/training/training-refresh-worker"),
+    ]);
+    startHealthSyncRefreshWorker();
+    startTrainingRefreshWorker();
+  }
 }

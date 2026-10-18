@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { HelpTip } from "@/components/help-tip";
 import { ModelStateSource } from "@/components/model-state-source";
@@ -16,7 +16,6 @@ import {
   buildGoalPlanningRequest,
   canOpenGoalPlanner,
   defaultGoalForm,
-  guidedWorkCategory,
   initialGoalFormWithRecommendation,
   recommendGoalFormNutrition,
   recommendGoalNutritionAtCalories,
@@ -32,6 +31,9 @@ import { minimumGoalDate } from "@/modules/model-target-solver/goal-date";
 import styles from "./goal.module.css";
 import { goalSettingsFromForm, isGoalBrowserSettings } from "@/modules/browser-settings/planning-settings";
 import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
+import { OCCUPATIONAL_CATEGORIES, type OccupationalCategory } from "@/model/occupational-activity";
+import { OccupationalCategoryDescriptions, WorkCategoryHelper } from "@/components/work-category-helper";
+import { occupationalCategoryCopy } from "@/modules/work-intervals/occupational-category-copy";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; filteredWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
 type ObservedWeight = { date: string; weightKg: number; bodyFatPercent?: number | null };
@@ -109,42 +111,59 @@ export function GoalClient() {
   const [form, setForm] = useState<GoalFormValues>(() => defaultGoalForm());
   const [initialized, setInitialized] = useState(false);
   const [formErrors, setFormErrors] = useState<GoalFormErrors>({});
-  const [workInputMode, setWorkInputMode] = useState<"direct" | "guided">("direct");
-  const [guidedWorkStep, setGuidedWorkStep] = useState(1);
   const [result, setResult] = useState<GoalPlanningResponse | null>(null);
   const [chartHistoryRange, setChartHistoryRange] = useState<"recent" | "full">("recent");
   const [chartMetric, setChartMetric] = useState<"physiologicalBodyWeightKg" | "fatMassKg">("physiologicalBodyWeightKg");
-  const [loadingContext, setLoadingContext] = useState(true);
+  const [contextLoad, setContextLoad] = useState<{
+    key: symbol;
+    status: "ready" | "no-active-episode" | "error";
+    error?: string;
+  } | null>(null);
+  const [contextLoadAttempt, setContextLoadAttempt] = useState(0);
   const [solving, setSolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const requestRef = useRef({ current: 0 });
+  const solvingRef = useRef(false);
+  const calculationSubmittedRef = useRef(false);
+  const inputRevisionRef = useRef(0);
   const skipSettingsWrite = useRef(false);
+  const contextLoadKey = useMemo(() => Symbol(`goal-context-request:${locale}:${contextLoadAttempt}`), [locale, contextLoadAttempt]);
+  const currentContextLoad = contextLoad?.key === contextLoadKey ? contextLoad : null;
+  const loadingContext = currentContextLoad === null;
+  const contextReady = currentContextLoad?.status === "ready";
+  const contextLoadError = currentContextLoad?.status === "error" ? currentContextLoad.error ?? null : null;
+  const noActiveEpisode = currentContextLoad?.status === "no-active-episode";
 
   useEffect(() => {
     const controller = new AbortController();
-    const profileRequest = fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => response.ok ? await response.json() as { profile?: GoalProfileAttributes | null } : { profile: null })
-      .catch(() => ({ profile: null }));
-    void Promise.all([
-      fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
-      profileRequest,
-    ]).then(async ([response, profileResult]) => {
-      if (!response.ok) throw new Error(await responseError(response, locale));
-      const contextResponse = await response.json() as Context;
-      const next = {
-        ...contextResponse,
-        observedWeights: await attachObservedBodyFatPercent(contextResponse.observedWeights ?? [], controller.signal),
-      };
-      const profile = profileResult.profile
-        ? {
-          sex: profileResult.profile.sex,
-          dateOfBirth: profileResult.profile.dateOfBirth,
-          heightCm: profileResult.profile.heightCm,
+    const requestKey = contextLoadKey;
+    void fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+      if (controller.signal.aborted) return;
+      if (!response.ok) {
+        if (response.status === 404) {
+          const body = await response.clone().json().catch(() => null) as { error?: string } | null;
+          if (controller.signal.aborted) return;
+          if (body?.error === "no_active_episode") {
+            setContextLoad({ key: requestKey, status: "no-active-episode" });
+            return;
+          }
         }
-        : null;
-      setContext({ ...next, profile });
-      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, profile);
+        throw new Error(uk
+          ? "Не вдалося завантажити стан моделі. Перевірте з’єднання та спробуйте ще раз."
+          : "Could not load model state. Check your connection and try again.");
+      }
+      const contextResponse = await response.json() as Context;
+      if (controller.signal.aborted) return;
+      const initializedInputRevision = inputRevisionRef.current;
+      calculationSubmittedRef.current = false;
+      const next: Context = {
+        ...contextResponse,
+        observedWeights: contextResponse.observedWeights ?? [],
+        profile: null,
+      };
+      setContext(next);
+      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, null);
       const persisted = readBrowserSettings(GOAL_SETTINGS_KEY, isGoalBrowserSettings);
       if (persisted) {
         const restored: GoalFormValues = {
@@ -152,7 +171,7 @@ export function GoalClient() {
           ...persisted.form,
           plan: { ...initial.form.plan, ...persisted.form.plan },
         };
-        const refreshedRecommendation = recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, profile);
+        const refreshedRecommendation = recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, null);
         restored.plan = {
           ...restored.plan,
           ...refreshedRecommendation.nutrition,
@@ -161,12 +180,62 @@ export function GoalClient() {
       } else {
         setForm(initial.form);
       }
+      setResult(null);
+      setError(null);
+      setFormErrors({});
       setInitialized(true);
+      setContextLoad({ key: requestKey, status: "ready" });
+      void fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
+        .then(async (profileResponse) => profileResponse.ok
+          ? await profileResponse.json() as { profile?: GoalProfileAttributes | null }
+          : { profile: null })
+        .then((profileResult) => {
+          if (controller.signal.aborted || !profileResult.profile) return;
+          // Keep a submitted scenario bound to the inputs used for its request.
+          // Optional profile enrichment must not rewrite the form under a result.
+          if (calculationSubmittedRef.current) return;
+          const profile = {
+            sex: profileResult.profile.sex,
+            dateOfBirth: profileResult.profile.dateOfBirth,
+            heightCm: profileResult.profile.heightCm,
+          };
+          setContext((current) => current ? { ...current, profile } : current);
+          if (inputRevisionRef.current === initializedInputRevision && !solvingRef.current) {
+            const personalizedInitial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, profile);
+            const persisted = readBrowserSettings(GOAL_SETTINGS_KEY, isGoalBrowserSettings);
+            if (persisted) {
+              const restored: GoalFormValues = {
+                ...personalizedInitial.form,
+                ...persisted.form,
+                plan: { ...personalizedInitial.form.plan, ...persisted.form.plan },
+              };
+              restored.plan = {
+                ...restored.plan,
+                ...recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, profile).nutrition,
+              };
+              setForm(restored);
+            } else {
+              setForm(personalizedInitial.form);
+            }
+          }
+        })
+        .catch(() => undefined);
+      void attachObservedBodyFatPercent(next.observedWeights ?? [], controller.signal)
+        .then((observedWeights) => {
+          if (!controller.signal.aborted) {
+            setContext((current) => current ? { ...current, observedWeights } : current);
+          }
+        })
+        .catch(() => undefined);
     }).catch((reason) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.");
-    }).finally(() => { if (!controller.signal.aborted) setLoadingContext(false); });
+      if (!controller.signal.aborted) setContextLoad({
+        key: requestKey,
+        status: "error",
+        error: reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.",
+      });
+    });
     return () => { controller.abort(); controllerRef.current?.abort(); };
-  }, [locale, uk]);
+  }, [locale, uk, contextLoadAttempt, contextLoadKey]);
 
   useEffect(() => {
     if (!initialized) return;
@@ -176,16 +245,19 @@ export function GoalClient() {
   }, [form, initialized]);
 
   function updateForm<K extends keyof GoalFormValues>(key: K, value: GoalFormValues[K]) {
+    inputRevisionRef.current += 1;
     setForm((current) => ({ ...current, [key]: value }));
     setResult(null); setError(null); setFormErrors({});
   }
   function updatePlan<K extends keyof PlanValues>(key: K, value: PlanValues[K]) {
+    inputRevisionRef.current += 1;
     setForm((current) => ({ ...current, plan: { ...current.plan, [key]: value } }));
     setResult(null); setError(null); setFormErrors({});
   }
 
   function resetSettings() {
     if (!context) return;
+    inputRevisionRef.current += 1;
     resetBrowserSettings(GOAL_SETTINGS_KEY);
     const initial = initialGoalFormWithRecommendation(context.status.latestModeledDate, context.status, context.latestCompletedLocalDate, context.profile ?? null);
     skipSettingsWrite.current = true;
@@ -195,6 +267,7 @@ export function GoalClient() {
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (solvingRef.current) return;
     if (!context?.status.latestModeledDate || !context.latestCompletedLocalDate) { setError(uk ? "Останній змодельований стан недоступний." : "The latest modeled state is unavailable."); return; }
     const referenceNutrition = recommendGoalFormNutrition(
       form,
@@ -208,10 +281,11 @@ export function GoalClient() {
     }, context.status.latestModeledDate, context.latestCompletedLocalDate);
     setFormErrors(built.errors);
     if (!built.request) { setError(uk ? "Перевірте виділені поля." : "Check the highlighted fields."); return; }
-    controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     const requestId = beginForecastRequest(requestRef.current);
+    calculationSubmittedRef.current = true;
+    solvingRef.current = true;
     setSolving(true); setError(null); setResult(null);
     try {
       const response = await fetch("/api/goal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(built.request), signal: controller.signal });
@@ -222,6 +296,7 @@ export function GoalClient() {
       if (!controller.signal.aborted && isCurrentForecastRequest(requestRef.current, requestId)) setError(reason instanceof Error ? reason.message : uk ? "Не вдалося розрахувати ціль." : "Could not calculate the goal.");
     } finally {
       if (isCurrentForecastRequest(requestRef.current, requestId)) setSolving(false);
+      solvingRef.current = false;
     }
   }
 
@@ -247,11 +322,13 @@ export function GoalClient() {
     <header className={styles.hero}><div><p className={styles.eyebrow}>{uk ? "Сценарій · не припис" : "Scenario · not a prescription"}</p><h1>{uk ? "Перевірте шлях до цілі" : "Explore a path to your goal"}</h1><p>{uk ? "Порівняйте бажану вагу з розрахованою траєкторією, імовірністю та межами прогнозу." : "Compare your target weight with the modeled trajectory, attainment estimate, and forecast limits."}</p></div><div className={styles.statePill}><span className={solving ? styles.pulse : undefined} />{solving ? (uk ? "Розраховуємо…" : "Solving…") : (uk ? "Гіпотетичний план" : "Hypothetical plan")}</div></header>
 
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
-    {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
-    {!loadingContext && initialized && canPlan && latestModeledDate && <div className={`${styles.workspace} ${result ? styles.hasResult : ""}`}>
+    {!loadingContext && noActiveEpisode && <section className={styles.errorCard} role="status"><strong>{uk ? "Активної моделі ще немає" : "No active model yet"}</strong><p>{uk ? "Щоб побудувати ціль, спочатку додайте історичні дані та розрахуйте модель." : "Add history and calculate a model before planning a goal."}</p><p><Link href="/history">{uk ? "Відкрити історію" : "Open History"}</Link> · <Link href="/forecast">{uk ? "Відкрити Forecast і розрахувати модель" : "Open Forecast and calculate a model"}</Link></p></section>}
+    {!loadingContext && contextLoadError && <section className={styles.errorCard} role="alert"><strong>{uk ? "Стан моделі не завантажено" : "Model state did not load"}</strong><p>{contextLoadError}</p><button type="button" onClick={() => setContextLoadAttempt((attempt) => attempt + 1)}>{uk ? "Спробувати ще раз" : "Try again"}</button></section>}
+    {!loadingContext && contextReady && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
+    {!loadingContext && contextReady && initialized && canPlan && latestModeledDate && <div className={`${styles.workspace} ${result ? styles.hasResult : ""}`}>
       <section className={styles.formColumn} aria-labelledby="goal-plan-heading">
         <div className={styles.formIntro}><div><p className={styles.eyebrow}>{uk ? "Умови розрахунку" : "Calculation inputs"}</p><h2 id="goal-plan-heading">{uk ? "Ваш сценарій" : "Your scenario"}</h2></div></div>
-    {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
+    {!loadingContext && contextReady && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
       <div className={styles.formUtilityRow}><span>{uk ? "Параметри сценарію" : "Scenario inputs"}</span><button className={styles.resetButton} type="button" disabled={solving} onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
         <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} helpLabel={uk ? "Пояснення цільової ваги" : "Explain target weight"} help={uk ? "Вага, до якої solver підбирає сценарій у заданих межах планування." : "The weight the solver uses to search for a scenario within your planning bounds."} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
@@ -280,28 +357,32 @@ export function GoalClient() {
       </div></section>
 
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>04</span><h2>{uk ? "Робоча активність" : "Work activity"}</h2><HelpTip label={uk ? "Пояснення робочої активності" : "Explain work activity"}>{uk ? "Додавайте робочі дні лише якщо робота помітно впливає на ваш рух. Розрахунок використовує одну з наявних категорій роботи." : "Include work days when your job meaningfully affects your movement. The calculation uses one of its existing work categories."}</HelpTip></div><p>{uk ? "Окремо від кроків і тренувань." : "Separate from steps and training."}</p></div>
-        <label className={styles.toggle}><input type="checkbox" checked={form.plan.plannedWork} onChange={(event) => { updatePlan("plannedWork", event.currentTarget.checked); if (event.currentTarget.checked) { setWorkInputMode("direct"); setGuidedWorkStep(1); } }} /><span>{uk ? "У мене є робочі дні" : "I have work days"}</span></label>
-        {form.plan.plannedWork && <>
-          <div className={styles.modeGrid}>
-            <button type="button" aria-pressed={workInputMode === "direct"} onClick={() => setWorkInputMode("direct")}><strong>{uk ? "Я знаю характер роботи" : "I know my work type"}</strong><span>{uk ? "Виберіть одну з підтриманих категорій." : "Choose one of the supported categories."}</span></button>
-            <button type="button" aria-pressed={workInputMode === "guided"} onClick={() => { setWorkInputMode("guided"); setGuidedWorkStep(1); }}><strong>{uk ? "Не впевнений — допоможіть визначити" : "Not sure — help me choose"}</strong><span>{uk ? "Кілька простих запитань про ваш графік." : "A few simple questions about your schedule."}</span></button>
+        <label className={styles.toggle}><input type="checkbox" checked={form.plan.plannedWork} onChange={(event) => updatePlan("plannedWork", event.currentTarget.checked)} /><span>{uk ? "У мене є робочі дні" : "I have work days"}</span></label>
+        {form.plan.plannedWork && <div className={styles.workPlanGrid}>
+          <PlanNumberField id="workDaysPerWeek" label={uk ? "Робочих днів" : "Work days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.workDaysPerWeek} min={1} max={7} onChange={(value) => updatePlan("workDaysPerWeek", value)} />
+          <div className={styles.workCategoryField}>
+            <label className={styles.field} htmlFor="workCategory">
+              <span>{uk ? "Характер роботи" : "Work type"}</span>
+              <select id="workCategory" value={form.plan.workCategory} onChange={(event) => updatePlan("workCategory", event.currentTarget.value as OccupationalCategory)}>
+                {(Object.keys(OCCUPATIONAL_CATEGORIES) as OccupationalCategory[]).map((category) => (
+                  <option key={category} value={category}>{occupationalCategoryCopy(category, uk ? "uk" : "en").label}</option>
+                ))}
+              </select>
+              <small>{occupationalCategoryCopy(form.plan.workCategory, uk ? "uk" : "en").description}</small>
+            </label>
+            <WorkCategoryHelper onRecommend={(category) => updatePlan("workCategory", category)} />
+            <OccupationalCategoryDescriptions />
           </div>
-          {workInputMode === "direct" ? <div className={styles.formGrid}>
-            <PlanNumberField id="workDaysPerWeek" label={uk ? "Робочих днів" : "Work days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.workDaysPerWeek} min={1} max={7} onChange={(value) => updatePlan("workDaysPerWeek", value)} />
-            <label className={styles.field} htmlFor="workCategory"><span>{uk ? "Характер роботи" : "Work type"}</span><select id="workCategory" value={form.plan.workCategory} onChange={(event) => updatePlan("workCategory", event.currentTarget.value as PlanValues["workCategory"])}><option value="standingLight">{uk ? "Дуже легка / переважно очікування" : "Very light / mostly waiting"}</option><option value="manualLight">{uk ? "Легке переміщення / пакування" : "Light handling / packing"}</option><option value="standingLightModerate">{uk ? "Активна легка ручна робота" : "Active light manual work"}</option><option value="manualModerate">{uk ? "Помірна ручна робота" : "Moderate handling"}</option></select></label>
-            <PlanNumberField id="shiftHours" label={uk ? "Тривалість зміни" : "Shift duration"} unit={uk ? "год" : "hours"} value={form.plan.shiftHours} min={0.1} max={24} step={0.25} onChange={(value) => updatePlan("shiftHours", value)} />
-            <PlanNumberField id="breakHours" label={uk ? "Перерви за зміну" : "Breaks per shift"} unit={uk ? "год" : "hours"} value={form.plan.breakHours} max={form.plan.shiftHours} step={0.25} onChange={(value) => updatePlan("breakHours", value)} />
-          </div> : <div className={styles.guidedWork} aria-live="polite">
-            {guidedWorkStep === 1 && <><p>{uk ? "Скільки днів на тиждень ви зазвичай працюєте?" : "How many days per week do you usually work?"}</p><div className={styles.guidedControls}><PlanNumberField id="guidedWorkDays" label={uk ? "Робочих днів" : "Work days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.workDaysPerWeek} min={1} max={7} onChange={(value) => updatePlan("workDaysPerWeek", value)} /><button type="button" onClick={() => setGuidedWorkStep(2)}>{uk ? "Далі" : "Next"}</button></div></>}
-            {guidedWorkStep === 2 && <><p>{uk ? "Скільки годин триває звичайна зміна?" : "How long is a typical shift?"}</p><div className={styles.guidedControls}><PlanNumberField id="guidedShiftHours" label={uk ? "Тривалість зміни" : "Shift duration"} unit={uk ? "год" : "hours"} value={form.plan.shiftHours} min={0.1} max={24} step={0.25} onChange={(value) => updatePlan("shiftHours", value)} /><button type="button" onClick={() => setGuidedWorkStep(3)}>{uk ? "Далі" : "Next"}</button></div><button className={styles.backButton} type="button" onClick={() => setGuidedWorkStep(1)}>{uk ? "Назад" : "Back"}</button></>}
-            {guidedWorkStep === 3 && <><p>{uk ? "Що найкраще описує роботу?" : "Which description best fits your work?"}</p><div className={styles.guidedChoices}><button type="button" onClick={() => { updatePlan("workCategory", guidedWorkCategory("mostly-sitting")); setGuidedWorkStep(4); }}>{uk ? "Переважно сиджу або чекаю" : "Mostly sitting or waiting"}</button><button type="button" onClick={() => { updatePlan("workCategory", guidedWorkCategory("mostly-standing")); setGuidedWorkStep(4); }}>{uk ? "Переважно стою, легкі рухи" : "Mostly standing, light movement"}</button><button type="button" onClick={() => { updatePlan("workCategory", guidedWorkCategory("manual-handling")); setGuidedWorkStep(4); }}>{uk ? "Ручна робота, легке переміщення" : "Manual work, light handling"}</button></div><button className={styles.backButton} type="button" onClick={() => setGuidedWorkStep(2)}>{uk ? "Назад" : "Back"}</button><small>{uk ? "Це найближчі відповідники серед наявних категорій. Для точнішого вибору скористайтеся режимом «Я знаю характер роботи»." : "These are the closest matches among existing categories. Use “I know my work type” for a more exact choice."}</small></>}
-            {guidedWorkStep === 4 && <><p>{uk ? "Скільки годин перерв зазвичай входить у зміну?" : "How many hours of breaks are included in a typical shift?"}</p><div className={styles.guidedControls}><PlanNumberField id="guidedBreakHours" label={uk ? "Перерви за зміну" : "Breaks per shift"} unit={uk ? "год" : "hours"} value={form.plan.breakHours} max={form.plan.shiftHours} step={0.25} onChange={(value) => updatePlan("breakHours", value)} /><button type="button" onClick={() => setGuidedWorkStep(1)}>{uk ? "Змінити відповіді" : "Edit answers"}</button></div><p>{uk ? "Графік готовий. Усі відповіді збережені в одному плані." : "Work schedule ready. Your answers are saved in the same plan."}</p></>}
-          </div>}
-        </>}
+          <PlanNumberField id="shiftHours" label={uk ? "Тривалість зміни" : "Shift duration"} unit={uk ? "год" : "hours"} value={form.plan.shiftHours} min={0.1} max={24} step={0.25} onChange={(value) => updatePlan("shiftHours", value)} />
+          <PlanNumberField id="breakHours" label={uk ? "Перерви за зміну" : "Breaks per shift"} unit={uk ? "год" : "hours"} value={form.plan.breakHours} max={form.plan.shiftHours} step={0.25} onChange={(value) => updatePlan("breakHours", value)} />
+          <p className={styles.workScheduleNote}>{uk
+            ? "Кількість робочих днів, години зміни й перерви задаються окремо від рекомендованого рівня роботи."
+            : "Work days, shift hours, and breaks are separate from the recommended work level."}</p>
+        </div>}
         <FieldError id="plan-error" message={formErrors.plan} />
       </section>
 
-      <div className={styles.submitRow}><div><strong>{uk ? "Розрахунок може тривати кілька секунд." : "The solve may take several seconds."}</strong><span>{uk ? "Новий запит скасовує попередній; показується лише останній результат." : "A new request cancels the previous one; only the latest result is shown."}</span></div><button type="submit" aria-busy={solving}>{solving ? (uk ? "Скасувати попередній і перерахувати" : "Cancel previous and recalculate") : (uk ? "Розрахувати сценарій" : "Calculate scenario")}</button></div>
+      <div className={styles.submitRow}><div><strong>{uk ? "Розрахунок може тривати кілька секунд." : "The solve may take several seconds."}</strong><span>{uk ? "Поки обчислення триває, дочекайтеся результату перед новим запуском." : "Wait for this calculation to finish before starting another."}</span></div><button type="submit" aria-busy={solving} disabled={solving}>{solving ? (uk ? "Рахуємо сценарій…" : "Calculating scenario…") : (uk ? "Розрахувати сценарій" : "Calculate scenario")}</button></div>
     </form>}
     {error && <section className={styles.errorCard} role="alert"><strong>{uk ? "План не розраховано" : "Plan was not calculated"}</strong><p>{error}</p></section>}
     {solving && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Перевіряємо межі, траєкторії та фінальну числову якість" : "Checking bounds, trajectories, and final numerical quality"}</strong><span>{uk ? "Ми не послаблюємо 128/512 траєкторій заради швидшого інтерфейсу." : "The 128/512 path verification is not weakened for UI speed."}</span></section>}

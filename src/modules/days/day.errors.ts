@@ -4,3 +4,10 @@ export class DuplicateDayError extends Error {
     this.name = "DuplicateDayError";
   }
 }
+
+export class DuplicateWorkoutError extends Error {
+  constructor() {
+    super("A workout cannot replace a synced workout with the same exact interval.");
+    this.name = "DuplicateWorkoutError";
+  }
+}

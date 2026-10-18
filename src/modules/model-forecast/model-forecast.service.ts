@@ -1,5 +1,10 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import {
+  isTrainingRefreshPending,
+  readTrainingRefreshVisibilityFence,
+  trainingRefreshFenceChanged,
+} from "@/modules/training/training-refresh-queue";
 import { isOccupationalCategory } from "@/model/occupational-activity";
 import {
   missingPhysiologicalTransitionFields,
@@ -263,6 +268,12 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     if (request.episodeId === undefined) throw new NoActiveModelEpisodeError();
     throw new ModelEpisodeNotFoundError();
   }
+  const trainingFence = await readTrainingRefreshVisibilityFence(client, episode.profileId);
+  if (isTrainingRefreshPending(trainingFence)) return blockedV2({
+    episode,
+    reasonCode: "unified-v4-not-current",
+    reason: "Training source changes are waiting for the durable model refresh.",
+  });
   const now = request.now ?? new Date();
   const latestCompletedDate = latestCompletedLocalDate(now, episode.timezone);
   const lifecycle = await client.physiologyV7Lifecycle.findUnique({
@@ -500,6 +511,10 @@ export async function forecastModelEpisodeWithInternalArtifacts(
         && finalLifecycle.staleFromDate >= episode.startDate
         && finalLifecycle.staleFromDate <= latestCompletedDate)) {
     return blockedV2({ episode, reasonCode: "unified-v4-not-current", reason: "Unified V4 became stale while the forecast was being computed." });
+  }
+  if (isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(client, episode.profileId))
+      || await trainingRefreshFenceChanged(client, episode.profileId, trainingFence)) {
+    return blockedV2({ episode, reasonCode: "unified-v4-not-current", reason: "Training source changes arrived while the forecast was being computed." });
   }
   artifacts.result.forecastVersion = EXPERIMENTAL_FORECAST_V2_VERSION;
   artifacts.result.experimentalQuality = reliableDonors.length >= config.minimumReliableDonorDays ? "standard" : "limited-history";

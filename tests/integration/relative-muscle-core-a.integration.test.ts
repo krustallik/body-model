@@ -308,7 +308,7 @@ describe("Relative Muscle episode core", () => {
     expect(repaired.every(({ isStale }) => !isStale)).toBe(true);
   });
 
-  it("serializes overlapping rebuilds profile-first so a delayed stale candidate cannot overwrite newer source state", async () => {
+  it("serializes overlapping rebuilds with the Relative Muscle lock before the shared publication fence", async () => {
     const targetProfileId = profileId;
     const episode = await createEpisode({
       startDate: raceDate,
@@ -423,13 +423,13 @@ describe("Relative Muscle episode core", () => {
         granted: true,
       }));
       expect(staleWaitState).toContainEqual(expect.objectContaining({
-        namespace: profileAdvisoryLockNamespace,
+        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
         profileId: targetProfileId,
         pid: staleWriterPid,
         granted: true,
       }));
-      expect(staleWaitState).toContainEqual(expect.objectContaining({
-        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
+      expect(staleWaitState).not.toContainEqual(expect.objectContaining({
+        namespace: profileAdvisoryLockNamespace,
         profileId: targetProfileId,
         pid: staleWriterPid,
         granted: true,
@@ -480,15 +480,9 @@ describe("Relative Muscle episode core", () => {
           && !relativeWaiterPidsBefore.has(lock.pid)
           && !lock.granted)
         .map((lock) => lock.pid);
-      expect(newProfileWaiterPids.length).toBeGreaterThan(0);
-      expect(newRelativeWaiterPids).toEqual([]);
-      expect(newProfileWaiterPids).not.toContain(staleWriterPid);
-      expect(overlapState).toContainEqual(expect.objectContaining({
-        namespace: profileAdvisoryLockNamespace,
-        profileId: targetProfileId,
-        pid: staleWriterPid,
-        granted: true,
-      }));
+      expect(newProfileWaiterPids).toEqual([]);
+      expect(newRelativeWaiterPids.length).toBeGreaterThan(0);
+      expect(newRelativeWaiterPids).not.toContain(staleWriterPid);
       expect(overlapState).toContainEqual(expect.objectContaining({
         namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
         profileId: targetProfileId,
@@ -502,7 +496,7 @@ describe("Relative Muscle episode core", () => {
       }));
 
       // Release the stale transaction only after PostgreSQL proves the fresh
-      // writer is queued at the first lock in the approved global lock order.
+      // rebuild is queued on the Relative Muscle serialization lock.
       firstBarrier.release();
       await Promise.all([firstBarrier.transaction, staleCandidate]);
 
@@ -515,8 +509,7 @@ describe("Relative Muscle episode core", () => {
       const freshWriterPid = freshWaitState.find(
         (lock) => lock.namespace === secondBarrierNamespace && !lock.granted,
       )!.pid;
-      expect(newProfileWaiterPids).toContain(freshWriterPid);
-      expect(newRelativeWaiterPids).not.toContain(freshWriterPid);
+      expect(newRelativeWaiterPids).toContain(freshWriterPid);
       expect(freshWaitState).toContainEqual(expect.objectContaining({
         namespace: secondBarrierNamespace,
         profileId: targetProfileId,
@@ -524,13 +517,13 @@ describe("Relative Muscle episode core", () => {
         granted: true,
       }));
       expect(freshWaitState).toContainEqual(expect.objectContaining({
-        namespace: profileAdvisoryLockNamespace,
+        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
         profileId: targetProfileId,
         pid: freshWriterPid,
         granted: true,
       }));
-      expect(freshWaitState).toContainEqual(expect.objectContaining({
-        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
+      expect(freshWaitState).not.toContainEqual(expect.objectContaining({
+        namespace: profileAdvisoryLockNamespace,
         profileId: targetProfileId,
         pid: freshWriterPid,
         granted: true,

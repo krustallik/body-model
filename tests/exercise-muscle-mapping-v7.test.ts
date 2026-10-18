@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import {
+  CANONICAL_EXERCISES_WITHOUT_V7_MAPPING,
+  CANONICAL_EXERCISE_IDENTITIES,
+} from "@/modules/training/canonical-exercise-identity";
 import {
   approvedExerciseMuscleMappingCoverageV7,
   assertMappingHasNoNumericWeights,
@@ -14,12 +17,14 @@ import {
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 
 describe("ExerciseMuscleMappingV7 registry", () => {
-  it("covers all thirteen canonical stableKeys with the same mappingVersion", () => {
+  it("covers mapped canonical stableKeys and declares unsupported anatomy unmapped", () => {
     const coverage = approvedExerciseMuscleMappingCoverageV7();
     expect(coverage).toEqual({ expected: 13, mapped: 13, missingStableKeys: [] });
     expect(EXERCISE_MUSCLE_MAPPING_REGISTRY_V7.size).toBe(13);
 
-    for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
+    for (const identity of CANONICAL_EXERCISE_IDENTITIES.filter(({ stableKey }) =>
+      !CANONICAL_EXERCISES_WITHOUT_V7_MAPPING.includes(stableKey as (typeof CANONICAL_EXERCISES_WITHOUT_V7_MAPPING)[number]),
+    )) {
       const mapping = lookupExerciseMuscleMappingV7(identity.stableKey);
       expect(mapping).not.toBeNull();
       expect(mapping!.mappingVersion).toBe(EXERCISE_MUSCLE_MAPPING_V7_VERSION);
@@ -29,6 +34,14 @@ describe("ExerciseMuscleMappingV7 registry", () => {
         target.role === "direct" || target.role === "indirect"
       ))).toBe(true);
       assertMappingHasNoNumericWeights(mapping!);
+    }
+    for (const stableKey of CANONICAL_EXERCISES_WITHOUT_V7_MAPPING) {
+      expect(buildExerciseMuscleMappingSnapshotV7(stableKey)).toMatchObject({
+        availability: "unavailable",
+        reason: "unregistered-stable-key",
+        stableKey,
+        targets: [],
+      });
     }
   });
 

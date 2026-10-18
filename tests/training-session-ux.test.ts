@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import { sessionPlanCompletion } from "@/modules/training/session-plan-completion";
-import { formatElapsedClock, planCompletionTone } from "@/app/training/training-labels";
+import { formatElapsedClock, formatLoadKg, planCompletionTone } from "@/app/training/training-labels";
 
 describe("parseTrainingDecimal", () => {
   it("accepts comma and dot decimals", () => {
@@ -36,6 +36,19 @@ describe("formatElapsedClock", () => {
   it("formats mm:ss and h:mm:ss", () => {
     expect(formatElapsedClock(82_000)).toBe("01:22");
     expect(formatElapsedClock(3_662_000)).toBe("1:01:02");
+  });
+});
+
+describe("formatLoadKg", () => {
+  it("localizes ordinary decimal loads without losing precision", () => {
+    expect(formatLoadKg(15.25, "uk-UA")).toBe("15,25");
+    expect(formatLoadKg(15.25, "en-US")).toBe("15.25");
+  });
+
+  it("keeps accepted positive boundary values visible without expanding huge numbers", () => {
+    expect(formatLoadKg(1e-21, "uk-UA")).not.toBe("0");
+    expect(formatLoadKg(1e-21, "uk-UA")).toMatch(/[1-9]/);
+    expect(formatLoadKg(1e308, "en-US").length).toBeLessThan(32);
   });
 });
 

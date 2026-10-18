@@ -9,6 +9,9 @@
 /** User-entered stepper rows are durable records, not members of a sync feed. */
 export const MANUAL_STEPPER_SOURCE_PREFIX = "manual:stepper:";
 
+/** History-created workouts have their own stable identity and are not feed rows. */
+export const MANUAL_HISTORY_SOURCE_PREFIX = "manual:history:";
+
 export type WorkoutIdentitySource = {
   externalId?: string | null;
   type: string;

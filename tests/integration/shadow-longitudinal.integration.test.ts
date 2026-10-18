@@ -17,7 +17,10 @@ import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
 const profileId = 1;
-const start = "2052-07-01";
+// Keep diagnostic dates close to current-era fixtures. A dirty lifecycle
+// boundary from another integration suite must not turn this 28-day check
+// into a decades-long replay.
+const start = "2027-07-01";
 const dayCount = 28;
 const dates = Array.from({ length: dayCount }, (_, index) => addCalendarDays(start, index));
 const fixtureMethod = "shadow-longitudinal-stage12";

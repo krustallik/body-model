@@ -80,6 +80,7 @@ export type StrengthSetDto = {
 };
 
 export type ExerciseHistorySetDto = {
+  id: number;
   setNumber: number;
   /** Actual set completion instant; null when the source did not record it. */
   completedAt: string | null;
@@ -88,12 +89,13 @@ export type ExerciseHistorySetDto = {
   bandNominalResistanceKg: number | null;
   rir: number | null;
   comment: string | null;
+  loadAccountingOverride?: unknown | null;
 };
 
 export type ExerciseHistoryEntryDto = {
   sessionId: number;
   occurredAt: string;
-  programName: string;
+  programName: string | null;
   resistanceType: ResistanceType;
   sets: ExerciseHistorySetDto[];
 };
@@ -136,10 +138,11 @@ export type StrengthSessionDto = {
   status: SessionStatus;
   entryMode: EntryMode;
   revision: number;
-  programId: number;
-  programName: string;
-  programVersionId: number;
-  programVersionNumber: number;
+  /** Null for a dynamic live session that has no program template. */
+  programId: number | null;
+  programName: string | null;
+  programVersionId: number | null;
+  programVersionNumber: number | null;
   /** Null for RETROSPECTIVE — no live web Start Workout occurred. */
   webStartedAt: string | null;
   webEndedAt: string | null;
@@ -182,8 +185,9 @@ export type StrengthSessionSummaryDto = {
   id: number;
   status: SessionStatus;
   entryMode: EntryMode;
-  programId: number;
-  programName: string;
+  /** Null for a dynamic session without a program template. */
+  programId: number | null;
+  programName: string | null;
   webStartedAt: string | null;
   webEndedAt: string | null;
   matchStatus: MatchStatus;

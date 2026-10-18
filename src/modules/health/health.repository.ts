@@ -6,11 +6,14 @@ import {
 import { planDayWorkoutReconciliation } from "@/modules/health/reconcile-day-workouts";
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
-import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
+import { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX, workoutFingerprint } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { logEvent } from "@/lib/logger";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
+import { enqueueTrainingSourceChangeInTransaction } from "@/modules/training/training-refresh-queue";
+import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   invalidateStepperMassDependenciesInTransactionV1,
@@ -188,14 +191,22 @@ async function reconcileDayWorkouts(
       type: true,
       startAt: true,
       endAt: true,
+      durationMinutes: true,
+      energyKcal: true,
+      activeEnergyKcal: true,
       syncProtected: true,
       hiddenFromHistory: true,
       matchedDiarySession: { select: { id: true } },
     },
   });
 
+  const historyFingerprints = new Set(existing
+    .filter((row) => row.sourceIdentity?.startsWith(MANUAL_HISTORY_SOURCE_PREFIX))
+    .map((row) => workoutFingerprint({ type: row.type, startAt: row.startAt, endAt: row.endAt })));
+  const reconciledIncoming = incoming.filter((workout) => !historyFingerprints.has(workoutFingerprint(workout)));
   const plan = planDayWorkoutReconciliation(
-    existing.filter((row) => !row.sourceIdentity?.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map((row) => ({
+    existing.filter((row) => !row.sourceIdentity?.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)
+      && !row.sourceIdentity?.startsWith(MANUAL_HISTORY_SOURCE_PREFIX)).map((row) => ({
       id: row.id,
       sourceIdentity: row.sourceIdentity,
       externalId: row.externalId,
@@ -206,10 +217,20 @@ async function reconcileDayWorkouts(
       syncProtected: row.syncProtected,
       hiddenFromHistory: row.hiddenFromHistory,
     })),
-    incoming,
+    reconciledIncoming,
   );
 
   for (const update of plan.updates) {
+    const previousWorkout = existing.find((row) => row.id === update.id);
+    const workoutInputsChanged = previousWorkout === undefined
+      || previousWorkout.sourceIdentity !== update.fields.sourceIdentity
+      || previousWorkout.externalId !== update.fields.externalId
+      || previousWorkout.type !== update.fields.type
+      || previousWorkout.startAt.getTime() !== update.fields.startAt.getTime()
+      || previousWorkout.endAt.getTime() !== update.fields.endAt.getTime()
+      || previousWorkout.durationMinutes !== update.fields.durationMinutes
+      || (previousWorkout.energyKcal === null ? null : Number(previousWorkout.energyKcal)) !== update.fields.energyKcal
+      || (previousWorkout.activeEnergyKcal === null ? null : Number(previousWorkout.activeEnergyKcal)) !== update.fields.activeEnergyKcal;
     await transaction.workout.update({
       where: { id: update.id },
       data: {
@@ -232,28 +253,73 @@ async function reconcileDayWorkouts(
         await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(linked.profileId);
       }
       const previousEffectiveAt = linked.effectiveAccountingAt ?? linked.webStartedAt ?? linked.createdAt;
-      if (previousEffectiveAt.getTime() === update.fields.startAt.getTime()) continue;
-      const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
-      const timeZoneProvenance = linked.accountingTimeZoneProvenance ?? "legacy-default";
-      const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
-      const nextLocalDate = instantToLocalDateTime(update.fields.startAt, timeZone).date;
-      await transaction.strengthDiarySession.update({
-        where: { id: linked.id },
-        data: {
-          effectiveAccountingAt: update.fields.startAt,
-          ...(previousLocalDate === nextLocalDate ? {} : {
-            accountingInputRevision: { increment: 1 },
-            currentSnapshotRevision: null,
-          }),
-        },
-      });
-      if (previousLocalDate === nextLocalDate) {
-        await rebaseCurrentAccountingSnapshotTimestamp(transaction, {
-          sessionId: linked.id,
-          effectiveAccountingAt: update.fields.startAt,
-          effectiveLocalDate: nextLocalDate,
-          timeZone,
-          timeZoneProvenance,
+      if (previousEffectiveAt.getTime() !== update.fields.startAt.getTime()) {
+        const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+        const timeZoneProvenance = linked.accountingTimeZoneProvenance ?? "legacy-default";
+        const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
+        const nextLocalDate = instantToLocalDateTime(update.fields.startAt, timeZone).date;
+        await transaction.strengthDiarySession.update({
+          where: { id: linked.id },
+          data: {
+            effectiveAccountingAt: update.fields.startAt,
+            ...(previousLocalDate === nextLocalDate ? {} : {
+              accountingInputRevision: { increment: 1 },
+              currentSnapshotRevision: null,
+            }),
+          },
+        });
+        if (previousLocalDate === nextLocalDate) {
+          await rebaseCurrentAccountingSnapshotTimestamp(transaction, {
+            sessionId: linked.id,
+            effectiveAccountingAt: update.fields.startAt,
+            effectiveLocalDate: nextLocalDate,
+            timeZone,
+            timeZoneProvenance,
+          });
+        }
+      }
+      if (linked.status === "COMPLETED" && workoutInputsChanged) {
+        const previousWorkout = existing.find((row) => row.id === update.id);
+        const priorSourceInstant = previousWorkout?.startAt ?? previousEffectiveAt;
+        const nextSourceInstant = update.fields.startAt;
+        const episodes = await transaction.modelEpisode.findMany({
+          where: { profileId: linked.profileId },
+          orderBy: [{ startDate: "asc" }, { id: "asc" }],
+          select: { id: true, startDate: true, timezone: true, active: true },
+        });
+        const oldModelDate = episodeTimeContextForInstantV1(episodes, priorSourceInstant).date;
+        const newModelDate = episodeTimeContextForInstantV1(episodes, nextSourceInstant).date;
+        await enqueueTrainingSourceChangeInTransaction(transaction, {
+          profileId: linked.profileId,
+          operationKind: "health-linked-workout-reconciled",
+          affectedSessionIds: [linked.id],
+          oldSourceIdentity: {
+            kind: "health-workout",
+            workoutId: update.id,
+            sourceIdentity: previousWorkout?.sourceIdentity ?? null,
+            externalId: previousWorkout?.externalId ?? null,
+            type: previousWorkout?.type ?? null,
+          },
+          newSourceIdentity: {
+            kind: "health-workout",
+            workoutId: update.id,
+            sourceIdentity: update.fields.sourceIdentity,
+            externalId: update.fields.externalId,
+            type: update.fields.type,
+          },
+          oldEventInstants: {
+            trainingEffectiveAt: priorSourceInstant.toISOString(),
+            workoutStartAt: previousWorkout?.startAt.toISOString() ?? null,
+            workoutEndAt: previousWorkout?.endAt.toISOString() ?? null,
+          },
+          newEventInstants: {
+            trainingEffectiveAt: nextSourceInstant.toISOString(),
+            workoutStartAt: nextSourceInstant.toISOString(),
+            workoutEndAt: update.fields.endAt.toISOString(),
+          },
+          oldModelDates: [oldModelDate],
+          newModelDates: [newModelDate],
+          deadlineMode: "health-fast",
         });
       }
     }
@@ -322,9 +388,18 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay, metadata.timezone);
     const workoutFeedPresent = hasWorkoutFeedPayload(rawDay);
     // Latest state, immutable snapshot, and workout reconciliation are one atomic sync.
-    return this.client.$transaction(async (transaction) => {
+    const transactionStartedAt = performance.now();
+    let result!: SyncDateResult;
+    try {
+      result = await this.client.$transaction(async (transaction) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+      const profileLockStartedAt = performance.now();
       await lifecycle.lockProfile(1);
+      logEvent("info", "health_sync_stage_timing", {
+        stage: "persistence-profile-lock",
+        durationMs: Math.round(performance.now() - profileLockStartedAt),
+        calls: 1,
+      });
       // A first-ever sync can reach this transaction before any model write has
       // bootstrapped the lifecycle row. Ensure it exists before arming the
       // durable fence; blockUnifiedPublication intentionally no-ops without it.
@@ -489,12 +564,61 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         }
       }
 
+      if (metadata.deferDependentRefresh) {
+        const previousJob = await transaction.healthSyncRefreshJob.findUnique({
+          where: { profileId: 1 },
+          select: { fromDate: true, toDate: true, sourceDates: true, weightSourceChangedDates: true },
+        });
+        const sourceDates = new Set(previousJob?.sourceDates ?? []);
+        sourceDates.add(day.date);
+        const changedWeightDates = new Set(previousJob?.weightSourceChangedDates ?? []);
+        if (weightSourceChanged) changedWeightDates.add(day.date);
+        const fromDate = previousJob?.fromDate && previousJob.fromDate < day.date
+          ? previousJob.fromDate
+          : day.date;
+        const toDate = previousJob?.toDate && previousJob.toDate > day.date
+          ? previousJob.toDate
+          : day.date;
+        await transaction.healthSyncRefreshJob.upsert({
+          where: { profileId: 1 },
+          create: {
+            profileId: 1,
+            requestedGeneration: 1,
+            completedGeneration: 0,
+            fromDate,
+            toDate,
+            sourceDates: [...sourceDates].sort(),
+            weightSourceChangedDates: [...changedWeightDates].sort(),
+            nextAttemptAt: new Date(Date.now() + 3_000),
+            updatedAt: new Date(),
+          },
+          update: {
+            requestedGeneration: { increment: 1 },
+            fromDate,
+            toDate,
+            sourceDates: [...sourceDates].sort(),
+            weightSourceChangedDates: [...changedWeightDates].sort(),
+            nextAttemptAt: new Date(Date.now() + 3_000),
+            lastErrorType: null,
+            lastErrorAt: null,
+          },
+        });
+      }
+
       return {
         date: day.date,
         action: existing ? "updated" : "created",
         ...(weightSourceChanged ? { weightSourceChanged: true } : {}),
       };
-    });
+      });
+    } finally {
+      logEvent("info", "health_sync_stage_timing", {
+        stage: "persistence-transaction",
+        durationMs: Math.round(performance.now() - transactionStartedAt),
+        calls: 1,
+      });
+    }
+    return result;
   }
 
   /**

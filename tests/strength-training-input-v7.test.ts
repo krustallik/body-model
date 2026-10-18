@@ -119,7 +119,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
 describe("canonical v7 strength-training input", () => {
   it("preserves recorded-set resistance semantics and mapping diagnostics without inventing completion", () => {
     const input = buildCanonicalStrengthTrainingInputV7({ session: session(), heartRateSamples: null });
-    expect(input.contractVersion).toBe("bodycast-physiology-v7-strength-input-v3");
+    expect(input.contractVersion).toBe("bodycast-physiology-v7-strength-input-v4");
     expect(input.program).toEqual({ programId: 7, programVersionId: 9, programVersionNumber: 2 });
     expect(input.exercises.map((exercise) => exercise.stableKey)).toEqual([
       "seated_dumbbell_press",
@@ -168,6 +168,36 @@ describe("canonical v7 strength-training input", () => {
       activeEnergyProvenance: "garmin-device-estimate",
     }));
     expect(input.heartRate).toBeNull();
+  });
+
+  it("represents a dynamic live session without fabricating program provenance", () => {
+    const input = buildCanonicalStrengthTrainingInputV7({
+      session: session({
+        status: "ACTIVE",
+        entryMode: "LIVE",
+        programId: null,
+        programName: null,
+        programVersionId: null,
+        programVersionNumber: null,
+        matchedWorkoutId: null,
+        matchedWorkout: null,
+      }),
+      heartRateSamples: null,
+    });
+    expect(input.program).toBeNull();
+    expect(input.exercises).toHaveLength(3);
+  });
+
+  it.each([
+    { programId: 7, programVersionId: null, programVersionNumber: null },
+    { programId: null, programVersionId: 9, programVersionNumber: 2 },
+    { programId: 7, programVersionId: 9, programVersionNumber: null },
+    { programId: null, programVersionId: null, programVersionNumber: 2 },
+  ])("blocks incomplete program provenance: %o", (programFields) => {
+    expect(() => buildCanonicalStrengthTrainingInputV7({
+      session: session(programFields),
+      heartRateSamples: null,
+    })).toThrow("strength session has incomplete program provenance");
   });
 
   it("does not emit planned-but-unrecorded sets as recorded sets", () => {

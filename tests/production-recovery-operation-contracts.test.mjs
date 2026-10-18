@@ -7,6 +7,7 @@ import {
   OPERATION_ADAPTER_CONTRACT_DIGEST,
   OPERATION_CONTRACTS,
   OPERATION_CONTRACT_VERSION,
+  validateOperationObservation,
   verifyOperationAdapterConformance,
 } from "../scripts/production-recovery/operation-contracts.mjs";
 
@@ -51,6 +52,71 @@ function callOperation({ inspect, execute, beforeEffect = async () => {} } = {})
 }
 
 describe("fixed host operation replay and success contract", () => {
+  it("requires contract v9 and a post-lock READ COMMITTED snapshot for every Health-currentness guarded operation", () => {
+    expect(OPERATION_CONTRACT_VERSION).toBe(9);
+    for (const operationType of ["recovery-start-readonly-app", "recovery-verify-completion-gates", "recovery-open-traffic"]) {
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/begin-read-committed-before-first-read/);
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/acquire-unified-profile-exclusive-fence-before-database-identity-health-queue-and-v4-reads/);
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/hold-fence-through-currentness-check/);
+      expect(OPERATION_CONTRACTS[operationType].replayPolicy).toMatch(/health-queue-and-unified-v4-under-profile-fence/);
+    }
+  });
+
+  it.each(["recovery-start-readonly-app", "recovery-drain-and-enable-writers"])(
+    "requires exact app capability evidence in %s post-state observations, including replay",
+    (operationType) => {
+      const definition = OPERATION_CONTRACTS[operationType];
+      const releaseSha = "c".repeat(40);
+      const databaseDigest = "f".repeat(64);
+      const bindings = { releaseSha, logicalProductionDbIdentityDigest: databaseDigest,
+        immutableRollbackArtifact: { rollbackImageDigest: "d".repeat(64) } };
+      const base = {
+        releaseSha,
+        imageDigest: "d".repeat(64),
+        logicalProductionDbIdentityDigest: databaseDigest,
+        programlessSessionCount: 2,
+        rollbackAppSupportsProgramlessSessions: true,
+        programlessSessionCompatible: true,
+        rollbackAppCapabilityDigest: "e".repeat(64),
+      };
+      if (operationType === "recovery-start-readonly-app") {
+        base.healthSyncRefreshQueueDigest = "6".repeat(64);
+        base.unifiedV4CurrentnessDigest = "7".repeat(64);
+      }
+      const postcondition = operationType === "recovery-start-readonly-app"
+        ? { ...base, containerId: "captured-container", healthStatus: "healthy", databaseRoleMode: "readonly" }
+        : { ...base, healthStatus: "healthy", writerMode: "enabled", activeWriterCount: 0, topologyDigest: "9".repeat(64) };
+      const operation = { operationType, operationId: "a".repeat(64), operationInputDigest: "b".repeat(64), bindings };
+      const observationFor = (condition) => ({ schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType,
+        operationId: operation.operationId, idempotencyKey: operation.operationId,
+        operationInputDigest: operation.operationInputDigest, state: "post", observedAt: new Date().toISOString(),
+        stateDigest: canonicalDigest({ state: definition.postState, precondition: null, postcondition: condition }),
+        precondition: null, postcondition: condition });
+      const precondition = operationType === "recovery-start-readonly-app"
+        ? { ...base, containerState: "stopped", databaseRoleMode: "readonly" }
+        : { ...base, readonlyAppStopped: true, activeWriterCount: 0, topologyDigest: "7".repeat(64) };
+      const preObservation = { schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType,
+        operationId: operation.operationId, idempotencyKey: operation.operationId,
+        operationInputDigest: operation.operationInputDigest, state: "pre", observedAt: new Date().toISOString(),
+        stateDigest: canonicalDigest({ state: definition.preState, precondition, postcondition: null }),
+        precondition, postcondition: null };
+
+      expect(validateOperationObservation(observationFor(postcondition), operation).normalizedState).toBe("post");
+      expect(validateOperationObservation(preObservation, operation).normalizedState).toBe("pre");
+      const mismatchedRollbackImagePrecondition = { ...precondition, imageDigest: "1".repeat(64) };
+      expect(() => validateOperationObservation({ ...preObservation, precondition: mismatchedRollbackImagePrecondition,
+        stateDigest: canonicalDigest({ state: definition.preState, precondition: mismatchedRollbackImagePrecondition, postcondition: null }) }, operation))
+        .toThrow(/does not match the captured rollback image/);
+      expect(() => validateOperationObservation(observationFor({ ...postcondition, rollbackAppSupportsProgramlessSessions: false }), operation))
+        .toThrow(/safe access to existing programless sessions/);
+      expect(() => validateOperationObservation(observationFor({ ...postcondition, releaseSha: "7".repeat(40) }), operation))
+        .toThrow(/immutable releaseSha binding/);
+      const missingCapability = { ...postcondition };
+      delete missingCapability.rollbackAppCapabilityDigest;
+      expect(() => validateOperationObservation(observationFor(missingCapability), operation)).toThrow(/closed schema/);
+    },
+  );
+
   it("reconciles successful typed result to actual post-state before returning a receipt-ready success", async () => {
     let state = "pre";
     const result = await callOperation({
@@ -156,6 +222,11 @@ describe("fixed host operation replay and success contract", () => {
       trustedPublicKeys: { "adapter-test-key": trustedKey } }).current).toBe(true);
     const incomplete = { ...receipt, testedOperationTypes: ["ordinary-release"] };
     expect(() => verifyOperationAdapterConformance(incomplete, { adapterDigest: unsigned.adapterDigest,
+      trustedPublicKeys: { "adapter-test-key": trustedKey } })).toThrow(/does not cover/);
+    const legacyUnsigned = { ...unsigned, contractVersion: OPERATION_CONTRACT_VERSION - 1,
+      contractDigest: "c".repeat(64) };
+    const legacyReceipt = { ...legacyUnsigned, signature: signCanonical(legacyUnsigned, privateKey) };
+    expect(() => verifyOperationAdapterConformance(legacyReceipt, { adapterDigest: unsigned.adapterDigest,
       trustedPublicKeys: { "adapter-test-key": trustedKey } })).toThrow(/does not cover/);
   });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
   CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+  calculateLoadAccountingWithBreakdownV1,
   calculateLoadAccountingV1,
   LEGACY_LOAD_CONFIGS_V1,
   loadConfigV1Schema,
@@ -127,7 +128,7 @@ describe("Stage 01 literal load accounting golden", () => {
 
 describe("versioned config and execution semantics", () => {
   it("accepts per-hand pairs, one implement across both hands, bars, and unilateral work", () => {
-    expect(Object.keys(LEGACY_LOAD_CONFIGS_V1)).toHaveLength(13);
+    expect(Object.keys(LEGACY_LOAD_CONFIGS_V1)).toHaveLength(18);
     expect(loadConfigV1Schema.safeParse(LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg).success).toBe(true);
     expect(LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg).toMatchObject({
       inventoryCount: 2, loadedSides: 2, loadInput: "per-implement-kg", repsMeaning: "per-side",
@@ -135,6 +136,49 @@ describe("versioned config and execution semantics", () => {
     expect(LEGACY_LOAD_CONFIGS_V1.hyperextension).toMatchObject({
       inventoryCount: 1, loadedSides: 2, implementsPerMovement: 1, repsMeaning: "per-movement",
     });
+    for (const stableKey of [
+      "bulgarian_split_squat", "forward_dumbbell_lunge", "goblet_squat",
+      "dumbbell_crunch", "dumbbell_russian_twist",
+    ] as const) {
+      expect(loadConfigV1Schema.safeParse(LEGACY_LOAD_CONFIGS_V1[stableKey]).success).toBe(true);
+    }
+    expect(LEGACY_LOAD_CONFIGS_V1.bulgarian_split_squat).toMatchObject({
+      accountingKind: "external-per-implement-pair-per-side", execution: "unilateral", repsMeaning: "per-side",
+    });
+    expect(LEGACY_LOAD_CONFIGS_V1.forward_dumbbell_lunge).toMatchObject({
+      accountingKind: "external-per-implement-pair-per-side", execution: "unilateral", repsMeaning: "per-side",
+    });
+    for (const stableKey of ["bulgarian_split_squat", "forward_dumbbell_lunge"] as const) {
+      expect(LEGACY_LOAD_CONFIGS_V1[stableKey]).toMatchObject({ inventoryCount: 2, loadedSides: 2 });
+      const accounted = calculateLoadAccountingV1({
+        localDate: "2026-09-24",
+        exercises: [{
+          identity: identity(stableKey),
+          resistanceHint: "external",
+          sets: [{ reps: 5, weightKg: 10, bandNominalResistanceKg: null }],
+        }],
+      });
+      expect(accounted.externalLoadVolume.value).toBe(200);
+      const detailed = calculateLoadAccountingWithBreakdownV1({
+        localDate: "2026-09-24",
+        sessionId: 10,
+        exercises: [{
+          identity: identity(stableKey),
+          resistanceHint: "external",
+          sessionExerciseId: 20,
+          exerciseOrder: 0,
+          exerciseName: stableKey,
+          sets: [{ strengthSetId: 30, setNumber: 1, reps: 5, weightKg: 10, bandNominalResistanceKg: null }],
+        }],
+      });
+      expect(detailed.breakdown.rows[0]?.mechanics).toMatchObject({ inventoryCount: 2, loadedSides: 2, effectiveMultiplier: 2 });
+      expect(detailed.breakdown.rows[0]?.contributions).toContainEqual(expect.objectContaining({ category: "externalLoadVolume", value: 200 }));
+    }
+    for (const stableKey of ["goblet_squat", "dumbbell_crunch", "dumbbell_russian_twist"] as const) {
+      expect(LEGACY_LOAD_CONFIGS_V1[stableKey]).toMatchObject({
+        accountingKind: "external-per-implement-per-movement", implementsPerMovement: 1, repsMeaning: "per-movement",
+      });
+    }
     const bar = {
       schemaVersion: 1, configVersion: "bar-v1", inventoryCount: 1, loadedSides: 2,
       execution: "simultaneous", equipment: { equipmentId: "barbell", setupId: "full-bar" },
@@ -296,5 +340,79 @@ describe("versioned config and execution semantics", () => {
     expect(weighted.externalLoadVolume.value).toBe(0);
     expect(weighted.bodyweight.referenceVolume.coverage.omittedReasons)
       .toEqual({ "missing-bodyweight-reference": 2 });
+  });
+
+  it("keeps maximum supported BODYWEIGHT loads finite at the maximum repetitions", () => {
+    const result = calculateLoadAccountingV1({
+      localDate: "2026-09-24",
+      exercises: [{ identity: identity("pull_up"), sets: [
+        { reps: 10_000, weightKg: null, bandNominalResistanceKg: null,
+          override: { additionalLoadKg: 2_000 } },
+        { reps: 10_000, weightKg: null, bandNominalResistanceKg: null,
+          override: { assistanceLoadKg: 2_000 } },
+      ] }],
+    });
+
+    expect(result.additionalLoad).toMatchObject({ value: 20_000_000, availability: "available" });
+    expect(result.assistanceLoad).toMatchObject({ value: 20_000_000, availability: "available" });
+    const serialized = JSON.parse(JSON.stringify(result)) as typeof result;
+    expect(serialized.additionalLoad.value).toBe(20_000_000);
+    expect(serialized.assistanceLoad.value).toBe(20_000_000);
+    expect(Number.isFinite(serialized.additionalLoad.value)).toBe(true);
+  });
+
+  it("keeps legacy overflowing BODYWEIGHT overrides readable but marks the derived metric unavailable", () => {
+    expect(setExecutionOverrideV1Schema.safeParse({ additionalLoadKg: 1e308 }).success).toBe(true);
+    expect(setExecutionOverrideV1Schema.safeParse({ assistanceLoadKg: 1e308 }).success).toBe(true);
+    const calculateLegacyMetric = (override: { additionalLoadKg?: number; assistanceLoadKg?: number }) =>
+      calculateLoadAccountingV1({
+        localDate: "2026-09-24",
+        exercises: [{ identity: identity("pull_up"), sets: [{
+          reps: 10_000,
+          weightKg: null,
+          bandNominalResistanceKg: null,
+          override,
+        }] }],
+      });
+    const additionalResult = calculateLegacyMetric({ additionalLoadKg: 1e308 });
+    const assistanceResult = calculateLegacyMetric({ assistanceLoadKg: 1e308 });
+
+    expect(additionalResult.additionalLoad).toMatchObject({
+      value: null,
+      availability: "unavailable",
+      coverage: { omittedRows: 1, omittedReasons: { "invalid-load": 1 } },
+    });
+    expect(assistanceResult.assistanceLoad).toMatchObject({
+      value: null,
+      availability: "unavailable",
+      coverage: { omittedRows: 1, omittedReasons: { "invalid-load": 1 } },
+    });
+    const serializedAdditional = JSON.parse(JSON.stringify(additionalResult)) as typeof additionalResult;
+    const serializedAssistance = JSON.parse(JSON.stringify(assistanceResult)) as typeof assistanceResult;
+    expect(serializedAdditional.additionalLoad.value).toBeNull();
+    expect(serializedAdditional.additionalLoad.availability).toBe("unavailable");
+    expect(serializedAssistance.assistanceLoad.value).toBeNull();
+    expect(serializedAssistance.assistanceLoad.availability).toBe("unavailable");
+  });
+
+  it("keeps a legacy aggregate finite when individually finite rows would overflow their sum", () => {
+    const result = calculateLoadAccountingV1({
+      localDate: "2026-09-24",
+      exercises: [{ identity: identity("pull_up"), sets: [1, 2].map(() => ({
+        reps: 1,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        override: { additionalLoadKg: 1e308 },
+      })) }],
+    });
+
+    expect(result.additionalLoad).toMatchObject({
+      value: 1e308,
+      availability: "partial",
+      coverage: { eligibleRows: 2, accountedRows: 1, omittedReasons: { "invalid-load": 1 } },
+    });
+    const serialized = JSON.parse(JSON.stringify(result)) as typeof result;
+    expect(serialized.additionalLoad.value).toBe(1e308);
+    expect(serialized.additionalLoad.availability).toBe("partial");
   });
 });

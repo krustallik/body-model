@@ -28,29 +28,29 @@ describe("getModelDiagnostics", () => {
 
   it("uses an inclusive 28-day calendar window and composes read-only sources", async () => {
     const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-08-25" };
-    const status = { episodeId: 2 };
+    const status = { episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: "2026-08-25" };
     const evidence = { modeledDayCount: 28 };
     dependencies.getActive.mockResolvedValue(episode);
     dependencies.status.mockResolvedValue(status);
     dependencies.evidence.mockResolvedValue(evidence);
     dependencies.recovery.mockResolvedValue({ status: "recovered" });
     expect(await getModelDiagnostics({} as never)).toEqual({ ok: true });
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-07-29", "2026-08-25");
+    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-07-29", "2026-08-25", "2026-08-25");
     expect(dependencies.build).toHaveBeenCalledWith({ episode, status, evidence, windowStartDate: "2026-07-29", recovery: { status: "recovered" } });
   });
 
   it("does not count source evidence from before a short episode", async () => {
     const episode = { id: 2, startDate: "2026-08-20", latestModeledDate: "2026-08-25" };
     dependencies.getActive.mockResolvedValue(episode);
-    dependencies.status.mockResolvedValue({ episodeId: 2 });
+    dependencies.status.mockResolvedValue({ episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: "2026-08-25" });
     dependencies.evidence.mockResolvedValue({ modeledDayCount: 6 });
     await getModelDiagnostics({} as never);
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-08-20", "2026-08-25");
+    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-08-20", "2026-08-25", "2026-08-25");
   });
 
   it("returns zero recent evidence before any modeled date", async () => {
     const episode = { id: 2, startDate: "2026-08-20", latestModeledDate: null };
-    const status = { episodeId: 2 };
+    const status = { episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: null };
     dependencies.getActive.mockResolvedValue(episode);
     dependencies.status.mockResolvedValue(status);
     await getModelDiagnostics({} as never);
@@ -59,5 +59,88 @@ describe("getModelDiagnostics", () => {
       windowStartDate: null,
       evidence: { modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0, observedNutritionDayCount: 0, imputedNutritionDayCount: 0, unresolvedNutritionDayCount: 0, weightObservationCount: 0 },
     }));
+  });
+
+  it("bounds all current diagnostics evidence to the production stale cutoff", async () => {
+    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const status = {
+      episodeId: 2,
+      productionCurrent: false,
+      productionDirtyFromDate: "2026-10-10",
+      latestModeledDate: "2026-10-09",
+    };
+    dependencies.getActive.mockResolvedValue(episode);
+    dependencies.status.mockResolvedValue(status);
+    dependencies.evidence.mockResolvedValue({ modeledDayCount: 9, completeDayCount: 9 });
+
+    await getModelDiagnostics({} as never);
+
+    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-12", "2026-10-09", "2026-10-09");
+    expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
+      episode,
+      status,
+      evidence: { modeledDayCount: 9, completeDayCount: 9 },
+      windowStartDate: "2026-09-12",
+    }));
+  });
+
+  it("ends the recent evidence window at the latest complete current date", async () => {
+    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const status = {
+      episodeId: 2,
+      productionCurrent: false,
+      productionDirtyFromDate: "2026-10-10",
+      latestModeledDate: "2026-10-08",
+    };
+    dependencies.getActive.mockResolvedValue(episode);
+    dependencies.status.mockResolvedValue(status);
+    dependencies.evidence.mockResolvedValue({ modeledDayCount: 27 });
+
+    await getModelDiagnostics({} as never);
+
+    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-11", "2026-10-08", "2026-10-08");
+  });
+
+  it("returns empty evidence when invalidation leaves no current prefix", async () => {
+    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const status = {
+      episodeId: 2,
+      productionCurrent: false,
+      productionDirtyFromDate: "2026-01-01",
+      latestModeledDate: null,
+    };
+    dependencies.getActive.mockResolvedValue(episode);
+    dependencies.status.mockResolvedValue(status);
+
+    await getModelDiagnostics({} as never);
+
+    expect(dependencies.evidence).not.toHaveBeenCalled();
+    expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
+      episode,
+      status,
+      windowStartDate: null,
+      evidence: {
+        modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0,
+        observedNutritionDayCount: 0, imputedNutritionDayCount: 0,
+        unresolvedNutritionDayCount: 0, weightObservationCount: 0,
+      },
+    }));
+  });
+
+  it("shows the recalculated date range again once production is current", async () => {
+    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const status = {
+      episodeId: 2,
+      productionCurrent: true,
+      productionDirtyFromDate: null,
+      latestModeledDate: "2026-10-15",
+    };
+    dependencies.getActive.mockResolvedValue(episode);
+    dependencies.status.mockResolvedValue(status);
+    dependencies.evidence.mockResolvedValue({ modeledDayCount: 28 });
+
+    await getModelDiagnostics({} as never);
+
+    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-18", "2026-10-15", "2026-10-15");
   });
 });

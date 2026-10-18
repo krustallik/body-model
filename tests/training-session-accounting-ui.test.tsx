@@ -439,6 +439,32 @@ describe("persisted session accounting UI", () => {
     expect(calculateExternalExample(savedConfig)).toBe(480);
   });
 
+  it("explains unilateral dumbbell-pair load and preserves its accounting rule", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
+      requests.push(String(args[1]?.body));
+      return Response.json({ ok: true });
+    }));
+    const config = LEGACY_LOAD_CONFIGS_V1.bulgarian_split_squat;
+    render(<ExerciseLoadConfigEditor catalogId={153} configuration={config} stableKey="bulgarian_split_squat" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+
+    expect(screen.getByText("2 гантелі по 20 кг × 12 повторів на кожну сторону (2 сторони) → 960 кг·повторів")).toBeTruthy();
+    expect(screen.getByText("Введіть вагу однієї гантелі та повтори на кожну сторону. Приклад враховує обидві гантелі й обидві сторони.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
+
+    const savedConfig = JSON.parse(requests[0]!).loadAccountingConfig;
+    expect(savedConfig).toMatchObject({
+      accountingKind: "external-per-implement-pair-per-side",
+      execution: "unilateral",
+      inventoryCount: 2,
+      loadedSides: 2,
+      repsMeaning: "per-side",
+    });
+    expect(calculateExternalExample(savedConfig)).toBe(960);
+  });
+
   it("uses one weight-per-implement choice for symmetric work without a duplicate per-side option", async () => {
     const user = userEvent.setup();
     const requests: string[] = [];

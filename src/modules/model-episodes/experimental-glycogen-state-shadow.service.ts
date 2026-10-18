@@ -1,6 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
+import { episodeTimeContextForInstantV1, type EpisodeTimeContextRowV1 } from "./episode-time-context-v1";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import {
   assertUnifiedSourceFenceV1,
@@ -81,7 +83,7 @@ type DbClient = PrismaClient | Prisma.TransactionClient;
 
 const MAX_GLYCOGEN_SOURCE_CONFLICT_ATTEMPTS = 3;
 
-async function loadDayInputs(client: DbClient, profileId: number, date: string): Promise<{
+async function loadDayInputs(client: DbClient, profileId: number, date: string, episodes: readonly EpisodeTimeContextRowV1[]): Promise<{
   exerciseDepletionKg: number | null;
   exerciseDepletionLowerKg: number | null;
   exerciseDepletionUpperKg: number | null;
@@ -118,10 +120,31 @@ async function loadDayInputs(client: DbClient, profileId: number, date: string):
     client.experimentalStrengthGlycogenDemandShadow.findMany({
       where: {
         profileId,
-        session: { matchedWorkout: { dailyHealthData: { date } } },
+        session: {
+          status: "COMPLETED",
+          OR: [
+            { matchedWorkout: { dailyHealthData: { date } } },
+            {
+              matchedWorkoutId: null,
+              OR: [
+                { effectiveAccountingAt: { gte: new Date(`${addCalendarDays(date, -2)}T00:00:00.000Z`), lt: new Date(`${addCalendarDays(date, 3)}T00:00:00.000Z`) } },
+                { effectiveAccountingAt: null, webStartedAt: { gte: new Date(`${addCalendarDays(date, -2)}T00:00:00.000Z`), lt: new Date(`${addCalendarDays(date, 3)}T00:00:00.000Z`) } },
+                { effectiveAccountingAt: null, webStartedAt: null, createdAt: { gte: new Date(`${addCalendarDays(date, -2)}T00:00:00.000Z`), lt: new Date(`${addCalendarDays(date, 3)}T00:00:00.000Z`) } },
+              ],
+            },
+          ],
+        },
       },
       orderBy: { sessionId: "asc" },
-      select: { sessionId: true, modelRevision: true, sourceFingerprint: true, result: true },
+      select: {
+        sessionId: true, modelRevision: true, sourceFingerprint: true, result: true,
+        session: {
+          select: {
+            effectiveAccountingAt: true, accountingTimeZone: true, webStartedAt: true, createdAt: true,
+            matchedWorkout: { select: { startAt: true } },
+          },
+        },
+      },
     }),
     client.experimentalStepperGlycogenDemandShadow.findMany({
       where: {
@@ -133,8 +156,16 @@ async function loadDayInputs(client: DbClient, profileId: number, date: string):
     }),
   ]);
 
+  const dayStrengthShadows = strengthShadows.filter((row) => {
+    const instant = row.session.matchedWorkout?.startAt
+      ?? row.session.effectiveAccountingAt
+      ?? row.session.webStartedAt
+      ?? row.session.createdAt;
+    return episodeTimeContextForInstantV1(episodes, instant, row.session.accountingTimeZone ?? DEFAULT_TIME_ZONE).date === date;
+  });
+
   const depletion = sumDepletions([
-    ...strengthShadows.map((row) => readDepletion(row.result)),
+    ...dayStrengthShadows.map((row) => readDepletion(row.result)),
     ...stepperShadows.map((row) => readDepletion(row.result)),
   ]);
 
@@ -151,7 +182,7 @@ async function loadDayInputs(client: DbClient, profileId: number, date: string):
         id: health.id,
         updatedAt: health.updatedAt.toISOString(),
       },
-      strengthDemandShadows: strengthShadows.map((row) => ({
+      strengthDemandShadows: dayStrengthShadows.map((row) => ({
         sessionId: row.sessionId,
         modelRevision: row.modelRevision,
         sourceFingerprint: row.sourceFingerprint,
@@ -250,6 +281,11 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
   // Capture before loading the durable predecessor so a source refresh between
   // those reads cannot pair an old predecessor with a newer lifecycle fence.
   let expectedFence = await readUnifiedSourceFenceV1(prisma, profileId);
+  const episodes = await prisma.modelEpisode.findMany({
+    where: { profileId },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { startDate: true, timezone: true, active: true },
+  });
   const priorRow = await prisma.experimentalGlycogenStateShadow.findFirst({
     where: { profileId, date: { lt: fromDate } },
     orderBy: { date: "desc" },
@@ -263,7 +299,7 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
   // days while still carrying the old predecessor in memory.
   for (let date = fromDate; date <= input.toDate; date = addCalendarDays(date, 1)) {
     const fence = expectedFence;
-    const day = await loadDayInputs(prisma, profileId, date);
+    const day = await loadDayInputs(prisma, profileId, date, episodes);
     const gapContext = transitionExperimentalDataGapContextV1({
       date,
       sources: glycogenCoverage(day),
@@ -291,7 +327,7 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
       const lifecycle = new PhysiologyV7PersistenceRepository(tx);
       await lifecycle.lockProfile(profileId);
       await assertUnifiedSourceFenceV1(tx, profileId, fence);
-      const currentDay = await loadDayInputs(tx, profileId, date);
+      const currentDay = await loadDayInputs(tx, profileId, date, episodes);
       if (stableSha256(currentDay.sourceLineage) !== stableSha256(day.sourceLineage)) {
         throw new PhysiologyV7ConcurrentSourceChangeError();
       }
@@ -326,6 +362,7 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
 export async function recordExperimentalGlycogenStateShadow(input: {
   date: string;
   profileId?: number;
+  onCandidateCommitted?: (date: string) => Promise<void>;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   const last = await prisma.dailyHealthData.findFirst({
@@ -338,5 +375,6 @@ export async function recordExperimentalGlycogenStateShadow(input: {
     profileId,
     fromDate: input.date,
     toDate: last.date,
+    onCandidateCommitted: async ({ date }) => input.onCandidateCommitted?.(date),
   });
 }

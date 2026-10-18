@@ -1,5 +1,5 @@
 /**
- * Version-controlled portable identities for the original supported catalog.
+ * Version-controlled portable identities for the supported catalog.
  * Display names participate only in the one-time database migration; model
  * code must use stableKey once it has been persisted.
  */
@@ -17,6 +17,20 @@ export const CANONICAL_EXERCISE_IDENTITIES = [
   { stableKey: "one_arm_concentration_curl", displayName: "Згинання однієї руки від коліна" },
   { stableKey: "incline_seated_rotating_dumbbell_curl", displayName: "Згинання рук з розворотом сидячи на похилій лаві" },
   { stableKey: "supported_dumbbell_wrist_curl", displayName: "Згинання кисті з гантеллю в упорі" },
+  { stableKey: "bulgarian_split_squat", displayName: "Болгарські присідання з упором задньої ноги на лаву" },
+  { stableKey: "forward_dumbbell_lunge", displayName: "Випади вперед" },
+  { stableKey: "goblet_squat", displayName: "Присідання з гантеллю в руках" },
+  { stableKey: "dumbbell_crunch", displayName: "Прямі скручування з гантеллю на прес" },
+  { stableKey: "dumbbell_russian_twist", displayName: "Бокові скручування з гантеллю на прес" },
+] as const;
+
+/** New entries whose anatomy is shown as coaching copy but lacks a v7 model group. */
+export const CANONICAL_EXERCISES_WITHOUT_V7_MAPPING = [
+  "bulgarian_split_squat",
+  "forward_dumbbell_lunge",
+  "goblet_squat",
+  "dumbbell_crunch",
+  "dumbbell_russian_twist",
 ] as const;
 
 export type CanonicalExerciseStableKey = (typeof CANONICAL_EXERCISE_IDENTITIES)[number]["stableKey"];

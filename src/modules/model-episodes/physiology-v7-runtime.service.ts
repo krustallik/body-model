@@ -1,5 +1,5 @@
 import { createUnavailablePhysiologyRuntimeStateV7, type PhysiologyRuntimeStateV7 } from "@/model/physiology-v7/daily-runtime-v7";
-import { rebuildPhysiologyRangeV7 } from "@/model/physiology-v7/rebuild-v7";
+import { rebuildPhysiologyRangeV7WithProgress } from "@/model/physiology-v7/rebuild-v7";
 import { calendarDayIndex } from "./model-calendar";
 import {
   physiologyV7RuntimeRepository,
@@ -24,6 +24,7 @@ export class PhysiologyV7RuntimeService {
     timeZone: string;
     historyFromDate?: string;
     initialState?: PhysiologyRuntimeStateV7;
+    onProgress?: () => Promise<void> | void;
   }) {
     calendarDayIndex(input.fromDate);
     calendarDayIndex(input.toDate);
@@ -36,11 +37,12 @@ export class PhysiologyV7RuntimeService {
       historyFromDate,
       timeZone: input.timeZone,
     });
-    const rebuild = rebuildPhysiologyRangeV7({
+    const rebuild = await rebuildPhysiologyRangeV7WithProgress({
       fromDate: input.fromDate,
       toDate: input.toDate,
       initialState: input.initialState ?? createUnavailablePhysiologyRuntimeStateV7(),
       sources,
+      onProgress: input.onProgress,
     });
     return {
       serviceVersion: PHYSIOLOGY_V7_REBUILD_SERVICE_VERSION,

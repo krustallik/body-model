@@ -5,7 +5,10 @@ import path from "node:path";
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[1-9][0-9]*$/;
-const MANIFEST_IDS = new Set(["active-energy-unified-v2", "unified-v4-republication-v1"]);
+const MANIFEST_IDS = new Set([
+  "active-energy-unified-v2", "unified-v4-republication-v1", "programless-workouts-health-sync-v1",
+  "training-mutation-ledger-refresh-queue-v1",
+]);
 const MARKER_NAME = "marker";
 const STATES = new Set([
   "ddl-starting", "ddl-started", "schema-applied", "app-ready", "v4-ready",
@@ -53,6 +56,9 @@ export function parseProductionReleaseMarker(text) {
     || !/^[A-Za-z0-9-]{16,80}$/.test(marker.authorizationId) || !DIGEST.test(marker.lineageDigest)
     || !new Set(["not-started", "started"]).has(marker.spawnState)) {
     throw new Error("release marker values are invalid");
+  }
+  if (marker.manifestId === "training-mutation-ledger-refresh-queue-v1" && marker.state === "forward-resume-armed") {
+    throw new Error("Training ledger markers do not support forward resume");
   }
   if (marker.state === "ddl-starting" && marker.spawnState !== "not-started") throw new Error("ddl-starting marker has an invalid spawn state");
   if (["ddl-started", "schema-applied", "app-ready", "v4-ready"].includes(marker.state) && marker.spawnState !== "started") {

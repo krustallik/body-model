@@ -8,6 +8,23 @@ import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
 
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string; setId: string }> },
+): Promise<Response> {
+  const routeParams = SessionSetParamsSchema.safeParse(await params);
+  if (!routeParams.success) return validationResponse(routeParams.error);
+
+  try {
+    const set = await trainingService.getSetForSession(routeParams.data.id, routeParams.data.setId);
+    return set
+      ? Response.json({ set })
+      : Response.json({ error: "not_found" }, { status: 404 });
+  } catch {
+    return trainingInternalError();
+  }
+}
+
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string; setId: string }> },
@@ -27,8 +44,7 @@ export async function PATCH(
       routeParams.data.setId,
       parsed.data,
     );
-    const { modelPublicationStatus, ...setDto } = set;
-    return Response.json({ set: setDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
+    return Response.json({ set });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }
@@ -42,10 +58,7 @@ export async function DELETE(
   if (!routeParams.success) return validationResponse(routeParams.error);
 
   try {
-    const result = await trainingService.deleteSet(routeParams.data.id, routeParams.data.setId);
-    if (result.modelPublicationStatus !== undefined) {
-      return Response.json({ deleted: true, modelPublicationStatus: result.modelPublicationStatus });
-    }
+    await trainingService.deleteSet(routeParams.data.id, routeParams.data.setId);
     return new Response(null, { status: 204 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

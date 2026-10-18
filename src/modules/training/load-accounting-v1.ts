@@ -36,6 +36,21 @@ const perSideExternalSchema = z.object({
   }
 });
 
+const perSideExternalPairSchema = z.object({
+  ...baseShape,
+  accountingKind: z.literal("external-per-implement-pair-per-side"),
+  resistanceType: z.literal("external"),
+  loadInput: z.literal("per-implement-kg"),
+  repsMeaning: z.literal("per-side"),
+}).strict().superRefine((config, context) => {
+  if (config.inventoryCount !== 2 || config.loadedSides !== 2) {
+    context.addIssue({ code: "custom", path: ["inventoryCount"], message: "paired per-side loading requires two implements and two loaded sides" });
+  }
+  if (config.execution === "simultaneous") {
+    context.addIssue({ code: "custom", path: ["execution"], message: "paired per-side loading is reserved for alternating/unilateral side-by-side execution" });
+  }
+});
+
 const perMovementPerImplementSchema = z.object({
   ...baseShape,
   accountingKind: z.literal("external-per-implement-per-movement"),
@@ -104,6 +119,7 @@ const bodyweightPerSideSchema = z.object({
 
 export const loadConfigV1Schema = z.discriminatedUnion("accountingKind", [
   perSideExternalSchema,
+  perSideExternalPairSchema,
   perMovementPerImplementSchema,
   completeSetupSchema,
   bandLoggedSideSchema,
@@ -235,6 +251,16 @@ function legacyPerSide(equipmentId = "dumbbell", setupId = "single-dumbbell"): L
   };
 }
 
+function legacyDumbbellPairPerSide(setupId: string): LoadConfigV1 {
+  return {
+    ...common(2, 2, "unilateral", "dumbbell", setupId),
+    accountingKind: "external-per-implement-pair-per-side",
+    resistanceType: "external",
+    loadInput: "per-implement-kg",
+    repsMeaning: "per-side",
+  };
+}
+
 function legacyDumbbellPair(execution: "simultaneous" | "alternating" = "simultaneous"): LoadConfigV1 {
   return {
     ...common(2, 2, execution, "dumbbell", "pair"),
@@ -242,6 +268,17 @@ function legacyDumbbellPair(execution: "simultaneous" | "alternating" = "simulta
     resistanceType: "external",
     loadInput: "per-implement-kg",
     repsMeaning: "per-side",
+  };
+}
+
+function legacySingleDumbbellPerMovement(setupId: string): LoadConfigV1 {
+  return {
+    ...common(1, 1, "simultaneous", "dumbbell", setupId),
+    accountingKind: "external-per-implement-per-movement",
+    resistanceType: "external",
+    loadInput: "per-implement-kg",
+    repsMeaning: "per-movement",
+    implementsPerMovement: 1,
   };
 }
 
@@ -276,7 +313,7 @@ function immutableConfig<T extends LoadConfigV1>(config: T): Readonly<T> {
   return Object.freeze(config);
 }
 
-/** Frozen identity-to-config map for the thirteen canonical historical exercises. */
+/** Frozen identity-to-config map for canonical exercises. */
 export const LEGACY_LOAD_CONFIGS_V1: Readonly<Record<
   CanonicalExerciseStableKey,
   Readonly<LoadConfigV1>
@@ -304,6 +341,11 @@ export const LEGACY_LOAD_CONFIGS_V1: Readonly<Record<
   one_arm_concentration_curl: immutableConfig(legacyPerSide()),
   incline_seated_rotating_dumbbell_curl: immutableConfig(legacyDumbbellPair("alternating")),
   supported_dumbbell_wrist_curl: immutableConfig(legacyPerSide()),
+  bulgarian_split_squat: immutableConfig(legacyDumbbellPairPerSide("split-squat-dumbbell-pair")),
+  forward_dumbbell_lunge: immutableConfig(legacyDumbbellPairPerSide("lunge-dumbbell-pair")),
+  goblet_squat: immutableConfig(legacySingleDumbbellPerMovement("goblet-hold")),
+  dumbbell_crunch: immutableConfig(legacySingleDumbbellPerMovement("crunch-load")),
+  dumbbell_russian_twist: immutableConfig(legacySingleDumbbellPerMovement("russian-twist-load")),
 });
 
 export type ConfigProvenanceV1 = {
@@ -707,7 +749,9 @@ function effectiveConfig(
     merged.accountingKind = merged.loadInput === "complete-setup-kg"
       ? "external-complete-setup-per-movement"
       : merged.repsMeaning === "per-side"
-        ? "external-per-implement-per-side"
+        ? config.accountingKind === "external-per-implement-pair-per-side" && merged.inventoryCount === 2 && merged.loadedSides === 2
+          ? "external-per-implement-pair-per-side"
+          : "external-per-implement-per-side"
         : "external-per-implement-per-movement";
   } else if (config.resistanceType === "band-nominal") {
     merged.accountingKind = merged.repsMeaning === "per-side"
@@ -878,6 +922,14 @@ function calculateLoadAccountingCoreV1(
     effectiveMultiplier: number,
     additionalProvenance?: ConfigProvenanceV1,
   ): void {
+    const category = targetFor(target).category;
+    // Preserve historical raw overrides, but never label an unrepresentable
+    // additional/assistance load or aggregate as available (JSON serializes Infinity as null).
+    if ((category === "additionalLoad" || category === "assistanceLoad")
+        && (!Number.isFinite(value) || !Number.isFinite(target.total + value))) {
+      omitWithBreakdown(target, "invalid-load", row, config, provenance);
+      return;
+    }
     contribute(target, value, provenance);
     emit(row, target, {
       value, reason: null, config, effectiveMultiplier, provenance, additionalProvenance,
@@ -987,7 +1039,9 @@ function calculateLoadAccountingCoreV1(
           ? 1
           : config.repsMeaning === "per-movement" && "implementsPerMovement" in config
             ? config.implementsPerMovement
-            : 1;
+            : config.accountingKind === "external-per-implement-pair-per-side"
+              ? config.inventoryCount
+              : 1;
         if (row) row.mechanics = {
           inventoryCount: config.inventoryCount,
           loadedSides: config.loadedSides,

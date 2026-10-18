@@ -14,4 +14,10 @@ describe("stepper workout input", () => {
     expect(CreateStepperWorkoutSchema.safeParse({ startAt: "2042-03-15T08:00:00Z", durationMinutes: 20, activeEnergyKcal: 300 }).success).toBe(false);
     expect(StepperWorkoutIdParamsSchema.safeParse({ id: "0" }).success).toBe(false);
   });
+
+  it("accepts PostgreSQL Int boundary and rejects values that would wedge a durable create", () => {
+    const base = { startAt: "2042-03-15T08:00:00.000Z", durationMinutes: 20 };
+    expect(CreateStepperWorkoutSchema.safeParse({ ...base, manualStepCount: 2_147_483_647 }).success).toBe(true);
+    expect(CreateStepperWorkoutSchema.safeParse({ ...base, manualStepCount: 2_147_483_648 }).success).toBe(false);
+  });
 });

@@ -23,6 +23,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
   matchedDiarySession: { id: number } | null;
 }> = []) {
   const transaction = {
+    $queryRaw: vi.fn().mockResolvedValue([]),
     $executeRaw: vi.fn().mockResolvedValue(0),
     physiologyV7Lifecycle: {
       upsert: vi.fn().mockResolvedValue({

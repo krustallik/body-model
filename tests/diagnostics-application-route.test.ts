@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const services = vi.hoisted(() => ({ getModelDiagnostics: vi.fn() }));
+const services = vi.hoisted(() => {
+  class TrainingRefreshPendingDiagnosticsError extends Error {}
+  return { getModelDiagnostics: vi.fn(), TrainingRefreshPendingDiagnosticsError };
+});
 vi.mock("@/modules/model-diagnostics/model-diagnostics.service", () => services);
 
 import { GET } from "@/app/api/diagnostics/route";
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
+import { TrainingRefreshPendingDiagnosticsError } from "@/modules/model-diagnostics/model-diagnostics.service";
 
 describe("diagnostics application route", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -23,6 +27,13 @@ describe("diagnostics application route", () => {
     const response = await GET();
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "diagnostics_failed" });
+  });
+
+  it("fails closed when Training publication is pending", async () => {
+    services.getModelDiagnostics.mockRejectedValueOnce(new TrainingRefreshPendingDiagnosticsError());
+    const response = await GET();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "training_refresh_pending" });
   });
 });
 

@@ -61,6 +61,7 @@ function database() {
   } = { events: [], aliases: [], candidates: [], revisions: [], nextEventId: 1, forceCasMiss: false };
 
   const tx = {
+    $queryRaw: vi.fn(async () => []),
     $executeRaw: vi.fn(async () => 0),
     activeEnergyEventAlias: {
       findMany: vi.fn(async (query: AliasLookup) => {

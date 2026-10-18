@@ -83,7 +83,7 @@ export function normalizeStaticPublicBodyMapManifestV1(source: StaticPublicBodyM
   const expectedGroupIds = BODY_MAP_GROUP_CATALOG_V2.map(({ id }) => id).sort();
   const actualGroupIds = source.bodyMapGroups.map(({ groupId }) => groupId).sort();
   if (source.schemaVersion !== "2.0.0") throw new Error("Unsupported static Body Map manifest version.");
-  if (asset.mediaType !== "model/gltf-binary" || !asset.url.startsWith("/body-map/bodyparts3d-v3/") || asset.url.includes("..")) {
+  if (asset.mediaType !== "model/gltf-binary" || !asset.url.startsWith("/body-map/bodyparts3d-v3/") || asset.url.includes("..") || /[?#]/.test(asset.url)) {
     throw new Error("Body Map production delivery must use the versioned public GLB path.");
   }
   if (!/^[a-f0-9]{64}$/i.test(asset.sha256) || !Number.isSafeInteger(asset.byteLength) || asset.byteLength <= 0) {
@@ -101,11 +101,12 @@ export function normalizeStaticPublicBodyMapManifestV1(source: StaticPublicBodyM
   }
 
   const trainingExposure = unavailableTrainingExposureV1(actualGroupIds);
+  const versionedAssetUrl = `${asset.url}?v=${asset.sha256.toLowerCase()}`;
   const pairs = source.bodyMapGroups.flatMap(({ groupId, subregions }) => subregions.map(({ anatomyId }) => ({ anatomyId, groupId })));
   const primaryPickGroupByAnatomyId = Object.fromEntries(source.visualIdentity.supportedRegions.map(({ anatomyId, primaryPickGroupId }) => [anatomyId, primaryPickGroupId]));
   const runtimeAsset = {
     assetId: asset.assetId,
-    path: asset.url,
+    path: versionedAssetUrl,
     sha256: asset.sha256,
     byteLength: asset.byteLength,
     meshNodeCount: asset.selectableMeshCount + asset.contextMeshCount,
@@ -141,7 +142,7 @@ export function normalizeStaticPublicBodyMapManifestV1(source: StaticPublicBodyM
       contextMeshCount: asset.contextMeshCount,
     },
     viewerAsset: {
-      path: asset.url,
+      path: versionedAssetUrl,
       sha256: asset.sha256,
       status: source.release,
       mayClaimMusclePicking: true,

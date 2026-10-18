@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { ProgramEditorClient } from "../../program-editor";
 
 export const metadata: Metadata = {
@@ -14,7 +15,15 @@ export default async function EditProgramPage({ params }: PageProps) {
   const { id } = await params;
   const programId = Number(id);
   if (!Number.isFinite(programId) || programId < 1) {
-    return <ProgramEditorClient />;
+    return (
+      <Suspense fallback={<p role="status">Loading program editor…</p>}>
+        <ProgramEditorClient />
+      </Suspense>
+    );
   }
-  return <ProgramEditorClient programId={programId} />;
+  return (
+    <Suspense fallback={<p role="status">Loading program editor…</p>}>
+      <ProgramEditorClient programId={programId} />
+    </Suspense>
+  );
 }

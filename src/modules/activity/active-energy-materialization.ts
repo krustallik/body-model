@@ -8,10 +8,11 @@ import { stepperMassCandidateDependsOnReplayV1 } from "@/model/activity/stepper-
 import { isProductionGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import type { ActiveEnergyConvergenceOwnerToken } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { recordExperimentalStrengthEnergyShadowBySessionId } from "@/modules/training/experimental-strength-energy-shadow.service";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 
-type ResolutionSnapshot = {
+export type ActiveEnergyResolutionSnapshotV1 = {
   id: number;
   modelDate: string;
   isStale: boolean;
@@ -19,7 +20,7 @@ type ResolutionSnapshot = {
   resolutionRevision: number;
 };
 
-async function readResolutionSnapshot(profileId: number): Promise<ResolutionSnapshot[]> {
+async function readResolutionSnapshot(profileId: number): Promise<ActiveEnergyResolutionSnapshotV1[]> {
   return prisma.activeEnergyCanonicalEvent.findMany({
     where: { profileId, eventKind: { in: ["strength", "stepper"] }, supersededByEventId: null },
     select: { id: true, modelDate: true, isStale: true, currentResolutionFingerprint: true, resolutionRevision: true },
@@ -33,7 +34,10 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function changedResolutionDates(before: readonly ResolutionSnapshot[], after: readonly ResolutionSnapshot[]): string[] {
+export function changedResolutionDatesV1(
+  before: readonly ActiveEnergyResolutionSnapshotV1[],
+  after: readonly ActiveEnergyResolutionSnapshotV1[],
+): string[] {
   const oldById = new Map(before.map((row) => [row.id, row]));
   const newById = new Map(after.map((row) => [row.id, row]));
   const dates: string[] = [];
@@ -44,24 +48,37 @@ function changedResolutionDates(before: readonly ResolutionSnapshot[], after: re
         || oldRow.isStale !== newRow.isStale
         || oldRow.currentResolutionFingerprint !== newRow.currentResolutionFingerprint
         || oldRow.resolutionRevision !== newRow.resolutionRevision) {
-      const date = newRow?.modelDate ?? oldRow?.modelDate;
-      if (date) dates.push(date);
+      // A moved event invalidates both sides of the relocation: the old date
+      // loses its event and the new date gains it.
+      if (oldRow?.modelDate) dates.push(oldRow.modelDate);
+      if (newRow?.modelDate) dates.push(newRow.modelDate);
     }
   }
   return [...new Set(dates)].sort();
 }
 
-export async function invalidateActiveEnergyResolutionDatesV1(profileId: number, dates: readonly string[]): Promise<void> {
+export async function invalidateActiveEnergyResolutionDatesV1(
+  profileId: number,
+  dates: readonly string[],
+  activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken,
+): Promise<void> {
   const earliest = [...dates].sort()[0];
   if (!earliest) return;
   await prisma.$transaction(async (tx) => {
-    await new PhysiologyV7PersistenceRepository(tx).invalidate(profileId, earliest);
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(profileId);
+    if (activeEnergyConvergenceOwner) await lifecycle.assertActiveEnergyConvergenceOwner(profileId, activeEnergyConvergenceOwner);
+    await lifecycle.invalidate(profileId, earliest);
   });
 }
 
 export async function materializeActiveEnergyCandidatesV1(
   profileId = 1,
-  options: { onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void } = {},
+  options: {
+    activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
+    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
+    onCandidateProcessed?: () => void | Promise<void>;
+  } = {},
 ): Promise<{
   stepperWorkoutIds: number[];
   strengthSessionIds: number[];
@@ -85,15 +102,18 @@ export async function materializeActiveEnergyCandidatesV1(
     await recordExperimentalStrengthEnergyShadowBySessionId({
       sessionId: session.id,
       profileId,
+      ...(options.activeEnergyConvergenceOwner === undefined ? {} : { activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner }),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
+    await options.onCandidateProcessed?.();
   }
   const strengthWorkoutIds = workouts
     .filter((workout) => workout.matchedDiarySession === null
       && canonicalizeWorkoutType(workout.type).classification === "traditional-strength-training")
     .map((workout) => workout.id);
   for (const workoutId of strengthWorkoutIds) {
-    await recordUnmatchedStrengthWorkoutV1({ workoutId, profileId });
+    await recordUnmatchedStrengthWorkoutV1({ workoutId, profileId, activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner });
+    await options.onCandidateProcessed?.();
   }
   const stepperWorkoutIds = workouts
     .filter((workout) => canonicalizeWorkoutType(workout.type).classification === "stair-climbing")
@@ -102,18 +122,24 @@ export async function materializeActiveEnergyCandidatesV1(
     await recordExperimentalStepperActiveEnergyShadow({
       workoutId,
       profileId,
+      ...(options.activeEnergyConvergenceOwner === undefined ? {} : { activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner }),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
+    await options.onCandidateProcessed?.();
   }
   return {
     stepperWorkoutIds,
     strengthSessionIds: sessions.map(({ id }) => id),
     strengthWorkoutIds,
-    changedDates: changedResolutionDates(before, await readResolutionSnapshot(profileId)),
+    changedDates: changedResolutionDatesV1(before, await readResolutionSnapshot(profileId)),
   };
 }
 
-async function recordUnmatchedStrengthWorkoutV1(input: { workoutId: number; profileId: number }): Promise<void> {
+async function recordUnmatchedStrengthWorkoutV1(input: {
+  workoutId: number;
+  profileId: number;
+  activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
+}): Promise<void> {
   const workout = await prisma.workout.findFirst({
     where: { id: input.workoutId, hiddenFromHistory: false, matchedDiarySession: null },
     select: {
@@ -208,6 +234,11 @@ async function recordUnmatchedStrengthWorkoutV1(input: { workoutId: number; prof
     return true;
   };
   await prisma.$transaction(async (tx) => {
+    const persistence = new PhysiologyV7PersistenceRepository(tx);
+    await persistence.lockProfile(input.profileId);
+    if (input.activeEnergyConvergenceOwner) {
+      await persistence.assertActiveEnergyConvergenceOwner(input.profileId, input.activeEnergyConvergenceOwner);
+    }
     await persistActiveEnergyCanonicalResolutionV1(tx, {
       profileId: input.profileId,
       logicalEventKey: `workout:${workout.id}`,
@@ -229,14 +260,18 @@ export async function refreshStepperCandidatesV1(profileId: number, workoutIds: 
   for (const workoutId of workoutIds) {
     await recordExperimentalStepperActiveEnergyShadow({ workoutId, profileId });
   }
-  return changedResolutionDates(before, await readResolutionSnapshot(profileId));
+  return changedResolutionDatesV1(before, await readResolutionSnapshot(profileId));
 }
 
 /** Refresh only active-energy candidates whose values can depend on replayed days. */
 export async function refreshCandidatesAfterProductionV1(
   profileId: number,
   replayFromDate: string,
-  options: { onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void } = {},
+  options: {
+    activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
+    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
+    onCandidateProcessed?: () => void | Promise<void>;
+  } = {},
 ): Promise<string[]> {
   const before = await readResolutionSnapshot(profileId);
   const [episodes, sessions, workouts] = await Promise.all([
@@ -268,33 +303,26 @@ export async function refreshCandidatesAfterProductionV1(
       orderBy: { id: "asc" },
     }),
   ]);
-  const aliases = sessions.length === 0 ? [] : await prisma.activeEnergyEventAlias.findMany({
-    where: {
-      profileId,
-      sourceType: "strength-session",
-      sourceId: { in: sessions.map((session) => String(session.id)) },
-    },
-    select: { sourceId: true, event: { select: { currentSource: true } } },
-  });
-  const strengthSourceBySessionId = new Map(aliases.map((row) => [row.sourceId, row.event.currentSource]));
   for (const session of sessions) {
     const eventInstant = session.matchedWorkout?.startAt
       ?? session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
     const modelDate = episodeTimeContextForInstantV1(episodes, eventInstant).date;
-    const currentSource = strengthSourceBySessionId.get(String(session.id));
-    if (modelDate < replayFromDate || currentSource === "bodycast-strength-estimate") continue;
+    if (modelDate < replayFromDate) continue;
     await recordExperimentalStrengthEnergyShadowBySessionId({
       sessionId: session.id,
       profileId,
+      ...(options.activeEnergyConvergenceOwner === undefined ? {} : { activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner }),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
+    await options.onCandidateProcessed?.();
   }
   for (const workout of workouts) {
     const classification = canonicalizeWorkoutType(workout.type).classification;
     const modelDate = episodeTimeContextForInstantV1(episodes, workout.startAt).date;
     if (classification === "traditional-strength-training" && workout.matchedDiarySession === null
         && modelDate >= replayFromDate) {
-      await recordUnmatchedStrengthWorkoutV1({ workoutId: workout.id, profileId });
+      await recordUnmatchedStrengthWorkoutV1({ workoutId: workout.id, profileId, activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner });
+      await options.onCandidateProcessed?.();
       continue;
     }
     if (classification !== "stair-climbing") continue;
@@ -310,8 +338,10 @@ export async function refreshCandidatesAfterProductionV1(
     await recordExperimentalStepperActiveEnergyShadow({
       workoutId: workout.id,
       profileId,
+      ...(options.activeEnergyConvergenceOwner === undefined ? {} : { activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner }),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
+    await options.onCandidateProcessed?.();
   }
-  return changedResolutionDates(before, await readResolutionSnapshot(profileId));
+  return changedResolutionDatesV1(before, await readResolutionSnapshot(profileId));
 }

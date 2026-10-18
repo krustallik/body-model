@@ -9,6 +9,7 @@ import {
   physiologyV7PersistenceRepository,
 } from "./physiology-v7-persistence.repository";
 import { createUnavailablePhysiologyRuntimeStateV7, type PhysiologyRuntimeStateV7 } from "@/model/physiology-v7/daily-runtime-v7";
+import { assertTrainingRefreshWorkerLeaseInTransaction } from "@/modules/training/training-refresh-worker-context";
 
 export const PHYSIOLOGY_V7_PERSISTED_REBUILD_VERSION =
   "bodycast-physiology-v7-persisted-rebuild-1" as const;
@@ -27,6 +28,7 @@ export class PhysiologyV7PersistedRebuildService {
     historyFromDate?: string;
     initialState?: PhysiologyRuntimeStateV7;
     beforePromotion?: () => Promise<void>;
+    onProgress?: () => Promise<void> | void;
   }) {
     const profileId = input.profileId ?? 1;
     const prepared = await prisma.$transaction(async (tx) => {
@@ -45,9 +47,18 @@ export class PhysiologyV7PersistedRebuildService {
         addCalendarDays(effectiveFromDate, -1),
       );
       if (predecessor.status !== "current" || predecessor.result === null) {
-        throw new Error("v7 rebuild has no compatible current predecessor");
+        // Some callers deliberately provide a new explicit origin state
+        // (notably the diagnostic V7 shadow rebuild). If the stale cache
+        // starts before their requested range and no predecessor is current,
+        // replay from that stale boundary with the caller's seed. Never infer
+        // a predecessor or silently do this when the caller supplied none.
+        if (input.initialState === undefined) {
+          throw new Error("v7 rebuild has no compatible current predecessor");
+        }
+        initialState = input.initialState;
+      } else {
+        initialState = predecessor.result.resultingState;
       }
-      initialState = predecessor.result.resultingState;
     }
     const rebuild = await this.runtime.rebuildProfileRange({
       profileId,
@@ -59,18 +70,30 @@ export class PhysiologyV7PersistedRebuildService {
         : effectiveFromDate,
       timeZone: input.timeZone,
       initialState,
+      onProgress: input.onProgress,
     });
     await input.beforePromotion?.();
     await prisma.$transaction(async (tx) => {
       const repository = new PhysiologyV7PersistenceRepository(tx);
-      await repository.lockProfile(profileId);
-      await repository.persistRange({
+      // The generation remains unpublished while candidate rows are written.
+      // Acquire the source/worker fence only after these private upserts, so a
+      // large range cannot hold up Training CRUD or block worker heartbeats.
+      const { firstRebuiltDate } = await repository.persistRangeCandidates({
         profileId,
         expectedGeneration: prepared.invalidationGeneration,
         rebuiltThroughDate: input.toDate,
         days: rebuild.days,
       });
-    });
+      await repository.lockProfile(profileId);
+      await assertTrainingRefreshWorkerLeaseInTransaction(tx, profileId);
+      await repository.promotePersistedRange({
+        profileId,
+        expectedGeneration: prepared.invalidationGeneration,
+        rebuiltThroughDate: input.toDate,
+        firstRebuiltDate,
+      });
+      await assertTrainingRefreshWorkerLeaseInTransaction(tx, profileId);
+    }, { maxWait: 10_000, timeout: 30_000 });
     return {
       persistedRebuildVersion: PHYSIOLOGY_V7_PERSISTED_REBUILD_VERSION,
       effectiveFromDate,

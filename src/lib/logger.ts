@@ -34,6 +34,24 @@ export function errorDiagnosticFields(error: unknown): SafeFields {
     fields.errorCode = code;
   }
 
+  // Prisma P2028 covers several distinct transaction failures. Emit only a
+  // bounded classification and numeric timeout values; never include the raw
+  // engine message, which may contain database details.
+  if (code === "P2028") {
+    const message = error.message;
+    fields.transactionFailureKind = /Unable to start a transaction/i.test(message)
+      ? "transaction-start-timeout"
+      : /Transaction already closed/i.test(message)
+        ? "transaction-expired-or-closed"
+        : /Transaction not found/i.test(message)
+          ? "transaction-not-found"
+          : "transaction-api-error";
+    const timeoutMs = message.match(/timeout for this transaction was\s+(\d+)\s*ms/i)?.[1];
+    const elapsedMs = message.match(/(\d+)\s*ms passed since the start/i)?.[1];
+    if (timeoutMs !== undefined) fields.transactionTimeoutMs = Number(timeoutMs);
+    if (elapsedMs !== undefined) fields.transactionElapsedMs = Number(elapsedMs);
+  }
+
   const stackLines = error.stack?.slice(0, 16_384).split("\n").slice(1, 33) ?? [];
   for (const stackLine of stackLines) {
     const frame = stackLine.match(/(?:\(|\s)([^()\s]{1,256}):(\d{1,8}):(\d{1,8})\)?$/);

@@ -228,11 +228,15 @@ describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreS
         sessionRevision: loaded!.revision,
         matchedWorkoutId: workout.id,
         occurrenceStartAt: workout.startAt.toISOString(),
-        program: {
-          programId: loaded!.programId,
-          programVersionId: loaded!.programVersionId,
-          programVersionNumber: loaded!.programVersionNumber,
-        },
+        program: loaded!.programId === null
+          || loaded!.programVersionId === null
+          || loaded!.programVersionNumber === null
+          ? null
+          : {
+            programId: loaded!.programId,
+            programVersionId: loaded!.programVersionId,
+            programVersionNumber: loaded!.programVersionNumber,
+          },
         dose,
       }],
     });

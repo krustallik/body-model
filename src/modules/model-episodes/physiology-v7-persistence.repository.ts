@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import type { PhysiologyDayResultV7 } from "@/model/physiology-v7/daily-runtime-v7";
 import {
@@ -10,6 +11,17 @@ import {
   versionsAreCurrent,
 } from "./physiology-v7-persistence";
 import { addCalendarDays } from "./model-calendar";
+import {
+  getHealthSyncRefreshWorkerLease,
+  HealthSyncRefreshWorkerLeaseLostError,
+} from "@/modules/health/health-sync-worker-context";
+import {
+  getTrainingRefreshWorkerLease,
+  TrainingRefreshWorkerLeaseLostError,
+  assertTrainingRefreshWorkerLeaseInTransaction,
+} from "@/modules/training/training-refresh-worker-context";
+
+export const PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE = 927001;
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 type LifecycleInvalidationState = {
@@ -20,6 +32,12 @@ type LifecycleInvalidationState = {
   productionStaleFromDate: string | null;
   productionPublishedGeneration: number | null;
   unifiedPublishedGeneration: number | null;
+};
+
+export type ActiveEnergyConvergenceOwnerToken = {
+  revision: number;
+  fromDate: string;
+  ownerToken: string;
 };
 
 function isPrismaClient(client: DbClient): client is PrismaClient {
@@ -92,10 +110,17 @@ export async function persistUnifiedShadowCandidateV1(input: {
 }): Promise<boolean> {
   return input.client.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
-    await lifecycle.lockProfile(input.profileId);
+    // Candidate rows are private to this transaction. Keep the source-writer
+    // profile lock out of the potentially long candidate upsert loop; take it
+    // only at the publication fence below. A source commit during persistence
+    // changes the lifecycle CAS token and rolls back these candidates.
     await assertUnifiedSourceFenceV1(tx, input.profileId, input.expectedFence);
     const changed = await input.persist(tx);
+    await lifecycle.lockProfile(input.profileId);
+    await assertTrainingRefreshWorkerLeaseInTransaction(tx, input.profileId);
+    await assertUnifiedSourceFenceV1(tx, input.profileId, input.expectedFence);
     if (changed) await lifecycle.invalidateUnifiedPublication(input.profileId);
+    await assertTrainingRefreshWorkerLeaseInTransaction(tx, input.profileId);
     return changed;
   });
 }
@@ -150,7 +175,43 @@ export class PhysiologyV7PersistenceRepository {
   }
 
   async lockProfile(profileId: number): Promise<void> {
-    await this.client.$executeRaw`SELECT pg_advisory_xact_lock(927001, CAST(${profileId} AS integer))`;
+    const workerLease = getHealthSyncRefreshWorkerLease();
+    const trainingWorkerLease = getTrainingRefreshWorkerLease();
+    if (workerLease && (workerLease.profileId !== profileId || isPrismaClient(this.client))) {
+      throw new HealthSyncRefreshWorkerLeaseLostError();
+    }
+    if (trainingWorkerLease && (trainingWorkerLease.profileId !== profileId || isPrismaClient(this.client))) {
+      throw new TrainingRefreshWorkerLeaseLostError();
+    }
+    // Recovery takes this same transaction-scoped profile lock while checking
+    // Health queue and Unified currentness, then holds it through its effect.
+    // Worker mutations additionally validate and row-lock their exact durable
+    // lease through the lifecycle mutation.
+    await this.client.$executeRaw`SELECT pg_advisory_xact_lock(CAST(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))`;
+    if (workerLease) {
+      const ownedJobs = await this.client.$queryRaw<Array<{ profileId: number }>>`
+        SELECT "profileId"
+        FROM "HealthSyncRefreshJob"
+        WHERE "profileId" = ${workerLease.profileId}
+          AND "requestedGeneration" = ${workerLease.requestedGeneration}
+          AND "leaseToken" = ${workerLease.leaseToken}
+          AND "leaseUntil" > ${new Date()}
+        FOR UPDATE
+      `;
+      if (ownedJobs.length !== 1) throw new HealthSyncRefreshWorkerLeaseLostError();
+    }
+    if (trainingWorkerLease) {
+      const ownedJobs = await this.client.$queryRaw<Array<{ profileId: number }>>`
+        SELECT "profileId"
+        FROM "TrainingRefreshJob"
+        WHERE "profileId" = ${trainingWorkerLease.profileId}
+          AND "requestedGeneration" = ${trainingWorkerLease.requestedGeneration}
+          AND "leaseToken" = ${trainingWorkerLease.leaseToken}
+          AND "leaseUntil" > clock_timestamp()
+        FOR UPDATE
+      `;
+      if (ownedJobs.length !== 1) throw new TrainingRefreshWorkerLeaseLostError();
+    }
   }
 
   /**
@@ -175,7 +236,7 @@ export class PhysiologyV7PersistenceRepository {
   async blockUnifiedPublication(input: {
     profileId: number;
     fromDate: string;
-    source: "health" | "training" | "day" | "stepper";
+    source: "health" | "training" | "day" | "stepper" | "active_energy";
     sourceKey: string;
   }): Promise<void> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate) || input.sourceKey.length < 1 || input.sourceKey.length > 100) {
@@ -202,7 +263,7 @@ export class PhysiologyV7PersistenceRepository {
 
   async readUnifiedPublicationBlockToken(input: {
     profileId: number;
-    source: "health" | "training" | "day" | "stepper";
+    source: "health" | "training" | "day" | "stepper" | "active_energy";
     sourceKey: string;
   }): Promise<{ revision: number; fromDate: string } | null> {
     return this.client.unifiedPublicationBlock.findUnique({
@@ -287,7 +348,7 @@ export class PhysiologyV7PersistenceRepository {
   /** A retry clears only the exact durable source operation it fully reprocessed. */
   async clearUnifiedPublicationBlock(input: {
     profileId: number;
-    source: "health" | "training" | "day" | "stepper";
+    source: "health" | "training" | "day" | "stepper" | "active_energy";
     sourceKey: string;
     expectedRevision: number;
     expectedFromDate: string;
@@ -301,6 +362,108 @@ export class PhysiologyV7PersistenceRepository {
       });
       if (changed.count > 0) await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
       return changed.count === 1;
+    });
+  }
+
+  /**
+   * Keep production readers stale throughout Active Energy feedback replay.
+   * This durable block is separate from the production generation so internal
+   * candidate passes can still read the just-committed production rows.
+   */
+  async beginActiveEnergyConvergence(input: { profileId: number; fromDate: string }): Promise<ActiveEnergyConvergenceOwnerToken> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate)) throw new Error("Active Energy convergence date is malformed");
+    const ownerToken = randomUUID();
+    return this.withProfileLock(input.profileId, async (client) => {
+      const rows = await client.$queryRaw<Array<{ revision: number; fromDate: string }>>`
+        INSERT INTO "UnifiedPublicationBlock" (
+          "profileId", "source", "sourceKey", "fromDate", "revision", "ownerToken", "ownerLeaseUntil", "updatedAt", "createdAt"
+        ) VALUES (
+          ${input.profileId}, 'active_energy', 'convergence', ${input.fromDate}, 1, ${ownerToken},
+          clock_timestamp() + INTERVAL '120 seconds', clock_timestamp(), clock_timestamp()
+        )
+        ON CONFLICT ("profileId", "source", "sourceKey") DO UPDATE SET
+          "fromDate" = LEAST("UnifiedPublicationBlock"."fromDate", EXCLUDED."fromDate"),
+          "revision" = "UnifiedPublicationBlock"."revision" + 1,
+          "ownerToken" = EXCLUDED."ownerToken",
+          "ownerLeaseUntil" = clock_timestamp() + INTERVAL '120 seconds',
+          "updatedAt" = clock_timestamp()
+        RETURNING "revision", "fromDate"
+      `;
+      const block = rows[0];
+      if (!block) throw new Error("Active Energy convergence fence was not persisted");
+      await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+      return { ...block, ownerToken };
+    });
+  }
+
+  async renewActiveEnergyConvergence(input: {
+    profileId: number;
+    owner: ActiveEnergyConvergenceOwnerToken;
+  }): Promise<void> {
+    const renewed = await this.withProfileLock(input.profileId, async (client) => client.$executeRaw`
+      UPDATE "UnifiedPublicationBlock"
+      SET "ownerLeaseUntil" = clock_timestamp() + INTERVAL '120 seconds',
+          "updatedAt" = clock_timestamp()
+      WHERE "profileId" = ${input.profileId}
+        AND "source" = 'active_energy'
+        AND "sourceKey" = 'convergence'
+        AND "revision" = ${input.owner.revision}
+        AND "fromDate" = ${input.owner.fromDate}
+        AND "ownerToken" = ${input.owner.ownerToken}
+        AND "ownerLeaseUntil" > clock_timestamp()
+    `);
+    if (renewed !== 1) throw new Error("Active Energy convergence owner lease was lost");
+  }
+
+  async assertActiveEnergyConvergenceOwner(
+    profileId: number,
+    owner: ActiveEnergyConvergenceOwnerToken,
+  ): Promise<void> {
+    const rows = await this.client.$queryRaw<Array<{ owned: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM "UnifiedPublicationBlock"
+        WHERE "profileId" = ${profileId}
+          AND "source" = 'active_energy'
+          AND "sourceKey" = 'convergence'
+          AND "revision" = ${owner.revision}
+          AND "fromDate" = ${owner.fromDate}
+          AND "ownerToken" = ${owner.ownerToken}
+          AND "ownerLeaseUntil" > clock_timestamp()
+      ) AS owned
+    `;
+    if (rows[0]?.owned !== true) throw new Error("Active Energy convergence owner lease was lost");
+  }
+
+  /** Clear only after a stable pass, with source generation and fence CAS. */
+  async finishActiveEnergyConvergence(input: {
+    profileId: number;
+    expectedGeneration: number;
+    expectedRevision: number;
+    expectedFromDate: string;
+    expectedOwnerToken: string;
+  }): Promise<boolean> {
+    return this.withProfileLock(input.profileId, async (client) => {
+      const lifecycle = await client.physiologyV7Lifecycle.findUnique({
+        where: { profileId: input.profileId },
+        select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
+      });
+      if (!lifecycle
+          || lifecycle.invalidationGeneration !== input.expectedGeneration
+          || lifecycle.productionPublishedGeneration !== input.expectedGeneration
+          || lifecycle.productionStaleFromDate !== null) return false;
+      const deleted = await client.$executeRaw`
+        DELETE FROM "UnifiedPublicationBlock"
+        WHERE "profileId" = ${input.profileId}
+          AND "source" = 'active_energy'
+          AND "sourceKey" = 'convergence'
+          AND "revision" = ${input.expectedRevision}
+          AND "fromDate" = ${input.expectedFromDate}
+          AND "ownerToken" = ${input.expectedOwnerToken}
+          AND "ownerLeaseUntil" > clock_timestamp()
+      `;
+      if (deleted !== 1) return false;
+      await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+      return true;
     });
   }
 
@@ -383,7 +546,11 @@ export class PhysiologyV7PersistenceRepository {
   async publishProduction(input: {
     profileId: number;
     expectedGeneration: number;
+    convergenceOwner?: ActiveEnergyConvergenceOwnerToken;
   }): Promise<void> {
+    if (input.convergenceOwner) {
+      await this.assertActiveEnergyConvergenceOwner(input.profileId, input.convergenceOwner);
+    }
     const result = await this.client.physiologyV7Lifecycle.updateMany({
       where: { profileId: input.profileId, invalidationGeneration: input.expectedGeneration },
       data: {
@@ -395,22 +562,34 @@ export class PhysiologyV7PersistenceRepository {
   }
 
   async readRange(profileId: number, fromDate: string, toDate: string) {
-    const [lifecycle, rows] = await Promise.all([
-      this.client.physiologyV7Lifecycle.findUnique({ where: { profileId } }),
-      this.client.physiologyV7DailyResult.findMany({
-        where: { profileId, date: { gte: fromDate, lte: toDate } },
-        orderBy: { date: "asc" },
-      }),
-    ]);
-    const lifecycleCompatible = lifecycle === null || versionsAreCurrent(lifecycle);
+    // Lifecycle and daily rows are one publication snapshot. Separate
+    // READ COMMITTED statements can straddle an atomic publisher commit and
+    // pair the old daily rows with the new lifecycle (or vice versa).
+    const snapshots = await this.client.$queryRaw<Array<{
+      daily: Prisma.JsonValue;
+      lifecycle: Prisma.JsonValue | null;
+    }>>`
+      SELECT to_jsonb(daily) AS daily, to_jsonb(lifecycle) AS lifecycle
+      FROM "PhysiologyV7DailyResult" AS daily
+      LEFT JOIN "PhysiologyV7Lifecycle" AS lifecycle
+        ON lifecycle."profileId" = daily."profileId"
+      WHERE daily."profileId" = ${profileId}
+        AND daily."date" >= ${fromDate}
+        AND daily."date" <= ${toDate}
+      ORDER BY daily."date" ASC
+    `;
+    const rows = snapshots.map(({ daily }) => daily as Record<string, unknown>);
+    const lifecycle = snapshots[0]?.lifecycle as Record<string, unknown> | null | undefined;
+    const lifecycleCompatible = lifecycle == null || versionsAreCurrent(lifecycle);
     return rows.map((row) => {
       const compatible = versionsAreCurrent(row);
+      const date = row.date as string;
       const stale = !compatible || !lifecycleCompatible || (lifecycle?.staleFromDate !== null
-        && lifecycle?.staleFromDate !== undefined && row.date >= lifecycle.staleFromDate);
+        && lifecycle?.staleFromDate !== undefined && date >= lifecycle.staleFromDate);
       return {
         status: stale ? "stale" as const : "current" as const,
-        date: row.date,
-        resultFingerprint: row.resultFingerprint,
+        date,
+        resultFingerprint: row.resultFingerprint as string,
         result: deserializePhysiologyDayResultV7(row.result),
       };
     });
@@ -427,11 +606,31 @@ export class PhysiologyV7PersistenceRepository {
     rebuiltThroughDate: string;
     days: readonly PhysiologyDayResultV7[];
   }): Promise<void> {
+    const { firstRebuiltDate } = await this.persistRangeCandidates(input);
+    await this.promotePersistedRange({
+      profileId: input.profileId,
+      expectedGeneration: input.expectedGeneration,
+      rebuiltThroughDate: input.rebuiltThroughDate,
+      firstRebuiltDate,
+    });
+  }
+
+  /** Write transaction-private V7 candidates without changing currentness. */
+  async persistRangeCandidates(input: {
+    profileId: number;
+    expectedGeneration: number;
+    rebuiltThroughDate: string;
+    days: readonly PhysiologyDayResultV7[];
+  }): Promise<{ firstRebuiltDate: string }> {
     const lifecycle = await this.client.physiologyV7Lifecycle.findUniqueOrThrow({
       where: { profileId: input.profileId },
     });
     if (lifecycle.invalidationGeneration !== input.expectedGeneration) {
       throw new PhysiologyV7ConcurrentSourceChangeError();
+    }
+    const firstRebuiltDate = input.days[0]?.date;
+    if (firstRebuiltDate === undefined || firstRebuiltDate > input.rebuiltThroughDate) {
+      throw new RangeError("persisted v7 rebuild must contain its rebuilt range");
     }
     for (const day of input.days) {
       const resultFingerprint = persistedResultFingerprint(day);
@@ -449,11 +648,23 @@ export class PhysiologyV7PersistenceRepository {
         update: data,
       });
     }
-    const firstRebuiltDate = input.days[0]?.date;
-    if (firstRebuiltDate === undefined || firstRebuiltDate > input.rebuiltThroughDate) {
-      throw new RangeError("persisted v7 rebuild must contain its rebuilt range");
+    return { firstRebuiltDate };
+  }
+
+  /** Promote candidate rows after the caller has acquired the source fence. */
+  async promotePersistedRange(input: {
+    profileId: number;
+    expectedGeneration: number;
+    rebuiltThroughDate: string;
+    firstRebuiltDate: string;
+  }): Promise<void> {
+    const lifecycle = await this.client.physiologyV7Lifecycle.findUniqueOrThrow({
+      where: { profileId: input.profileId },
+    });
+    if (lifecycle.invalidationGeneration !== input.expectedGeneration) {
+      throw new PhysiologyV7ConcurrentSourceChangeError();
     }
-    const staleWasRebuilt = lifecycle.staleFromDate !== null && lifecycle.staleFromDate >= firstRebuiltDate
+    const staleWasRebuilt = lifecycle.staleFromDate !== null && lifecycle.staleFromDate >= input.firstRebuiltDate
       && lifecycle.staleFromDate <= input.rebuiltThroughDate;
     // Partial replay at the stale point leaves its dependent suffix stale.
     const staleFromDate = staleWasRebuilt && lifecycle.currentThroughDate !== null

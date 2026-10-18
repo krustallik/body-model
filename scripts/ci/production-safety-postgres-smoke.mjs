@@ -128,6 +128,7 @@ async function createSourceFixture(db = source) {
       ON public."ExperimentalCessationDetrainingShadow" ("profileId", date);
     CREATE TABLE public."StrengthDiarySession" (
       id integer PRIMARY KEY, "profileId" integer NOT NULL, status varchar(20) NOT NULL,
+      "programId" integer NOT NULL DEFAULT 1, "programVersionId" integer NOT NULL DEFAULT 1,
       "matchedWorkoutId" integer REFERENCES public."Workout"(id) ON DELETE SET NULL,
       "webStartedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now()
     );
@@ -176,6 +177,11 @@ async function createSourceFixture(db = source) {
   `;
   sql(db, createSql);
   for (const { name } of STAGE_02_MANIFEST.migrations) {
+    sql(db, await readFile(path.join("prisma/migrations", name, "migration.sql"), "utf8"));
+  }
+  // These later migrations are present in the synthetic applied history too;
+  // install their real schema effects so the fixture matches that history.
+  for (const name of ["20261015090000_programless_dynamic_sessions", "20261015100000_health_sync_durable_refresh_queue"]) {
     sql(db, await readFile(path.join("prisma/migrations", name, "migration.sql"), "utf8"));
   }
   for (const tableName of ["ExperimentalSkeletalMuscleDeltaShadow", "ExperimentalCessationDetrainingShadow"]) {

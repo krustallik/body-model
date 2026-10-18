@@ -34,7 +34,6 @@ export async function DELETE(
     return Response.json({
       deleted: true,
       matchedWorkoutId: result.matchedWorkoutId,
-      ...(result.modelPublicationStatus === undefined ? {} : { modelPublicationStatus: result.modelPublicationStatus }),
     });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

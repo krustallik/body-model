@@ -5,8 +5,11 @@ const trainingService = vi.hoisted(() => ({
   listRecentSessions: vi.fn(),
   countRecentSessions: vi.fn(),
   getSession: vi.fn(),
+  getSetForSession: vi.fn(),
   startSession: vi.fn(),
+  startDynamicSession: vi.fn(),
   createSet: vi.fn(),
+  getSetCreateOperation: vi.fn(),
   updateSet: vi.fn(),
   deleteSet: vi.fn(),
   finishSession: vi.fn(),
@@ -19,10 +22,12 @@ import { POST as CREATE_SET } from "@/app/api/v1/training/sessions/[id]/exercise
 import { POST as CANCEL } from "@/app/api/v1/training/sessions/[id]/cancel/route";
 import { POST as FINISH } from "@/app/api/v1/training/sessions/[id]/finish/route";
 import { GET as DETAIL } from "@/app/api/v1/training/sessions/[id]/route";
-import { DELETE as DELETE_SET, PATCH as PATCH_SET } from "@/app/api/v1/training/sessions/[id]/sets/[setId]/route";
+import { DELETE as DELETE_SET, GET as GET_SET, PATCH as PATCH_SET } from "@/app/api/v1/training/sessions/[id]/sets/[setId]/route";
 import { GET as ACTIVE } from "@/app/api/v1/training/sessions/active/route";
 import { GET as RECENT } from "@/app/api/v1/training/sessions/recent/route";
 import { POST as START } from "@/app/api/v1/training/sessions/start/route";
+import { POST as START_DYNAMIC } from "@/app/api/v1/training/sessions/start-dynamic/route";
+import { GET as GET_SET_CREATE_OPERATION } from "@/app/api/v1/training/set-create-operations/[operationId]/route";
 import {
   ActiveSessionExistsError,
   ProgramArchivedError,
@@ -36,6 +41,7 @@ import {
 import { MATCH_STATUS, SESSION_STATUS } from "@/modules/training/training.constants";
 
 const base = "http://localhost/api/v1/training/sessions";
+const testOperationId = "00000000-0000-4000-8000-000000000096";
 const session = {
   id: 42,
   status: SESSION_STATUS.ACTIVE,
@@ -70,7 +76,10 @@ const setDto = {
 function jsonRequest(url: string, method: string, body: unknown): Request {
   return new Request(url, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(method === "POST" && url.endsWith("/sets") ? { "Idempotency-Key": testOperationId } : {}),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -86,6 +95,21 @@ const setCtx = (id: string, setId: string) => ({
 describe("/api/v1/training/sessions", () => {
   beforeEach(() => {
     Object.values(trainingService).forEach((mock) => mock.mockReset());
+  });
+
+  it("maps a durably rejected set-create operation to a terminal 409", async () => {
+    trainingService.getSetCreateOperation.mockResolvedValue({ state: "REJECTED" });
+    const response = await GET_SET_CREATE_OPERATION(
+      new Request(`http://localhost/api/v1/training/set-create-operations/${testOperationId}`),
+      { params: Promise.resolve({ operationId: testOperationId }) },
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      operationId: testOperationId,
+      state: "REJECTED",
+      error: "set_create_operation_rejected",
+    });
+    expect(trainingService.getSetCreateOperation).toHaveBeenCalledWith(testOperationId, undefined, undefined);
   });
 
   it("returns the active session payload", async () => {
@@ -133,6 +157,28 @@ describe("/api/v1/training/sessions", () => {
     expect(trainingService.startSession).toHaveBeenCalledWith(7, undefined, undefined);
   });
 
+  it("starts a dynamic live session without a program and preserves the supplied time zone", async () => {
+    const dynamicSession = {
+      ...session,
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [],
+    };
+    trainingService.startDynamicSession.mockResolvedValue(dynamicSession);
+    const response = await START_DYNAMIC(jsonRequest(`${base}/start-dynamic`, "POST", { timeZone: "Europe/Bratislava" }));
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ session: dynamicSession });
+    expect(trainingService.startDynamicSession).toHaveBeenCalledWith(undefined, "Europe/Bratislava");
+  });
+
+  it("rejects invalid dynamic-session time zones without mutation", async () => {
+    const response = await START_DYNAMIC(jsonRequest(`${base}/start-dynamic`, "POST", { timeZone: "Not/AZone" }));
+    expect(response.status).toBe(400);
+    expect(trainingService.startDynamicSession).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid start body without mutation", async () => {
     const response = await START(jsonRequest(`${base}/start`, "POST", { programId: "x" }));
     expect(response.status).toBe(400);
@@ -160,16 +206,200 @@ describe("/api/v1/training/sessions", () => {
   });
 
   it("creates a set", async () => {
-    trainingService.createSet.mockResolvedValue({ ...setDto, modelPublicationStatus: "stale" });
+    trainingService.createSet.mockResolvedValue(setDto);
     const response = await CREATE_SET(
       jsonRequest(`${base}/42/exercises/5/sets`, "POST", { reps: 10, weightKg: 30 }),
       exerciseCtx("42", "5"),
     );
     expect(response.status).toBe(201);
-    await expect(response.json()).resolves.toEqual({ set: setDto, modelPublicationStatus: "stale" });
+    await expect(response.json()).resolves.toEqual({ operationId: testOperationId, state: "COMMITTED", set: setDto });
     expect(trainingService.createSet).toHaveBeenCalledWith(42, 5, {
       reps: 10,
       weightKg: 30,
+    }, undefined, testOperationId);
+  });
+
+  it("fails closed for legacy set-create requests without an idempotency key", async () => {
+    const request = new Request(`${base}/42/exercises/5/sets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reps: 10, weightKg: 30 }),
+    });
+    const response = await CREATE_SET(request, exerciseCtx("42", "5"));
+    expect(response.status).toBe(428);
+    await expect(response.json()).resolves.toEqual({ error: "idempotency_key_required" });
+    expect(trainingService.createSet).not.toHaveBeenCalled();
+  });
+
+  it("passes BODYWEIGHT additional-load overrides through create, read, and update", async () => {
+    const loadedSet = {
+      ...setDto,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      loadAccountingOverride: {
+        additionalLoadKg: 15,
+        reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+        equipmentSetupId: "rings",
+      },
+    };
+    trainingService.createSet.mockResolvedValue(loadedSet);
+    const createResponse = await CREATE_SET(
+      jsonRequest(`${base}/42/exercises/5/sets`, "POST", {
+        reps: 10,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        loadAccountingOverride: loadedSet.loadAccountingOverride,
+      }),
+      exerciseCtx("42", "5"),
+    );
+    expect(createResponse.status).toBe(201);
+    await expect(createResponse.json()).resolves.toEqual({
+      operationId: testOperationId,
+      state: "COMMITTED",
+      set: loadedSet,
+    });
+    expect(trainingService.createSet).toHaveBeenCalledWith(42, 5, {
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      loadAccountingOverride: loadedSet.loadAccountingOverride,
+    }, undefined, testOperationId);
+
+    trainingService.getSetForSession.mockResolvedValue(loadedSet);
+    const readResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(readResponse.status).toBe(200);
+    await expect(readResponse.json()).resolves.toEqual({ set: loadedSet });
+
+    const updatedOverride = {
+      additionalLoadKg: 17.5,
+      reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+      equipmentSetupId: "rings",
+    };
+    trainingService.updateSet.mockResolvedValue({
+      ...loadedSet,
+      loadAccountingOverride: updatedOverride,
+    });
+    const updateResponse = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", {
+        reps: 10,
+        loadAccountingOverride: updatedOverride,
+      }),
+      setCtx("42", "9"),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toEqual({
+      set: { ...loadedSet, loadAccountingOverride: updatedOverride },
+    });
+    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, {
+      reps: 10,
+      loadAccountingOverride: updatedOverride,
+    });
+  });
+
+  it("accepts the maximum override and rejects out-of-range or overflowing POST/PATCH inputs", async () => {
+    trainingService.createSet.mockResolvedValue(setDto);
+    const acceptedCreate = await CREATE_SET(
+      jsonRequest(`${base}/42/exercises/5/sets`, "POST", {
+        reps: 10_000,
+        weightKg: null,
+        loadAccountingOverride: { additionalLoadKg: 2_000 },
+      }),
+      exerciseCtx("42", "5"),
+    );
+    expect(acceptedCreate.status).toBe(201);
+
+    trainingService.updateSet.mockResolvedValue(setDto);
+    const acceptedUpdate = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", {
+        loadAccountingOverride: { additionalLoadKg: 2_000 },
+      }),
+      setCtx("42", "9"),
+    );
+    expect(acceptedUpdate.status).toBe(200);
+
+    for (const [method, payload] of [
+      ["POST", { reps: 10, loadAccountingOverride: { additionalLoadKg: 2_000.01 } }],
+      ["POST", { reps: 10, loadAccountingOverride: { additionalLoadKg: 1e308 } }],
+      ["POST", { reps: 10, loadAccountingOverride: { assistanceLoadKg: 2_000.01 } }],
+      ["PATCH", { loadAccountingOverride: { additionalLoadKg: -1 } }],
+      ["PATCH", { loadAccountingOverride: { additionalLoadKg: 2_000.01 } }],
+      ["PATCH", { loadAccountingOverride: { additionalLoadKg: 1e308 } }],
+      ["PATCH", { loadAccountingOverride: { assistanceLoadKg: 2_000.01 } }],
+    ] as const) {
+      const response = method === "POST"
+        ? await CREATE_SET(jsonRequest(`${base}/42/exercises/5/sets`, method, payload), exerciseCtx("42", "5"))
+        : await PATCH_SET(jsonRequest(`${base}/42/sets/9`, method, payload), setCtx("42", "9"));
+      expect(response.status).toBe(400);
+    }
+
+    const parsedInfinity = await CREATE_SET(
+      new Request(`${base}/42/exercises/5/sets`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"reps":10,"loadAccountingOverride":{"additionalLoadKg":1e400}}',
+      }),
+      exerciseCtx("42", "5"),
+    );
+    expect(parsedInfinity.status).toBe(400);
+    expect(trainingService.createSet).toHaveBeenCalledTimes(1);
+    expect(trainingService.updateSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps stored historical overrides readable without applying write bounds", async () => {
+    const historical = { ...setDto, loadAccountingOverride: { additionalLoadKg: 1e308 } };
+    trainingService.getSetForSession.mockResolvedValue(historical);
+    const response = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ set: historical });
+  });
+
+  it("preserves a legacy raw override when PATCH omits it and GET returns the stored value", async () => {
+    const rawOverride = {
+      additionalLoadKg: 2_500,
+      equipmentSetupId: "rings",
+      inventoryCount: 2,
+    };
+    const historical = { ...setDto, rir: 2, comment: "before", loadAccountingOverride: rawOverride };
+    trainingService.updateSet.mockResolvedValue({ ...historical, rir: 3, comment: "after" });
+
+    const patchResponse = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", { rir: 3, comment: "after" }),
+      setCtx("42", "9"),
+    );
+
+    expect(patchResponse.status).toBe(200);
+    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { rir: 3, comment: "after" });
+    trainingService.getSetForSession.mockResolvedValue({ ...historical, rir: 3, comment: "after" });
+    const getResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(getResponse.status).toBe(200);
+    await expect(getResponse.json()).resolves.toEqual({
+      set: { ...historical, rir: 3, comment: "after" },
+    });
+
+    const zeroHistorical = {
+      ...setDto,
+      rir: 2,
+      comment: "zero remains raw",
+      loadAccountingOverride: { additionalLoadKg: 0 },
+    };
+    trainingService.updateSet.mockResolvedValue({ ...zeroHistorical, rir: 3 });
+    const zeroPatchResponse = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", { rir: 3 }),
+      setCtx("42", "9"),
+    );
+    expect(zeroPatchResponse.status).toBe(200);
+    expect(trainingService.updateSet).toHaveBeenLastCalledWith(42, 9, { rir: 3 });
+    trainingService.getSetForSession.mockResolvedValue({ ...zeroHistorical, rir: 3 });
+    const zeroGetResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(zeroGetResponse.status).toBe(200);
+    await expect(zeroGetResponse.json()).resolves.toEqual({
+      set: {
+        ...zeroHistorical,
+        rir: 3,
+        completedAt: setDto.completedAt,
+        createdAt: setDto.createdAt,
+        updatedAt: setDto.updatedAt,
+      },
     });
   });
 
@@ -211,27 +441,33 @@ describe("/api/v1/training/sessions", () => {
   });
 
   it("patches a set", async () => {
-    trainingService.updateSet.mockResolvedValue({ ...setDto, reps: 8, modelPublicationStatus: "stale" });
+    trainingService.updateSet.mockResolvedValue({ ...setDto, reps: 8 });
     const response = await PATCH_SET(
       jsonRequest(`${base}/42/sets/9`, "PATCH", { reps: 8 }),
       setCtx("42", "9"),
     );
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ set: { ...setDto, reps: 8 }, modelPublicationStatus: "stale" });
+    await expect(response.json()).resolves.toEqual({ set: { ...setDto, reps: 8 } });
     expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { reps: 8 });
   });
 
-  it("returns a conflict when strength publication loses its source snapshot", async () => {
+  it("reads a set for mutation reconciliation without using session detail", async () => {
+    trainingService.getSetForSession.mockResolvedValue(setDto);
+    const response = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ set: setDto });
+    expect(trainingService.getSetForSession).toHaveBeenCalledWith(42, 9);
+    expect(trainingService.getSession).not.toHaveBeenCalled();
+  });
+
+  it("returns the domain conflict without model-publication UI status", async () => {
     trainingService.updateSet.mockRejectedValue(new StaleStrengthEnergySourceError());
     const response = await PATCH_SET(
       jsonRequest(`${base}/42/sets/9`, "PATCH", { reps: 8 }),
       setCtx("42", "9"),
     );
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({
-      error: "strength_energy_source_stale",
-      modelPublicationStatus: "stale",
-    });
+    await expect(response.json()).resolves.toEqual({ error: "strength_energy_source_stale" });
   });
 
   it("rejects empty patch body without mutation", async () => {
@@ -244,13 +480,12 @@ describe("/api/v1/training/sessions", () => {
   });
 
   it("deletes a set", async () => {
-    trainingService.deleteSet.mockResolvedValue({ modelPublicationStatus: "stale" });
+    trainingService.deleteSet.mockResolvedValue(undefined);
     const response = await DELETE_SET(
       new Request(`${base}/42/sets/9`, { method: "DELETE" }),
       setCtx("42", "9"),
     );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ deleted: true, modelPublicationStatus: "stale" });
+    expect(response.status).toBe(204);
     expect(trainingService.deleteSet).toHaveBeenCalledWith(42, 9);
   });
 
@@ -271,10 +506,10 @@ describe("/api/v1/training/sessions", () => {
       webEndedAt: "2026-09-17T17:00:00.000Z",
       matchStatus: MATCH_STATUS.PENDING,
     };
-    trainingService.finishSession.mockResolvedValue({ ...completed, modelPublicationStatus: "stale" });
+    trainingService.finishSession.mockResolvedValue(completed);
     const response = await FINISH(new Request(`${base}/42/finish`, { method: "POST" }), sessionCtx("42"));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ session: completed, modelPublicationStatus: "stale" });
+    await expect(response.json()).resolves.toEqual({ session: completed });
     expect(trainingService.finishSession).toHaveBeenCalledWith(42);
   });
 

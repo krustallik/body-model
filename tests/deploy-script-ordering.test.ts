@@ -240,6 +240,7 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(exactShaAt).toBeGreaterThan(applyAt);
     expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
     expect(deploySh).toContain('BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1"');
+    expect(deploySh).toContain('BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1"');
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(migrateSh).toContain("read_bodycast_release_marker");
     expect(migrateSh).toContain("only an exact verified pre-spawn marker has an owner-authorized forward-resume path");

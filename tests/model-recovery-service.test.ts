@@ -8,6 +8,7 @@ const recovery = vi.hoisted(() => ({
   markAllStale: vi.fn(), persist: vi.fn(), latestStatus: vi.fn(),
 }));
 const engine = vi.hoisted(() => ({ recoverHistoricalTrajectories: vi.fn() }));
+const visibility = vi.hoisted(() => ({ readFence: vi.fn(), hasBlocks: vi.fn() }));
 
 vi.mock("@/modules/model-episodes/model-episode.repository", () => ({
   ModelEpisodeRepository: class { constructor() { return episodes; } },
@@ -16,6 +17,12 @@ vi.mock("@/modules/model-recovery/model-recovery.repository", () => ({
   ModelRecoveryRepository: class { constructor() { return recovery; } },
 }));
 vi.mock("@/modules/model-recovery/trajectory-recovery", () => engine);
+vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
+  PhysiologyV7PersistenceRepository: class {
+    readUnifiedPublicationFence = visibility.readFence;
+    hasUnifiedPublicationBlocks = visibility.hasBlocks;
+  },
+}));
 
 import {
   getModelRecoveryStatus,
@@ -58,6 +65,8 @@ describe("historical recovery application service", () => {
     recovery.markAllStale.mockResolvedValue(undefined);
     recovery.persist.mockResolvedValue({ id: 9, status: "recovered", stale: false });
     recovery.latestStatus.mockResolvedValue(null);
+    visibility.readFence.mockResolvedValue({ invalidationGeneration: 1, updatedAt: "2026-08-11T10:00:00.000Z" });
+    visibility.hasBlocks.mockResolvedValue(false);
     engine.recoverHistoricalTrajectories.mockReturnValue({
       algorithmVersion: RECOVERY_ALGORITHM_VERSION,
       seed: 12,

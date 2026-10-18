@@ -206,6 +206,46 @@ const EXERCISE_INFO_BY_CATALOG_NAME: Record<string, ExerciseInfoCopy> = {
       "full range without jerking",
     ],
   },
+  "Болгарські присідання з упором задньої ноги на лаву": {
+    primaryMusclesUk: "квадрицепси, сідничні м’язи",
+    primaryMusclesEn: "quadriceps, glutes",
+    secondaryMusclesUk: "задня поверхня стегна, литкові м’язи, м’язи корпуса",
+    secondaryMusclesEn: "hamstrings, calves, core",
+    cuesUk: ["спирайтеся задньою ногою на лаву", "контролюйте опускання на передній нозі", "тримайте корпус стабільно"],
+    cuesEn: ["rest the rear foot on a bench", "control the descent through the front leg", "keep the torso steady"],
+  },
+  "Випади вперед": {
+    primaryMusclesUk: "квадрицепси, сідничні м’язи",
+    primaryMusclesEn: "quadriceps, glutes",
+    secondaryMusclesUk: "задня поверхня стегна, литкові м’язи, м’язи корпуса",
+    secondaryMusclesEn: "hamstrings, calves, core",
+    cuesUk: ["зробіть контрольований крок уперед", "опускайтеся без удару заднім коліном", "поверніться у вихідне положення поштовхом передньої ноги"],
+    cuesEn: ["step forward under control", "lower without dropping the rear knee", "push through the front leg to return"],
+  },
+  "Присідання з гантеллю в руках": {
+    primaryMusclesUk: "квадрицепси, сідничні м’язи",
+    primaryMusclesEn: "quadriceps, glutes",
+    secondaryMusclesUk: "привідні м’язи стегна, м’язи корпуса",
+    secondaryMusclesEn: "hip adductors, core",
+    cuesUk: ["утримуйте гантель перед грудьми", "опускайтеся в комфортну глибину", "зберігайте стопи повністю на підлозі"],
+    cuesEn: ["hold the dumbbell in front of your chest", "squat to a comfortable depth", "keep both feet grounded"],
+  },
+  "Прямі скручування з гантеллю на прес": {
+    primaryMusclesUk: "прямий м’яз живота",
+    primaryMusclesEn: "rectus abdominis",
+    secondaryMusclesUk: "косі м’язи живота",
+    secondaryMusclesEn: "obliques",
+    cuesUk: ["рухайте грудну клітку до таза", "піднімайте лопатки контрольовано", "не тягніть шию руками"],
+    cuesEn: ["curl the rib cage toward the pelvis", "lift the shoulder blades under control", "do not pull on your neck"],
+  },
+  "Бокові скручування з гантеллю на прес": {
+    primaryMusclesUk: "косі м’язи живота",
+    primaryMusclesEn: "obliques",
+    secondaryMusclesUk: "прямий м’яз живота",
+    secondaryMusclesEn: "rectus abdominis",
+    cuesUk: ["обертайте грудну клітку контрольовано", "рухайтеся корпусом, не смикайте гантель", "виконуйте повторення в обидва боки"],
+    cuesEn: ["rotate the torso under control", "turn through the trunk instead of swinging the dumbbell", "perform repetitions on both sides"],
+  },
 };
 
 export function resolveExerciseInfo(input: {

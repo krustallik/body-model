@@ -5,6 +5,12 @@ const services = vi.hoisted(() => ({
   getModelStatus: vi.fn(),
   recalculateModelEpisode: vi.fn(),
 }));
+const trainingFence = vi.hoisted(() => ({ read: vi.fn(), pending: vi.fn() }));
+vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
+vi.mock("@/modules/training/training-refresh-queue", () => ({
+  readTrainingRefreshVisibilityFence: trainingFence.read,
+  isTrainingRefreshPending: trainingFence.pending,
+}));
 vi.mock("@/modules/model-forecast/model-forecast.service", () => ({
   forecastModelEpisode: services.forecastModelEpisode,
 }));
@@ -24,6 +30,8 @@ describe("forecast application route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     services.getModelStatus.mockResolvedValue({ daysModeled: 28, latestModeledDate: "2026-08-24" });
+    trainingFence.read.mockResolvedValue({ requestedGeneration: 1, completedGeneration: 1 });
+    trainingFence.pending.mockReturnValue(false);
   });
 
   it("validates and delegates to the real application service with the stable seed", async () => {
@@ -41,6 +49,16 @@ describe("forecast application route", () => {
     expect((await POST(request(validBody))).status).toBe(200);
     expect(services.recalculateModelEpisode).toHaveBeenCalledWith({});
     expect(services.forecastModelEpisode).toHaveBeenCalled();
+  });
+
+  it("does not persist an intermediate model while Training publication is pending", async () => {
+    trainingFence.pending.mockReturnValue(true);
+    services.forecastModelEpisode.mockResolvedValue({ status: "ok", dates: [] });
+
+    expect((await POST(request(validBody))).status).toBe(200);
+    expect(services.getModelStatus).not.toHaveBeenCalled();
+    expect(services.recalculateModelEpisode).not.toHaveBeenCalled();
+    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...validBody, seed: 20_260_824 });
   });
 
   it("skips persistence when there is no active episode yet", async () => {

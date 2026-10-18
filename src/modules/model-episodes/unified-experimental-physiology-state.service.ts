@@ -13,7 +13,7 @@ import {
   type UnifiedUncertaintyV1,
 } from "@/model/unified-experimental-physiology-v1/contracts";
 import { physicalGlycogenWaterDeltaV4, resolvePhysicalGlycogenWaterV4 } from "@/model/body-composition/physical-glycogen-water-v4";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1 } from "./publication-generation-v1";
 import { replayTransientExerciseWaterV2, transientWaterV2ContributionKg, type ActiveTransientExerciseWaterImpulseV2, type TransientExerciseWaterImpulseV2, type TransientWaterV2Branch } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
@@ -295,7 +295,7 @@ function uncertainty(prior: UnifiedUncertaintyV1 | null, day: UnifiedDurableDayE
 }
 
 /** Pure shared candidate builder used by both publication and read-only postflight verification. */
-export function buildUnifiedRangeCandidatesV1(input: {
+export async function buildUnifiedRangeCandidatesV1(input: {
   profileId: number;
   days: readonly UnifiedDurableDayEvidenceV1[];
   targetRevision: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION;
@@ -305,7 +305,8 @@ export function buildUnifiedRangeCandidatesV1(input: {
   previousDate?: string | null;
   previousObservedWeightKg?: number | null;
   initialGapRun?: number;
-}): ReturnType<typeof serializeUnifiedExperimentalPhysiologyV1>[] {
+  onProgress?: () => Promise<void>;
+}): Promise<ReturnType<typeof serializeUnifiedExperimentalPhysiologyV1>[]> {
   let priorState = input.priorState ?? null;
   let priorFingerprint = input.priorFingerprint ?? null;
   let priorUncertainty = input.priorUncertainty ?? null;
@@ -392,6 +393,7 @@ export function buildUnifiedRangeCandidatesV1(input: {
       previousObservedWeight = observedWeight;
       gapRun = 0;
     }
+    if (input.onProgress && results.length % 64 === 0) await input.onProgress();
   }
   return results;
 }
@@ -437,6 +439,51 @@ function toPersisted(result: UnifiedExperimentalPhysiologyDayResultV1) {
   return { profileId: result.profileId, modelEpisodeId: result.modelEpisodeId, date: result.date, boundaryAt: new Date(result.boundaryAt), modelRevision, sourceFingerprint: result.sourceFingerprint, priorStateFingerprint: result.priorStateFingerprint, resultFingerprint: result.resultFingerprint, qualityStatus: result.quality.availability, gapSeverity: result.quality.gapSeverity, state: json(result.state), deltas: json(result.deltas), uncertainty: json(result.uncertainty), reconciliation: json(result.reconciliation), energyLedger: json(result.energyLedger), sourceLineage: json(result.sourceLineage), diagnostics: json(result.diagnostics) };
 }
 
+const UNIFIED_CANDIDATE_UPSERT_BATCH_SIZE = 500;
+
+function unifiedCandidateInsertValues(row: ReturnType<typeof toPersisted>): Prisma.Sql {
+  return Prisma.sql`(
+    ${row.profileId}, ${row.modelEpisodeId}, ${row.date}, ${row.boundaryAt},
+    ${row.modelRevision}, ${row.sourceFingerprint}, ${row.priorStateFingerprint}, ${row.resultFingerprint},
+    ${row.qualityStatus}, ${row.gapSeverity}, ${JSON.stringify(row.state)}::jsonb,
+    ${JSON.stringify(row.deltas)}::jsonb, ${JSON.stringify(row.uncertainty)}::jsonb,
+    ${JSON.stringify(row.reconciliation)}::jsonb, ${JSON.stringify(row.energyLedger)}::jsonb,
+    ${JSON.stringify(row.sourceLineage)}::jsonb, ${JSON.stringify(row.diagnostics)}::jsonb,
+    clock_timestamp()
+  )`;
+}
+
+async function upsertUnifiedCandidateBatch(
+  tx: Prisma.TransactionClient,
+  rows: readonly ReturnType<typeof toPersisted>[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "UnifiedExperimentalPhysiologyStateV2" (
+      "profileId", "modelEpisodeId", "date", "boundaryAt", "modelRevision",
+      "sourceFingerprint", "priorStateFingerprint", "resultFingerprint", "qualityStatus",
+      "gapSeverity", "state", "deltas", "uncertainty", "reconciliation", "energyLedger",
+      "sourceLineage", "diagnostics", "updatedAt"
+    ) VALUES ${Prisma.join(rows.map(unifiedCandidateInsertValues))}
+    ON CONFLICT ("profileId", "modelEpisodeId", "date") DO UPDATE SET
+      "boundaryAt" = EXCLUDED."boundaryAt",
+      "modelRevision" = EXCLUDED."modelRevision",
+      "sourceFingerprint" = EXCLUDED."sourceFingerprint",
+      "priorStateFingerprint" = EXCLUDED."priorStateFingerprint",
+      "resultFingerprint" = EXCLUDED."resultFingerprint",
+      "qualityStatus" = EXCLUDED."qualityStatus",
+      "gapSeverity" = EXCLUDED."gapSeverity",
+      "state" = EXCLUDED."state",
+      "deltas" = EXCLUDED."deltas",
+      "uncertainty" = EXCLUDED."uncertainty",
+      "reconciliation" = EXCLUDED."reconciliation",
+      "energyLedger" = EXCLUDED."energyLedger",
+      "sourceLineage" = EXCLUDED."sourceLineage",
+      "diagnostics" = EXCLUDED."diagnostics",
+      "updatedAt" = EXCLUDED."updatedAt"
+  `);
+}
+
 function compatiblePredecessorLedger(value: unknown): ActiveTransientExerciseWaterImpulseV2[] | null {
   try {
     const state = object(value);
@@ -478,6 +525,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   targetRevision?: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION;
   rolloutEpoch?: number;
   onCandidateComputed?: () => Promise<void>;
+  onProgress?: () => Promise<void>;
 }): Promise<void> {
   if (input.fromDate && input.toDate && input.toDate < input.fromDate) {
     throw new RangeError("toDate must not precede fromDate");
@@ -518,7 +566,11 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       || (targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION && expectedRolloutEpoch < 1)) {
     throw new ProductionPublicationUnavailableError();
   }
-  const transientRebuild = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+  const transientRebuild = await rebuildExperimentalTransientExerciseWaterV2({
+    profileId,
+    client,
+    onProgress: input.onProgress,
+  });
   const publicationState = await client.physiologyV7Lifecycle.findUnique({
     where: { profileId },
     select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true, updatedAt: true },
@@ -676,7 +728,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     ?.dailyHealthData?.weightKg ?? null;
   let gapRun = 0;
   for (const day of prefixDays) gapRun = day.dailyHealthData === null ? gapRun + 1 : 0;
-  const serializedDays = buildUnifiedRangeCandidatesV1({
+  const serializedDays = await buildUnifiedRangeCandidatesV1({
     profileId,
     days: replayDays,
     targetRevision,
@@ -686,10 +738,27 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     previousDate,
     previousObservedWeightKg: previousObservedWeight,
     initialGapRun: gapRun,
+    onProgress: input.onProgress,
   });
   await input.onCandidateComputed?.();
+  // Candidate computation is complete outside the transaction. Keep the
+  // candidate upserts plus the final source/pointer CAS atomic, with a bounded
+  // budget sized for large historical batches (the rebuild itself is never
+  // held inside this transaction).
   await client.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    // Candidate upserts remain transaction-private; the lifecycle pointer is
+    // not advanced until the source and generation checks pass. Stage them
+    // before taking the shared source lock so a large suffix cannot delay
+    // Training CRUD during the batch writes. Re-read every
+    // publication input under the lock immediately before pointer promotion.
+    const persistedDays = serializedDays.map(toPersisted);
+    for (let offset = 0; offset < persistedDays.length; offset += UNIFIED_CANDIDATE_UPSERT_BATCH_SIZE) {
+      await upsertUnifiedCandidateBatch(
+        tx,
+        persistedDays.slice(offset, offset + UNIFIED_CANDIDATE_UPSERT_BATCH_SIZE),
+      );
+    }
     await lifecycle.lockProfile(profileId);
     const current = await tx.physiologyV7Lifecycle.findUnique({
       where: { profileId },
@@ -717,19 +786,6 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     if (unifiedRangeToken(profileId, currentRange.fromInstant, currentRange.throughInstant, currentRange.days) !== expectedRangeToken) {
       throw new PhysiologyV7ConcurrentSourceChangeError();
     }
-    for (const result of serializedDays) {
-      await tx.unifiedExperimentalPhysiologyStateV2.upsert({
-        where: {
-          profileId_modelEpisodeId_date: {
-            profileId,
-            modelEpisodeId: result.modelEpisodeId,
-            date: result.date,
-          },
-        },
-        create: toPersisted(result),
-        update: toPersisted(result),
-      });
-    }
     const published = await tx.physiologyV7Lifecycle.updateMany({
       where: {
         profileId,
@@ -746,7 +802,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       },
     });
     if (published.count !== 1) throw new PhysiologyV7ConcurrentSourceChangeError();
-  });
+  }, { maxWait: 10_000, timeout: 120_000 });
 }
 
 /** Invalidate the published Unified snapshot for a Relative Muscle source edit. */

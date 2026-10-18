@@ -30,6 +30,7 @@ export const REQUIRED_READER_ROLLOUT_FIXTURES = Object.freeze([
 
 export const REVIEWED_ENTRYPOINTS = Object.freeze([
   "scripts/production-release-marker.sh",
+  "scripts/production-schema-deploy-handoff.mjs",
   "scripts/production-traffic-cutover.sh",
   "scripts/deploy.sh",
   "scripts/deploy-preflight-schema.sh",
@@ -43,6 +44,9 @@ export const REVIEWED_ENTRYPOINTS = Object.freeze([
   "scripts/production-app-capabilities.mjs",
   "scripts/production-app-capabilities.json",
   "scripts/production-recovery/authorization.mjs",
+  "scripts/production-migration-authorization.mjs",
+  "scripts/production-migration-manifests.mjs",
+  "scripts/github-owner-identity.mjs",
   "scripts/production-recovery/authorization-issuer-service.mjs",
   "scripts/production-recovery/authority.mjs",
   "scripts/production-recovery/artifact-identity.mjs",

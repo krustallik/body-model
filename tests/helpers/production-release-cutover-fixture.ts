@@ -270,7 +270,8 @@ if [[ "$1" == "compose" ]]; then
     if [[ "$schema_count" -ge 2 ]]; then advance_main final-schema; fi
     exit 0
   fi
-  if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* ]]; then
+if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* \
+    || "$joined" == *" run --rm --no-deps --interactive --no-TTY --entrypoint node migrate "* ]]; then
     if [[ "$joined" == *"production-full-history-recalculate.mjs"* ]]; then
       event "full-history-recalculate"
       if [[ "\${FAIL_FULL_HISTORY_RECALCULATE:-0}" == "1" ]]; then exit 45; fi
@@ -299,6 +300,19 @@ if [[ "$1" == "compose" ]]; then
     if [[ "$joined" == *"unified-v4-activate-replay.mjs"* ]]; then
       event "unified-v4-activation"
       if [[ "\${FAIL_V4_ACTIVATION:-0}" == "1" ]]; then exit 44; fi
+      exit 0
+    fi
+    if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--hold-currentness-fence"* ]]; then
+      event "unified-v4-fence-start"
+      if [[ "\${FAIL_TRAINING_V4_CHECK:-0}" == "1" ]]; then event "unified-v4-fence-rejected"; exit 42; fi
+      event "unified-v4-fence-ready"
+      printf '%s\n' 'BODYCAST_UNIFIED_V4_FENCE_READY 85000'
+      if [[ "\${FAIL_TRAINING_FENCE_AFTER_READY:-0}" == "1" ]]; then event "unified-v4-fence-exited-after-ready"; exit 43; fi
+      IFS= read -r decision || exit 42
+      [[ "$decision" == "route-committed" ]] || { event "unified-v4-fence-aborted"; exit 42; }
+      if [[ "\${FAIL_TRAINING_FENCE_COMMIT:-0}" == "1" ]]; then event "unified-v4-fence-commit-failed"; exit 44; fi
+      event "unified-v4-fence-committed"
+      printf '%s\n' 'BODYCAST_UNIFIED_V4_FENCE_COMMITTED {}'
       exit 0
     fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* ]]; then event "unified-v4-check"; fi
@@ -549,6 +563,15 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
     route_kind=maintenance
     grep -q reverse_proxy "$ROUTE_FILE" && route_kind=serving
     event "caddy-reload:$route_kind"
+    if [[ "$route_kind" == "serving" && "\${AMBIGUOUS_SERVING_RELOAD:-0}" == "1" ]]; then
+      (
+        sleep "\${AMBIGUOUS_RELOAD_DELAY_SECONDS:-0.25}"
+        printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"
+        event "late-caddy-serving-config"
+      ) >/dev/null 2>&1 &
+      event "caddy-reload-timeout:serving"
+      exit 124
+    fi
     if [[ "\${FAIL_CADDY_RELOAD:-0}" == "1" \
         || ( "$route_kind" == "maintenance" && "\${FAIL_MAINTENANCE_RELOAD:-0}" == "1" ) \
         || ( "$route_kind" == "serving" && "\${FAIL_SERVING_RELOAD:-0}" == "1" ) ]]; then
@@ -620,6 +643,12 @@ if [[ "$url" == *"/" && "\${CURL_REDIRECT:-0}" == "1" ]]; then
 fi
 if [[ "\${FAIL_MAINTENANCE_PROBE:-0}" == "1" && "$url" == *"/" ]]; then status=200; fi
 if [[ "\${FAIL_CANDIDATE_PUBLIC_PROBE:-0}" == "1" && "$url" == *"/api/health" ]]; then
+  status=502
+  response_body='unavailable'
+  response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
+fi
+if [[ "\${FAIL_THIRD_MAINTENANCE_PROBE:-0}" == "1" && "$url" == *"/" ]] \
+    && [[ "$(grep -Fc 'public-probe:503:https://bodycast.example.test/' "$EVENT_LOG" 2>/dev/null || true)" -ge 2 ]]; then
   status=502
   response_body='unavailable'
   response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
@@ -962,7 +991,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
 
 export function runFixture(fixture: Fixture, command: string, overrides: Record<string, string | undefined> = {}) {
   return spawnSync(fixture.bash, ["--noprofile", "--norc", "-c",
-    `export PATH="$FIXTURE_BIN:$PATH"; curl() { "$FIXTURE_BIN/curl" "$@"; }; export -f curl; ${fakeMv}; ${fakeMktemp}; ${command}`], {
+    `export PATH="$FIXTURE_BIN:$PATH"; curl() { "$FIXTURE_BIN/curl" "$@"; }; export -f curl; node() { if [[ "\${1:-}" == */production-schema-deploy-handoff.mjs && ( "\${2:-}" == "--check" || "\${2:-}" == "--validate-marker" ) ]]; then [[ "\${FAIL_TRAINING_MARKER_CHECK:-0}" != "1" ]]; else command node "$@"; fi; }; export -f node; ${fakeMv}; ${fakeMktemp}; ${command}`], {
     cwd: fixture.repo,
     encoding: "utf8",
     env: { ...fixture.env, ...overrides },
@@ -981,7 +1010,7 @@ export function runFixtureAsync(
       ? `${completionPrefix}fixture_command_status=$?; exit "$fixture_command_status"`
       : `${completionPrefix}fixture_command_status=$?; wait; exit "$fixture_command_status"`;
     const child = spawn(fixture.bash, ["--noprofile", "--norc", "-c",
-      `export PATH="$FIXTURE_BIN:$PATH"; curl() { "$FIXTURE_BIN/curl" "$@"; }; export -f curl; ${fakeMv}; ${fakeMktemp}; ${command}${completion}`], {
+      `export PATH="$FIXTURE_BIN:$PATH"; curl() { "$FIXTURE_BIN/curl" "$@"; }; export -f curl; node() { if [[ "\${1:-}" == */production-schema-deploy-handoff.mjs && ( "\${2:-}" == "--check" || "\${2:-}" == "--validate-marker" ) ]]; then [[ "\${FAIL_TRAINING_MARKER_CHECK:-0}" != "1" ]]; else command node "$@"; fi; }; export -f node; ${fakeMv}; ${fakeMktemp}; ${command}${completion}`], {
       cwd: fixture.repo,
       detached: process.platform !== "win32",
       env: { ...fixture.env, ...overrides },

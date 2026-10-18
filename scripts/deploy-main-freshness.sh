@@ -12,7 +12,7 @@ bodycast_assert_current_main_sha() {
     return 1
   }
 
-  if ! git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main; then
+  if ! timeout 15s git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main; then
     echo "Unable to refresh canonical origin/main; refusing the release." >&2
     return 1
   fi

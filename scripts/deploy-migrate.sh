@@ -145,6 +145,11 @@ bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
   > "$CONTEXT_DIR/live-report-final.json"
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]]; then
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --pre-training-migration \
+    || fail "Unified V4 must already be current before Training DDL; no Training replay is authorized by this manifest."
+fi
 [[ ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a final guard receipt already exists in the private context."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \

@@ -21,6 +21,10 @@ grep -Fq -- '--before-ddl' "$DEPLOY"
 grep -Fq -- '--after-ddl' "$DEPLOY"
 ! grep -Fq 'prisma migrate deploy' "$DEPLOY"
 ! grep -Fq 'bodycast-production-operation' "$DEPLOY" "$CUTOVER"
+grep -Fq 'serve_training_release' "$CUTOVER"
+grep -Fq -- '--hold-currentness-fence' "$CUTOVER"
+! grep -Fq 'BODYCAST_TRAINING_AUTHORIZATION_CONTEXT_ID' "$CUTOVER"
+! grep -Fq 'host-operation-client.mjs" traffic-serve' "$CUTOVER"
 ! grep -Fq 'docker compose -f docker-compose.prod.yml up -d db' "$DEPLOY" "$SCHEMA_PREFLIGHT" "$CUTOVER"
 grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY"
 grep -Fq 'verifyFinalGuardReceipt' "$WRAPPER"
@@ -33,6 +37,7 @@ grep -Fq 'withPrismaLockTimeout(authorized.databaseUrl, 5000)' "$WRAPPER"
 ! grep -Fq 'CONFIRM_PRODUCTION_MIGRATE' "$DEPLOY" "$WRAPPER"
 grep -Fq 'github.actor_id == '\''126446430'\''' "$MIGRATE"
 grep -Fq 'assertTrustedOwnerWorkflowRun' "$MIGRATE"
+! grep -Fq 'migration-context-pin' "$MIGRATE"
 grep -Fq 'run.triggering_actor?.id' "$ROOT/scripts/github-owner-identity.mjs"
 grep -Fq 'workflow_dispatch:' "$DEPLOY_WORKFLOW"
 grep -Fq 'workflow_run:' "$DEPLOY_WORKFLOW"
@@ -72,6 +77,9 @@ APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.s
 [[ -n "$FINAL_IDENTITY_LINE" && -n "$MARKER_WRITE_LINE" && -n "$PRISMA_SPAWN_LINE" && -n "$SPAWN_ACK_LINE" ]]
 [[ "$FINAL_IDENTITY_LINE" -lt "$MARKER_WRITE_LINE" && "$MARKER_WRITE_LINE" -lt "$PRISMA_SPAWN_LINE" && "$PRISMA_SPAWN_LINE" -lt "$SPAWN_ACK_LINE" ]]
 [[ -n "$APP_READY_LINE" && -n "$APP_SHA_CHECK_LINE" && "$APP_SHA_CHECK_LINE" -lt "$APP_READY_LINE" ]]
+REMOTE_MIGRATE_LINE="$(grep -nF 'bash scripts/deploy-migrate.sh' "$MIGRATE" | cut -d: -f1)"
+PRE_DDL_V4_LINE="$(grep -nF 'unified-v4-traffic-check.mjs --profile-id 1 --pre-training-migration' "$DEPLOY" | cut -d: -f1)"
+[[ -n "$REMOTE_MIGRATE_LINE" && -n "$PRE_DDL_V4_LINE" && "$PRE_DDL_V4_LINE" -lt "$FINAL_GUARD_LINE" ]]
 ! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY" "$DEPLOY_SCRIPT"
 
 TMP="$(mktemp -d)"

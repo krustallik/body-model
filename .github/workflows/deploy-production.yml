@@ -17,13 +17,6 @@ on:
         required: true
         default: true
         type: boolean
-  workflow_run:
-    workflows:
-      - BodyCast CI/CD
-    types:
-      - completed
-    branches:
-      - main
 
 permissions:
   contents: read

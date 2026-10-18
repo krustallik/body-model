@@ -1,11 +1,10 @@
 # Production release operations
 
-BodyCast ordinary app releases deploy automatically after `BodyCast CI/CD` succeeds for the
-current exact `main` SHA. The deploy workflow re-reads the upstream run and current `main` before
-production credentials and again before SSH. It ignores pull-request runs, synthetic merge SHAs,
-stale runs, failed runs, and reruns whose attempt does not match the event. Manual deployment is
-reserved for the owner-authorized non-serving schema-cutover path and checks GitHub's triggering
-actor against owner ID `126446430`.
+Automatic serving deployment is paused while the legacy V4 recovery and schema cutover are pending.
+The deploy workflow currently exposes only its owner-authorized, exact-current-main non-serving
+dispatch. Resume serving only through the separately owner-controlled SSH serve step after V4 and
+the approved DDL checkpoints. Manual deployment checks GitHub's triggering actor against owner ID
+`126446430`.
 
 ## Release components
 
@@ -15,8 +14,8 @@ actor against owner ID `126446430`.
 - `.github/workflows/production-migrate.yml` verifies the exact signed owner authorization,
   current SHA, six-migration manifest and hashes, database identity, backup/restore evidence, and
   writer drain before invoking `scripts/deploy-migrate.sh` over SSH.
-- `.github/workflows/deploy-production.yml` performs the ordinary exact-SHA app deploy after
-  successful current-main CI. Manual use remains owner-gated and non-serving for schema cutover.
+- `.github/workflows/deploy-production.yml` currently has no CI-completion trigger. Its manual
+  exact-SHA dispatch remains owner-gated and non-serving while this release pause is active.
 - Unified V4 activation/replay was a one-time rollout operation. Its workflow dispatch has been
   removed; guarded cutover and recovery helpers remain available to the retained release paths.
 - `scripts/deploy.sh`, `scripts/deploy-migrate.sh`, `scripts/production-traffic-cutover.sh`, and
@@ -48,33 +47,21 @@ claiming the Docker image cache is read-only.
 
 ## Owner-authorized release order
 
-1. Merge the audited PR. Wait for successful `BodyCast CI/CD` on the exact current `main` SHA. For
-   an ordinary compatible app release, deployment starts automatically; no manual SHA or dispatch
-   is needed.
-2. Dispatch **Production migration preflight and encrypted backup** from `main` for that SHA,
-   manifest `active-energy-unified-v2`, with confirmation `maintenance-backup-restore`. The job
-   confirms the public maintenance response, disables restart and stops/removes the old app,
-   checks the existing DB and writer topology, creates the encrypted backup, then restores it and
-   rehearses the exact migrations only on the disposable PostgreSQL service. Review the report,
-   encrypted artifact, key availability, and restore result.
-3. Dispatch **Manual production migration** from `main` for the same SHA and manifest with
-   `MIGRATE_PRODUCTION`. The owner-only signing job binds the exact pending set and evidence. The
-   execution job repeats current-main, signature, hash, DB identity, backup freshness, and writer
-   drain checks. It writes the durable `ddl-started` marker immediately before its single Prisma
-   migration attempt. Read-only postflight must pass before the marker advances to
-   `schema-applied`.
-4. For a migration release only, dispatch the manual owner-authorized app deploy for the same SHA,
-   confirm `deploy`, and require non-serving mode. The app starts behind maintenance only after the
-   migration marker matches that SHA and the app passes health and image/SHA checks. The marker
-   advances to `app-ready`.
-5. Dispatch **Owner-authorized Unified V4 activation and traffic serve** for the same current-main
-   SHA with `ACTIVATE_UNIFIED_V4_AND_SERVE`. The job verifies V3 postflight, explicitly activates
-   and replays Unified V4, checks currentness/coverage, and opens traffic only when the exact app
-   and rollout gates pass.
+A. Run the owner-approved legacy V4 recovery against the verified 65-migration schema.
+B. Verify V4 CURRENT and coverage read-only; keep V4 epoch 1.
+C. For the programless release, review the exact two-migration manifest and preflight, create an
+   encrypted backup, rehearse restore and DDL on isolated PostgreSQL, then sign a separate DDL
+   approval.
+D. For Training, repeat with the exact seven-migration manifest, fresh preflight, backup, restore
+   rehearsal, and separate signed DDL approval.
+E. Deploy the exact-current-main app without serving traffic.
+F. Serve through the owner-controlled SSH path only after all approved schema checkpoints pass.
+G. Run production health, API, UI, V4, Training, and Health smoke checks.
 
-Do not manually run Prisma commands or `docker compose up` as a substitute for these fixed
-workflows. The migration workflow is the only production DDL path. The V4 workflow is the only
-release path that activates/replays V4 or changes the final serving route.
+The two DDL approvals are separate and do not authorize each other. An unknown or partial Training
+DDL result stops the sequence: keep maintenance active and do not retry Prisma, apply manual SQL, or
+automatically roll back. Do not run Prisma commands or `docker compose up` manually as a substitute
+for the reviewed release paths.
 
 ## Backup and failure handling
 

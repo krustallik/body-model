@@ -22,25 +22,88 @@ if (!/^[a-f0-9]{64}$/.test(containerId ?? "") || !outputPath || !readyPath
 const storageProbe = [
   "set -eu",
   "data_path=\"$(readlink -f \"${PGDATA:-/var/lib/postgresql/data}\")\"",
-  "wal_path=\"$(readlink -f \"$data_path/pg_wal\")\"",
-  "data_bytes=\"$(du -sx -B1 --exclude=pg_wal -- \"$data_path\" | awk '{print $1}')\"",
-  "wal_bytes=\"$(du -sx -B1 -- \"$wal_path\" | awk '{print $1}')\"",
-  "printf '%s|%s\\n' \"$data_bytes\" \"$wal_bytes\"",
+  "wal_entry=\"$data_path/pg_wal\"",
+  "wal_path=\"$(readlink -f \"$wal_entry\")\"",
+  "[ -d \"$data_path\" ] && [ -d \"$wal_path\" ] || { printf '%s\\n' 'PGDATA or pg_wal is not a directory.' >&2; exit 1; }",
+  "root_allocation=\"$(stat -c '%b|%B' \"$data_path\")\"",
+  "case \"$root_allocation\" in *'|'*) root_blocks=\"${root_allocation%%|*}\"; root_block_bytes=\"${root_allocation#*|}\";; *) printf '%s\\n' 'PGDATA allocation output is malformed.' >&2; exit 1;; esac",
+  "case \"$root_blocks\" in ''|*[!0-9]*) printf '%s\\n' 'PGDATA allocation output is malformed.' >&2; exit 1;; esac",
+  "case \"$root_block_bytes\" in ''|*[!0-9]*) printf '%s\\n' 'PGDATA allocation output is malformed.' >&2; exit 1;; esac",
+  "printf 'R|%s|%s\\n' \"$root_blocks\" \"$root_block_bytes\"",
+  // BusyBox du has no GNU --exclude contract; exclude the WAL entry explicitly and measure its resolved target once below.
+  "for path in \"$data_path\"/* \"$data_path\"/.[!.]* \"$data_path\"/..?*; do",
+  "  [ -e \"$path\" ] || [ -L \"$path\" ] || continue",
+  "  [ \"$path\" = \"$wal_entry\" ] && continue",
+  "  usage=\"$(du -sk -- \"$path\")\" || exit $?",
+  "  set -- $usage",
+  "  [ \"$#\" -eq 2 ] || { printf '%s\\n' 'PGDATA du output is malformed.' >&2; exit 1; }",
+  "  case \"$1\" in ''|*[!0-9]*) printf '%s\\n' 'PGDATA du output is malformed.' >&2; exit 1;; esac",
+  "  [ \"$2\" = \"$path\" ] || { printf '%s\\n' 'PGDATA du path does not match.' >&2; exit 1; }",
+  "  printf 'D|%s\\n' \"$1\"",
+  "done",
+  "wal_usage=\"$(du -sk -- \"$wal_path\")\" || exit $?",
+  "set -- $wal_usage",
+  "[ \"$#\" -eq 2 ] || { printf '%s\\n' 'WAL du output is malformed.' >&2; exit 1; }",
+  "case \"$1\" in ''|*[!0-9]*) printf '%s\\n' 'WAL du output is malformed.' >&2; exit 1;; esac",
+  "[ \"$2\" = \"$wal_path\" ] || { printf '%s\\n' 'WAL du path does not match.' >&2; exit 1; }",
+  "printf 'W|%s\\n' \"$1\"",
 ].join("\n");
 
 function sample() {
   const result = spawnSync("docker", ["exec", containerId, "sh", "-eu", "-c", storageProbe], {
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
   });
-  if (result.error || result.status !== 0) throw new Error("Could not sample isolated PostgreSQL data/WAL allocation.");
-  const match = /^(\d+)\|(\d+)\r?\n?$/.exec(result.stdout);
-  if (!match) throw new Error("Isolated PostgreSQL allocation sample is malformed.");
-  const dataBytes = Number(match[1]);
-  const walBytes = Number(match[2]);
-  if (!Number.isSafeInteger(dataBytes) || dataBytes < 1 || !Number.isSafeInteger(walBytes) || walBytes < 0) {
+  const stderr = String(result.stderr ?? "");
+  if (result.error || result.status !== 0 || stderr.trim() !== "") {
+    const diagnostic = (stderr || result.error?.message || `docker exec exited with status ${result.status ?? "unknown"}`)
+      .trim().slice(0, 512);
+    throw new Error(`Could not sample isolated PostgreSQL data/WAL allocation: ${diagnostic}`);
+  }
+  if (!result.stdout.endsWith("\n")) throw new Error("Isolated PostgreSQL allocation sample is malformed.");
+  const output = result.stdout.replace(/\r?\n$/, "");
+  if (!output || output.endsWith("\n") || output.includes("\r")) {
+    throw new Error("Isolated PostgreSQL allocation sample is malformed.");
+  }
+  const rows = output.split(/\r?\n/);
+  let dataBytes = 0n;
+  let walBytes = null;
+  let rootBlocks = null;
+  let dataEntries = 0;
+  for (const row of rows) {
+    const rootMatch = /^R\|(\d+)\|(\d+)$/.exec(row);
+    if (rootMatch) {
+      const blocks = BigInt(rootMatch[1]);
+      const blockBytes = BigInt(rootMatch[2]);
+      if (rootBlocks !== null || blockBytes < 1n) {
+        throw new Error("Isolated PostgreSQL allocation sample is malformed.");
+      }
+      rootBlocks = blocks * blockBytes;
+      continue;
+    }
+    const match = /^(D|W)\|(\d+)$/.exec(row);
+    if (!match) throw new Error("Isolated PostgreSQL allocation sample is malformed.");
+    const value = BigInt(match[2]);
+    if (match[1] === "D") {
+      dataBytes += value * 1024n;
+      dataEntries += 1;
+    } else {
+      if (walBytes !== null) throw new Error("Isolated PostgreSQL allocation sample is malformed.");
+      walBytes = value * 1024n;
+    }
+  }
+  if (rootBlocks === null || walBytes === null || dataEntries === 0) {
+    throw new Error("Isolated PostgreSQL allocation sample is malformed.");
+  }
+  dataBytes += rootBlocks;
+  if (dataBytes > BigInt(Number.MAX_SAFE_INTEGER) || walBytes > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error("Isolated PostgreSQL allocation sample is outside the safe byte range.");
   }
-  return { dataBytes, walBytes };
+  const dataByteCount = Number(dataBytes);
+  const walByteCount = Number(walBytes);
+  if (!Number.isSafeInteger(dataByteCount) || dataByteCount < 1 || !Number.isSafeInteger(walByteCount) || walByteCount < 0) {
+    throw new Error("Isolated PostgreSQL allocation sample is outside the safe byte range.");
+  }
+  return { dataBytes: dataByteCount, walBytes: walByteCount };
 }
 
 const startedAt = new Date().toISOString();

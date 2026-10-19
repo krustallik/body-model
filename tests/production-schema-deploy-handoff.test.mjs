@@ -128,7 +128,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/production-full-history-recalculate.ts": {
         migrationOriginBlob: "4bce126c880af008295b4648701575c4b967da5e",
-        deployBlob: "ab4f8d3278c22178bf2dbdfcf5bdfcb529b460ad",
+        deployBlob: "667df800575c02a31b3a338aa55d5b3236c06f1c",
       },
       ".github/workflows/ci.yml": {
         migrationOriginBlob: "ea1f581e1ee17e0e3ca6ed811f15ba51e94670a2",
@@ -200,7 +200,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": {
         migrationOriginBlob: null,
-        deployBlob: "6b9ab318395b12089c8e1bd12ea102340ff965ef",
+        deployBlob: "12f9ff1aef75dcd602f2b54b804ad7120f2016f0",
       },
       "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
         migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",

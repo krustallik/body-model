@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/production-migration-safety-ci.yml"
+      - ".github/workflows/production-v4-derived-recovery.yml"
       - ".github/workflows/production-checkout-diagnostic.yml"
       - ".github/workflows/production-recovery-*.yml"
       - ".github/workflows/production-migration-preflight.yml"
@@ -13,6 +14,7 @@ on:
       - ".github/workflows/deploy-production.yml"
       - ".github/workflows/production-database-cutback.yml"
       - "Dockerfile"
+      - "Dockerfile.v4-derived-recovery"
       - "prisma/migrations/**"
       - "scripts/production-migration-*.mjs"
       - "scripts/production-no-app-preflight*.mjs"
@@ -40,6 +42,8 @@ on:
       - "scripts/production-release-marker.sh"
       - "scripts/production-release-marker.mjs"
       - "scripts/production-schema-deploy-handoff.mjs"
+      - "scripts/production-v4-derived-recovery.mjs"
+      - "scripts/production-v4-recovery-evidence.ts"
       - "scripts/production-release-lock.sh"
       - "scripts/production-recovery/**"
       - "scripts/deploy.sh"
@@ -94,6 +98,8 @@ on:
       - "src/modules/model-episodes/full-history-recalculation.service.ts"
       - "tests/production-release-marker.test.mjs"
       - "tests/production-schema-deploy-handoff.test.mjs"
+      - "tests/production-v4-derived-recovery.test.mjs"
+      - "tests/production-v4-derived-recovery-workflow.test.mjs"
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-deploy-rollback-safety.test.ts"
@@ -155,13 +161,13 @@ jobs:
         run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-no-app-preflight.test.mjs tests/production-no-app-workflow.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs
 
       - name: Run production recovery workflow protocol tests
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
 
       - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/production-no-app-preflight-host.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/production-database-cutback-promotion.sh scripts/production-database-cutback-lifecycle.sh scripts/production-db-data-fingerprint.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh scripts/production-checkout-diagnostic.sh scripts/production-app-container-health-wait.sh tests/production-checkout-diagnostic.test.sh tests/production-app-container-health-wait.test.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh scripts/ci/production-database-cutback-promotion-failure-injection.sh
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/production-no-app-preflight-host.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/production-database-cutback-promotion.sh scripts/production-database-cutback-lifecycle.sh scripts/production-db-data-fingerprint.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh scripts/production-checkout-diagnostic.sh scripts/production-app-container-health-wait.sh scripts/production-v4-derived-recovery-host.sh tests/production-checkout-diagnostic.test.sh tests/production-app-container-health-wait.test.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh scripts/ci/production-database-cutback-promotion-failure-injection.sh
 
       - name: Exercise read-only production checkout diagnostic against an isolated Git fixture
         run: bash tests/production-checkout-diagnostic.test.sh
@@ -195,6 +201,83 @@ jobs:
           BODYCAST_RECOVERY_DATABASE_URL_FILE: /dev/null
           BODYCAST_PRODUCTION_DATABASE_URL_FILE: /dev/null
         run: docker compose -f docker-compose.recovery.yml config --quiet
+
+  legacy-v4-recovery-image:
+    name: Exact legacy 65-schema V4 recovery tool image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast
+          POSTGRES_USER: bodycast
+          POSTGRES_PASSWORD: bodycast_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast -d bodycast"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout main-side release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assemble only the exact audited legacy source plus pinned release wrapper
+        env:
+          LEGACY_SHA: 3968154f965597843b6a2c429fff178c0f1ac54c
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/bodycast-v4-tool/source/scripts"
+          git fetch --no-tags https://github.com/krustallik/body-model.git "$LEGACY_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$LEGACY_SHA"
+          git archive "$LEGACY_SHA" | tar -x -C "$RUNNER_TEMP/bodycast-v4-tool/source"
+          cp Dockerfile.v4-derived-recovery "$RUNNER_TEMP/bodycast-v4-tool/source/Dockerfile.v4-derived-recovery"
+          cp scripts/production-v4-recovery-evidence.ts "$RUNNER_TEMP/bodycast-v4-tool/source/scripts/production-v4-recovery-evidence.ts"
+          docker build --file "$RUNNER_TEMP/bodycast-v4-tool/source/Dockerfile.v4-derived-recovery" \
+            --tag bodycast-v4-derived-recovery-ci "$RUNNER_TEMP/bodycast-v4-tool/source"
+
+      - name: Create isolated database and apply the exact 65-migration schema
+        env:
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_recovery_test
+          PGPASSWORD: bodycast_ci_only
+        run: |
+          set -Eeuo pipefail
+          psql --host=127.0.0.1 --username=bodycast --dbname=bodycast --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE bodycast_v4_recovery_test'
+          node --input-type=module -e 'const u = new URL(process.env.DATABASE_URL); if (u.hostname !== "127.0.0.1" || u.pathname !== "/bodycast_v4_recovery_test") process.exit(1)'
+          docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" bodycast-v4-derived-recovery-ci \
+            node /app/node_modules/prisma/build/index.js migrate deploy --schema /app/prisma/schema.prisma
+
+      - name: Verify image-bound schema, source evidence and fail-closed empty state
+        env:
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_recovery_test
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" bodycast-v4-derived-recovery-ci \
+            node /app/dist/production-v4-recovery-evidence.mjs > "$RUNNER_TEMP/recovery-evidence.json"
+          node --input-type=module - "$RUNNER_TEMP/recovery-evidence.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (report.database?.database !== "bodycast_v4_recovery_test" || !report.database.version.startsWith("17.")
+            || report.migrationRows.length !== 65 || report.expectedMigrationRows.length !== 65
+            || report.migrationRows.some((row, i) => row.name !== report.expectedMigrationRows[i].name
+              || row.checksum !== report.expectedMigrationRows[i].checksum || !row.finishedAt || row.rolledBackAt !== null)
+            || !/^[a-f0-9]{64}$/.test(report.sourceFingerprint) || report.lifecycle !== null || report.blocks.length !== 0) {
+            throw new Error("Exact legacy recovery image did not report its isolated 65-migration identity safely.");
+          }
+          NODE
+          if docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" bodycast-v4-derived-recovery-ci \
+            node /app/dist/production-full-history-recalculate.mjs --derived-v4-recovery --owner-authorized --profile-id 1; then
+            echo "::error::Recovery unexpectedly accepted an empty schema without V4 epoch 1."; exit 1
+          fi
+          migration_count="$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            --command='SELECT count(*) FROM public."_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL')"
+          [[ "$migration_count" == 65 ]] || { echo "::error::Recovery changed the isolated migration ledger."; exit 1; }
 
   postgres-recovery-integration:
     name: Disposable PostgreSQL recovery integration
@@ -411,6 +494,7 @@ jobs:
     needs:
       - safety-unit-regressions
       - migrator-image-and-compose
+      - legacy-v4-recovery-image
       - postgres-recovery-integration
       - postgres-migration-checksum
       - postgres-backup-restore-smoke
@@ -421,12 +505,13 @@ jobs:
         env:
           SAFETY_UNIT_RESULT: ${{ needs.safety-unit-regressions.result }}
           MIGRATOR_RESULT: ${{ needs.migrator-image-and-compose.result }}
+          LEGACY_V4_IMAGE_RESULT: ${{ needs.legacy-v4-recovery-image.result }}
           RECOVERY_INTEGRATION_RESULT: ${{ needs.postgres-recovery-integration.result }}
           CHECKSUM_RESULT: ${{ needs.postgres-migration-checksum.result }}
           BACKUP_RESTORE_RESULT: ${{ needs.postgres-backup-restore-smoke.result }}
           CUTBACK_RESULT: ${{ needs.postgres-cutback-smoke.result }}
         run: |
-          for result in "$SAFETY_UNIT_RESULT" "$MIGRATOR_RESULT" "$RECOVERY_INTEGRATION_RESULT" "$CHECKSUM_RESULT" "$BACKUP_RESTORE_RESULT" "$CUTBACK_RESULT"; do
+          for result in "$SAFETY_UNIT_RESULT" "$MIGRATOR_RESULT" "$LEGACY_V4_IMAGE_RESULT" "$RECOVERY_INTEGRATION_RESULT" "$CHECKSUM_RESULT" "$BACKUP_RESTORE_RESULT" "$CUTBACK_RESULT"; do
             if [[ "$result" != "success" ]]; then
               echo "Production migration safety job did not pass: $result" >&2
               exit 1

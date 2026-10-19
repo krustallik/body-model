@@ -39,6 +39,7 @@ const RECOVERY_RAW_INPUT_TABLES = [
   "StepperReconciliationGroup",
   "StepperReconciliationCandidate",
 ] as const;
+const RECOVERY_RAW_FINGERPRINT_PAGE_SIZE = 32;
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -56,17 +57,51 @@ async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<s
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
       : "to_jsonb(source_row)";
-    const rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
-      `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
-       FROM public."${table}" AS source_row
-       ORDER BY source_row.id`,
+    const [countRow] = await client.$queryRawUnsafe<Array<{ count: number }>>(
+      `SELECT count(*)::int AS count FROM public."${table}"`,
     );
-    const tableDigest = createHash("sha256").update(`${table}\0${rows.length}\0`);
-    for (const row of rows) {
-      if (!Number.isSafeInteger(row.id) || typeof row.raw_row !== "string") {
-        throw new Error(`V4 strict source fingerprint returned invalid ${table} row`);
+    const rowCount = countRow?.count;
+    if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
+      throw new Error(`V4 strict source fingerprint returned invalid ${table} row count`);
+    }
+    const tableDigest = createHash("sha256").update(`${table}\0${rowCount}\0`);
+    let lastId: number | null = null;
+    let seen = 0;
+    while (seen < rowCount) {
+      let rows: Array<{ id: number; raw_row: string }>;
+      if (lastId === null) {
+        rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
+          `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+           FROM public."${table}" AS source_row
+           ORDER BY source_row.id
+           LIMIT $1`,
+          RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
+        );
+      } else {
+        rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
+          `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+           FROM public."${table}" AS source_row
+           WHERE source_row.id > $1
+           ORDER BY source_row.id
+           LIMIT $2`,
+          lastId,
+          RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
+        );
       }
-      tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+      if (rows.length === 0) {
+        throw new Error(`V4 strict source fingerprint stopped before the end of ${table}`);
+      }
+      for (const row of rows) {
+        if (!Number.isSafeInteger(row.id) || (lastId !== null && row.id <= lastId) || typeof row.raw_row !== "string") {
+          throw new Error(`V4 strict source fingerprint returned invalid ${table} row`);
+        }
+        tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+        lastId = row.id;
+        seen += 1;
+      }
+    }
+    if (seen !== rowCount) {
+      throw new Error(`V4 strict source fingerprint row count changed for ${table}`);
     }
     digest.update(`${table}\0${tableDigest.digest("hex")}\0`);
   }

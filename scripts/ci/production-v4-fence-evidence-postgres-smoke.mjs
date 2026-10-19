@@ -26,6 +26,15 @@ const trainingEarlierFenceDate = "2025-01-10";
 const trainingTimeZone = "Europe/Bratislava";
 const trainingTimeZoneProvenance = "legacy-default";
 const trainingInputFingerprint = "a".repeat(64);
+const rawFingerprintTables = [
+  "Profile", "ModelEpisode", "StepperEquipmentAssignment", "DailyHealthData",
+  "HealthMetricSample", "HeartRateSample", "RestingHeartRateSample", "SleepSegment",
+  "HealthSyncSnapshot", "HealthSyncAudit", "HealthActivityInterval", "Workout",
+  "ExerciseCatalog", "ExerciseLoadConfiguration", "TrainingProgram",
+  "TrainingProgramVersion", "ProgramExercise", "StrengthDiarySession",
+  "StrengthDiaryProgramChange", "StrengthSessionExercise", "StrengthSet",
+  "WorkInterval", "StepperReconciliationGroup", "StepperReconciliationCandidate",
+];
 
 function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -147,6 +156,39 @@ async function readEvidence() {
   return JSON.parse(output.trim());
 }
 
+async function legacyUnpagedRawFingerprint() {
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v1\0");
+  for (const table of rawFingerprintTables) {
+    const rawRowExpression = table === "ModelEpisode"
+      ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
+      : "to_jsonb(source_row)";
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+       FROM public."${table}" AS source_row ORDER BY source_row.id`,
+    );
+    const tableDigest = createHash("sha256").update(`${table}\0${rows.length}\0`);
+    for (const row of rows) {
+      tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+    }
+    digest.update(`${table}\0${tableDigest.digest("hex")}\0`);
+  }
+  return digest.digest("hex");
+}
+
+async function insertFingerprintPageBoundarySnapshots(date, count) {
+  const [daily] = await prisma.$queryRawUnsafe(
+    `SELECT id FROM public."DailyHealthData" WHERE date = $1`, date,
+  );
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO public."HealthSyncSnapshot" (
+       "dailyHealthDataId", date, "receivedAt", "syncedAt", timezone, "rawPayload")
+     SELECT $1, $2, ($2::date + TIME '12:02' + series * INTERVAL '1 second') AT TIME ZONE 'UTC',
+       NULL, 'UTC', '{"fixture":"fingerprint-page-boundary"}'::jsonb
+     FROM generate_series(1, $3::int) AS series`,
+    daily.id, date, count,
+  );
+}
+
 async function validateCurrentEvidence(expectedHealthCount) {
   const report = await readEvidence();
   if (report.database?.database !== "bodycast_v4_recovery_test" || report.migrationRows?.length !== 65
@@ -186,6 +228,11 @@ try {
   await insertEpisode("2025-01-01", "UTC", false, new Date("2025-01-10T00:00:00.000Z"));
   await insertEpisode("2025-01-10", "Pacific/Kiritimati", true, null);
   for (const date of healthDates) await insertHealthDay(date);
+  await insertFingerprintPageBoundarySnapshots("2025-01-01", 70);
+  const [pageBoundaryCount] = await prisma.$queryRawUnsafe(
+    `SELECT count(*)::int AS count FROM public."HealthSyncSnapshot" WHERE date = $1`, "2025-01-01",
+  );
+  if (pageBoundaryCount.count <= 32) throw new Error("Fingerprint fixture did not cross a raw-row page boundary.");
 
   const [trainingDay] = await prisma.$queryRawUnsafe(`SELECT id FROM public."DailyHealthData" WHERE date = $1`, "2025-01-09");
   await prisma.$executeRawUnsafe(
@@ -230,6 +277,10 @@ try {
   );
 
   const nineDayEvidence = await validateCurrentEvidence(9);
+  const unpagedFingerprint = await legacyUnpagedRawFingerprint();
+  if (nineDayEvidence.sourceFingerprint !== unpagedFingerprint) {
+    throw new Error("Paged strict source fingerprint differs from the legacy unpaged byte-for-byte digest.");
+  }
   const trainingEvidence = nineDayEvidence.sourceEvidence.training;
   if (trainingEvidence?.snapshotRevision !== 79 || trainingEvidence.modelDate !== trainingModelDate
     || trainingEvidence.fromDate !== trainingModelDate || trainingEvidence.trainingEventAt !== trainingWorkoutStartAt

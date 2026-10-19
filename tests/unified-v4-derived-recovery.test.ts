@@ -8,10 +8,9 @@ const mocks = vi.hoisted(() => {
     failClear: string | null;
     invalidTrainingSession: number | null;
   } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null };
-  let prisma: Record<string, any>;
-  prisma = {
+  const prisma = {
     $queryRawUnsafe: vi.fn(async () => []),
-    $transaction: vi.fn(async (callback: (tx: any) => Promise<unknown>) => callback(prisma)),
+    $transaction: vi.fn(),
     physiologyV7Lifecycle: { findUnique: vi.fn() },
     unifiedPublicationBlock: { findMany: vi.fn(), findUnique: vi.fn(), count: vi.fn() },
     dailyHealthData: { findMany: vi.fn() },
@@ -92,6 +91,7 @@ import { createV4RecoveryEvidenceBindingV1, inventoryV4RecoveryRawSourcesV1,
 const dates = Array.from({ length: 8 }, (_, index) => `2071-01-${String(index + 1).padStart(2, "0")}`);
 
 function reset(blocks = true) {
+  mocks.prisma.$transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => callback(mocks.prisma));
   mocks.state.lifecycle = {
     unifiedTargetRevision: V4,
     unifiedRolloutEpoch: 1,

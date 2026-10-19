@@ -197,6 +197,14 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "2532cef483cb8bdec332cc22782a30d2a0ba178b",
     deployBlob: "d5b445b418a1c24637c6439d14938c661f48a619",
   }),
+  "src/modules/model-episodes/unified-experimental-physiology-state.service.ts": Object.freeze({
+    migrationOriginBlob: "0c7850cbb866f62d20a4a35ab384f18906a67ef8",
+    deployBlob: "d0f9f7ef0be1f0b0f4ad3efb1abbcac538f8b191",
+  }),
+  "src/modules/training/experimental-transient-exercise-water-shadow.service.ts": Object.freeze({
+    migrationOriginBlob: "4291768358207464a59476a75e3897e5a85f9332",
+    deployBlob: "8547fdaa05b721c4dcd578c2b1c096a53e52c729",
+  }),
 });
 /** Schema/runtime identity that must remain identical to the migration origin. */
 const CRITICAL_TREES = ["prisma"];

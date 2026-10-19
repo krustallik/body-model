@@ -108,6 +108,7 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
     mocks.invalidate.mockResolvedValue({});
     mocks.rebuildTransientWater.mockResolvedValue({
       earliestModelDate: "2024-01-01",
+      latestModelDate: "2024-01-01",
       sourceToken: "transient-water-source-token",
       impulseCount: 4,
     });
@@ -342,6 +343,7 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       mocks.state.lifecycle.unifiedRolloutEpoch = 1;
       return {
         earliestModelDate: "2024-01-01",
+        latestModelDate: "2024-01-01",
         sourceToken: "transient-water-source-token",
         impulseCount: 4,
       };

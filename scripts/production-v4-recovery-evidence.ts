@@ -2,11 +2,14 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { prisma } from "@/lib/db/prisma";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
+import { buildTransientEpisodePartitionsV2, latestCompletedSessionModelDateV2, transientModelDayBoundariesV2 } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "@/modules/training/bodyweight-reference-v2";
 import { LOAD_ACCOUNTING_METHOD_V1 } from "@/modules/training/load-accounting-v1";
 import { buildMassResolutionIdentity, persistedPayloadFromUnknown } from "@/modules/training/persisted-load-accounting-v1";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-type";
 
 const APPLE_HEALTH_SHORTCUT_SOURCE = "apple-health-shortcut";
 
@@ -38,8 +41,43 @@ const RECOVERY_RAW_INPUT_TABLES = [
   "WorkInterval",
   "StepperReconciliationGroup",
   "StepperReconciliationCandidate",
+  "StrengthSessionAccountingSnapshot",
+  "StrengthSessionAccountingOperation",
 ] as const;
 const RECOVERY_RAW_FINGERPRINT_PAGE_SIZE = 32;
+
+async function readExpectedV4ModelDayBoundariesV1(client: typeof prisma, profileId: number) {
+  const episodes = await client.modelEpisode.findMany({
+    where: { profileId }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true },
+  });
+  const partitions = buildTransientEpisodePartitionsV2(episodes);
+  const first = partitions[0];
+  const last = partitions.at(-1);
+  if (!first || !last) throw new Error("V4 recovery evidence has no persisted model episode boundary");
+  const [latestDurable, completedSessions] = await Promise.all([
+    client.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } }),
+    client.strengthDiarySession.findMany({
+      where: { profileId, status: "COMPLETED" },
+      select: { effectiveAccountingAt: true, webStartedAt: true, createdAt: true,
+        matchedWorkout: { select: { startAt: true } } },
+    }),
+  ]);
+  const latestSessionDate = latestCompletedSessionModelDateV2(partitions, completedSessions);
+  const requestedToDate = [latestDurable?.date, latestSessionDate]
+    .filter((date): date is string => date !== null && date !== undefined)
+    .sort()
+    .at(-1) ?? first.episode.startDate;
+  const effectiveToDate = [requestedToDate, first.episode.startDate, last.episode.startDate]
+    .sort()
+    .at(-1)!;
+  const throughInstant = localDateTimeToInstant(addCalendarDays(effectiveToDate, 1), "00:00", last.episode.timezone);
+  return transientModelDayBoundariesV2({
+    partitions,
+    fromInstant: first.startInstant,
+    throughInstant,
+  });
+}
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -52,7 +90,7 @@ function canonicalJson(value: unknown): string {
 }
 
 async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<string> {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v1\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
   for (const table of RECOVERY_RAW_INPUT_TABLES) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
@@ -179,138 +217,166 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
     };
   }));
 
-  const trainingBlocks = blocks.filter((block) => block.source === "training");
-  const trainingBlock = trainingBlocks.length === 1 && trainingBlocks[0]?.sourceKey === "20"
-    ? trainingBlocks[0] : null;
-  const session = trainingBlock ? await client.strengthDiarySession.findUnique({
-    where: { id: 20 },
+  const trainingBlocks = blocks.filter((block) => block.source === "training")
+    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
+  if (trainingBlocks.some((block) => !/^[1-9][0-9]*$/.test(block.sourceKey)
+    || !Number.isSafeInteger(Number(block.sourceKey)))) {
+    throw new Error("Training publication evidence contains a non-canonical session identity");
+  }
+  const trainingIds = trainingBlocks.map((block) => Number(block.sourceKey));
+  const sessions = trainingIds.length > 0 ? await client.strengthDiarySession.findMany({
+    where: { id: { in: trainingIds }, profileId: 1 },
     select: {
-      id: true, profileId: true, status: true, revision: true, accountingInputRevision: true,
+      id: true, profileId: true, status: true, entryMode: true, revision: true, accountingInputRevision: true,
       currentSnapshotRevision: true, matchedWorkoutId: true, matchStatus: true,
       effectiveAccountingAt: true, accountingTimeZone: true, accountingTimeZoneProvenance: true,
       webStartedAt: true, createdAt: true, updatedAt: true,
-      matchedWorkout: { select: { id: true, startAt: true } },
+      matchedWorkout: { select: {
+        id: true, type: true, startAt: true, sourceIdentity: true, dailyHealthDataId: true,
+        dailyHealthData: { select: { date: true } },
+      } },
     },
-  }) : null;
-  const accountingSnapshot = session?.currentSnapshotRevision !== null && session?.currentSnapshotRevision !== undefined
-    ? await client.strengthSessionAccountingSnapshot.findMany({
-      where: { sessionId: 20, snapshotRevision: session.currentSnapshotRevision },
-      select: {
-        snapshotRevision: true, accountingInputRevision: true, inputFingerprint: true,
-        effectiveLocalDate: true, timeZone: true, timeZoneProvenance: true,
-        accountingMethodVersion: true, massResolutionMethodVersion: true,
-        massResolutionIdentity: true, payloadVersion: true, payload: true, createdAt: true,
-      },
-    }) : [];
-  const episodes = session ? await client.modelEpisode.findMany({
+  }) : [];
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  const accountingSnapshots = trainingIds.length > 0 ? await client.strengthSessionAccountingSnapshot.findMany({
+    where: { sessionId: { in: trainingIds } },
+    select: {
+      sessionId: true, snapshotRevision: true, accountingInputRevision: true, inputFingerprint: true,
+      effectiveLocalDate: true, timeZone: true, timeZoneProvenance: true,
+      accountingMethodVersion: true, massResolutionMethodVersion: true,
+      massResolutionIdentity: true, payloadVersion: true, payload: true, createdAt: true,
+    },
+    orderBy: [{ sessionId: "asc" }, { snapshotRevision: "asc" }],
+  }) : [];
+  const snapshotsBySession = new Map<number, typeof accountingSnapshots>();
+  for (const snapshot of accountingSnapshots) {
+    const rows = snapshotsBySession.get(snapshot.sessionId) ?? [];
+    rows.push(snapshot);
+    snapshotsBySession.set(snapshot.sessionId, rows);
+  }
+  const episodes = trainingIds.length > 0 ? await client.modelEpisode.findMany({
     where: { profileId: 1 }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true },
   }) : [];
-  // Keep the publication fence event clock aligned with the legacy writer:
-  // matched workout start first, then persisted accounting/event fallbacks.
-  // Accounting snapshots intentionally retain their separate effective-time
-  // contract below.
-  const trainingEventAt = session?.matchedWorkout?.startAt ?? session?.effectiveAccountingAt
-    ?? session?.webStartedAt ?? session?.createdAt ?? null;
-  // Accounting snapshots retain the persisted accounting-time contract. Do
-  // not change this fallback order to match the independent fence event clock.
-  const effectiveAccountingAt = session?.effectiveAccountingAt ?? session?.matchedWorkout?.startAt
-    ?? session?.webStartedAt ?? session?.createdAt ?? null;
-  const accountingTimeZone = session?.accountingTimeZone ?? DEFAULT_TIME_ZONE;
-  const accountingTimeZoneProvenance = session?.accountingTimeZoneProvenance ?? "legacy-default";
-  const accountingEffectiveLocalDate = effectiveAccountingAt && isValidTimeZone(accountingTimeZone)
-    ? instantToLocalDateTime(effectiveAccountingAt, accountingTimeZone).date : null;
-  const modelDate = trainingEventAt
-    ? episodeTimeContextForInstantV1(episodes, trainingEventAt).date : null;
-  const snapshot = accountingSnapshot.length === 1 ? accountingSnapshot[0] : null;
-  let snapshotTimeZoneValid = false;
-  if (snapshot?.timeZone) {
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: snapshot.timeZone }).format(new Date(0));
-      snapshotTimeZoneValid = true;
-    } catch { /* Invalid persisted timezone remains a failed evidence bit. */ }
-  }
-  const payload = snapshot ? persistedPayloadFromUnknown(snapshot.payload) : null;
-  const expectedMassResolutionIdentity = payload && accountingEffectiveLocalDate && snapshotTimeZoneValid
-    ? buildMassResolutionIdentity({
-      localDate: accountingEffectiveLocalDate,
-      timeZone: accountingTimeZone,
-      methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
-      reference: payload.massReference,
-    }) : null;
-  const snapshotContractValid = Boolean(session && snapshot && payload && effectiveAccountingAt
-    && accountingEffectiveLocalDate && snapshotTimeZoneValid
-    && snapshot.snapshotRevision === session.currentSnapshotRevision
-    && snapshot.accountingInputRevision === session.accountingInputRevision
-    && snapshot.effectiveLocalDate === accountingEffectiveLocalDate
-    && snapshot.timeZone === accountingTimeZone
-    && snapshot.timeZoneProvenance === accountingTimeZoneProvenance
-    && snapshot.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
-    && snapshot.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
-    && snapshot.massResolutionIdentity === expectedMassResolutionIdentity
-    && /^[a-f0-9]{64}$/.test(snapshot.inputFingerprint)
-    && snapshot.payloadVersion === payload.schemaVersion
-    && payload.sessionId === session.id
-    && payload.snapshotRevision === snapshot.snapshotRevision
-    && payload.accountingInputRevision === session.accountingInputRevision
-    && payload.effectiveAccountingAt === effectiveAccountingAt.toISOString()
-    && payload.effectiveLocalDate === accountingEffectiveLocalDate
-    && payload.timeZone === accountingTimeZone
-    && payload.timeZoneProvenance === accountingTimeZoneProvenance
-    && payload.inputFingerprint === snapshot.inputFingerprint
-    && payload.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
-    && payload.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
-    && payload.massResolutionIdentity === expectedMassResolutionIdentity);
-  const snapshotEvidenceSha256 = snapshot ? sha256(canonicalJson({
-    snapshotRevision: snapshot.snapshotRevision,
-    accountingInputRevision: snapshot.accountingInputRevision,
-    inputFingerprint: snapshot.inputFingerprint,
-    effectiveLocalDate: snapshot.effectiveLocalDate,
-    timeZone: snapshot.timeZone,
-    timeZoneProvenance: snapshot.timeZoneProvenance,
-    accountingMethodVersion: snapshot.accountingMethodVersion,
-    massResolutionMethodVersion: snapshot.massResolutionMethodVersion,
-    massResolutionIdentity: snapshot.massResolutionIdentity,
-    payloadVersion: snapshot.payloadVersion,
-    payload: snapshot.payload,
-    createdAt: snapshot.createdAt,
-  })) : null;
-  const training = trainingBlock ? {
-    sourceKey: trainingBlock.sourceKey,
-    fromDate: trainingBlock.fromDate,
-    fenceRevision: trainingBlock.revision,
-    sessionRows: session ? 1 : 0,
-    sessionId: session?.id ?? null,
-    profileId: session?.profileId ?? null,
-    status: session?.status ?? null,
-    sourceRevision: session?.revision ?? null,
-    accountingInputRevision: session?.accountingInputRevision ?? null,
-    currentSnapshotRevision: session?.currentSnapshotRevision ?? null,
-    trainingEventAt: trainingEventAt?.toISOString() ?? null,
-    matchedWorkoutStartAt: session?.matchedWorkout?.startAt?.toISOString() ?? null,
-    effectiveAccountingAt: effectiveAccountingAt?.toISOString() ?? null,
-    accountingTimeZone,
-    accountingTimeZoneProvenance,
-    matchedWorkoutId: session?.matchedWorkoutId ?? null,
-    matchStatus: session?.matchStatus ?? null,
-    matchedWorkoutPresent: session?.matchedWorkout !== null && session?.matchedWorkout !== undefined,
-    matchedWorkoutIdentityMatches: session?.matchedWorkoutId === session?.matchedWorkout?.id,
-    modelDate,
-    accountingEffectiveLocalDate,
-    accountingSnapshotRows: accountingSnapshot.length,
-    snapshotRevision: snapshot?.snapshotRevision ?? null,
-    snapshotAccountingInputRevision: snapshot?.accountingInputRevision ?? null,
-    snapshotEffectiveLocalDate: snapshot?.effectiveLocalDate ?? null,
-    snapshotTimeZone: snapshot?.timeZone ?? null,
-    snapshotTimeZoneValid,
-    snapshotTimeZoneProvenance: snapshot?.timeZoneProvenance ?? null,
-    snapshotContractValid,
-    snapshotEvidenceSha256,
-    chronologyValid: Boolean(session && snapshot && validDate(snapshot.createdAt) && validDate(session.updatedAt)
-      && validDate(trainingBlock.createdAt) && validDate(trainingBlock.updatedAt)
-      && snapshot.createdAt <= session.updatedAt && session.updatedAt <= trainingBlock.updatedAt
-      && trainingBlock.createdAt <= trainingBlock.updatedAt),
-  } : null;
+  const training = trainingBlocks.map((trainingBlock) => {
+    const sessionId = Number(trainingBlock.sourceKey);
+    const session = sessionById.get(sessionId) ?? null;
+    const sessionSnapshots = session && session.currentSnapshotRevision !== null
+      ? (snapshotsBySession.get(session.id) ?? []).filter((snapshot) => snapshot.snapshotRevision === session.currentSnapshotRevision)
+      : [];
+    // The event clock follows the legacy writer; accounting uses its separate persisted fallback.
+    const persistedEffectiveAccountingAt = session?.effectiveAccountingAt ?? null;
+    const trainingEventAt = session?.matchedWorkout?.startAt ?? persistedEffectiveAccountingAt
+      ?? session?.webStartedAt ?? session?.createdAt ?? null;
+    const effectiveAccountingAt = persistedEffectiveAccountingAt ?? session?.matchedWorkout?.startAt
+      ?? session?.webStartedAt ?? session?.createdAt ?? null;
+    const accountingTimeZone = session?.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+    const accountingTimeZoneProvenance = session?.accountingTimeZoneProvenance ?? "legacy-default";
+    const accountingEffectiveLocalDate = effectiveAccountingAt && isValidTimeZone(accountingTimeZone)
+      ? instantToLocalDateTime(effectiveAccountingAt, accountingTimeZone).date : null;
+    const modelDate = trainingEventAt
+      ? episodeTimeContextForInstantV1(episodes, trainingEventAt).date : null;
+    const snapshot = sessionSnapshots.length === 1 ? sessionSnapshots[0] : null;
+    let snapshotTimeZoneValid = false;
+    if (snapshot?.timeZone) {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: snapshot.timeZone }).format(new Date(0));
+        snapshotTimeZoneValid = true;
+      } catch { /* Invalid persisted timezone remains a failed evidence bit. */ }
+    }
+    const payload = snapshot ? persistedPayloadFromUnknown(snapshot.payload) : null;
+    const expectedMassResolutionIdentity = payload && accountingEffectiveLocalDate && snapshotTimeZoneValid
+      ? buildMassResolutionIdentity({
+        localDate: accountingEffectiveLocalDate,
+        timeZone: accountingTimeZone,
+        methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
+        reference: payload.massReference,
+      }) : null;
+    const snapshotContractValid = Boolean(session && snapshot && payload && effectiveAccountingAt
+      && accountingEffectiveLocalDate && snapshotTimeZoneValid
+      && snapshot.snapshotRevision === session.currentSnapshotRevision
+      && snapshot.accountingInputRevision === session.accountingInputRevision
+      && snapshot.effectiveLocalDate === accountingEffectiveLocalDate
+      && snapshot.timeZone === accountingTimeZone
+      && snapshot.timeZoneProvenance === accountingTimeZoneProvenance
+      && snapshot.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
+      && snapshot.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
+      && snapshot.massResolutionIdentity === expectedMassResolutionIdentity
+      && /^[a-f0-9]{64}$/.test(snapshot.inputFingerprint)
+      && snapshot.payloadVersion === payload.schemaVersion
+      && payload.sessionId === session.id
+      && payload.snapshotRevision === snapshot.snapshotRevision
+      && payload.accountingInputRevision === session.accountingInputRevision
+      && payload.effectiveAccountingAt === effectiveAccountingAt.toISOString()
+      && payload.effectiveLocalDate === accountingEffectiveLocalDate
+      && payload.timeZone === accountingTimeZone
+      && payload.timeZoneProvenance === accountingTimeZoneProvenance
+      && payload.inputFingerprint === snapshot.inputFingerprint
+      && payload.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
+      && payload.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
+      && payload.massResolutionIdentity === expectedMassResolutionIdentity);
+    const snapshotEvidenceSha256 = snapshot ? sha256(canonicalJson({
+      snapshotRevision: snapshot.snapshotRevision,
+      accountingInputRevision: snapshot.accountingInputRevision,
+      inputFingerprint: snapshot.inputFingerprint,
+      effectiveLocalDate: snapshot.effectiveLocalDate,
+      timeZone: snapshot.timeZone,
+      timeZoneProvenance: snapshot.timeZoneProvenance,
+      accountingMethodVersion: snapshot.accountingMethodVersion,
+      massResolutionMethodVersion: snapshot.massResolutionMethodVersion,
+      massResolutionIdentity: snapshot.massResolutionIdentity,
+      payloadVersion: snapshot.payloadVersion,
+      payload: snapshot.payload,
+      createdAt: snapshot.createdAt,
+    })) : null;
+    return {
+      sourceKey: trainingBlock.sourceKey,
+      fromDate: trainingBlock.fromDate,
+      fenceRevision: trainingBlock.revision,
+      sessionRows: session ? 1 : 0,
+      sessionId: session?.id ?? null,
+      profileId: session?.profileId ?? null,
+      status: session?.status ?? null,
+      entryMode: session?.entryMode ?? null,
+      sourceRevision: session?.revision ?? null,
+      accountingInputRevision: session?.accountingInputRevision ?? null,
+      currentSnapshotRevision: session?.currentSnapshotRevision ?? null,
+      createdAt: session?.createdAt?.toISOString() ?? null,
+      persistedEffectiveAccountingAt: persistedEffectiveAccountingAt?.toISOString() ?? null,
+      webStartedAt: session?.webStartedAt?.toISOString() ?? null,
+      trainingEventAt: trainingEventAt?.toISOString() ?? null,
+      matchedWorkoutStartAt: session?.matchedWorkout?.startAt?.toISOString() ?? null,
+      effectiveAccountingAt: effectiveAccountingAt?.toISOString() ?? null,
+      accountingTimeZone,
+      accountingTimeZoneProvenance,
+      matchedWorkoutId: session?.matchedWorkoutId ?? null,
+      matchStatus: session?.matchStatus ?? null,
+      matchedWorkoutPresent: session?.matchedWorkout !== null && session?.matchedWorkout !== undefined,
+      matchedWorkoutIdentityMatches: session === null ? false : session.matchedWorkoutId === null
+        ? session.matchedWorkout === null : session.matchedWorkoutId === session.matchedWorkout?.id,
+      matchedWorkoutTypeSupported: session?.matchedWorkout
+        ? canonicalizeWorkoutType(session.matchedWorkout.type).classification === "traditional-strength-training" : false,
+      matchedWorkoutSourceIdentitySha256: session?.matchedWorkout?.sourceIdentity
+        ? sha256(session.matchedWorkout.sourceIdentity) : null,
+      matchedWorkoutSourceHealthDate: session?.matchedWorkout?.dailyHealthData?.date
+        ? dateKey(session.matchedWorkout.dailyHealthData.date) : null,
+      modelDate,
+      accountingEffectiveLocalDate,
+      accountingSnapshotRows: sessionSnapshots.length,
+      snapshotRevision: snapshot?.snapshotRevision ?? null,
+      snapshotAccountingInputRevision: snapshot?.accountingInputRevision ?? null,
+      snapshotEffectiveLocalDate: snapshot?.effectiveLocalDate ?? null,
+      snapshotTimeZone: snapshot?.timeZone ?? null,
+      snapshotTimeZoneValid,
+      snapshotTimeZoneProvenance: snapshot?.timeZoneProvenance ?? null,
+      snapshotContractValid,
+      snapshotEvidenceSha256,
+      chronologyValid: Boolean(session && snapshot && validDate(snapshot.createdAt) && validDate(session.updatedAt)
+        && validDate(trainingBlock.createdAt) && validDate(trainingBlock.updatedAt)
+        && snapshot.createdAt <= session.updatedAt && session.updatedAt <= trainingBlock.updatedAt
+        && trainingBlock.createdAt <= trainingBlock.updatedAt),
+    };
+  });
   return { health, training };
 }
 
@@ -356,12 +422,11 @@ async function main() {
       const sourceFingerprint = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
       const sourceEvidence = await readPublicationSourceEvidenceV1(tx as unknown as typeof prisma,
         blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })));
-      const [persistedDayRows, coveredDayRows] = lifecycle ? await Promise.all([
-        tx.dailyModelState.findMany({ where: { episode: { profileId: 1, active: true } },
-          select: { date: true }, orderBy: { date: "asc" } }),
+      const [sourceModelDayRows, coveredDayRows] = lifecycle ? await Promise.all([
+        readExpectedV4ModelDayBoundariesV1(tx as unknown as typeof prisma, 1),
         tx.unifiedExperimentalPhysiologyStateV2.findMany({
           where: { profileId: 1, modelRevision: lifecycle.unifiedTargetRevision },
-          select: { date: true }, orderBy: { date: "asc" },
+          select: { modelEpisodeId: true, date: true }, orderBy: [{ date: "asc" }, { modelEpisodeId: "asc" }],
         }),
       ]) : [[], []];
       return {
@@ -371,9 +436,11 @@ async function main() {
         blocks: blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })),
         sourceEvidence,
         sourceFingerprint,
-        persistedDayDates: persistedDayRows.map((row) => dateKey(row.date)),
+        sourceModelDayKeys: sourceModelDayRows.map((row) => `${row.episodeId}|${row.modelDate}`),
+        sourceModelDayDates: sourceModelDayRows.map((row) => row.modelDate),
+        coveredModelDayKeys: coveredDayRows.map((row) => `${row.modelEpisodeId}|${dateKey(row.date)}`),
         coveredDayDates: coveredDayRows.map((row) => dateKey(row.date)),
-        persistedDayCount: persistedDayRows.length,
+        sourceModelDayCount: sourceModelDayRows.length,
         coveredDayCount: coveredDayRows.length,
       };
     }, {

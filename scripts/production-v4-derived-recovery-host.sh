@@ -6,9 +6,9 @@ umask 077
 
 fail() { printf 'V4_RECOVERY_STOP %s\n' "$1" >&2; exit 1; }
 mode="${1:-}"
-[[ "$mode" == "preflight" || "$mode" == "execute" ]] || fail "invalid-mode"
+[[ "$mode" == "pretransfer" || "$mode" == "preflight" || "$mode" == "preexecute" || "$mode" == "execute" ]] || fail "invalid-mode"
 [[ "${BODYCAST_DEPLOY_PATH:-}" == "/srv/bodycast" ]] || fail "deploy-path"
-[[ "${BODYCAST_RECOVERY_SHA:-}" == "3968154f965597843b6a2c429fff178c0f1ac54c" ]] || fail "source-sha"
+[[ "${BODYCAST_RECOVERY_SHA:-}" == "35c556772759ea03c2728de921c1825f454d59c2" ]] || fail "source-sha"
 [[ "${BODYCAST_EXPECTED_APP_SHA:-}" == "f910d2a45dfa676fada5fab42c9e8946c97872b1" ]] || fail "expected-app-sha"
 [[ "${BODYCAST_OWNER_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || fail "owner-run-id"
 [[ "${BODYCAST_WORKFLOW_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || fail "workflow-sha"
@@ -18,7 +18,14 @@ mode="${1:-}"
 [[ "${BODYCAST_HOST_SCRIPT_SHA256:-}" =~ ^[a-f0-9]{64}$ && -f "$0" && ! -L "$0" ]] || fail "host-script-identity"
 [[ "$(sha256sum "$0" | awk '{print $1}')" == "$BODYCAST_HOST_SCRIPT_SHA256" ]] || fail "host-script-digest"
 [[ "$(realpath -e "$0" 2>/dev/null || true)" == "$0" ]] || fail "host-script-path-identity"
-[[ "${BODYCAST_IMAGE_ARCHIVE:-}" == "/var/lib/bodycast/recovery/artifacts/${BODYCAST_RECOVERY_SHA}/${BODYCAST_OWNER_RUN_ID}/image.tar" ]] || fail "image-path"
+artifact_dir="/var/lib/bodycast/recovery/artifacts/${BODYCAST_RECOVERY_SHA}/${BODYCAST_OWNER_RUN_ID}"
+[[ "${BODYCAST_IMAGE_ARCHIVE:-}" == "$artifact_dir/image.tar" ]] || fail "image-path"
+[[ "${BODYCAST_HEADROOM_SCRIPT:-}" == "$artifact_dir/headroom.mjs" && -f "$BODYCAST_HEADROOM_SCRIPT" \
+  && ! -L "$BODYCAST_HEADROOM_SCRIPT" && "$(realpath -e "$BODYCAST_HEADROOM_SCRIPT" 2>/dev/null || true)" == "$BODYCAST_HEADROOM_SCRIPT" ]] \
+  || fail "headroom-script-identity"
+[[ "${BODYCAST_HEADROOM_SCRIPT_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "headroom-script-digest"
+[[ "$(sha256sum "$BODYCAST_HEADROOM_SCRIPT" | awk '{print $1}')" == "$BODYCAST_HEADROOM_SCRIPT_SHA256" ]] || fail "headroom-script-digest"
+[[ "${BODYCAST_RECOVERY_HEADROOM_METRICS_JSON:-}" =~ ^\{.{2,1022}\}$ ]] || fail "headroom-metrics-missing"
 
 git_dir="$(git -C "$BODYCAST_DEPLOY_PATH" rev-parse --absolute-git-dir 2>/dev/null)" || fail "deploy-git-dir"
 [[ -d "$git_dir" && ! -L "$git_dir" && "$(git -C "$BODYCAST_DEPLOY_PATH" rev-parse --show-toplevel)" == "$BODYCAST_DEPLOY_PATH" ]] || fail "deploy-checkout-identity"
@@ -38,10 +45,54 @@ app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release
 [[ "$db_id" =~ ^[a-f0-9]{64}$ && "$db_image" =~ ^sha256:[a-f0-9]{64}$ && "$db_status" == running ]] || fail "db-container-identity"
 [[ "$app_id" =~ ^[a-f0-9]{64}$ && "$app_image" =~ ^sha256:[a-f0-9]{64}$ && "$app_health" == healthy && "$app_sha" == "$BODYCAST_EXPECTED_APP_SHA" ]] || fail "serving-app-identity"
 
+headroom_check() {
+  local phase="$1" docker_root pgdata_container pgwal_container mounts_json host_paths
+  docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" || fail "docker-root-identity"
+  [[ "$docker_root" == /* && -d "$docker_root" && ! -L "$docker_root" ]] || fail "docker-root-identity"
+  pgdata_container="$(docker exec "$db" sh -c 'printf "%s" "${PGDATA:-/var/lib/postgresql/data}"' 2>/dev/null)" || fail "postgres-pgdata-identity"
+  pgwal_container="$(docker exec "$db" sh -c 'readlink -f "${PGDATA:-/var/lib/postgresql/data}/pg_wal"' 2>/dev/null)" || fail "postgres-wal-identity"
+  [[ "$pgdata_container" == /* && "$pgwal_container" == /* ]] || fail "postgres-pgdata-identity"
+  mounts_json="$(docker inspect --format '{{json .Mounts}}' "$db" 2>/dev/null)" || fail "postgres-mount-identity"
+  host_paths="$(BODYCAST_MOUNTS_JSON="$mounts_json" BODYCAST_PGDATA_CONTAINER="$pgdata_container" \
+    BODYCAST_PGWAL_CONTAINER="$pgwal_container" node --input-type=module <<'NODE'
+const mounts = JSON.parse(process.env.BODYCAST_MOUNTS_JSON);
+const mapPath = (containerPath) => {
+  const matches = mounts.filter((mount) => containerPath === mount.Destination
+    || containerPath.startsWith(`${mount.Destination.replace(/\/$/, "")}/`))
+    .sort((a, b) => b.Destination.length - a.Destination.length);
+  const mount = matches[0];
+  if (!mount || !mount.Source || !mount.Destination || mount.Type === "tmpfs") throw new Error("PostgreSQL path is not on a verified persistent Docker mount.");
+  return `${mount.Source.replace(/\/$/, "")}${containerPath.slice(mount.Destination.replace(/\/$/, "").length)}`;
+};
+process.stdout.write(`${mapPath(process.env.BODYCAST_PGDATA_CONTAINER)}\n${mapPath(process.env.BODYCAST_PGWAL_CONTAINER)}\n`);
+NODE
+  )" || fail "postgres-mount-identity"
+  mapfile -t pg_host_paths <<< "$host_paths"
+  [[ "${#pg_host_paths[@]}" -eq 2 && "${pg_host_paths[0]}" == /* && "${pg_host_paths[1]}" == /* \
+    && -d "${pg_host_paths[0]}" && -d "${pg_host_paths[1]}" ]] || fail "postgres-mount-identity"
+  node "$BODYCAST_HEADROOM_SCRIPT" --check "$phase" "$BODYCAST_RECOVERY_HEADROOM_METRICS_JSON" \
+    "$artifact_dir" "$docker_root" "${pg_host_paths[0]}" "${pg_host_paths[1]}" /var/tmp /var/lib/bodycast/recovery \
+    "$(docker image inspect "$BODYCAST_IMAGE_ID" >/dev/null 2>&1 && printf true || printf false)" \
+    || fail "disk-headroom-${phase}"
+}
+
+if [[ "$mode" == "pretransfer" ]]; then
+  headroom_check before-transfer
+  printf 'V4_RECOVERY_HEADROOM_OK phase=before-transfer\n'
+  exit 0
+fi
+if [[ "$mode" == "preexecute" ]]; then
+  headroom_check before-execute
+  printf 'V4_RECOVERY_HEADROOM_OK phase=before-execute\n'
+  exit 0
+fi
+
 if [[ ! -f "$BODYCAST_IMAGE_ARCHIVE" || -L "$BODYCAST_IMAGE_ARCHIVE" ]]; then fail "image-archive-missing"; fi
 [[ "$(realpath -e "$BODYCAST_IMAGE_ARCHIVE" 2>/dev/null || true)" == "$BODYCAST_IMAGE_ARCHIVE" ]] || fail "image-path-identity"
 [[ "$(sha256sum "$BODYCAST_IMAGE_ARCHIVE" | awk '{print $1}')" == "$BODYCAST_IMAGE_ARCHIVE_SHA256" ]] || fail "image-archive-digest"
 if ! docker image inspect "$BODYCAST_IMAGE_ID" >/dev/null 2>&1; then
+  [[ "$mode" == "preflight" ]] || fail "immutable-recovery-image-not-loaded"
+  headroom_check before-load
   docker load --input "$BODYCAST_IMAGE_ARCHIVE" >/dev/null || fail "image-load"
 fi
 [[ "$(docker image inspect --format '{{.Id}}' "$BODYCAST_IMAGE_ID" 2>/dev/null)" == "$BODYCAST_IMAGE_ID" ]] || fail "loaded-image-id"
@@ -109,7 +160,7 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
   throw new Error("Live database is not the expected stale 65-migration V4 source state.");
 }
-const output = { sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
+const output = { sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.argv[6], appImageId: process.argv[7], appSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   databaseContainerAddress: process.argv[8], evidence };
@@ -133,16 +184,32 @@ import { createHash } from "node:crypto";
 const expected = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const live = JSON.parse(readFileSync(process.argv[3], "utf8"));
 const fences = expected.evidence?.blocks ?? [];
+const modelDayKeyPattern = /^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/;
+const normalizeModelDayKeys = (keys) => {
+  if (!Array.isArray(keys) || keys.length < 1 || keys.some((key) => {
+    if (typeof key !== "string" || !modelDayKeyPattern.test(key)) return true;
+    const date = key.slice(key.indexOf("|") + 1);
+    const parsed = new Date(`${date}T00:00:00.000Z`);
+    return !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date;
+  }) || new Set(keys).size !== keys.length) throw new Error("Malformed or duplicate rehearsed model-day coverage.");
+  return [...keys].sort();
+};
+const rehearsalCoveredModelDayKeys = normalizeModelDayKeys(expected.rehearsalCoverage?.coveredModelDayKeys);
+const sourceModelDayKeys = normalizeModelDayKeys(expected.evidence?.sourceModelDayKeys);
+const rehearsalCoverageSha256 = createHash("sha256").update(`${rehearsalCoveredModelDayKeys.join("\n")}\n`).digest("hex");
 const fenceDigest = createHash("sha256").update([...fences].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`))
   .map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join("")).digest("hex");
 if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !== process.argv[5]
     || expected.databaseImageId !== process.argv[6] || expected.appContainerId !== process.argv[7]
     || expected.appImageId !== process.argv[8] || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
+    || JSON.stringify(expected.evidence?.sourceModelDayKeys) !== JSON.stringify(live.sourceModelDayKeys)
     || JSON.stringify(expected.evidence?.migrationRows) !== JSON.stringify(live.migrationRows)
     || JSON.stringify(expected.evidence?.blocks) !== JSON.stringify(live.blocks)
     || JSON.stringify(expected.evidence?.sourceEvidence) !== JSON.stringify(live.sourceEvidence)
     || JSON.stringify(expected.evidence?.lifecycle) !== JSON.stringify(live.lifecycle)
     || expected.preflightSha !== process.argv[10] || expected.sourceSha !== process.argv[11]
+    || sourceModelDayKeys.some((key) => !rehearsalCoveredModelDayKeys.includes(key))
+    || expected.rehearsalCoverage?.sha256 !== rehearsalCoverageSha256
     || expected.databaseContainerAddress !== process.argv[9]
     || live.database?.serverAddress !== process.argv[9] || live.database?.serverPort !== 5432) {
   throw new Error("Production identity, schema, raw data, lifecycle, or fences changed after isolated restore rehearsal.");
@@ -150,12 +217,29 @@ if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !=
 process.stdout.write(JSON.stringify({ preflightDigest: createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"),
   ledgerDigest: expected.evidence.expectedLedgerDigest, fenceDigest, sourceFingerprint: live.sourceFingerprint }) + "\n");
 NODE
+binding_json="$(docker run --rm --interactive --network "$network" "$BODYCAST_IMAGE_ID" \
+  node --input-type=module -e 'import { readFileSync } from "node:fs"; import { recoveryEvidenceBinding } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); const binding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint, blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle }); process.stdout.write(JSON.stringify(binding));' \
+  < "$expected_file")" || fail "canonical-recovery-binding"
+BODYCAST_BINDING_JSON="$binding_json" BODYCAST_EXPECTED_FILE="$expected_file" node --input-type=module <<'NODE'
+import { readFileSync } from "node:fs";
+const preflight = JSON.parse(readFileSync(process.env.BODYCAST_EXPECTED_FILE, "utf8"));
+const binding = JSON.parse(process.env.BODYCAST_BINDING_JSON);
+if (!preflight.expectedEntryBinding || JSON.stringify(preflight.expectedEntryBinding) !== JSON.stringify(binding)
+    || binding.contract !== "bodycast-v4-recovery-evidence-binding-v1"
+    || !/^[a-f0-9]{64}$/.test(binding.rawFingerprint) || !/^[a-f0-9]{64}$/.test(binding.fenceDigest)
+    || !/^[a-f0-9]{64}$/.test(binding.lifecycleDigest) || !/^[a-f0-9]{64}$/.test(binding.bindingDigest)) {
+  throw new Error("Preflight-to-entrypoint evidence binding is absent or changed.");
+}
+NODE
+printf 'BODYCAST_V4_EXPECTED_EVIDENCE_BINDING=%s\n' "$binding_json" >> "$database_env_file"
 [[ "$(docker inspect --format '{{.Id}}' "$db")" == "$db_id" \
   && "$(docker inspect --format '{{.Image}}' "$db")" == "$db_image" \
   && "$(docker inspect --format '{{.Id}}' "$app")" == "$app_id" \
   && "$(docker inspect --format '{{.Image}}' "$app")" == "$app_image" \
   && "$(docker inspect --format '{{.State.Status}}' "$db")" == running \
   && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app")" == healthy ]] || fail "production-container-identity-changed"
+
+headroom_check before-execute
 
 # Durable one-shot fence is written and synced immediately before the only
 # production invocation. Any interrupted/unknown outcome leaves this marker.
@@ -166,14 +250,48 @@ const [path, sourceSha, runId, imageId, archiveSha, workflowSha, attempt, prefli
   schemaSha, dbId, dbImage, appId, appImage] = process.argv.slice(2);
 const preflight = JSON.parse(await readFile(preflightPath, "utf8"));
 const fences = [...preflight.evidence.blocks].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`));
+const rehearsalCoveredModelDayKeys = preflight.rehearsalCoverage?.coveredModelDayKeys;
+if (!Array.isArray(rehearsalCoveredModelDayKeys) || rehearsalCoveredModelDayKeys.length < 1
+    || rehearsalCoveredModelDayKeys.some((key) => typeof key !== "string" || !/^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/.test(key))
+    || new Set(rehearsalCoveredModelDayKeys).size !== rehearsalCoveredModelDayKeys.length) {
+  throw new Error("Preflight rehearsal coverage is malformed or duplicated.");
+}
+const normalizedRehearsalCoverage = [...rehearsalCoveredModelDayKeys].sort();
+const rehearsalCoverageSha256 = createHash("sha256").update(`${normalizedRehearsalCoverage.join("\n")}\n`).digest("hex");
+if (preflight.rehearsalCoverage.sha256 !== rehearsalCoverageSha256
+    || preflight.evidence.sourceModelDayKeys.some((key) => !normalizedRehearsalCoverage.includes(key))) {
+  throw new Error("Rehearsal coverage digest or persisted-source coverage binding failed.");
+}
 const fenceDigest = createHash("sha256").update(fences.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join("")).digest("hex");
 const preflightDigest = createHash("sha256").update(await readFile(preflightPath)).digest("hex");
-const tmp = `${path}.tmp-${process.pid}`;
-const file = await open(tmp, "wx", 0o600);
-await file.writeFile(`${JSON.stringify({ state: "started", sourceSha, ownerRunId: runId, workflowSha, attempt,
+const marker = { state: "started", sourceSha, ownerRunId: runId, workflowSha, attempt,
   imageId, archiveSha, preflightDigest, schemaSha, ledgerDigest: preflight.evidence.expectedLedgerDigest,
   fenceDigest, sourceFingerprint: preflight.evidence.sourceFingerprint, databaseContainerId: dbId,
-  databaseImageId: dbImage, appContainerId: appId, appImageId: appImage, startedAt: new Date().toISOString() })}\n`);
+  rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: normalizedRehearsalCoverage,
+  databaseImageId: dbImage, appContainerId: appId, appImageId: appImage, startedAt: new Date().toISOString() };
+const markerContents = `${JSON.stringify(marker)}\n`;
+const markerBytes = Buffer.byteLength(markerContents);
+const headroomMetrics = JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON ?? "null");
+const { pathToFileURL } = await import("node:url");
+const { recoveryTerminalMarkerBudgetTemplate, serializedRecoveryMarkerBytes } = await import(pathToFileURL(process.env.BODYCAST_HEADROOM_SCRIPT));
+const terminalMarkerTemplate = recoveryTerminalMarkerBudgetTemplate(marker, {
+  sourceModelDayKeys: preflight.evidence.sourceModelDayKeys,
+  coveredModelDayKeys: normalizedRehearsalCoverage,
+  sourceFingerprint: preflight.evidence.sourceFingerprint,
+  schemaSha256: schemaSha,
+  rehearsalCoverageSha256,
+  unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+});
+if (!Number.isSafeInteger(headroomMetrics?.recoveryStartMarkerBytes) || headroomMetrics.recoveryStartMarkerBytes < markerBytes) {
+  throw new Error("Durable start marker exceeds the measured disk headroom allowance.");
+}
+if (!Number.isSafeInteger(headroomMetrics?.recoveryTerminalMarkerBytes)
+    || headroomMetrics.recoveryTerminalMarkerBytes < serializedRecoveryMarkerBytes(terminalMarkerTemplate)) {
+  throw new Error("Durable terminal marker peak exceeds the measured disk headroom allowance.");
+}
+const tmp = `${path}.tmp-${process.pid}`;
+const file = await open(tmp, "wx", 0o600);
+await file.writeFile(markerContents);
 await file.sync(); await file.close(); await rename(tmp, path);
 NODE
 sync -f "$marker_dir" || fail "marker-sync"
@@ -190,7 +308,12 @@ if [[ "$result_status" != success ]]; then
   node --input-type=module - "$marker" "$result_status" <<'NODE'
 import { readFileSync, writeFileSync, openSync, fsyncSync, closeSync, renameSync } from "node:fs";
 const [path, status] = process.argv.slice(2); const prior = JSON.parse(readFileSync(path, "utf8"));
-const tmp = `${path}.terminal-${process.pid}`; writeFileSync(tmp, `${JSON.stringify({ ...prior, state: "terminal-failed", result: status, finishedAt: new Date().toISOString() })}\n`, { mode: 0o600, flag: "wx" });
+const terminalContents = `${JSON.stringify({ ...prior, state: "terminal-failed", result: status, finishedAt: new Date().toISOString() })}\n`;
+const metrics = JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON ?? "null");
+if (!Number.isSafeInteger(metrics?.recoveryTerminalMarkerBytes) || metrics.recoveryTerminalMarkerBytes < Buffer.byteLength(terminalContents)) {
+  throw new Error("Failed terminal marker exceeds the measured disk headroom allowance.");
+}
+const tmp = `${path}.terminal-${process.pid}`; writeFileSync(tmp, terminalContents, { mode: 0o600, flag: "wx" });
 const fd = openSync(tmp, "r+"); fsyncSync(fd); closeSync(fd); renameSync(tmp, path);
 NODE
   sync -f "$marker_dir" || true
@@ -209,9 +332,16 @@ schema_digest_after="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner
   || fail "production-container-identity-changed-during-recovery"
 node --input-type=module - "$marker" "$evidence_file" "$after_file" "$result_file" "$schema_digest" <<'NODE'
 import { readFileSync, writeFileSync, openSync, fsyncSync, closeSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
 const [path, beforePath, afterPath, resultPath, schemaSha256] = process.argv.slice(2);
 const before = JSON.parse(readFileSync(beforePath, "utf8")); const after = JSON.parse(readFileSync(afterPath, "utf8"));
 const result = JSON.parse(readFileSync(resultPath, "utf8").trim().split(/\r?\n/).at(-1));
+const preflight = JSON.parse(readFileSync(process.env.BODYCAST_PREFLIGHT_JSON_FILE, "utf8"));
+const modelDayKeyPattern = /^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/;
+const rehearsedKeys = preflight.rehearsalCoverage?.coveredModelDayKeys;
+const rehearsalCoverage = Array.isArray(rehearsedKeys) ? [...rehearsedKeys].sort() : [];
+const actualCoverage = Array.isArray(after.coveredModelDayKeys) ? [...after.coveredModelDayKeys].sort() : [];
+const rehearsalCoverageSha256 = createHash("sha256").update(`${rehearsalCoverage.join("\n")}\n`).digest("hex");
 if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedgerDigest !== after.expectedLedgerDigest
     || after.blocks.length !== 0
     || JSON.stringify(before.migrationRows) !== JSON.stringify(after.migrationRows)
@@ -221,24 +351,38 @@ if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedge
     || after.lifecycle?.unifiedPublicationBlockedFromDate !== null
     || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
     || after.lifecycle?.productionPublishedGeneration !== after.lifecycle?.invalidationGeneration
-    || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount !== after.persistedDayCount
+    || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount < after.sourceModelDayCount
     || after.coveredDayCount < 1
-    || JSON.stringify([...after.persistedDayDates].sort()) !== JSON.stringify([...after.coveredDayDates].sort())
-    || after.persistedDayDates.length !== after.persistedDayCount || after.coveredDayDates.length !== after.coveredDayCount
+    || !Array.isArray(rehearsedKeys) || rehearsedKeys.length < 1
+    || rehearsedKeys.some((key) => typeof key !== "string" || !modelDayKeyPattern.test(key))
+    || new Set(rehearsedKeys).size !== rehearsedKeys.length
+    || preflight.rehearsalCoverage.sha256 !== rehearsalCoverageSha256
+    || rehearsalCoverage.length !== actualCoverage.length
+    || rehearsalCoverage.some((key, index) => key !== actualCoverage[index])
+    || after.sourceModelDayKeys.some((key) => !rehearsalCoverage.includes(key))
+    || after.sourceModelDayCount !== after.sourceModelDayKeys.length || after.coveredDayCount !== after.coveredModelDayKeys.length
+    || JSON.stringify(before.sourceModelDayKeys) !== JSON.stringify(after.sourceModelDayKeys)
     || result.command !== "unified-v4-derived-recovery"
     || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.sourceFingerprint) {
   throw new Error("Read-only postflight did not prove strict raw parity and V4 CURRENT coverage at epoch 1.");
 }
 const prior = JSON.parse(readFileSync(path, "utf8")); const tmp = `${path}.terminal-${process.pid}`;
-writeFileSync(tmp, `${JSON.stringify({ ...prior, state: "completed", result: "current", finishedAt: new Date().toISOString(),
+const terminalContents = `${JSON.stringify({ ...prior, state: "completed", result: "current", finishedAt: new Date().toISOString(),
   sourceFingerprint: after.sourceFingerprint, postflightSchemaSha256: schemaSha256,
-  persistedDayDates: after.persistedDayDates, coveredDayDates: after.coveredDayDates,
-  coveredDayCount: after.coveredDayCount, persistedDayCount: after.persistedDayCount,
+  sourceModelDayKeys: after.sourceModelDayKeys, coveredModelDayKeys: after.coveredModelDayKeys,
+  rehearsalCoverageSha256: preflight.rehearsalCoverage.sha256,
+  sourceModelDayCount: after.sourceModelDayCount, coveredDayCount: after.coveredDayCount,
   blocksRemaining: after.blocks.length, unifiedPublishedGeneration: after.lifecycle.unifiedPublishedGeneration,
   productionPublishedGeneration: after.lifecycle.productionPublishedGeneration,
   unifiedTargetRevision: after.lifecycle.unifiedTargetRevision,
   unifiedPublicationBlockedFromDate: after.lifecycle.unifiedPublicationBlockedFromDate,
-  rolloutEpoch: after.lifecycle.unifiedRolloutEpoch })}\n`, { mode: 0o600, flag: "wx" });
+  rolloutEpoch: after.lifecycle.unifiedRolloutEpoch })}\n`;
+const headroomMetrics = JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON ?? "null");
+if (!Number.isSafeInteger(headroomMetrics?.recoveryTerminalMarkerBytes)
+    || headroomMetrics.recoveryTerminalMarkerBytes < Buffer.byteLength(terminalContents)) {
+  throw new Error("Completed terminal marker exceeds the measured disk headroom allowance.");
+}
+writeFileSync(tmp, terminalContents, { mode: 0o600, flag: "wx" });
 const fd = openSync(tmp, "r+"); fsyncSync(fd); closeSync(fd); renameSync(tmp, path);
 NODE
 sync -f "$marker_dir" || fail "terminal-marker-sync"

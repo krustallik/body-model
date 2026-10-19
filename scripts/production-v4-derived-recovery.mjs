@@ -5,18 +5,19 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
   pullRequest: 101,
   branch: "codex/v4-recovery-audit",
   baseSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
+  sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
   productionAppSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   migrationCount: 65,
   migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
   ledgerDigest: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
   prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
   ownerId: "126446430",
-  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3968154f965597843b6a2c429fff178c0f1ac54c",
+  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_35c556772759ea03c2728de921c1825f454d59c2",
   command: Object.freeze([
     "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
     "--owner-authorized", "--profile-id", "1",
   ]),
+  evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
 });
 
 const fail = (message) => { throw new Error(message); };
@@ -36,6 +37,28 @@ const isValidTimeZone = (value) => {
 
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizedModelDayKeys(keys, label) {
+  if (!Array.isArray(keys) || keys.length < 1 || keys.some((key) => !isModelDayKey(key))
+    || new Set(keys).size !== keys.length) {
+    fail(`${label} contains malformed or duplicate model-day identities.`);
+  }
+  return [...keys].sort();
+}
+
+export function modelDayKeysDigest(keys) {
+  const normalized = normalizedModelDayKeys(keys, "Rehearsed V4 coverage");
+  return sha256(`${normalized.join("\n")}\n`);
+}
+
+export function assertRehearsedCoverageEvidence({ sourceModelDayKeys, coveredModelDayKeys, coverageSha256 }) {
+  const source = normalizedModelDayKeys(sourceModelDayKeys, "Persisted-source model-day coverage");
+  const covered = normalizedModelDayKeys(coveredModelDayKeys, "Rehearsed V4 coverage");
+  if (source.some((key) => !covered.includes(key)) || modelDayKeysDigest(covered) !== coverageSha256) {
+    fail("Exact-image rehearsal coverage does not bind every persisted source model day.");
+  }
+  return true;
 }
 
 export function migrationLedgerDigest(rows) {
@@ -100,19 +123,22 @@ export function assertApprovedRecoveryRuns({
   return true;
 }
 
-export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archiveSha256, manifestSha256,
-  migrationTree, prismaSchemaBlob, effectiveCommand, ledgerRows }) {
+export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archiveSha256, archiveBytes, imageBytes,
+  evidenceBindingContract, manifestSha256, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerRows }) {
   const approved = LEGACY_V4_RECOVERY;
   if (sourceSha !== approved.sourceSha || !/^sha256:[a-f0-9]{64}$/.test(String(imageId))
     || !/^sha256:[a-f0-9]{64}$/.test(String(imageDigest))
-    || !isDigest(archiveSha256) || migrationTree !== approved.migrationTree
+    || !isDigest(archiveSha256) || !Number.isSafeInteger(archiveBytes) || archiveBytes < 1
+    || !Number.isSafeInteger(imageBytes) || imageBytes < 1
+    || evidenceBindingContract !== approved.evidenceBindingContract || migrationTree !== approved.migrationTree
     || prismaSchemaBlob !== approved.prismaSchemaBlob
     || JSON.stringify(effectiveCommand) !== JSON.stringify(approved.command)) {
     fail("Recovery artifact SHA, immutable image/archive identity, schema, or entrypoint is not approved.");
   }
   const ledgerDigest = migrationLedgerDigest(ledgerRows);
   if (ledgerDigest !== approved.ledgerDigest) fail("Recovery artifact migration rows do not match the exact audited 65-migration ledger.");
-  const manifest = { sourceSha, imageId, imageDigest, archiveSha256, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerDigest };
+  const manifest = { sourceSha, imageId, imageDigest, archiveSha256, archiveBytes, imageBytes,
+    evidenceBindingContract, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerDigest };
   if (manifestSha256 !== sha256(JSON.stringify(manifest))) fail("Recovery artifact provenance manifest digest does not match its contents.");
   return ledgerDigest;
 }
@@ -139,11 +165,44 @@ export function publicationBlockDigest(blocks) {
     }
   }
   const training = sorted.filter((block) => block.source === "training");
-  const health = sorted.filter((block) => block.source === "health");
-  if (health.length < 1 || training.length !== 1 || training[0].sourceKey !== "20") {
-    fail("Current persisted fence set must contain one or more Health dates and only Training session 20.");
+  if (training.some((block) => !/^[1-9][0-9]*$/.test(String(block.sourceKey))
+    || !Number.isSafeInteger(Number(block.sourceKey)))) {
+    fail("Current persisted fence set contains a non-canonical positive Training session identity.");
   }
   return sha256(sorted.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join(""));
+}
+
+function recoveryLifecycleBindingValues(lifecycle) {
+  if (!lifecycle || lifecycle.profileId !== 1
+      || !Number.isSafeInteger(lifecycle.invalidationGeneration)
+      || !Number.isSafeInteger(lifecycle.productionPublishedGeneration)
+      || typeof lifecycle.productionStaleFromDate !== "string" && lifecycle.productionStaleFromDate !== null
+      || typeof lifecycle.unifiedTargetRevision !== "string"
+      || !Number.isSafeInteger(lifecycle.unifiedRolloutEpoch)
+      || lifecycle.unifiedPublishedGeneration !== null && !Number.isSafeInteger(lifecycle.unifiedPublishedGeneration)
+      || lifecycle.unifiedPublishedRolloutEpoch !== null && !Number.isSafeInteger(lifecycle.unifiedPublishedRolloutEpoch)
+      || typeof lifecycle.unifiedPublicationBlockedFromDate !== "string" && lifecycle.unifiedPublicationBlockedFromDate !== null
+      || typeof lifecycle.unifiedPublicationBlockedSource !== "string" && lifecycle.unifiedPublicationBlockedSource !== null) {
+    fail("V4 recovery lifecycle binding is incomplete or malformed.");
+  }
+  return [lifecycle.profileId, lifecycle.invalidationGeneration, lifecycle.productionPublishedGeneration,
+    lifecycle.productionStaleFromDate, lifecycle.unifiedTargetRevision, lifecycle.unifiedRolloutEpoch,
+    lifecycle.unifiedPublishedGeneration, lifecycle.unifiedPublishedRolloutEpoch,
+    lifecycle.unifiedPublicationBlockedFromDate, lifecycle.unifiedPublicationBlockedSource];
+}
+
+/** Canonical versioned binding shared with the 65-schema recovery entrypoint. */
+export function recoveryEvidenceBinding({ sourceFingerprint, blocks, lifecycle }) {
+  if (!isDigest(sourceFingerprint)) fail("V4 recovery source fingerprint is malformed.");
+  const fenceDigest = publicationBlockDigest(blocks);
+  const lifecycleDigest = sha256(JSON.stringify(recoveryLifecycleBindingValues(lifecycle)));
+  return {
+    contract: "bodycast-v4-recovery-evidence-binding-v1",
+    rawFingerprint: sourceFingerprint,
+    fenceDigest,
+    lifecycleDigest,
+    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v1\n${sourceFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
+  };
 }
 
 export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
@@ -183,35 +242,59 @@ export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
     }
   }
 
-  const trainingBlocks = blocks.filter((block) => block.source === "training");
-  const training = sourceEvidence?.training;
-  const trainingBlock = trainingBlocks[0];
-  if (!training || trainingBlocks.length !== 1 || training.sourceKey !== trainingBlock.sourceKey
-    || training.fromDate !== trainingBlock.fromDate || training.fenceRevision !== trainingBlock.revision
-    || training.sessionRows !== 1 || training.sessionId !== 20 || training.profileId !== 1
-    || training.status !== "COMPLETED" || !Number.isSafeInteger(training.sourceRevision) || training.sourceRevision < 1
-    || !Number.isSafeInteger(training.accountingInputRevision) || training.accountingInputRevision < 1
-    || !Number.isSafeInteger(training.currentSnapshotRevision) || training.currentSnapshotRevision < 1
-    || training.accountingSnapshotRows !== 1 || training.snapshotRevision !== training.currentSnapshotRevision
-    || training.snapshotAccountingInputRevision !== training.accountingInputRevision
-    || !isCalendarDate(training.accountingEffectiveLocalDate)
-    || !isTimestamp(training.effectiveAccountingAt) || !isValidTimeZone(training.accountingTimeZone)
-    || !["client-session", "legacy-default"].includes(training.accountingTimeZoneProvenance)
-    || !isCalendarDate(training.snapshotEffectiveLocalDate)
-    || training.snapshotEffectiveLocalDate !== training.accountingEffectiveLocalDate
-    || training.snapshotTimeZone !== training.accountingTimeZone || !training.snapshotTimeZoneValid
-    || training.snapshotTimeZoneProvenance !== training.accountingTimeZoneProvenance
-    || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
-    || training.matchStatus !== "MATCHED" || !Number.isSafeInteger(training.matchedWorkoutId) || training.matchedWorkoutId < 1
-    || training.matchedWorkoutPresent !== true || training.matchedWorkoutIdentityMatches !== true
-    || !isTimestamp(training.matchedWorkoutStartAt) || !isTimestamp(training.trainingEventAt)
-    || training.trainingEventAt !== training.matchedWorkoutStartAt
-    // blockUnifiedPublication retains min(existing.fromDate, new fromDate),
-    // so a valid fence may be earlier than today's event model date. It must
-    // never start after the current writer date, which would omit dependencies.
-    || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
-    || training.chronologyValid !== true) {
-    fail("Training session 20 is missing its current persisted source, accounting snapshot, model date, or revision chronology.");
+  const trainingBlocks = blocks.filter((block) => block.source === "training")
+    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
+  const trainingEvidence = sourceEvidence?.training;
+  if (!Array.isArray(trainingEvidence) || trainingEvidence.length !== trainingBlocks.length) {
+    fail("Every Training publication fence must have exactly one matching persisted source and accounting snapshot.");
+  }
+  for (const [index, trainingBlock] of trainingBlocks.entries()) {
+    const training = trainingEvidence[index];
+    const matched = training?.matchStatus === "MATCHED";
+    const noMatch = ["PENDING", "UNMATCHED", "AMBIGUOUS"].includes(training?.matchStatus);
+    const expectedEventAt = training?.matchedWorkoutStartAt ?? training?.persistedEffectiveAccountingAt
+      ?? training?.webStartedAt ?? training?.createdAt;
+    const expectedAccountingAt = training?.persistedEffectiveAccountingAt ?? training?.matchedWorkoutStartAt
+      ?? training?.webStartedAt ?? training?.createdAt;
+    const matchEvidenceValid = matched
+      ? Number.isSafeInteger(training?.matchedWorkoutId) && training.matchedWorkoutId > 0
+        && training.matchedWorkoutPresent === true && training.matchedWorkoutIdentityMatches === true
+        && isTimestamp(training.matchedWorkoutStartAt) && training.matchedWorkoutTypeSupported === true
+        && isDigest(training.matchedWorkoutSourceIdentitySha256)
+        && isCalendarDate(training.matchedWorkoutSourceHealthDate)
+      : noMatch && training?.matchedWorkoutId === null && training.matchedWorkoutPresent === false
+        && training.matchedWorkoutIdentityMatches === true && training.matchedWorkoutStartAt === null
+        && training.matchedWorkoutTypeSupported === false
+        && training.matchedWorkoutSourceIdentitySha256 === null
+        && training.matchedWorkoutSourceHealthDate === null
+        && (training.entryMode === "LIVE"
+          || (training.entryMode === "RETROSPECTIVE" && training.matchStatus === "UNMATCHED"));
+    if (!training || training.sourceKey !== trainingBlock.sourceKey
+      || training.fromDate !== trainingBlock.fromDate || training.fenceRevision !== trainingBlock.revision
+      || training.sessionRows !== 1 || training.sessionId !== Number(trainingBlock.sourceKey) || training.profileId !== 1
+      || training.status !== "COMPLETED" || !["LIVE", "RETROSPECTIVE"].includes(training.entryMode)
+      || !Number.isSafeInteger(training.sourceRevision) || training.sourceRevision < 1
+      || !Number.isSafeInteger(training.accountingInputRevision) || training.accountingInputRevision < 1
+      || !Number.isSafeInteger(training.currentSnapshotRevision) || training.currentSnapshotRevision < 1
+      || training.accountingSnapshotRows !== 1 || training.snapshotRevision !== training.currentSnapshotRevision
+      || training.snapshotAccountingInputRevision !== training.accountingInputRevision
+      || !isTimestamp(training.createdAt)
+      || (training.persistedEffectiveAccountingAt !== null && !isTimestamp(training.persistedEffectiveAccountingAt))
+      || !isTimestamp(training.effectiveAccountingAt) || !isTimestamp(training.trainingEventAt)
+      || training.trainingEventAt !== expectedEventAt
+      || training.effectiveAccountingAt !== expectedAccountingAt
+      || !isCalendarDate(training.accountingEffectiveLocalDate) || !isValidTimeZone(training.accountingTimeZone)
+      || !["client-session", "legacy-default"].includes(training.accountingTimeZoneProvenance)
+      || !isCalendarDate(training.snapshotEffectiveLocalDate)
+      || training.snapshotEffectiveLocalDate !== training.accountingEffectiveLocalDate
+      || training.snapshotTimeZone !== training.accountingTimeZone || !training.snapshotTimeZoneValid
+      || training.snapshotTimeZoneProvenance !== training.accountingTimeZoneProvenance
+      || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
+      || !matchEvidenceValid
+      || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
+      || training.chronologyValid !== true) {
+      fail(`Training session ${trainingBlock.sourceKey} is missing its current persisted source, accounting snapshot, event model date, or revision chronology.`);
+    }
   }
   return true;
 }
@@ -285,7 +368,12 @@ export function assertSchemaSignature({ observed, expected, objectCount }) {
 }
 
 export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, lifecycle, blocks,
-  coveredDayCount, persistedDayCount, coveredDates, persistedDates, existingEpoch }) {
+  coveredModelDayCount, expectedModelDayCount, coveredModelDayKeys, expectedModelDayKeys,
+  rehearsalCoveredModelDayKeys, rehearsalCoverageSha256, existingEpoch }) {
+  assertRehearsedCoverageEvidence({ sourceModelDayKeys: expectedModelDayKeys,
+    coveredModelDayKeys: rehearsalCoveredModelDayKeys, coverageSha256: rehearsalCoverageSha256 });
+  const normalizedActualCoverage = normalizedModelDayKeys(coveredModelDayKeys, "Published V4 coverage");
+  const normalizedRehearsalCoverage = normalizedModelDayKeys(rehearsalCoveredModelDayKeys, "Rehearsed V4 coverage");
   if (!isDigest(beforeFingerprint) || beforeFingerprint !== afterFingerprint) fail("Strict persisted raw-source fingerprint changed during recovery.");
   if (existingEpoch !== 1 || lifecycle?.unifiedRolloutEpoch !== 1
     || lifecycle.productionStaleFromDate !== null
@@ -294,12 +382,26 @@ export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, 
     || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration
     || lifecycle.unifiedPublishedRolloutEpoch !== 1
     || lifecycle.unifiedPublicationBlockedFromDate !== null
-    || blocks !== 0 || !Number.isSafeInteger(persistedDayCount) || persistedDayCount < 1
-    || coveredDayCount !== persistedDayCount || !Array.isArray(persistedDates) || !Array.isArray(coveredDates)
-    || persistedDates.length !== persistedDayCount || coveredDates.length !== coveredDayCount
-    || new Set(persistedDates).size !== persistedDates.length || new Set(coveredDates).size !== coveredDates.length
-    || JSON.stringify([...persistedDates].sort()) !== JSON.stringify([...coveredDates].sort())) {
-    fail("V7/V4 postflight is not CURRENT with exact persisted-date coverage and zero blocks.");
+    || blocks !== 0 || !Number.isSafeInteger(expectedModelDayCount) || expectedModelDayCount < 1
+    || !Number.isSafeInteger(coveredModelDayCount) || coveredModelDayCount < expectedModelDayCount
+    || !Array.isArray(expectedModelDayKeys) || !Array.isArray(coveredModelDayKeys)
+    || expectedModelDayKeys.length !== expectedModelDayCount || coveredModelDayKeys.length !== coveredModelDayCount
+    || expectedModelDayKeys.some((key) => !isModelDayKey(key)) || coveredModelDayKeys.some((key) => !isModelDayKey(key))
+    || new Set(expectedModelDayKeys).size !== expectedModelDayKeys.length
+    || new Set(coveredModelDayKeys).size !== coveredModelDayKeys.length
+    || expectedModelDayKeys.some((key) => !coveredModelDayKeys.includes(key))
+    || JSON.stringify(normalizedActualCoverage) !== JSON.stringify(normalizedRehearsalCoverage)) {
+    fail("V7/V4 postflight is not CURRENT with exact rehearsed coverage and zero blocks.");
   }
   return true;
+}
+
+function isModelDayKey(value) {
+  if (typeof value !== "string") return false;
+  const separator = value.indexOf("|");
+  if (separator < 1 || !/^[1-9][0-9]*$/.test(value.slice(0, separator))) return false;
+  const date = value.slice(separator + 1);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }

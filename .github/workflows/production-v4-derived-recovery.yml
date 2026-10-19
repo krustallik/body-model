@@ -154,8 +154,9 @@ jobs:
             migrationTree: LEGACY_V4_RECOVERY.migrationTree, prismaSchemaBlob: LEGACY_V4_RECOVERY.prismaSchemaBlob,
             effectiveCommand: LEGACY_V4_RECOVERY.command, ledgerDigest: LEGACY_V4_RECOVERY.ledgerDigest };
           if (manifest.sourceSha !== LEGACY_V4_RECOVERY.sourceSha) throw new Error("Wrong legacy source SHA.");
+          const { schemaDigestContract, schemaDigestHelperSha256, ...legacyManifest } = manifest;
           writeFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`,
-            `${JSON.stringify({ ...manifest, manifestSha256: sha256(JSON.stringify(manifest)) })}\n`, { mode: 0o600, flag: "wx" });
+            `${JSON.stringify({ ...manifest, manifestSha256: sha256(JSON.stringify(legacyManifest)) })}\n`, { mode: 0o600, flag: "wx" });
           NODE
           echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
           echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
@@ -256,7 +257,7 @@ jobs:
               || manifest.schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256) throw new Error("Recovery artifact metadata mismatch.");
           // Exact embedded migration rows are checked against the live database evidence and the pinned ledger digest.
           if (manifest.ledgerDigest !== "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7") throw new Error("65-migration ledger binding mismatch.");
-          const { manifestSha256, ...manifestCore } = manifest;
+          const { manifestSha256, schemaDigestContract, schemaDigestHelperSha256, ...manifestCore } = manifest;
           if (manifestSha256 !== sha256(JSON.stringify(manifestCore))) throw new Error("Recovery artifact manifest digest mismatch.");
           NODE
       - name: Capture and encrypt production backup without stopping the app

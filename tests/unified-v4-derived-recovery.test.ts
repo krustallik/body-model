@@ -8,8 +8,10 @@ const mocks = vi.hoisted(() => {
     failClear: string | null;
     invalidTrainingSession: number | null;
   } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null };
-  const prisma = {
+  let prisma: Record<string, any>;
+  prisma = {
     $queryRawUnsafe: vi.fn(async () => []),
+    $transaction: vi.fn(async (callback: (tx: any) => Promise<unknown>) => callback(prisma)),
     physiologyV7Lifecycle: { findUnique: vi.fn() },
     unifiedPublicationBlock: { findMany: vi.fn(), findUnique: vi.fn(), count: vi.fn() },
     dailyHealthData: { findMany: vi.fn() },
@@ -84,7 +86,8 @@ vi.mock("@/modules/training/training.service", () => ({
 }));
 
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION as V4 } from "@/model/unified-experimental-physiology-v1/contracts";
-import { recoverUnifiedV4FromPersistedSourcesV1 } from "@/modules/model-episodes/unified-v4-derived-recovery.service";
+import { createV4RecoveryEvidenceBindingV1, inventoryV4RecoveryRawSourcesV1,
+  recoverUnifiedV4FromPersistedSourcesV1 } from "@/modules/model-episodes/unified-v4-derived-recovery.service";
 
 const dates = Array.from({ length: 8 }, (_, index) => `2071-01-${String(index + 1).padStart(2, "0")}`);
 
@@ -126,11 +129,21 @@ function reset(blocks = true) {
   mocks.replay.mockClear();
 }
 
+async function recover(expectedEvidenceBinding?: ReturnType<typeof createV4RecoveryEvidenceBindingV1>) {
+  const raw = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
+  const expected = expectedEvidenceBinding ?? createV4RecoveryEvidenceBindingV1({
+    rawFingerprint: raw.fingerprint,
+    blocks: mocks.state.blocks,
+    lifecycle: mocks.state.lifecycle as never,
+  });
+  return recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true, expectedEvidenceBinding: expected });
+}
+
 describe("persisted-source V4 derived recovery", () => {
   beforeEach(() => reset());
 
   it("refreshes every persisted Training dependency deterministically and CAS-clears all fences", async () => {
-    const result = await recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true });
+    const result = await recover();
     expect(mocks.shadow).toHaveBeenCalled();
     expect(mocks.training).toHaveBeenCalledWith({
       sessionId: 20, profileId: 1,
@@ -147,7 +160,7 @@ describe("persisted-source V4 derived recovery", () => {
 
   it("leaves fences armed and withholds V4 when a dependent refresh returns P2034", async () => {
     mocks.state.failAt = "health";
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toMatchObject({ code: "P2034" });
     expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
@@ -156,7 +169,7 @@ describe("persisted-source V4 derived recovery", () => {
 
   it("validates every Training source before refreshing any Health dependency", async () => {
     mocks.state.invalidTrainingSession = 24;
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("current persisted accounting snapshot");
     expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24]);
     expect(mocks.shadow).not.toHaveBeenCalled();
@@ -166,9 +179,28 @@ describe("persisted-source V4 derived recovery", () => {
     expect(mocks.state.blocks).toHaveLength(11);
   });
 
+  it.each(["raw fingerprint", "fence digest", "lifecycle generation"] as const)(
+    "fails closed before the first derived write when the rehearsed %s binding is stale",
+    async (changedBinding) => {
+      const raw = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
+      const expected = createV4RecoveryEvidenceBindingV1({
+        rawFingerprint: raw.fingerprint, blocks: mocks.state.blocks, lifecycle: mocks.state.lifecycle as never,
+      });
+      if (changedBinding === "raw fingerprint") expected.rawFingerprint = "f".repeat(64);
+      if (changedBinding === "fence digest") expected.fenceDigest = "e".repeat(64);
+      if (changedBinding === "lifecycle generation") expected.lifecycleDigest = "d".repeat(64);
+      await expect(recover(expected)).rejects.toThrow(/changed after exact-image rehearsal/);
+      expect(mocks.shadow).not.toHaveBeenCalled();
+      expect(mocks.training).not.toHaveBeenCalled();
+      expect(mocks.clearAll).not.toHaveBeenCalled();
+      expect(mocks.replay).not.toHaveBeenCalled();
+      expect(mocks.state.blocks).toHaveLength(11);
+    },
+  );
+
   it("withholds fence clearing and V4 publication if the second Training refresh fails", async () => {
     mocks.state.failAt = "training:24";
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toMatchObject({ code: "P2034" });
     expect(mocks.training.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24]);
     expect(mocks.clearAll).not.toHaveBeenCalled();
@@ -178,7 +210,7 @@ describe("persisted-source V4 derived recovery", () => {
 
   it("retains the complete fence set when the final CAS token no longer matches", async () => {
     mocks.state.failClear = dates[0]!;
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("health source fence changed during dependent refresh");
     expect(mocks.state.blocks).toHaveLength(11);
     expect(mocks.replay).not.toHaveBeenCalled();
@@ -189,7 +221,7 @@ describe("persisted-source V4 derived recovery", () => {
     mocks.state.lifecycle.productionStaleFromDate = "2071-01-01";
     mocks.state.lifecycle.productionPublishedGeneration = 11;
     mocks.state.failAt = "production";
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("Production generation remains stale");
     expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.recalculate).toHaveBeenCalledWith({ skipTrainingAccountingMaterialization: true });
@@ -200,9 +232,9 @@ describe("persisted-source V4 derived recovery", () => {
   it("can safely retry after all dependency blocks cleared but publication failed", async () => {
     reset(false);
     mocks.replay.mockRejectedValueOnce(Object.assign(new Error("serialization conflict"), { code: "P2034" }));
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toMatchObject({ code: "P2034" });
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 9 });
     expect(mocks.clearAll.mock.calls.map(([input]) => input.blocks)).toEqual([[], []]);
     expect(mocks.shadow).not.toHaveBeenCalled();
@@ -210,11 +242,11 @@ describe("persisted-source V4 derived recovery", () => {
 
   it("rejects an epoch change and unknown source blockers", async () => {
     mocks.state.lifecycle.unifiedRolloutEpoch = 2;
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("existing V4 epoch 1");
     reset();
     mocks.state.blocks.push({ source: "day", sourceKey: "2071-01-01", fromDate: "2071-01-01", revision: 1 });
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("unsupported publication block set");
   });
 
@@ -225,7 +257,7 @@ describe("persisted-source V4 derived recovery", () => {
     ["unsupported fence identity", { source: "garmin", sourceKey: "26", fromDate: "2071-01-20", revision: 1 }],
   ])("rejects %s before refreshing or clearing any source", async (_name, invalidBlock) => {
     mocks.state.blocks.push(invalidBlock);
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("unsupported publication block set");
     expect(mocks.shadow).not.toHaveBeenCalled();
     expect(mocks.training).not.toHaveBeenCalled();
@@ -235,7 +267,7 @@ describe("persisted-source V4 derived recovery", () => {
 
   it("rejects duplicate Training fence identities before dependent work", async () => {
     mocks.state.blocks.push({ ...mocks.state.blocks.find((block) => block.source === "training" && block.sourceKey === "24")! });
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+    await expect(recover())
       .rejects.toThrow("unsupported publication block set");
     expect(mocks.shadow).not.toHaveBeenCalled();
     expect(mocks.training).not.toHaveBeenCalled();

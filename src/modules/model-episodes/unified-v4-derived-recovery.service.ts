@@ -25,6 +25,97 @@ type PublicationBlock = {
   revision: number;
 };
 
+type RecoveryLifecycleBinding = {
+  profileId: number;
+  invalidationGeneration: number;
+  productionPublishedGeneration: number | null;
+  productionStaleFromDate: string | null;
+  unifiedTargetRevision: string | null;
+  unifiedRolloutEpoch: number | null;
+  unifiedPublishedGeneration: number | null;
+  unifiedPublishedRolloutEpoch: number | null;
+  unifiedPublicationBlockedFromDate: string | null;
+  unifiedPublicationBlockedSource: string | null;
+};
+
+export type V4RecoveryEvidenceBindingV1 = {
+  contract: "bodycast-v4-recovery-evidence-binding-v1";
+  rawFingerprint: string;
+  fenceDigest: string;
+  lifecycleDigest: string;
+  bindingDigest: string;
+};
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sortedFenceDigest(blocks: readonly PublicationBlock[]): string {
+  const sorted = [...blocks].sort((left, right) =>
+    `${left.source}\0${left.sourceKey}`.localeCompare(`${right.source}\0${right.sourceKey}`));
+  const content = sorted.map((block) => `${block.source}\t${block.sourceKey}\t${block.fromDate}\t${block.revision}\n`).join("");
+  return sha256(content);
+}
+
+function lifecycleBindingValues(lifecycle: RecoveryLifecycleBinding) {
+  return [lifecycle.profileId, lifecycle.invalidationGeneration, lifecycle.productionPublishedGeneration,
+    lifecycle.productionStaleFromDate, lifecycle.unifiedTargetRevision, lifecycle.unifiedRolloutEpoch,
+    lifecycle.unifiedPublishedGeneration, lifecycle.unifiedPublishedRolloutEpoch,
+    lifecycle.unifiedPublicationBlockedFromDate, lifecycle.unifiedPublicationBlockedSource] as const;
+}
+
+export function createV4RecoveryEvidenceBindingV1(input: {
+  rawFingerprint: string;
+  blocks: readonly PublicationBlock[];
+  lifecycle: RecoveryLifecycleBinding;
+}): V4RecoveryEvidenceBindingV1 {
+  if (!/^[a-f0-9]{64}$/.test(input.rawFingerprint)) throw new Error("V4 recovery raw fingerprint is malformed");
+  const fenceDigest = sortedFenceDigest(input.blocks);
+  const lifecycleDigest = sha256(JSON.stringify(lifecycleBindingValues(input.lifecycle)));
+  return {
+    contract: "bodycast-v4-recovery-evidence-binding-v1",
+    rawFingerprint: input.rawFingerprint,
+    fenceDigest,
+    lifecycleDigest,
+    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v1\n${input.rawFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
+  };
+}
+
+async function readConsistentRecoveryEvidenceV1(client: PrismaClient, profileId: number) {
+  return client.$transaction(async (tx) => {
+    const lifecycle = await tx.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+    if (!lifecycle) throw new Error("Persisted-source V4 recovery has no lifecycle row");
+    const blocks = await tx.unifiedPublicationBlock.findMany({
+      where: { profileId },
+      orderBy: [{ source: "asc" }, { sourceKey: "asc" }],
+      select: { source: true, sourceKey: true, fromDate: true, revision: true },
+    });
+    const raw = await inventoryV4RecoveryRawSourcesV1(tx as unknown as PrismaClient);
+    return { lifecycle, blocks, raw };
+  }, { isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000 });
+}
+
+async function assertExpectedRecoveryEvidenceBindingV1(input: {
+  client: PrismaClient;
+  profileId: number;
+  expected: V4RecoveryEvidenceBindingV1;
+}): Promise<{ lifecycle: Awaited<ReturnType<PrismaClient["physiologyV7Lifecycle"]["findUnique"]>>; blocks: PublicationBlock[]; raw: { fingerprint: string; tables: Record<string, string> } }> {
+  const current = await readConsistentRecoveryEvidenceV1(input.client, input.profileId);
+  const actual = createV4RecoveryEvidenceBindingV1({
+    rawFingerprint: current.raw.fingerprint,
+    blocks: current.blocks,
+    lifecycle: current.lifecycle,
+  });
+  if (input.expected.contract !== actual.contract
+      || input.expected.rawFingerprint !== actual.rawFingerprint
+      || input.expected.fenceDigest !== actual.fenceDigest
+      || input.expected.lifecycleDigest !== actual.lifecycleDigest
+      || input.expected.bindingDigest !== actual.bindingDigest) {
+    throw new Error("Persisted source, publication fence, or lifecycle binding changed after exact-image rehearsal; recovery stopped before derived writes");
+  }
+  return current;
+}
+
 function validDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -94,6 +185,7 @@ export async function inventoryV4RecoveryRawSourcesV1(client: PrismaClient): Pro
 export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   profileId: number;
   ownerAuthorized: true;
+  expectedEvidenceBinding: V4RecoveryEvidenceBindingV1;
 }): Promise<{
   profileId: number;
   rolloutEpoch: number;
@@ -108,21 +200,23 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   }
   const client: PrismaClient = prisma;
   const { profileId } = input;
-  const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+  if (!input.expectedEvidenceBinding || input.expectedEvidenceBinding.contract !== "bodycast-v4-recovery-evidence-binding-v1") {
+    throw new Error("V4 derived recovery requires the exact rehearsal evidence binding");
+  }
+  const initialEvidence = await assertExpectedRecoveryEvidenceBindingV1({
+    client, profileId, expected: input.expectedEvidenceBinding,
+  });
+  const lifecycle = initialEvidence.lifecycle;
   if (!lifecycle
       || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
       || lifecycle.unifiedRolloutEpoch !== 1) {
     throw new Error("Persisted-source V4 recovery requires the existing V4 epoch 1");
   }
 
-  const beforeRaw = await inventoryV4RecoveryRawSourcesV1(client);
+  const beforeRaw = initialEvidence.raw;
   try {
   const repository = new PhysiologyV7PersistenceRepository(client);
-  const initialBlocks = await client.unifiedPublicationBlock.findMany({
-    where: { profileId },
-    orderBy: [{ fromDate: "asc" }, { source: "asc" }, { sourceKey: "asc" }],
-    select: { source: true, sourceKey: true, fromDate: true, revision: true },
-  });
+  const initialBlocks = initialEvidence.blocks;
   const supported = assertSupportedBlockSet(initialBlocks);
   for (const block of supported.training) {
     const sessionId = Number(block.sourceKey);
@@ -145,6 +239,12 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     if (persistedDays.length !== dates.length) {
       throw new Error("A Health publication block has no corresponding persisted Health day");
     }
+
+    // Re-read all immutable sources, the full fence set, and lifecycle from a
+    // single PostgreSQL snapshot immediately before the first dependent write.
+    await assertExpectedRecoveryEvidenceBindingV1({
+      client, profileId, expected: input.expectedEvidenceBinding,
+    });
 
     for (const date of dates) {
       await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date, profileId });
@@ -178,6 +278,11 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   }
 
   const refreshedSessionIds: number[] = [];
+  if (supported.health.length === 0 && supported.training.length > 0) {
+    await assertExpectedRecoveryEvidenceBindingV1({
+      client, profileId, expected: input.expectedEvidenceBinding,
+    });
+  }
   for (const block of supported.training) {
     const sessionId = Number(block.sourceKey);
     await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId, profileId });

@@ -53,6 +53,28 @@ const episodeFixture = {
   calibrationDiagnostics: {},
 };
 
+async function captureRecoveryBinding() {
+  const { createV4RecoveryEvidenceBindingV1, inventoryV4RecoveryRawSourcesV1 } =
+    await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
+  const [raw, lifecycle, blocks] = await Promise.all([
+    inventoryV4RecoveryRawSourcesV1(prisma),
+    prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } }),
+    prisma.unifiedPublicationBlock.findMany({
+      where: { profileId }, orderBy: [{ source: "asc" }, { sourceKey: "asc" }],
+      select: { source: true, sourceKey: true, fromDate: true, revision: true },
+    }),
+  ]);
+  return createV4RecoveryEvidenceBindingV1({ rawFingerprint: raw.fingerprint, blocks, lifecycle });
+}
+
+async function recoverWithCurrentEvidence(expectedEvidenceBinding?: Awaited<ReturnType<typeof captureRecoveryBinding>>) {
+  const { recoverUnifiedV4FromPersistedSourcesV1 } =
+    await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
+  return recoverUnifiedV4FromPersistedSourcesV1({
+    profileId, ownerAuthorized: true, expectedEvidenceBinding: expectedEvidenceBinding ?? await captureRecoveryBinding(),
+  });
+}
+
 describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
   let programId: number;
   let programVersionId: number;
@@ -335,13 +357,55 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
   });
 
   it("rebuilds 8- and 9-Health fence sets across matched and unmatched Training sessions without changing sources", async () => {
-    const { inventoryV4RecoveryRawSourcesV1, recoverUnifiedV4FromPersistedSourcesV1 } = await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
+    const { inventoryV4RecoveryRawSourcesV1 } = await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
     const { assertPersistedTrainingSessionRecoveryReadyV1 } = await import("@/modules/training/training.service");
     const before = await inventoryV4RecoveryRawSourcesV1(prisma);
+    const preflightBinding = await captureRecoveryBinding();
+    const firstDay = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: healthDates[0]! } });
+    const lifecycleBeforeRawMutation = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    const stepperShadowBefore = await prisma.experimentalStepperActiveEnergyShadow.findUnique({ where: { workoutId } });
+    await prisma.dailyHealthData.update({ where: { id: firstDay.id }, data: { caloriesKcal: { increment: 1 } } });
+    await expect(recoverWithCurrentEvidence(preflightBinding)).rejects.toThrow(/changed after exact-image rehearsal/);
+    expect(await prisma.experimentalStepperActiveEnergyShadow.findUnique({ where: { workoutId } })).toEqual(stepperShadowBefore);
+    expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(11);
+    await prisma.$executeRaw`UPDATE public."DailyHealthData" SET "caloriesKcal" = ${firstDay.caloriesKcal}, "updatedAt" = ${firstDay.updatedAt} WHERE id = ${firstDay.id}`;
+    await prisma.$executeRaw`UPDATE public."PhysiologyV7Lifecycle" SET "invalidationGeneration" = ${lifecycleBeforeRawMutation.invalidationGeneration}, "staleFromDate" = ${lifecycleBeforeRawMutation.staleFromDate}, "currentThroughDate" = ${lifecycleBeforeRawMutation.currentThroughDate}, "updatedAt" = ${lifecycleBeforeRawMutation.updatedAt} WHERE "profileId" = ${profileId}`;
+    const restoredAfterRawMutation = await inventoryV4RecoveryRawSourcesV1(prisma);
+    expect(restoredAfterRawMutation.tables).toEqual(before.tables);
+    expect(restoredAfterRawMutation.fingerprint).toBe(preflightBinding.rawFingerprint);
+    expect((await captureRecoveryBinding()).bindingDigest).toBe(preflightBinding.bindingDigest);
+
+    const selectedFence = await prisma.unifiedPublicationBlock.findFirstOrThrow({
+      where: { profileId, source: "health" }, orderBy: { sourceKey: "asc" },
+    });
+    const fenceWhere = { profileId_source_sourceKey: { profileId, source: selectedFence.source, sourceKey: selectedFence.sourceKey } };
+    await prisma.unifiedPublicationBlock.update({ where: fenceWhere, data: { revision: { increment: 1 } } });
+    await expect(recoverWithCurrentEvidence(preflightBinding)).rejects.toThrow(/changed after exact-image rehearsal/);
+    expect(await prisma.experimentalStepperActiveEnergyShadow.findUnique({ where: { workoutId } })).toEqual(stepperShadowBefore);
+    await prisma.$executeRaw`UPDATE public."UnifiedPublicationBlock" SET "revision" = ${selectedFence.revision}, "fromDate" = ${selectedFence.fromDate}, "updatedAt" = ${selectedFence.updatedAt} WHERE "profileId" = ${profileId} AND "source" = ${selectedFence.source} AND "sourceKey" = ${selectedFence.sourceKey}`;
+
+    await prisma.unifiedPublicationBlock.update({ where: fenceWhere, data: { fromDate: healthDates[8]! } });
+    await expect(recoverWithCurrentEvidence(preflightBinding)).rejects.toThrow(/changed after exact-image rehearsal/);
+    expect(await prisma.experimentalStepperActiveEnergyShadow.findUnique({ where: { workoutId } })).toEqual(stepperShadowBefore);
+    await prisma.$executeRaw`UPDATE public."UnifiedPublicationBlock" SET "fromDate" = ${selectedFence.fromDate}, "updatedAt" = ${selectedFence.updatedAt} WHERE "profileId" = ${profileId} AND "source" = ${selectedFence.source} AND "sourceKey" = ${selectedFence.sourceKey}`;
+
+    const changedIdentity = healthDates[8]!;
+    await prisma.unifiedPublicationBlock.update({ where: fenceWhere, data: { sourceKey: changedIdentity } });
+    await expect(recoverWithCurrentEvidence(preflightBinding)).rejects.toThrow(/changed after exact-image rehearsal/);
+    expect(await prisma.experimentalStepperActiveEnergyShadow.findUnique({ where: { workoutId } })).toEqual(stepperShadowBefore);
+    await prisma.$executeRaw`UPDATE public."UnifiedPublicationBlock" SET "sourceKey" = ${selectedFence.sourceKey}, "updatedAt" = ${selectedFence.updatedAt} WHERE "profileId" = ${profileId} AND "source" = ${selectedFence.source} AND "sourceKey" = ${changedIdentity}`;
+
+    const preflightLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    await prisma.physiologyV7Lifecycle.update({ where: { profileId }, data: { invalidationGeneration: { increment: 1 } } });
+    await expect(recoverWithCurrentEvidence(preflightBinding)).rejects.toThrow(/changed after exact-image rehearsal/);
+    expect(await prisma.experimentalStepperActiveEnergyShadow.findUnique({ where: { workoutId } })).toEqual(stepperShadowBefore);
+    await prisma.$executeRaw`UPDATE public."PhysiologyV7Lifecycle" SET "invalidationGeneration" = ${preflightLifecycle.invalidationGeneration} WHERE "profileId" = ${profileId}`;
+    expect((await captureRecoveryBinding()).bindingDigest).toBe(preflightBinding.bindingDigest);
+
     await prisma.$executeRawUnsafe(`UPDATE public."StrengthDiarySession" SET "entryMode" = 'CORRUPT' WHERE id = 24`);
     await expect(assertPersistedTrainingSessionRecoveryReadyV1({ sessionId: 24, profileId }))
       .rejects.toThrow("unsupported persisted entry mode");
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true }))
+    await expect(recoverWithCurrentEvidence())
       .rejects.toThrow("unsupported persisted entry mode");
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(11);
     await prisma.$executeRawUnsafe(`UPDATE public."StrengthDiarySession" SET "entryMode" = 'LIVE' WHERE id = 24`);
@@ -378,7 +442,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     await prisma.experimentalStrengthEnergyShadow.deleteMany({ where: { sessionId: { in: [...trainingSessionIds] } } });
     let secondSessionFailure: unknown = null;
     try {
-      await recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true });
+      await recoverWithCurrentEvidence();
     } catch (error) {
       secondSessionFailure = error;
     }
@@ -410,7 +474,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       BEFORE DELETE ON public."UnifiedPublicationBlock"
       FOR EACH ROW EXECUTE FUNCTION public.fixture_training_block_serialization_failure()`);
     serializationTriggerCreated = true;
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true })).rejects.toMatchObject({ code: "P2034" });
+    await expect(recoverWithCurrentEvidence()).rejects.toMatchObject({ code: "P2034" });
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(11);
     expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(before.fingerprint);
     await prisma.$executeRawUnsafe('DROP TRIGGER "fixture_training_block_serialization_failure" ON public."UnifiedPublicationBlock"');
@@ -433,7 +497,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       return originalClear.call(this, input);
     });
     try {
-      await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true }))
+      await expect(recoverWithCurrentEvidence())
         .rejects.toThrow(/training source fence changed during dependent refresh/);
     } finally {
       clearSpy.mockRestore();
@@ -446,7 +510,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(11);
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } })).unifiedPublishedRolloutEpoch).toBeNull();
     expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(before.fingerprint);
-    const result = await recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true });
+    const result = await recoverWithCurrentEvidence();
     const after = await inventoryV4RecoveryRawSourcesV1(prisma);
     expect(after.fingerprint).toBe(before.fingerprint);
     expect(result).toMatchObject({
@@ -518,7 +582,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       energyAliases: await prisma.activeEnergyEventAlias.count({ where: { profileId } }),
       energyCandidates: await prisma.activeEnergyCandidate.count({ where: { event: { profileId } } }),
     };
-    const retried = await recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true });
+    const retried = await recoverWithCurrentEvidence();
     expect(retried).toMatchObject({ rolloutEpoch: 1, dayCount: 25, healthDatesRefreshed: [], trainingSessionIdsRefreshed: [] });
     expect({
       strengthEnergy: await prisma.experimentalStrengthEnergyShadow.count({ where: { sessionId: { in: [...trainingSessionIds] } } }),
@@ -538,7 +602,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       await fences.blockUnifiedPublication({ profileId, fromDate: fenceDates[index]!, source: "training", sourceKey: String(sessionId) });
     }
     const nineHealthBefore = await inventoryV4RecoveryRawSourcesV1(prisma);
-    const nineHealthResult = await recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true });
+    const nineHealthResult = await recoverWithCurrentEvidence();
     expect(nineHealthResult).toMatchObject({
       rolloutEpoch: 1, dayCount: 25, healthDatesRefreshed: [healthDates[8]!], trainingSessionIdsRefreshed: [...trainingSessionIds],
     });
@@ -566,7 +630,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     });
     sessionCreated = true;
     await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-10", source: "training", sourceKey: "26" });
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true }))
+    await expect(recoverWithCurrentEvidence())
       .rejects.toThrow("current persisted accounting snapshot");
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(1);
     await prisma.unifiedPublicationBlock.delete({
@@ -589,7 +653,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     await new TrainingRepository(prisma).materializeAccounting({ sessionId: 27, profileId, mode: "ordinary", idempotencyKey: "stale-snapshot-fixture" });
     await prisma.strengthDiarySession.update({ where: { id: 27 }, data: { accountingInputRevision: { increment: 1 } } });
     await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-11", source: "training", sourceKey: "27" });
-    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId, ownerAuthorized: true }))
+    await expect(recoverWithCurrentEvidence())
       .rejects.toThrow("current persisted accounting snapshot");
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(1);
     await prisma.unifiedPublicationBlock.delete({

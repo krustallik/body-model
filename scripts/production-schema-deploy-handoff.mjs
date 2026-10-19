@@ -144,13 +144,21 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
     deployBlob: "1aec3eca7cf973f5774eac6606dd555adbae06f4",
   }),
+  "src/modules/model-episodes/unified-experimental-physiology-state.service.ts": Object.freeze({
+    migrationOriginBlob: "0c7850cbb866f62d20a4a35ab384f18906a67ef8",
+    deployBlob: "0539c383df630be9980a7b0967df9c13fe1709d9",
+  }),
+  "src/modules/training/experimental-transient-exercise-water-shadow.service.ts": Object.freeze({
+    migrationOriginBlob: "4291768358207464a59476a75e3897e5a85f9332",
+    deployBlob: "04ec3b9aab6254ef70735d1c0cc37de7205c12b4",
+  }),
   "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": Object.freeze({
     migrationOriginBlob: null,
-    deployBlob: "9e48dc5420355b97a5d3196f768844674b36c9e5",
+    deployBlob: "6b9ab318395b12089c8e1bd12ea102340ff965ef",
   }),
   "src/modules/model-episodes/physiology-v7-persistence.repository.ts": Object.freeze({
     migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
-    deployBlob: "931fafdc488b460a080588ec7b981f08befd537f",
+    deployBlob: "b98cf66fa2d4c435e85be1edc3fad81e4c9b4f93",
   }),
   "src/modules/profile/experimental-stepper-active-energy-shadow.service.ts": Object.freeze({
     migrationOriginBlob: "b4ec529a9755c9a3b15ea2b6c9ba19216bd6e888",

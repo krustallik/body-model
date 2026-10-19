@@ -11,6 +11,7 @@ import {
   assertOneShotRecoveryState,
   assertSchemaSignature,
   migrationLedgerDigest,
+  validatePublicationSourceEvidence,
   publicationBlockDigest,
   sha256,
 } from "../scripts/production-v4-derived-recovery.mjs";
@@ -25,9 +26,38 @@ const ledgerRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((e
   }));
 const blocks = [
   ...Array.from({ length: 8 }, (_, i) => ({ source: "health", sourceKey: `2026-10-${String(i + 1).padStart(2, "0")}`,
-    fromDate: `2026-10-${String(i + 1).padStart(2, "0")}`, revision: 1 })),
-  { source: "training", sourceKey: "20", fromDate: "2026-10-16", revision: 2 },
+    fromDate: `2026-10-${String(i + 1).padStart(2, "0")}`, revision: 1,
+    createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" })),
+  { source: "training", sourceKey: "20", fromDate: "2026-10-09", revision: 2,
+    createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" },
 ];
+const makeHealthSource = (block, overrides = {}) => ({
+  sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
+  dailyDataRows: 1, snapshotRows: 2, linkedSnapshotRows: 2, invalidSnapshotRows: 0,
+  snapshotsWithReceivedAt: 2, snapshotsWithSyncedAt: 1, snapshotsWithNullSyncedAt: 1, invalidSnapshotTimes: 0,
+  snapshotsWithValidTimeZone: 2, invalidSnapshotTimeZones: 0,
+  dailyUpdatedAt: "2026-10-20T00:00:01.000Z",
+  metricSampleRows: 3,
+  linkedMetricSampleRows: 3, invalidMetricSampleRows: 0, unsupportedMetricSourceRows: 0,
+  chronologyValid: true, ...overrides,
+});
+const makeTrainingSource = (block, overrides = {}) => ({
+  sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
+  sessionRows: 1, sessionId: 20, profileId: 1, status: "COMPLETED", sourceRevision: 24,
+  accountingInputRevision: 22, currentSnapshotRevision: 79, accountingSnapshotRows: 1,
+  snapshotRevision: 79, snapshotAccountingInputRevision: 22, snapshotEffectiveLocalDate: "2026-10-09",
+  effectiveAccountingAt: "2026-10-09T12:00:00.000Z", accountingEffectiveLocalDate: "2026-10-09",
+  accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
+  snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
+  snapshotTimeZoneProvenance: "legacy-default", snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
+  matchedWorkoutId: 79, matchStatus: "MATCHED", matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
+  matchedWorkoutStartAt: "2026-10-09T12:00:00.000Z", trainingEventAt: "2026-10-09T12:00:00.000Z", modelDate: block.fromDate,
+  chronologyValid: true, ...overrides,
+});
+const makeSourceEvidence = (value = blocks) => ({
+  health: value.filter((block) => block.source === "health").map((block) => makeHealthSource(block)),
+  training: makeTrainingSource(value.find((block) => block.source === "training") ?? blocks.at(-1)),
+});
 const recoveryRun = (path) => [{ head_sha: LEGACY_V4_RECOVERY.sourceSha, head_branch: LEGACY_V4_RECOVERY.branch,
   event: "pull_request", path, status: "completed", conclusion: "success", run_attempt: 1 }];
 const mainRun = (path) => [{ head_sha: "3".repeat(40), head_branch: "main", event: "push",
@@ -109,29 +139,130 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       database: { containerId: "e".repeat(64), imageId: `sha256:${"f".repeat(64)}` },
       app: { containerId: "1".repeat(64), imageId: `sha256:${"2".repeat(64)}` },
     };
+    const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
+      unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
     expect(assertProductionIdentity({
       database: { name: "bodycast", version: "17.11", ...expected.database },
       app: { name: "bodycast-app-prod", health: "healthy", releaseSha: LEGACY_V4_RECOVERY.productionAppSha, ...expected.app },
       migrationRows: ledgerRows, schemaSha256: expected.schemaSha256, sourceFingerprint: expected.sourceFingerprint,
-      lifecycle: { profileId: 1, unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9 },
-      blocks, sourceRowsValid: true, expected,
+      lifecycle, blocks, sourceEvidence: makeSourceEvidence(), expected,
     })).toBe(true);
     expect(() => assertProductionIdentity({
       database: { name: "bodycast", version: "17.11", ...expected.database },
       app: { name: "bodycast-app-prod", health: "healthy", releaseSha: LEGACY_V4_RECOVERY.productionAppSha, ...expected.app },
       migrationRows: ledgerRows, schemaSha256: expected.schemaSha256, sourceFingerprint: expected.sourceFingerprint,
-      lifecycle: { profileId: 1, unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9 },
-      blocks: blocks.slice(1), sourceRowsValid: true, expected,
+      lifecycle, blocks: blocks.slice(1), sourceEvidence: makeSourceEvidence(blocks.slice(1)), expected,
     })).toThrow();
   });
 
-  it("rejects duplicate or changed persisted fence identities", () => {
+  it("accepts eight, nine, and more valid Health dates while keeping the exact Training 20 fence", () => {
+    const additionalDate = { source: "health", sourceKey: "2026-10-10", fromDate: "2026-10-10", revision: 3,
+      createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" };
+    expect(publicationBlockDigest(blocks)).toMatch(/^[a-f0-9]{64}$/);
+    expect(publicationBlockDigest([...blocks.filter((block) => block.source === "health"),
+      { ...additionalDate, fromDate: "2026-10-10", sourceKey: "2026-10-10" }, blocks.at(-1)])).toMatch(/^[a-f0-9]{64}$/);
+    const tenHealthBlocks = [...blocks.filter((block) => block.source === "health"),
+      ...["2026-10-09", "2026-10-10"].map((date) => ({ source: "health", sourceKey: date, fromDate: date, revision: 3,
+        createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" })),
+      blocks.at(-1)];
+    expect(validatePublicationSourceEvidence({ blocks: tenHealthBlocks, sourceEvidence: makeSourceEvidence(tenHealthBlocks) })).toBe(true);
+  });
+
+  it("accepts both Health sync write orders while requiring valid persisted chronology", () => {
+    const sourceBeforeFence = makeSourceEvidence();
+    sourceBeforeFence.health[0].dailyUpdatedAt = "2026-10-19T23:59:59.000Z";
+    expect(validatePublicationSourceEvidence({ blocks, sourceEvidence: sourceBeforeFence })).toBe(true);
+    const invalidFenceTime = blocks.map((block, index) => index === 0
+      ? { ...block, createdAt: "2026-10-21T00:00:00.000Z" } : block);
+    expect(() => validatePublicationSourceEvidence({ blocks: invalidFenceTime,
+      sourceEvidence: makeSourceEvidence(invalidFenceTime) })).toThrow(/timestamps/);
+  });
+
+  it("rejects missing, malformed, duplicate, unsupported, or provenance-free source fences", () => {
     expect(() => publicationBlockDigest([...blocks, blocks[0]])).toThrow(/duplicate/);
-    expect(() => publicationBlockDigest(blocks.filter((block) => block.sourceKey !== "20"))).toThrow(/Training/);
-    expect(() => publicationBlockDigest(blocks.filter((block) => block.source === "training"))).toThrow(/exactly 8 Health dates/);
-    expect(() => publicationBlockDigest(blocks.filter((block) => block.sourceKey !== "2026-10-08"))).toThrow(/exactly 8 Health dates/);
-    expect(() => publicationBlockDigest([...blocks, { source: "health", sourceKey: "2026-10-09",
-      fromDate: "2026-10-09", revision: 1 }])).toThrow(/exactly 8 Health dates/);
+    expect(() => publicationBlockDigest(blocks.filter((block) => block.sourceKey !== "20"))).toThrow(/Training session 20/);
+    expect(() => publicationBlockDigest([...blocks, { source: "training", sourceKey: "21", fromDate: "2026-10-09", revision: 1 }])).toThrow(/only Training session 20/);
+    expect(() => publicationBlockDigest([...blocks, { source: "health", sourceKey: "2026-02-30", fromDate: "2026-02-30", revision: 1 }])).toThrow(/unsupported or malformed/);
+    expect(() => publicationBlockDigest([...blocks, { source: "day", sourceKey: "2026-10-10", fromDate: "2026-10-10", revision: 1 }])).toThrow(/unsupported or malformed/);
+    expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: { ...makeSourceEvidence(), health: makeSourceEvidence().health.slice(1) } })).toThrow(/matching source provenance/);
+    expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: makeSourceEvidence(blocks).health
+      ? { ...makeSourceEvidence(), health: makeSourceEvidence().health.map((row, index) => index === 0 ? { ...row, dailyDataRows: 0 } : row) }
+      : null })).toThrow(/orphaned/);
+  });
+
+  it("binds fence revisions and dates to the preflight source evidence", () => {
+    const expectedDigest = publicationBlockDigest(blocks);
+    const changedRevision = blocks.map((block, index) => index === 0 ? { ...block, revision: block.revision + 1 } : block);
+    const changedDate = blocks.map((block, index) => index === 0 ? { ...block, sourceKey: "2026-10-11", fromDate: "2026-10-11" } : block);
+    expect(publicationBlockDigest(changedRevision)).not.toBe(expectedDigest);
+    expect(publicationBlockDigest(changedDate)).not.toBe(expectedDigest);
+    expect(() => validatePublicationSourceEvidence({ blocks: changedRevision, sourceEvidence: makeSourceEvidence() })).toThrow(/persisted snapshot provenance/);
+    expect(() => validatePublicationSourceEvidence({ blocks: changedDate, sourceEvidence: makeSourceEvidence() })).toThrow(/persisted snapshot provenance/);
+    const invalidTimeZone = makeSourceEvidence();
+    invalidTimeZone.health[0].snapshotsWithValidTimeZone = 1;
+    invalidTimeZone.health[0].invalidSnapshotTimeZones = 1;
+    expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: invalidTimeZone })).toThrow(/persisted snapshot provenance/);
+  });
+
+  it("requires Training accounting snapshot timezone and provenance to match session fallback inputs", () => {
+    const sourceEvidence = makeSourceEvidence();
+    expect(validatePublicationSourceEvidence({ blocks, sourceEvidence })).toBe(true);
+    const changedSnapshot = { ...sourceEvidence, training: {
+      ...sourceEvidence.training, snapshotTimeZone: "America/New_York", snapshotEvidenceSha256: "b".repeat(64),
+    } };
+    expect(changedSnapshot.training.snapshotEvidenceSha256).not.toBe(sourceEvidence.training.snapshotEvidenceSha256);
+    expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: changedSnapshot })).toThrow(/Training session 20/);
+    const changedProvenance = { ...sourceEvidence, training: {
+      ...sourceEvidence.training, snapshotTimeZoneProvenance: "user-selected",
+    } };
+    expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: changedProvenance })).toThrow(/Training session 20/);
+    const unsupportedProvenance = { ...sourceEvidence, training: {
+      ...sourceEvidence.training,
+      accountingTimeZoneProvenance: "user-selected",
+      snapshotTimeZoneProvenance: "user-selected",
+    } };
+    expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: unsupportedProvenance })).toThrow(/Training session 20/);
+  });
+
+  it("uses the matched workout event date for its fence while validating accounting by its own timestamp", () => {
+    const eventModelDate = "2026-10-10";
+    const accountingDate = "2026-10-09";
+    const trainingEventAt = "2026-10-10T00:30:00.000Z";
+    const effectiveAccountingAt = "2026-10-09T20:30:00.000Z";
+    const withFenceDate = (fromDate) => {
+      const datedBlocks = blocks.map((block) => block.source === "training" ? { ...block, fromDate } : block);
+      const sourceEvidence = makeSourceEvidence(datedBlocks);
+      sourceEvidence.training = {
+        ...sourceEvidence.training,
+        fromDate,
+        matchedWorkoutStartAt: trainingEventAt,
+        trainingEventAt,
+        modelDate: eventModelDate,
+        effectiveAccountingAt,
+        accountingEffectiveLocalDate: accountingDate,
+        snapshotEffectiveLocalDate: accountingDate,
+      };
+      return { blocks: datedBlocks, sourceEvidence };
+    };
+
+    // The fence date follows the legacy writer's matchedWorkout.startAt date;
+    // its accounting snapshot remains bound to effectiveAccountingAt.
+    const exactEventDate = withFenceDate(eventModelDate);
+    expect(exactEventDate.sourceEvidence.training.snapshotEffectiveLocalDate)
+      .not.toBe(exactEventDate.sourceEvidence.training.modelDate);
+    expect(validatePublicationSourceEvidence(exactEventDate)).toBe(true);
+
+    // Repeated invalidation preserves an earlier persisted fromDate via min().
+    expect(validatePublicationSourceEvidence(withFenceDate(accountingDate))).toBe(true);
+
+    // A fence after the event date cannot be produced by the legacy writer.
+    expect(() => validatePublicationSourceEvidence(withFenceDate("2026-10-11")))
+      .toThrow(/Training session 20/);
+    const wrongEventTimestamp = exactEventDate.sourceEvidence;
+    wrongEventTimestamp.training.trainingEventAt = effectiveAccountingAt;
+    expect(() => validatePublicationSourceEvidence(exactEventDate)).toThrow(/Training session 20/);
   });
 
   it("rejects changed raw rows, reset epoch, stale generations, leftover blocks and incomplete coverage", () => {
@@ -173,5 +304,26 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("rejects impossible Health fence dates instead of accepting malformed block identities", () => {
     expect(() => publicationBlockDigest([{ source: "health", sourceKey: "2026-02-30", fromDate: "2026-02-30", revision: 1 },
       { source: "training", sourceKey: "20", fromDate: "2026-02-01", revision: 1 }])).toThrow();
+  });
+
+  it("accepts actual NULL V4 publication generation but rejects a missing lifecycle field", () => {
+    const expected = {
+      ledgerDigest: migrationLedgerDigest(ledgerRows), schemaSha256: "c".repeat(64), sourceFingerprint: "d".repeat(64),
+      blockDigest: publicationBlockDigest(blocks),
+      database: { containerId: "e".repeat(64), imageId: `sha256:${"f".repeat(64)}` },
+      app: { containerId: "1".repeat(64), imageId: `sha256:${"2".repeat(64)}` },
+    };
+    const args = { database: { name: "bodycast", version: "17.11", ...expected.database },
+      app: { name: "bodycast-app-prod", health: "healthy", releaseSha: LEGACY_V4_RECOVERY.productionAppSha, ...expected.app },
+      migrationRows: ledgerRows, schemaSha256: expected.schemaSha256, sourceFingerprint: expected.sourceFingerprint,
+      blocks, sourceEvidence: makeSourceEvidence(), expected };
+    const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
+      unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
+    expect(assertProductionIdentity({ ...args, lifecycle })).toBe(true);
+    const missingGeneration = { ...lifecycle };
+    delete missingGeneration.unifiedPublishedGeneration;
+    expect(() => assertProductionIdentity({ ...args, lifecycle: missingGeneration })).toThrow(/stale/);
   });
 });

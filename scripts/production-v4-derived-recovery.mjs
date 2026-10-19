@@ -22,6 +22,17 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
 const fail = (message) => { throw new Error(message); };
 const isSha = (value) => /^[a-f0-9]{40}$/.test(String(value ?? ""));
 const isDigest = (value) => /^[a-f0-9]{64}$/.test(String(value ?? ""));
+const isCalendarDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+const isTimestamp = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+const isValidTimeZone = (value) => {
+  if (typeof value !== "string" || value.length === 0) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date(0)); return true; }
+  catch { return false; }
+};
 
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -114,26 +125,99 @@ export function publicationBlockDigest(blocks) {
     const identity = `${block.source}\0${block.sourceKey}`;
     if (identities.has(identity)) fail("Publication fence set contains duplicate source identities.");
     identities.add(identity);
-    const date = typeof block.fromDate === "string" ? new Date(`${block.fromDate}T00:00:00.000Z`) : null;
-    const health = block.source === "health" && block.sourceKey === block.fromDate
-      && /^\d{4}-\d{2}-\d{2}$/.test(String(block.fromDate))
-      && date !== null && Number.isFinite(date.getTime())
-      && date.toISOString().slice(0, 10) === block.fromDate;
-    const training = block.source === "training" && /^[1-9][0-9]*$/.test(String(block.sourceKey));
+    const validDate = isCalendarDate(block.fromDate);
+    const health = block.source === "health" && block.sourceKey === block.fromDate && validDate;
+    const training = block.source === "training" && /^[1-9][0-9]*$/.test(String(block.sourceKey)) && validDate;
     if ((!health && !training) || !Number.isSafeInteger(block.revision) || block.revision < 1) {
       fail("Publication fence set contains an unsupported or malformed source.");
+    }
+    if (block.createdAt !== undefined || block.updatedAt !== undefined) {
+      if (!isTimestamp(block.createdAt) || !isTimestamp(block.updatedAt)
+        || Date.parse(block.createdAt) > Date.parse(block.updatedAt)) {
+        fail("Publication fence timestamps are absent, malformed, or out of order.");
+      }
     }
   }
   const training = sorted.filter((block) => block.source === "training");
   const health = sorted.filter((block) => block.source === "health");
-  if (health.length !== 8 || training.length !== 1 || training[0].sourceKey !== "20") {
-    fail("Current persisted fence set must contain exactly 8 Health dates and Training session 20.");
+  if (health.length < 1 || training.length !== 1 || training[0].sourceKey !== "20") {
+    fail("Current persisted fence set must contain one or more Health dates and only Training session 20.");
   }
   return sha256(sorted.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join(""));
 }
 
+export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
+  publicationBlockDigest(blocks);
+  const healthBlocks = blocks.filter((block) => block.source === "health");
+  const healthEvidence = sourceEvidence?.health;
+  if (!Array.isArray(healthEvidence) || healthEvidence.length !== healthBlocks.length) {
+    fail("Every persisted Health fence must have matching source provenance evidence.");
+  }
+  const byHealthIdentity = new Map();
+  for (const row of healthEvidence) {
+    if (!row || typeof row.sourceKey !== "string" || byHealthIdentity.has(row.sourceKey)) {
+      fail("Health source evidence contains a duplicate or malformed identity.");
+    }
+    byHealthIdentity.set(row.sourceKey, row);
+  }
+  for (const block of healthBlocks) {
+    const row = byHealthIdentity.get(block.sourceKey);
+    const counts = [row?.dailyDataRows, row?.snapshotRows, row?.linkedSnapshotRows,
+      row?.invalidSnapshotRows, row?.snapshotsWithReceivedAt, row?.snapshotsWithSyncedAt,
+      row?.snapshotsWithNullSyncedAt, row?.snapshotsWithValidTimeZone, row?.invalidSnapshotTimes,
+      row?.invalidSnapshotTimeZones, row?.metricSampleRows,
+      row?.linkedMetricSampleRows, row?.invalidMetricSampleRows, row?.unsupportedMetricSourceRows];
+    if (!row || row.fromDate !== block.fromDate || row.fenceRevision !== block.revision
+      || !isCalendarDate(row.fromDate) || counts.some((value) => !Number.isSafeInteger(value) || value < 0)
+      || !isTimestamp(block.createdAt) || !isTimestamp(block.updatedAt)
+      || Date.parse(block.createdAt) > Date.parse(block.updatedAt)
+      || row.dailyDataRows !== 1 || row.snapshotRows < 1 || row.linkedSnapshotRows !== row.snapshotRows
+      || row.invalidSnapshotRows !== 0 || row.snapshotsWithReceivedAt !== row.snapshotRows
+      || row.snapshotsWithSyncedAt + row.snapshotsWithNullSyncedAt !== row.snapshotRows
+      || row.snapshotsWithValidTimeZone !== row.snapshotRows || row.invalidSnapshotTimes !== 0
+      || row.invalidSnapshotTimeZones !== 0
+      || row.linkedMetricSampleRows !== row.metricSampleRows || row.invalidMetricSampleRows !== 0
+      || row.unsupportedMetricSourceRows !== 0 || row.chronologyValid !== true
+      || !isTimestamp(row.dailyUpdatedAt)) {
+      fail("A Health fence is unsupported, orphaned, missing persisted snapshot provenance, or out of revision chronology.");
+    }
+  }
+
+  const trainingBlocks = blocks.filter((block) => block.source === "training");
+  const training = sourceEvidence?.training;
+  const trainingBlock = trainingBlocks[0];
+  if (!training || trainingBlocks.length !== 1 || training.sourceKey !== trainingBlock.sourceKey
+    || training.fromDate !== trainingBlock.fromDate || training.fenceRevision !== trainingBlock.revision
+    || training.sessionRows !== 1 || training.sessionId !== 20 || training.profileId !== 1
+    || training.status !== "COMPLETED" || !Number.isSafeInteger(training.sourceRevision) || training.sourceRevision < 1
+    || !Number.isSafeInteger(training.accountingInputRevision) || training.accountingInputRevision < 1
+    || !Number.isSafeInteger(training.currentSnapshotRevision) || training.currentSnapshotRevision < 1
+    || training.accountingSnapshotRows !== 1 || training.snapshotRevision !== training.currentSnapshotRevision
+    || training.snapshotAccountingInputRevision !== training.accountingInputRevision
+    || !isCalendarDate(training.accountingEffectiveLocalDate)
+    || !isTimestamp(training.effectiveAccountingAt) || !isValidTimeZone(training.accountingTimeZone)
+    || !["client-session", "legacy-default"].includes(training.accountingTimeZoneProvenance)
+    || !isCalendarDate(training.snapshotEffectiveLocalDate)
+    || training.snapshotEffectiveLocalDate !== training.accountingEffectiveLocalDate
+    || training.snapshotTimeZone !== training.accountingTimeZone || !training.snapshotTimeZoneValid
+    || training.snapshotTimeZoneProvenance !== training.accountingTimeZoneProvenance
+    || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
+    || training.matchStatus !== "MATCHED" || !Number.isSafeInteger(training.matchedWorkoutId) || training.matchedWorkoutId < 1
+    || training.matchedWorkoutPresent !== true || training.matchedWorkoutIdentityMatches !== true
+    || !isTimestamp(training.matchedWorkoutStartAt) || !isTimestamp(training.trainingEventAt)
+    || training.trainingEventAt !== training.matchedWorkoutStartAt
+    // blockUnifiedPublication retains min(existing.fromDate, new fromDate),
+    // so a valid fence may be earlier than today's event model date. It must
+    // never start after the current writer date, which would omit dependencies.
+    || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
+    || training.chronologyValid !== true) {
+    fail("Training session 20 is missing its current persisted source, accounting snapshot, model date, or revision chronology.");
+  }
+  return true;
+}
+
 export function assertProductionIdentity({ database, app, migrationRows, schemaSha256, sourceFingerprint,
-  lifecycle, blocks, sourceRowsValid, expected }) {
+  lifecycle, blocks, sourceEvidence, expected }) {
   const approved = LEGACY_V4_RECOVERY;
   const ledgerDigest = migrationLedgerDigest(migrationRows);
   if (ledgerDigest !== approved.ledgerDigest) fail("Live database migration ledger differs from the exact approved legacy ledger.");
@@ -144,13 +228,28 @@ export function assertProductionIdentity({ database, app, migrationRows, schemaS
     || app.releaseSha !== LEGACY_V4_RECOVERY.productionAppSha
     || !/^[a-f0-9]{64}$/.test(String(app.containerId))
     || !/^sha256:[a-f0-9]{64}$/.test(String(app.imageId))) fail("Serving BodyCast app identity is unknown, unhealthy, or changed.");
+  const publishedGenerationValid = lifecycle?.unifiedPublishedGeneration === null
+    || (Number.isSafeInteger(lifecycle?.unifiedPublishedGeneration) && lifecycle.unifiedPublishedGeneration >= 0);
+  const publishedEpochValid = lifecycle?.unifiedPublishedRolloutEpoch === null
+    || (Number.isSafeInteger(lifecycle?.unifiedPublishedRolloutEpoch) && lifecycle.unifiedPublishedRolloutEpoch >= 0);
+  const earliestBlock = Array.isArray(blocks) ? [...blocks].sort((a, b) =>
+    `${a.fromDate}\0${a.source}`.localeCompare(`${b.fromDate}\0${b.source}`))[0] : null;
   if (!isDigest(schemaSha256) || !isDigest(sourceFingerprint) || !lifecycle
     || lifecycle.profileId !== 1 || lifecycle.unifiedRolloutEpoch !== 1
     || !Number.isSafeInteger(lifecycle.invalidationGeneration)
-    || lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration) {
+    || !Number.isSafeInteger(lifecycle.productionPublishedGeneration)
+    || lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration
+    || lifecycle.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once"
+    || !publishedGenerationValid || lifecycle.unifiedPublishedGeneration === undefined
+    || !publishedEpochValid || lifecycle.unifiedPublishedRolloutEpoch === undefined
+    || (lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration
+      && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch)
+    || !earliestBlock || lifecycle.unifiedPublicationBlockedFromDate !== earliestBlock.fromDate
+    || lifecycle.unifiedPublicationBlockedSource !== earliestBlock.source) {
     fail("Production V4 must be epoch 1 and stale with valid read-only source/schema evidence.");
   }
-  if (!sourceRowsValid || !expected || ledgerDigest !== expected.ledgerDigest
+  validatePublicationSourceEvidence({ blocks, sourceEvidence });
+  if (!expected || ledgerDigest !== expected.ledgerDigest
     || schemaSha256 !== expected.schemaSha256 || sourceFingerprint !== expected.sourceFingerprint
     || publicationBlockDigest(blocks) !== expected.blockDigest
     || database.containerId !== expected.database.containerId || database.imageId !== expected.database.imageId

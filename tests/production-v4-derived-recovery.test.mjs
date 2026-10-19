@@ -15,6 +15,7 @@ import {
   modelDayKeysDigest,
   validatePublicationSourceEvidence,
   publicationBlockDigest,
+  recoveryEvidenceBinding,
   sha256,
 } from "../scripts/production-v4-derived-recovery.mjs";
 
@@ -132,6 +133,9 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       imageId: `sha256:${"a".repeat(64)}`,
       imageDigest: `sha256:${"9".repeat(64)}`,
       archiveSha256: "b".repeat(64),
+      archiveBytes: 1024,
+      imageBytes: 2048,
+      evidenceBindingContract: LEGACY_V4_RECOVERY.evidenceBindingContract,
       migrationTree: LEGACY_V4_RECOVERY.migrationTree,
       prismaSchemaBlob: LEGACY_V4_RECOVERY.prismaSchemaBlob,
       effectiveCommand: [...LEGACY_V4_RECOVERY.command],
@@ -142,6 +146,9 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       imageId: artifact.imageId,
       imageDigest: artifact.imageDigest,
       archiveSha256: artifact.archiveSha256,
+      archiveBytes: artifact.archiveBytes,
+      imageBytes: artifact.imageBytes,
+      evidenceBindingContract: artifact.evidenceBindingContract,
       migrationTree: artifact.migrationTree,
       prismaSchemaBlob: artifact.prismaSchemaBlob,
       effectiveCommand: artifact.effectiveCommand,
@@ -240,6 +247,22 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     invalidTimeZone.health[0].snapshotsWithValidTimeZone = 1;
     invalidTimeZone.health[0].invalidSnapshotTimeZones = 1;
     expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: invalidTimeZone })).toThrow(/persisted snapshot provenance/);
+  });
+
+  it("uses the shared canonical raw/fence/lifecycle binding contract", () => {
+    const lifecycle = { profileId: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      productionStaleFromDate: null, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
+      unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
+    const binding = recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), blocks, lifecycle });
+    expect(binding).toMatchObject({ contract: "bodycast-v4-recovery-evidence-binding-v1",
+      rawFingerprint: "d".repeat(64), fenceDigest: publicationBlockDigest(blocks) });
+    expect(binding.lifecycleDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(binding.bindingDigest).toBe(sha256(`bodycast-v4-recovery-evidence-binding-v1\n${binding.rawFingerprint}\n${binding.fenceDigest}\n${binding.lifecycleDigest}\n`));
+    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), blocks: blocks.map((block, index) => index === 0
+      ? { ...block, revision: block.revision + 1 } : block), lifecycle }).bindingDigest).not.toBe(binding.bindingDigest);
+    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), blocks,
+      lifecycle: { ...lifecycle, invalidationGeneration: 11 } }).bindingDigest).not.toBe(binding.bindingDigest);
   });
 
   it("requires Training accounting snapshot timezone and provenance to match session fallback inputs", () => {

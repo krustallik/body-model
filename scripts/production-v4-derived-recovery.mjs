@@ -5,18 +5,19 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
   pullRequest: 101,
   branch: "codex/v4-recovery-audit",
   baseSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  sourceSha: "3add9b49fc1fb3965f3414451c8a40368d5b4bba",
+  sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
   productionAppSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   migrationCount: 65,
   migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
   ledgerDigest: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
   prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
   ownerId: "126446430",
-  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3add9b49fc1fb3965f3414451c8a40368d5b4bba",
+  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_35c556772759ea03c2728de921c1825f454d59c2",
   command: Object.freeze([
     "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
     "--owner-authorized", "--profile-id", "1",
   ]),
+  evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
 });
 
 const fail = (message) => { throw new Error(message); };
@@ -122,19 +123,22 @@ export function assertApprovedRecoveryRuns({
   return true;
 }
 
-export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archiveSha256, manifestSha256,
-  migrationTree, prismaSchemaBlob, effectiveCommand, ledgerRows }) {
+export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archiveSha256, archiveBytes, imageBytes,
+  evidenceBindingContract, manifestSha256, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerRows }) {
   const approved = LEGACY_V4_RECOVERY;
   if (sourceSha !== approved.sourceSha || !/^sha256:[a-f0-9]{64}$/.test(String(imageId))
     || !/^sha256:[a-f0-9]{64}$/.test(String(imageDigest))
-    || !isDigest(archiveSha256) || migrationTree !== approved.migrationTree
+    || !isDigest(archiveSha256) || !Number.isSafeInteger(archiveBytes) || archiveBytes < 1
+    || !Number.isSafeInteger(imageBytes) || imageBytes < 1
+    || evidenceBindingContract !== approved.evidenceBindingContract || migrationTree !== approved.migrationTree
     || prismaSchemaBlob !== approved.prismaSchemaBlob
     || JSON.stringify(effectiveCommand) !== JSON.stringify(approved.command)) {
     fail("Recovery artifact SHA, immutable image/archive identity, schema, or entrypoint is not approved.");
   }
   const ledgerDigest = migrationLedgerDigest(ledgerRows);
   if (ledgerDigest !== approved.ledgerDigest) fail("Recovery artifact migration rows do not match the exact audited 65-migration ledger.");
-  const manifest = { sourceSha, imageId, imageDigest, archiveSha256, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerDigest };
+  const manifest = { sourceSha, imageId, imageDigest, archiveSha256, archiveBytes, imageBytes,
+    evidenceBindingContract, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerDigest };
   if (manifestSha256 !== sha256(JSON.stringify(manifest))) fail("Recovery artifact provenance manifest digest does not match its contents.");
   return ledgerDigest;
 }
@@ -166,6 +170,39 @@ export function publicationBlockDigest(blocks) {
     fail("Current persisted fence set contains a non-canonical positive Training session identity.");
   }
   return sha256(sorted.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join(""));
+}
+
+function recoveryLifecycleBindingValues(lifecycle) {
+  if (!lifecycle || lifecycle.profileId !== 1
+      || !Number.isSafeInteger(lifecycle.invalidationGeneration)
+      || !Number.isSafeInteger(lifecycle.productionPublishedGeneration)
+      || typeof lifecycle.productionStaleFromDate !== "string" && lifecycle.productionStaleFromDate !== null
+      || typeof lifecycle.unifiedTargetRevision !== "string"
+      || !Number.isSafeInteger(lifecycle.unifiedRolloutEpoch)
+      || lifecycle.unifiedPublishedGeneration !== null && !Number.isSafeInteger(lifecycle.unifiedPublishedGeneration)
+      || lifecycle.unifiedPublishedRolloutEpoch !== null && !Number.isSafeInteger(lifecycle.unifiedPublishedRolloutEpoch)
+      || typeof lifecycle.unifiedPublicationBlockedFromDate !== "string" && lifecycle.unifiedPublicationBlockedFromDate !== null
+      || typeof lifecycle.unifiedPublicationBlockedSource !== "string" && lifecycle.unifiedPublicationBlockedSource !== null) {
+    fail("V4 recovery lifecycle binding is incomplete or malformed.");
+  }
+  return [lifecycle.profileId, lifecycle.invalidationGeneration, lifecycle.productionPublishedGeneration,
+    lifecycle.productionStaleFromDate, lifecycle.unifiedTargetRevision, lifecycle.unifiedRolloutEpoch,
+    lifecycle.unifiedPublishedGeneration, lifecycle.unifiedPublishedRolloutEpoch,
+    lifecycle.unifiedPublicationBlockedFromDate, lifecycle.unifiedPublicationBlockedSource];
+}
+
+/** Canonical versioned binding shared with the 65-schema recovery entrypoint. */
+export function recoveryEvidenceBinding({ sourceFingerprint, blocks, lifecycle }) {
+  if (!isDigest(sourceFingerprint)) fail("V4 recovery source fingerprint is malformed.");
+  const fenceDigest = publicationBlockDigest(blocks);
+  const lifecycleDigest = sha256(JSON.stringify(recoveryLifecycleBindingValues(lifecycle)));
+  return {
+    contract: "bodycast-v4-recovery-evidence-binding-v1",
+    rawFingerprint: sourceFingerprint,
+    fenceDigest,
+    lifecycleDigest,
+    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v1\n${sourceFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
+  };
 }
 
 export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {

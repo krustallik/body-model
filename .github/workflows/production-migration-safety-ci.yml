@@ -43,6 +43,8 @@ on:
       - "scripts/production-release-marker.mjs"
       - "scripts/production-schema-deploy-handoff.mjs"
       - "scripts/production-v4-derived-recovery.mjs"
+      - "scripts/production-v4-recovery-headroom.mjs"
+      - "scripts/ci/postgres-storage-peak-sampler.mjs"
       - "scripts/production-v4-recovery-evidence.ts"
       - "scripts/production-release-lock.sh"
       - "scripts/production-recovery/**"
@@ -101,6 +103,8 @@ on:
       - "tests/production-schema-deploy-handoff.test.mjs"
       - "tests/production-v4-derived-recovery.test.mjs"
       - "tests/production-v4-derived-recovery-workflow.test.mjs"
+      - "tests/production-v4-recovery-headroom.test.mjs"
+      - "tests/postgres-storage-peak-sampler.test.mjs"
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-deploy-rollback-safety.test.ts"
@@ -162,7 +166,7 @@ jobs:
         run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-no-app-preflight.test.mjs tests/production-no-app-workflow.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs tests/production-v4-recovery-headroom.test.mjs tests/postgres-storage-peak-sampler.test.mjs
 
       - name: Run production recovery workflow protocol tests
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
@@ -241,7 +245,7 @@ jobs:
 
       - name: Assemble only the exact audited legacy source plus pinned release wrapper
         env:
-          LEGACY_SHA: 3add9b49fc1fb3965f3414451c8a40368d5b4bba
+          LEGACY_SHA: 35c556772759ea03c2728de921c1825f454d59c2
         run: |
           set -Eeuo pipefail
           mkdir -p "$RUNNER_TEMP/bodycast-v4-tool/source/scripts"

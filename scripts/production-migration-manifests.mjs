@@ -688,34 +688,41 @@ const TRAINING_MUTATION_LEDGER_OBJECT_SIGNATURES = Object.freeze({
   "UnifiedPublicationBlock_ownerLeaseUntil_idx": "unique=false|valid=true|definition=CREATE INDEX \"UnifiedPublicationBlock_ownerLeaseUntil_idx\" ON public.\"UnifiedPublicationBlock\" USING btree (source, \"ownerLeaseUntil\")",
 });
 
-const TRAINING_MUTATION_LEDGER_PREDECESSORS = Object.freeze([
-  ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations,
+const TRAINING_MUTATION_LEDGER_PREDECESSORS = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations;
+const TRAINING_MUTATION_LEDGER_MIGRATIONS = Object.freeze([
   ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations,
+  Object.freeze({ name: "20261016120000_training_mutation_ledger_queue", sha256: "1d6d2ba9fba560b651ea0d6770e64ed497a9a331501b90fe61bff33522134461" }),
+  Object.freeze({ name: "20261016130000_training_rejected_set_create_operations", sha256: "93866e7d74a39d76a9b9517530d9e561b2bb60599db8b996058f5df4df87434a" }),
+  Object.freeze({ name: "20261016140000_training_refresh_publication_block_keys", sha256: "cdb7f5a07966e8a26ce6938f45735bb9af1b526319e7b94beb1c08b57efbd01b" }),
+  Object.freeze({ name: "20261017120000_add_five_training_exercises", sha256: "8e12d1f6ddcd3b32be4df7a9e4852ba803a44e4094faaebf3d7a7026f5739166" }),
+  Object.freeze({ name: "20261017130000_stepper_operation_recovery", sha256: "71e6028c6e0630eb18e9f231027e7b4a55c20fc50b20bce4a3f91757009c3bbf" }),
+  Object.freeze({ name: "20261017140000_active_energy_convergence_fence", sha256: "65e0784e6bbfa85fee3041aa0adef690fa712614280365f25357a324d0944d43" }),
+  Object.freeze({ name: "20261017150000_active_energy_convergence_owner_lease", sha256: "5316ae90ffbce62adee0cf5a735b0315cf8f1666983f211e3ba4b255effe5518" }),
 ]);
 
 export const TRAINING_MUTATION_LEDGER_MANIFEST = Object.freeze({
   id: "training-mutation-ledger-refresh-queue-v1",
   cutbackSupported: false,
   requireCompleteReleaseTree: true,
-  migrations: Object.freeze([
-    Object.freeze({ name: "20261016120000_training_mutation_ledger_queue", sha256: "1d6d2ba9fba560b651ea0d6770e64ed497a9a331501b90fe61bff33522134461" }),
-    Object.freeze({ name: "20261016130000_training_rejected_set_create_operations", sha256: "93866e7d74a39d76a9b9517530d9e561b2bb60599db8b996058f5df4df87434a" }),
-    Object.freeze({ name: "20261016140000_training_refresh_publication_block_keys", sha256: "cdb7f5a07966e8a26ce6938f45735bb9af1b526319e7b94beb1c08b57efbd01b" }),
-    Object.freeze({ name: "20261017120000_add_five_training_exercises", sha256: "8e12d1f6ddcd3b32be4df7a9e4852ba803a44e4094faaebf3d7a7026f5739166" }),
-    Object.freeze({ name: "20261017130000_stepper_operation_recovery", sha256: "71e6028c6e0630eb18e9f231027e7b4a55c20fc50b20bce4a3f91757009c3bbf" }),
-    Object.freeze({ name: "20261017140000_active_energy_convergence_fence", sha256: "65e0784e6bbfa85fee3041aa0adef690fa712614280365f25357a324d0944d43" }),
-    Object.freeze({ name: "20261017150000_active_energy_convergence_owner_lease", sha256: "5316ae90ffbce62adee0cf5a735b0315cf8f1666983f211e3ba4b255effe5518" }),
-  ]),
+  // Prisma deploy applies every pending directory in one run. Bind the
+  // 65-schema baseline and all nine ordered targets in this one exact set.
+  migrations: TRAINING_MUTATION_LEDGER_MIGRATIONS,
   requiredAppliedMigrations: TRAINING_MUTATION_LEDGER_PREDECESSORS,
-  requiredTablesBefore: Object.freeze([...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredTablesBefore, "HealthSyncRefreshJob"]),
-  requiredObjectsBefore: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightObjects,
-  requiredObjectSignatureIncludes: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightSignatureIncludes,
+  requiredTablesBefore: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredTablesBefore,
+  requiredObjectsBefore: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredObjectsBefore,
+  requiredObjectSignatureIncludes: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredObjectSignatureIncludes,
   requiredObjectSignatureEquals: Object.freeze({
-    ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightSignatureEquals,
+    ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredObjectSignatureEquals,
     "UnifiedPublicationBlock_source_check": "c|validated=true|table=\"UnifiedPublicationBlock\"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying]::text[]))",
   }),
-  partialObjects: TRAINING_MUTATION_LEDGER_OBJECTS,
-  requiredAbsentObjectsBefore: TRAINING_MUTATION_LEDGER_OBJECTS,
+  partialObjects: Object.freeze([
+    ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.partialObjects,
+    ...TRAINING_MUTATION_LEDGER_OBJECTS,
+  ]),
+  requiredAbsentObjectsBefore: Object.freeze([
+    ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAbsentObjectsBefore,
+    ...TRAINING_MUTATION_LEDGER_OBJECTS,
+  ]),
   postflightAbsentObjects: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightAbsentObjects,
   postflightSignatureIncludes: Object.freeze({
     ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightSignatureIncludes,

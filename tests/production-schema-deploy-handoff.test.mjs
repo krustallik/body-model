@@ -736,7 +736,10 @@ describe("schema deploy compatibility handoff", () => {
 
     execFileSync(process.execPath, [script, "--validate-marker", markerPath], { cwd: process.cwd() });
     execFileSync(process.execPath, [script, "--check", markerPath, TRAINING_MIGRATION_SHA, process.cwd()], { cwd: process.cwd() });
-  });
+  // On Windows, the compatibility check verifies every committed migration
+  // blob twice (fixture construction and deployed CLI); measured bounded time
+  // is ~5.5s for the nine-migration manifest.
+  }, 8_000);
 
   it.each([
     ["wrong manifest", { manifestId: "unified-v4-republication-v1" }],

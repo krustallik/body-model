@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
-import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
+import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, evaluateProductionMigrationTree, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
@@ -135,6 +135,47 @@ describe("production schema signature normalization", () => {
       { ...restored, present: false },
     ]) {
       expect(schemaInventoryDigest([changed])).not.toBe(schemaInventoryDigest([source]));
+    }
+  });
+
+  it("canonicalizes only the four exact PostgreSQL 17.11 Training constraint renderings", async () => {
+    const [convergenceMigration, stepperMigration] = await Promise.all([
+      readFile(new URL("../prisma/migrations/20261017140000_active_energy_convergence_fence/migration.sql", import.meta.url), "utf8"),
+      readFile(new URL("../prisma/migrations/20261017130000_stepper_operation_recovery/migration.sql", import.meta.url), "utf8"),
+    ]);
+    expect(convergenceMigration).toContain('CHECK ("source" IN (\'health\', \'day\', \'training\', \'stepper\', \'active_energy\'))');
+    expect(stepperMigration).toContain('CHECK ("payloadVersion" = 1)');
+    expect(stepperMigration).toContain('CHECK ("state" IN (\'PENDING\', \'COMMITTED\', \'TOMBSTONED\'))');
+    expect(stepperMigration).toContain('("state" = \'PENDING\' AND "workoutId" IS NULL)');
+
+    const actualPg17 = {
+      UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
+      StepperCreateOperation_payloadVersion_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
+      StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
+      StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+    };
+
+    for (const [name, signature] of Object.entries(actualPg17)) {
+      const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
+      expect(expected).toBeTruthy();
+      const expectedObject = { name, present: true, kind: "constraint", signature: expected };
+      const pg17Object = { ...expectedObject, signature };
+      expect(schemaInventoryDigest([pg17Object])).toBe(schemaInventoryDigest([expectedObject]));
+      expect(schemaInventoryDifferenceSummary([expectedObject], [pg17Object]).changedObjects.find(({ name: changed }) => changed === name).normalizedSignaturesEqual).toBe(true);
+      expect(schemaInventoryDigest([{ ...pg17Object, signature: `${signature} OR TRUE` }])).not.toBe(schemaInventoryDigest([expectedObject]));
+    }
+
+    for (const [name, mutate] of [
+      ["UnifiedPublicationBlock_source_check", (signature) => signature.replace("'active_energy'", "'unknown'")],
+      ["StepperCreateOperation_payloadVersion_check", (signature) => signature.replace("= 1", "= 2")],
+      ["StepperCreateOperation_state_check", (signature) => signature.replace("'TOMBSTONED'", "'DELETED'")],
+      ["StepperCreateOperation_result_check", (signature) => signature.replace("'COMMITTED'", "'PENDING'")],
+    ]) {
+      const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
+      const sourceObject = { name, present: true, kind: "constraint", signature: expected };
+      const altered = { ...sourceObject, signature: mutate(actualPg17[name]) };
+      expect(schemaInventoryDigest([altered])).not.toBe(schemaInventoryDigest([sourceObject]));
+      expect(schemaInventoryDifferenceSummary([sourceObject], [altered]).changedObjects.find(({ name: changed }) => changed === name).normalizedSignaturesEqual).toBe(false);
     }
   });
 
@@ -316,13 +357,15 @@ function validDynamicWorkoutPreflightReport({ applied = false } = {}) {
 }
 
 function validTrainingMutationLedgerPreflightReport({ applied = false } = {}) {
-  const report = validDynamicWorkoutPreflightReport({ applied: true });
+  const report = validDynamicWorkoutPreflightReport({ applied });
   report.migrations = [
     ...TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations.map((migration) => migrationRow(migration)),
     ...(applied ? TRAINING_MUTATION_LEDGER_MANIFEST.migrations.map((migration) => migrationRow(migration)) : []),
   ];
-  for (const name of TRAINING_MUTATION_LEDGER_MANIFEST.postflightObjects.filter((candidate) =>
-    Object.hasOwn(TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals, candidate))) {
+  const trainingOutputObjects = TRAINING_MUTATION_LEDGER_MANIFEST.postflightObjects.filter((candidate) =>
+    !DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightObjects.includes(candidate)
+      && Object.hasOwn(TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals, candidate));
+  for (const name of [...trainingOutputObjects, "UnifiedPublicationBlock_source_check"]) {
     const object = report.objects.find((candidate) => candidate.name === name);
     if (!object) throw new Error(`Missing reviewed schema object fixture: ${name}`);
     const signature = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
@@ -337,7 +380,7 @@ function validTrainingMutationLedgerPreflightReport({ applied = false } = {}) {
         : signature
       : null;
   }
-  report.tables = {
+  if (applied) report.tables = {
     ...report.tables,
     HealthSyncRefreshJob: { exists: true, estimatedRows: 1, totalBytes: 128 },
   };
@@ -580,9 +623,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     }
   });
 
-  it("keeps all seven Training release migration hashes bound to the runbook", async () => {
+  it("keeps all nine Training release migration hashes bound to the runbook", async () => {
     const runbook = await readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8");
-    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(7);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(9);
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.cutbackSupported).toBe(false);
     for (const migration of TRAINING_MUTATION_LEDGER_MANIFEST.migrations) {
       expect(runbook).toContain(`| \`${migration.name}\` | \`${migration.sha256}\` |`);
@@ -590,6 +633,30 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(runbook).toContain("there is no automatic forward-resume or rollback");
     expect(runbook).toContain("Do not retry `migrate deploy`, run `prisma migrate resolve`");
     expect(runbook).toContain("The Training manifest has `cutbackSupported: false`");
+  });
+
+  it("selects only the combined Training manifest and rehearses it from the pinned 65-migration baseline", async () => {
+    const [migrationWorkflow, preflightWorkflow, safetyWorkflow] = await Promise.all([
+      readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8"),
+    ]);
+    expect(migrationWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
+    expect(migrationWorkflow).not.toContain("programless-workouts-health-sync-v1");
+    expect(preflightWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
+    expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
+    expect(safetyWorkflow).toContain("Rehearse the exact Training manifest from the 65-migration baseline");
+    expect(safetyWorkflow).toContain("BASELINE_SHA: 35c556772759ea03c2728de921c1825f454d59c2");
+    const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Training manifest from the 65-migration baseline");
+    const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
+    const currentMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema prisma/schema.prisma', rehearsalStart);
+    expect(rehearsalStart).toBeGreaterThan(0);
+    expect(exactTreeCheck).toBeGreaterThan(0);
+    expect(exactTreeCheck).toBeLessThan(currentMigration);
+    expect(safetyWorkflow).toContain('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"');
+    expect(safetyWorkflow).toContain("npx prisma migrate deploy --schema prisma/schema.prisma");
+    expect(safetyWorkflow).toContain("--manifest training-mutation-ledger-refresh-queue-v1");
+    expect(safetyWorkflow).toContain('--release-sha "$GITHUB_SHA"');
   });
 
   it("renders the canonical preflight SQL template before the PostgreSQL backup/restore smoke executes it", async () => {
@@ -960,8 +1027,12 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("admits only the complete Training ledger/queue migration set and exact postflight schema", async () => {
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.requireCompleteReleaseTree).toBe(true);
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.cutbackSupported).toBe(false);
-    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations.map(({ name }) => name)).toEqual(dynamicWorkoutDirs);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations.map(({ name }) => name)).toEqual(
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations.map(({ name }) => name),
+    );
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations.map(({ name }) => name)).toEqual([
+      "20261015090000_programless_dynamic_sessions",
+      "20261015100000_health_sync_durable_refresh_queue",
       "20261016120000_training_mutation_ledger_queue",
       "20261016130000_training_rejected_set_create_operations",
       "20261016140000_training_refresh_publication_block_keys",
@@ -970,9 +1041,18 @@ describe("V5 closed migration manifest and full pending set", () => {
       "20261017140000_active_energy_convergence_fence",
       "20261017150000_active_energy_convergence_owner_lease",
     ]);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations).toHaveLength(65);
+    expect(evaluateProductionMigrationTree(trainingMutationLedgerDirs, TRAINING_MUTATION_LEDGER_MANIFEST.id).ready).toBe(true);
+    const treeWithUnreviewedMigration = evaluateProductionMigrationTree(
+      [...trainingMutationLedgerDirs, "20261018120000_unreviewed_migration"],
+      TRAINING_MUTATION_LEDGER_MANIFEST.id,
+    );
+    expect(treeWithUnreviewedMigration.ready).toBe(false);
+    expect(treeWithUnreviewedMigration.blockers.join(" ")).toContain("complete release migration tree exactly");
+    const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     for (const migration of TRAINING_MUTATION_LEDGER_MANIFEST.migrations) {
-      const bytes = await readFile(new URL(`../prisma/migrations/${migration.name}/migration.sql`, import.meta.url));
-      expect(sha256(bytes), migration.name).toBe(migration.sha256);
+      const blob = await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha, migration });
+      expect(blob.matchesManifest, migration.name).toBe(true);
     }
 
     const report = validTrainingMutationLedgerPreflightReport();
@@ -988,6 +1068,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     const preflight = evaluateProductionPreflight(report, trainingMutationLedgerDirs, TRAINING_MUTATION_LEDGER_MANIFEST.id);
     expect(preflight.readyForOwnerAuthorization, preflight.blockers.join(" | ")).toBe(true);
     expect(preflight.pending).toEqual(TRAINING_MUTATION_LEDGER_MANIFEST.migrations.map(({ name }) => name).sort());
+
+    const programlessAlreadyApplied = validDynamicWorkoutPreflightReport({ applied: true });
+    const splitRelease = evaluateProductionPreflight(programlessAlreadyApplied, trainingMutationLedgerDirs,
+      TRAINING_MUTATION_LEDGER_MANIFEST.id);
+    expect(splitRelease.readyForOwnerAuthorization).toBe(false);
+    expect(splitRelease.blockers.join(" ")).toContain("Full release-tree pending set differs");
+    expect(splitRelease.blockers.join(" ")).toContain("Migration output objects already exist");
 
     const missingDirectory = evaluateProductionPreflight(report,
       trainingMutationLedgerDirs.filter((name) => name !== TRAINING_MUTATION_LEDGER_MANIFEST.migrations[2].name),

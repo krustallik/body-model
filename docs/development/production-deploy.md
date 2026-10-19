@@ -12,7 +12,7 @@ the approved DDL checkpoints. Manual deployment checks GitHub's triggering actor
   inspects production read-only, encrypts a database backup, and rehearses its restore and the
   reviewed migration set on disposable PostgreSQL.
 - `.github/workflows/production-migrate.yml` verifies the exact signed owner authorization,
-  current SHA, six-migration manifest and hashes, database identity, backup/restore evidence, and
+  current SHA, selected exact migration manifest and hashes, database identity, backup/restore evidence, and
   writer drain before invoking `scripts/deploy-migrate.sh` over SSH.
 - `.github/workflows/deploy-production.yml` currently has no CI-completion trigger. Its manual
   exact-SHA dispatch remains owner-gated and non-serving while this release pause is active.
@@ -49,19 +49,16 @@ claiming the Docker image cache is read-only.
 
 A. Run the owner-approved legacy V4 recovery against the verified 65-migration schema.
 B. Verify V4 CURRENT and coverage read-only; keep V4 epoch 1.
-C. For the programless release, review the exact two-migration manifest and preflight, create an
-   encrypted backup, rehearse restore and DDL on isolated PostgreSQL, then sign a separate DDL
-   approval.
-D. For Training, repeat with the exact seven-migration manifest, fresh preflight, backup, restore
-   rehearsal, and separate signed DDL approval.
-E. Deploy the exact-current-main app without serving traffic.
-F. Serve through the owner-controlled SSH path only after all approved schema checkpoints pass.
-G. Run production health, API, UI, V4, Training, and Health smoke checks.
+C. For the combined Training release, use the exact nine-migration manifest from the 65-migration
+   baseline, fresh current-main preflight, encrypted backup, isolated restore/DDL rehearsal, and
+   one separate signed DDL approval bound to that exact manifest and SHA.
+D. Deploy the exact-current-main app without serving traffic.
+E. Serve through the owner-controlled SSH path only after all approved schema checkpoints pass.
+F. Run production health, API, UI, V4, Training, and Health smoke checks.
 
-The two DDL approvals are separate and do not authorize each other. An unknown or partial Training
-DDL result stops the sequence: keep maintenance active and do not retry Prisma, apply manual SQL, or
-automatically roll back. Do not run Prisma commands or `docker compose up` manually as a substitute
-for the reviewed release paths.
+An unknown or partial Training DDL result stops the sequence: keep maintenance active and do not
+retry Prisma, apply manual SQL, or automatically roll back. Do not run Prisma commands or
+`docker compose up` manually as a substitute for the reviewed release paths.
 
 ## Backup and failure handling
 
@@ -87,5 +84,6 @@ currentness/coverage fails closed. Preserve the exact run evidence and stop for 
 recovery decision. Production operations remain separately authorized and are never performed by
 CI or ordinary app startup.
 
-See [the V5 migration runbook](production-migration-v5-runbook.md) for the exact six SQL hashes,
+See [the V5 migration runbook](production-migration-v5-runbook.md) for the exact SQL hashes for each
+supported manifest (including the current nine-migration Training set),
 database checks, and recovery details.

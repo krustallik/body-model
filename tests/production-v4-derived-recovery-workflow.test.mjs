@@ -76,16 +76,18 @@ describe("legacy derived V4 recovery release workflow", () => {
       unifiedRolloutEpoch: 1, unifiedPublishedGeneration: 12, unifiedPublishedRolloutEpoch: 1,
       unifiedPublicationBlockedFromDate: null,
     };
-    const days = ["2025-01-01", "2025-01-02"];
+    const modelDayKeys = ["1|2025-01-01", "2|2025-01-02"];
     const before = { database: { database: "bodycast_restore" }, migrationRows, expectedLedgerDigest: ledgerDigest,
       blocks, sourceEvidence, sourceFingerprint: fingerprint,
+      sourceModelDayKeys: modelDayKeys,
       lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11, unifiedPublicationBlockedFromDate: "2025-01-01" } };
-    const after = { ...before, blocks: [], lifecycle, persistedDayDates: days, coveredDayDates: days,
-      persistedDayCount: days.length, coveredDayCount: days.length };
-    const report = { sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f", evidence: {
+    const replayCoverageKeys = [...modelDayKeys, "2|2025-01-03"];
+    const after = { ...before, blocks: [], lifecycle, coveredModelDayKeys: replayCoverageKeys,
+      sourceModelDayCount: modelDayKeys.length, coveredDayCount: replayCoverageKeys.length };
+    const report = { sourceSha: "3add9b49fc1fb3965f3414451c8a40368d5b4bba", evidence: {
       database: { database: "bodycast" }, migrationRows, expectedMigrationRows: migrationRows,
       expectedLedgerDigest: before.expectedLedgerDigest, blocks: before.blocks, sourceFingerprint: fingerprint,
-      sourceEvidence, lifecycle: before.lifecycle,
+      sourceEvidence, lifecycle: before.lifecycle, sourceModelDayKeys: modelDayKeys,
     } };
     writeFileSync(join(artifactRoot, "restored-before.json"), JSON.stringify(before));
     writeFileSync(join(artifactRoot, "restored-after.json"), JSON.stringify(after));
@@ -102,13 +104,15 @@ describe("legacy derived V4 recovery release workflow", () => {
       const preflight = JSON.parse(readFileSync(join(artifactRoot, "preflight.json"), "utf8"));
       expect(preflight).toMatchObject({ preflightRunId: "123456", preflightSha: "c".repeat(40),
         capturedAt, restoredSourceFingerprint: fingerprint,
-        sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f",
+        rehearsalCoverage: { coveredModelDayKeys: replayCoverageKeys,
+          sha256: createHash("sha256").update(`${[...replayCoverageKeys].sort().join("\n")}\n`).digest("hex") },
+        sourceSha: "3add9b49fc1fb3965f3414451c8a40368d5b4bba",
         evidence: { database: { database: "bodycast" }, sourceFingerprint: fingerprint,
           expectedLedgerDigest: ledgerDigest, migrationRows: expect.arrayContaining([expect.objectContaining({ name: migrationRows[0].name })]),
           blocks: expect.arrayContaining([expect.objectContaining({ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 })]) } });
 
       const artifactManifest = {
-        sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f", imageId: `sha256:${"d".repeat(64)}`,
+        sourceSha: "3add9b49fc1fb3965f3414451c8a40368d5b4bba", imageId: `sha256:${"d".repeat(64)}`,
         imageDigest: `sha256:${"d".repeat(64)}`, archiveSha256: "e".repeat(64),
         migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
         effectiveCommand: ["node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery", "--owner-authorized", "--profile-id", "1"],
@@ -152,12 +156,12 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(workflow).toMatch(/\[\[ "\$DISPATCH_SHA" == "\$GITHUB_SHA"/);
     expect(workflow).toContain("main-ci.ndjson");
     expect(workflow).toContain("Recheck exact owner approval, current main, and legacy CI immediately before execution");
-    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_57f2124e9a97c5d3bf12d7968d11341b8e28258f");
+    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3add9b49fc1fb3965f3414451c8a40368d5b4bba");
     expect(workflow).toContain("needs.rehearse.result == 'success'");
   });
 
   it("requires the exact audited legacy SHA, 65-schema manifest, and derived-only entrypoint", () => {
-    expect(workflow).toContain("57f2124e9a97c5d3bf12d7968d11341b8e28258f");
+    expect(workflow).toContain("3add9b49fc1fb3965f3414451c8a40368d5b4bba");
     expect(workflow).toContain("291b9c95924e196d66f9cdd555535b2e5a2b5990");
     expect(workflow).toContain("4fa84cb62262986d5f0c58d3c76db2ba52b5500e");
     expect(workflow).toContain("a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7");
@@ -201,8 +205,62 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(host).not.toContain("prisma migrate");
     expect(host).toContain("serverAddress");
     expect(host).toContain("serverPort !== 5432");
-    expect(evidence).toContain("persistedDayDates");
+    expect(evidence).toContain("sourceModelDayKeys");
     expect(evidence).toContain("coveredDayDates");
     expect(workflow).not.toMatch(/^\s+run:.*docker (compose )?(up|restart|stop)/m);
+  });
+
+  it("executes the host postflight gate and rejects coverage that differs from exact-image rehearsal", () => {
+    const marker = 'node --input-type=module - "$marker" "$evidence_file" "$after_file" "$result_file" "$schema_digest" <<\'NODE\'\n';
+    const commandStart = host.indexOf(marker);
+    expect(commandStart).toBeGreaterThanOrEqual(0);
+    const sourceStart = commandStart + marker.length;
+    const sourceEnd = host.indexOf("\nNODE", sourceStart);
+    expect(sourceEnd).toBeGreaterThan(sourceStart);
+    const nodeSource = host.slice(sourceStart, sourceEnd);
+    const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-host-postflight-"));
+    const paths = {
+      marker: join(tempRoot, "marker.json"), before: join(tempRoot, "before.json"),
+      after: join(tempRoot, "after.json"), result: join(tempRoot, "result.json"),
+      preflight: join(tempRoot, "execute-preflight.json"),
+    };
+    const sourceKeys = ["1|2025-01-01", "1|2025-01-02"];
+    const rehearsalKeys = [...sourceKeys, "2|2025-01-03"];
+    const fingerprint = "a".repeat(64);
+    const lifecycle = { unifiedRolloutEpoch: 1, unifiedPublishedRolloutEpoch: 1,
+      unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedPublicationBlockedFromDate: null, unifiedPublishedGeneration: 8,
+      invalidationGeneration: 8, productionPublishedGeneration: 8, productionStaleFromDate: null };
+    const before = { sourceFingerprint: fingerprint, expectedLedgerDigest: "b".repeat(64), migrationRows: [],
+      database: { database: "bodycast", version: "17.11" }, sourceModelDayKeys: sourceKeys };
+    const after = { ...before, blocks: [], lifecycle, sourceModelDayKeys: sourceKeys,
+      coveredModelDayKeys: rehearsalKeys, sourceModelDayCount: sourceKeys.length, coveredDayCount: rehearsalKeys.length };
+    const report = { rehearsalCoverage: { coveredModelDayKeys: rehearsalKeys,
+      sha256: createHash("sha256").update(`${[...rehearsalKeys].sort().join("\n")}\n`).digest("hex") } };
+    const run = (coverageKeys) => {
+      writeFileSync(paths.marker, JSON.stringify({ state: "started" }));
+      writeFileSync(paths.before, JSON.stringify(before));
+      writeFileSync(paths.after, JSON.stringify({ ...after, coveredModelDayKeys: coverageKeys,
+        coveredDayCount: coverageKeys.length }));
+      writeFileSync(paths.result, JSON.stringify({ command: "unified-v4-derived-recovery", rolloutEpoch: 1,
+        rawInputFingerprint: fingerprint }));
+      writeFileSync(paths.preflight, JSON.stringify(report));
+      return spawnSync(process.execPath, ["--input-type=module", "-", paths.marker, paths.before, paths.after,
+        paths.result, "c".repeat(64)], { env: { ...process.env, BODYCAST_PREFLIGHT_JSON_FILE: paths.preflight },
+        input: nodeSource, encoding: "utf8" });
+    };
+    try {
+      const valid = run(rehearsalKeys);
+      expect(valid.status, valid.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(paths.marker, "utf8"))).toMatchObject({ state: "completed", result: "current",
+        rehearsalCoverageSha256: report.rehearsalCoverage.sha256 });
+      const extraUnboundTail = run([...rehearsalKeys, "2|2025-01-04"]);
+      expect(extraUnboundTail.status).not.toBe(0);
+      expect(extraUnboundTail.stderr).toContain("Read-only postflight did not prove strict raw parity");
+      const missingSourceDay = run(["1|2025-01-02", "2|2025-01-03"]);
+      expect(missingSourceDay.status).not.toBe(0);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

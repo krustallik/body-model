@@ -241,7 +241,7 @@ jobs:
 
       - name: Assemble only the exact audited legacy source plus pinned release wrapper
         env:
-          LEGACY_SHA: 57f2124e9a97c5d3bf12d7968d11341b8e28258f
+          LEGACY_SHA: 3add9b49fc1fb3965f3414451c8a40368d5b4bba
         run: |
           set -Eeuo pipefail
           mkdir -p "$RUNNER_TEMP/bodycast-v4-tool/source/scripts"

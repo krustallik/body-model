@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
-import { assertRecoveryPostflight, publicationBlockDigest, validatePublicationSourceEvidence } from "../production-v4-derived-recovery.mjs";
+import { assertRecoveryPostflight, modelDayKeysDigest, publicationBlockDigest, validatePublicationSourceEvidence } from "../production-v4-derived-recovery.mjs";
 
 const databaseUrl = process.env.BODYCAST_V4_RECOVERY_TEST_DATABASE_URL;
 const image = process.env.BODYCAST_V4_RECOVERY_TEST_IMAGE;
@@ -244,6 +244,17 @@ try {
   );
   await insertEpisode("2025-01-01", "UTC", false, new Date("2025-01-10T00:00:00.000Z"));
   await insertEpisode("2025-01-10", "Pacific/Kiritimati", true, null);
+  const fixtureEpisodes = await prisma.modelEpisode.findMany({
+    where: { profileId: 1, startDate: { in: ["2025-01-01", "2025-01-10"] } },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true },
+  });
+  if (fixtureEpisodes.length !== 2 || fixtureEpisodes[0]?.startDate !== "2025-01-01"
+      || fixtureEpisodes[1]?.startDate !== "2025-01-10") {
+    throw new Error("The isolated V4 rehearsal did not persist its two expected model episode identities.");
+  }
+  const firstEpisodeId = fixtureEpisodes[0].id;
+  const secondEpisodeId = fixtureEpisodes[1].id;
   for (const date of healthDates) await insertHealthDay(date);
   await insertFingerprintPageBoundarySnapshots("2025-01-01", 70);
   const [pageBoundaryCount] = await prisma.$queryRawUnsafe(
@@ -299,7 +310,36 @@ try {
     );
   }
 
+  // A cancelled diary session can leave an old derived transient-water row.
+  // V4 replay consumes that former model day to clear derived history, even
+  // when it is later than today's persisted Health/Completed-session range.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO public."StrengthDiarySession" (id, "profileId", "programId", "programVersionId", status,
+       "entryMode", revision, "accountingInputRevision", "createdAt", "updatedAt")
+     VALUES (26, 1, 1, 1, 'CANCELLED', 'LIVE', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+  );
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO public."ExperimentalTransientExerciseWaterShadow" ("sessionId", "profileId", "sourceFingerprint",
+       "modelRevision", features, result, "createdAt", "updatedAt")
+     VALUES (26, 1, $1, 'experimental-transient-exercise-water-v2-impulse-ledger', '{}'::jsonb,
+       '{"impulse":{"modelDate":"2025-01-15"}}'::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    "f".repeat(64),
+  );
+  const [staleTransientBefore] = await prisma.$queryRawUnsafe(
+    `SELECT count(*)::int AS count FROM public."ExperimentalTransientExerciseWaterShadow"
+     WHERE "sessionId" = 26 AND result #>> '{impulse,modelDate}' = '2025-01-15'`,
+  );
+  if (staleTransientBefore.count !== 1) throw new Error("The exact-image rehearsal did not seed its intended stale derived transient row.");
+
   const nineDayEvidence = await validateCurrentEvidence(9);
+  const expectedModelDayKeys = [
+    ...Array.from({ length: 9 }, (_, index) => `${firstEpisodeId}|2025-01-${String(index + 1).padStart(2, "0")}`),
+    `${secondEpisodeId}|2025-01-10`, `${secondEpisodeId}|2025-01-11`,
+  ];
+  if (nineDayEvidence.sourceModelDayCount !== expectedModelDayKeys.length
+    || JSON.stringify(nineDayEvidence.sourceModelDayKeys) !== JSON.stringify(expectedModelDayKeys)) {
+    throw new Error("Read-only evidence did not derive the exact V4 model-day boundaries from persisted sources across both episodes.");
+  }
   const unpagedFingerprint = await legacyUnpagedRawFingerprint();
   if (nineDayEvidence.sourceFingerprint !== unpagedFingerprint) {
     throw new Error("Paged strict source fingerprint differs from the legacy unpaged byte-for-byte digest.");
@@ -465,30 +505,58 @@ try {
     ]);
   const lifecycle = lifecycleRows[0];
   const evidenceAfter = await readEvidence();
+  const [staleTransientRows] = await prisma.$queryRawUnsafe(
+    `SELECT count(*)::int AS count FROM public."ExperimentalTransientExerciseWaterShadow" WHERE "sessionId" = 26`,
+  );
+  const expectedReplayCoverageKeys = [
+    ...Array.from({ length: 9 }, (_, index) => `${firstEpisodeId}|2025-01-${String(index + 1).padStart(2, "0")}`),
+    ...Array.from({ length: 6 }, (_, index) => `${secondEpisodeId}|2025-01-${String(index + 10).padStart(2, "0")}`),
+  ];
   assertExactLedger(evidenceAfter, ledgerAfter);
   if (JSON.stringify(ledgerBefore) !== JSON.stringify(ledgerAfter)) {
     throw new Error("Exact-image recovery changed one or more persisted Prisma migration ledger rows.");
   }
-  assertRecoveryPostflight({
-    beforeFingerprint: recoveryRawBefore,
-    afterFingerprint: evidenceAfter.sourceFingerprint,
-    lifecycle: evidenceAfter.lifecycle,
-    blocks: evidenceAfter.blocks.length,
-    coveredDayCount: evidenceAfter.coveredDayCount,
-    persistedDayCount: evidenceAfter.persistedDayCount,
-    coveredDates: evidenceAfter.coveredDayDates,
-    persistedDates: evidenceAfter.persistedDayDates,
-    existingEpoch: evidenceBefore.lifecycle.unifiedRolloutEpoch,
-  });
+  try {
+    assertRecoveryPostflight({
+      beforeFingerprint: recoveryRawBefore,
+      afterFingerprint: evidenceAfter.sourceFingerprint,
+      lifecycle: evidenceAfter.lifecycle,
+      blocks: evidenceAfter.blocks.length,
+      coveredModelDayCount: evidenceAfter.coveredDayCount,
+      expectedModelDayCount: evidenceAfter.sourceModelDayCount,
+      coveredModelDayKeys: evidenceAfter.coveredModelDayKeys,
+      expectedModelDayKeys: evidenceAfter.sourceModelDayKeys,
+      rehearsalCoveredModelDayKeys: expectedReplayCoverageKeys,
+      rehearsalCoverageSha256: modelDayKeysDigest(expectedReplayCoverageKeys),
+      existingEpoch: evidenceBefore.lifecycle.unifiedRolloutEpoch,
+    });
+  } catch (error) {
+    throw new Error(`Exact-image V4 postflight failed: ${JSON.stringify({
+      beforeFingerprint: recoveryRawBefore,
+      afterFingerprint: evidenceAfter.sourceFingerprint,
+      lifecycle: evidenceAfter.lifecycle,
+      blocks: evidenceAfter.blocks.length,
+      coveredDayCount: evidenceAfter.coveredDayCount,
+      sourceModelDayCount: evidenceAfter.sourceModelDayCount,
+      sourceModelDayKeys: evidenceAfter.sourceModelDayKeys,
+      coveredModelDayKeys: evidenceAfter.coveredModelDayKeys,
+      coveredDayDates: evidenceAfter.coveredDayDates,
+      existingEpoch: evidenceBefore.lifecycle.unifiedRolloutEpoch,
+    })}`, { cause: error });
+  }
   if (remainingFences !== 0 || lifecycleRows.length !== 1 || lifecycle?.unifiedRolloutEpoch !== 1
     || lifecycle.unifiedPublishedRolloutEpoch !== 1 || lifecycle.invalidationGeneration !== lifecycle.productionPublishedGeneration
     || lifecycle.invalidationGeneration !== lifecycle.unifiedPublishedGeneration
-    || unifiedRows !== recoveryResult.dayCount || evidenceAfter.coveredDayCount !== unifiedRows
+    || recoveryResult.dayCount !== evidenceAfter.sourceModelDayCount
+    || evidenceAfter.sourceModelDayCount !== 11 || evidenceAfter.coveredDayCount !== expectedReplayCoverageKeys.length
+    || JSON.stringify(evidenceAfter.coveredModelDayKeys) !== JSON.stringify(expectedReplayCoverageKeys)
+    || evidenceAfter.coveredDayCount !== unifiedRows || staleTransientRows.count !== 0
     || finalWorkoutCount !== sourceWorkoutCount || finalSessionCount !== sourceSessionCount || finalSetCount !== sourceSetCount
     || JSON.stringify(sessionStates.map(({ id, status, entryMode, matchStatus, matchedWorkoutId, currentSnapshotRevision }) =>
       [id, status, entryMode, matchStatus, matchedWorkoutId, currentSnapshotRevision]))
       !== JSON.stringify([[20, "COMPLETED", "RETROSPECTIVE", "MATCHED", 79, 79],
-        [24, "COMPLETED", "LIVE", "PENDING", null, 80], [25, "COMPLETED", "RETROSPECTIVE", "UNMATCHED", null, 81]])) {
+        [24, "COMPLETED", "LIVE", "PENDING", null, 80], [25, "COMPLETED", "RETROSPECTIVE", "UNMATCHED", null, 81],
+        [26, "CANCELLED", "LIVE", "PENDING", null, null]])) {
     throw new Error("Exact-image rehearsal did not publish V4 epoch 1 from the unchanged persisted source set.");
   }
   if (await legacyUnpagedRawFingerprint() !== recoveryRawBefore) {
@@ -496,7 +564,7 @@ try {
   }
 
   process.stdout.write("PASS: exact 65-migration legacy evidence accepted dynamic Health fences and nullable legacy Training accounting fields; validated the Training event date across a timezone/episode boundary independently from its accounting snapshot; retained an earlier repeated-invalidation fence date; rejected future fence dates, accounting-date mismatch, missing Health sources and unsupported snapshot timezones.\n");
-  process.stdout.write("PASS: exact legacy image refreshed all 9 persisted Health fences and 3 Training fences (MATCHED, LIVE/PENDING without Workout, RETROSPECTIVE/UNMATCHED), preserved raw fingerprint/workouts/sessions/sets and ledger 65, cleared fences only after success, and published V4 epoch 1/current generations.\n");
+  process.stdout.write("PASS: exact legacy image refreshed all 9 persisted Health fences and 3 Training fences (MATCHED, LIVE/PENDING without Workout, RETROSPECTIVE/UNMATCHED), removed the stale session-26 transient shadow, replayed its episode-2 model-day tail through Jan 15, preserved raw fingerprint/workouts/sessions/sets and ledger 65, cleared fences only after success, and published V4 epoch 1/current generations.\n");
 } finally {
   await prisma.$disconnect();
 }

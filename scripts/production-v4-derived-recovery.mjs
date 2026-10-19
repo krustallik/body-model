@@ -5,14 +5,14 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
   pullRequest: 101,
   branch: "codex/v4-recovery-audit",
   baseSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f",
+  sourceSha: "3add9b49fc1fb3965f3414451c8a40368d5b4bba",
   productionAppSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   migrationCount: 65,
   migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
   ledgerDigest: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
   prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
   ownerId: "126446430",
-  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_57f2124e9a97c5d3bf12d7968d11341b8e28258f",
+  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3add9b49fc1fb3965f3414451c8a40368d5b4bba",
   command: Object.freeze([
     "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
     "--owner-authorized", "--profile-id", "1",
@@ -36,6 +36,28 @@ const isValidTimeZone = (value) => {
 
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizedModelDayKeys(keys, label) {
+  if (!Array.isArray(keys) || keys.length < 1 || keys.some((key) => !isModelDayKey(key))
+    || new Set(keys).size !== keys.length) {
+    fail(`${label} contains malformed or duplicate model-day identities.`);
+  }
+  return [...keys].sort();
+}
+
+export function modelDayKeysDigest(keys) {
+  const normalized = normalizedModelDayKeys(keys, "Rehearsed V4 coverage");
+  return sha256(`${normalized.join("\n")}\n`);
+}
+
+export function assertRehearsedCoverageEvidence({ sourceModelDayKeys, coveredModelDayKeys, coverageSha256 }) {
+  const source = normalizedModelDayKeys(sourceModelDayKeys, "Persisted-source model-day coverage");
+  const covered = normalizedModelDayKeys(coveredModelDayKeys, "Rehearsed V4 coverage");
+  if (source.some((key) => !covered.includes(key)) || modelDayKeysDigest(covered) !== coverageSha256) {
+    fail("Exact-image rehearsal coverage does not bind every persisted source model day.");
+  }
+  return true;
 }
 
 export function migrationLedgerDigest(rows) {
@@ -309,7 +331,12 @@ export function assertSchemaSignature({ observed, expected, objectCount }) {
 }
 
 export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, lifecycle, blocks,
-  coveredDayCount, persistedDayCount, coveredDates, persistedDates, existingEpoch }) {
+  coveredModelDayCount, expectedModelDayCount, coveredModelDayKeys, expectedModelDayKeys,
+  rehearsalCoveredModelDayKeys, rehearsalCoverageSha256, existingEpoch }) {
+  assertRehearsedCoverageEvidence({ sourceModelDayKeys: expectedModelDayKeys,
+    coveredModelDayKeys: rehearsalCoveredModelDayKeys, coverageSha256: rehearsalCoverageSha256 });
+  const normalizedActualCoverage = normalizedModelDayKeys(coveredModelDayKeys, "Published V4 coverage");
+  const normalizedRehearsalCoverage = normalizedModelDayKeys(rehearsalCoveredModelDayKeys, "Rehearsed V4 coverage");
   if (!isDigest(beforeFingerprint) || beforeFingerprint !== afterFingerprint) fail("Strict persisted raw-source fingerprint changed during recovery.");
   if (existingEpoch !== 1 || lifecycle?.unifiedRolloutEpoch !== 1
     || lifecycle.productionStaleFromDate !== null
@@ -318,12 +345,26 @@ export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, 
     || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration
     || lifecycle.unifiedPublishedRolloutEpoch !== 1
     || lifecycle.unifiedPublicationBlockedFromDate !== null
-    || blocks !== 0 || !Number.isSafeInteger(persistedDayCount) || persistedDayCount < 1
-    || coveredDayCount !== persistedDayCount || !Array.isArray(persistedDates) || !Array.isArray(coveredDates)
-    || persistedDates.length !== persistedDayCount || coveredDates.length !== coveredDayCount
-    || new Set(persistedDates).size !== persistedDates.length || new Set(coveredDates).size !== coveredDates.length
-    || JSON.stringify([...persistedDates].sort()) !== JSON.stringify([...coveredDates].sort())) {
-    fail("V7/V4 postflight is not CURRENT with exact persisted-date coverage and zero blocks.");
+    || blocks !== 0 || !Number.isSafeInteger(expectedModelDayCount) || expectedModelDayCount < 1
+    || !Number.isSafeInteger(coveredModelDayCount) || coveredModelDayCount < expectedModelDayCount
+    || !Array.isArray(expectedModelDayKeys) || !Array.isArray(coveredModelDayKeys)
+    || expectedModelDayKeys.length !== expectedModelDayCount || coveredModelDayKeys.length !== coveredModelDayCount
+    || expectedModelDayKeys.some((key) => !isModelDayKey(key)) || coveredModelDayKeys.some((key) => !isModelDayKey(key))
+    || new Set(expectedModelDayKeys).size !== expectedModelDayKeys.length
+    || new Set(coveredModelDayKeys).size !== coveredModelDayKeys.length
+    || expectedModelDayKeys.some((key) => !coveredModelDayKeys.includes(key))
+    || JSON.stringify(normalizedActualCoverage) !== JSON.stringify(normalizedRehearsalCoverage)) {
+    fail("V7/V4 postflight is not CURRENT with exact rehearsed coverage and zero blocks.");
   }
   return true;
+}
+
+function isModelDayKey(value) {
+  if (typeof value !== "string") return false;
+  const separator = value.indexOf("|");
+  if (separator < 1 || !/^[1-9][0-9]*$/.test(value.slice(0, separator))) return false;
+  const date = value.slice(separator + 1);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }

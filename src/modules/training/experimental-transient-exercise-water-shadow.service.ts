@@ -43,6 +43,21 @@ export class TransientExerciseWaterConcurrentSourceChangeError extends Error {
   }
 }
 
+function previousModelDate(result: unknown, sessionId: number): string {
+  const impulse = result && typeof result === "object"
+    ? (result as { impulse?: { modelDate?: unknown } }).impulse
+    : undefined;
+  const date = impulse?.modelDate;
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new TransientExerciseWaterSourceUnavailableError(`persisted shadow for session ${sessionId} has no valid model date`);
+  }
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new TransientExerciseWaterSourceUnavailableError(`persisted shadow for session ${sessionId} has no valid model date`);
+  }
+  return date;
+}
+
 type SourceSnapshot = {
   episodes: Episode[];
   partitions: TransientEpisodePartitionV2<Episode>[];
@@ -214,7 +229,7 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
   client?: PrismaClient;
   onCandidateComputed?: () => Promise<void>;
   onProgress?: () => Promise<void>;
-} = {}): Promise<{ earliestModelDate: string | null; sourceToken: string; impulseCount: number }> {
+} = {}): Promise<{ earliestModelDate: string | null; latestModelDate: string | null; sourceToken: string; impulseCount: number }> {
   const profileId = input.profileId ?? 1;
   const client = input.client ?? prisma;
   const before = await readSourceSnapshot(client, profileId);
@@ -235,16 +250,11 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
     const existingBySession = new Map(existingRows.map((row) => [row.sessionId, row]));
     const currentSessionIds = new Set(impulses.map((impulse) => impulse.strengthDiarySessionId));
     const changedDates: string[] = [];
-    const addPreviousDate = (value: unknown) => {
-      const result = value && typeof value === "object" ? value as { impulse?: { modelDate?: unknown } } : null;
-      const date = result?.impulse?.modelDate;
-      if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) changedDates.push(date);
-    };
     for (const impulse of impulses) {
       const existing = existingBySession.get(impulse.strengthDiarySessionId);
       if (existing?.sourceFingerprint === impulse.sourceFingerprint) continue;
       changedDates.push(impulse.modelDate);
-      addPreviousDate(existing?.result);
+      if (existing) changedDates.push(previousModelDate(existing.result, impulse.strengthDiarySessionId));
       const row = sourceRow(impulse, profileId);
       await tx.experimentalTransientExerciseWaterShadow.upsert({
         where: { sessionId: impulse.strengthDiarySessionId },
@@ -260,7 +270,7 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
     }
     for (const existing of existingRows) {
       if (!currentSessionIds.has(existing.sessionId)) {
-        addPreviousDate(existing.result);
+        changedDates.push(previousModelDate(existing.result, existing.sessionId));
       }
     }
     const deleted = await tx.experimentalTransientExerciseWaterShadow.deleteMany({
@@ -275,6 +285,11 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
       await lifecycle.invalidateUnifiedPublication(profileId);
     }
   });
-  const earliestModelDate = affectedDates.sort()[0] ?? null;
-  return { earliestModelDate, sourceToken: before.token, impulseCount: impulses.length };
+  const orderedAffectedDates = affectedDates.sort();
+  return {
+    earliestModelDate: orderedAffectedDates[0] ?? null,
+    latestModelDate: orderedAffectedDates.at(-1) ?? null,
+    sourceToken: before.token,
+    impulseCount: impulses.length,
+  };
 }

@@ -55,8 +55,8 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
             && "$DISPATCH_ACTOR_ID" == 126446430 ]] || { echo "::error::Pinned owner and canonical main are required."; exit 1; }
-          [[ "$RECOVERY_SHA" == 57f2124e9a97c5d3bf12d7968d11341b8e28258f \
-            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_57f2124e9a97c5d3bf12d7968d11341b8e28258f ]] \
+          [[ "$RECOVERY_SHA" == 3add9b49fc1fb3965f3414451c8a40368d5b4bba \
+            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3add9b49fc1fb3965f3414451c8a40368d5b4bba ]] \
             || { echo "::error::Exact approved SHA and confirmation are required."; exit 1; }
           [[ "$DISPATCH_SHA" == "$GITHUB_SHA" && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$GITHUB_SHA" ]] \
             || { echo "::error::Requested runner SHA is not current main."; exit 1; }
@@ -316,7 +316,7 @@ jobs:
             > "$RUNNER_TEMP/bodycast-v4-artifact/restored-after.json"
           node --input-type=module - <<'NODE'
           import { readFileSync } from "node:fs";
-          import { migrationLedgerDigest, publicationBlockDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          import { assertRehearsedCoverageEvidence, migrationLedgerDigest, modelDayKeysDigest, publicationBlockDigest } from "./scripts/production-v4-derived-recovery.mjs";
           const root = `${process.env.RUNNER_TEMP}/bodycast-v4-artifact/`;
           const preflightPath = `${root}preflight.json`;
           const before = JSON.parse(readFileSync(`${root}restored-before.json`, "utf8"));
@@ -337,18 +337,25 @@ jobs:
             || after.lifecycle?.unifiedRolloutEpoch !== 1 || after.lifecycle?.unifiedPublishedRolloutEpoch !== 1
             || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
             || after.lifecycle?.productionPublishedGeneration !== after.lifecycle?.invalidationGeneration
-            || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount !== after.persistedDayCount
-            || after.coveredDayCount < 1 || JSON.stringify([...after.persistedDayDates].sort()) !== JSON.stringify([...after.coveredDayDates].sort())
-            || after.persistedDayDates.length !== after.persistedDayCount || after.coveredDayDates.length !== after.coveredDayCount
+            || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount < after.sourceModelDayCount
+            || after.coveredDayCount < 1
+            || after.sourceModelDayCount !== after.sourceModelDayKeys.length || after.coveredDayCount !== after.coveredModelDayKeys.length
+            || JSON.stringify(before.sourceModelDayKeys) !== JSON.stringify(after.sourceModelDayKeys)
             || result.command !== "unified-v4-derived-recovery" || result.rolloutEpoch !== 1
             || result.rawInputFingerprint !== before.sourceFingerprint) throw new Error("Isolated exact-image V4 recovery rehearsal did not pass raw parity/CURRENT.");
+          const rehearsalCoverageSha256 = modelDayKeysDigest(after.coveredModelDayKeys);
+          assertRehearsedCoverageEvidence({ sourceModelDayKeys: after.sourceModelDayKeys,
+            coveredModelDayKeys: after.coveredModelDayKeys, coverageSha256: rehearsalCoverageSha256 });
           if (preflight.evidence?.sourceFingerprint !== before.sourceFingerprint) throw new Error("Production sources changed while the backup snapshot was captured.");
           const { assertRecoveryPostflight, validatePublicationSourceEvidence } = await import("./scripts/production-v4-derived-recovery.mjs");
           validatePublicationSourceEvidence({ blocks: before.blocks, sourceEvidence: before.sourceEvidence });
           assertRecoveryPostflight({ beforeFingerprint: before.sourceFingerprint, afterFingerprint: after.sourceFingerprint,
-            lifecycle: after.lifecycle, blocks: after.blocks.length, coveredDayCount: after.coveredDayCount,
-            persistedDayCount: after.persistedDayCount, coveredDates: after.coveredDayDates,
-            persistedDates: after.persistedDayDates, existingEpoch: before.lifecycle?.unifiedRolloutEpoch });
+            lifecycle: after.lifecycle, blocks: after.blocks.length,
+            coveredModelDayCount: after.coveredDayCount, expectedModelDayCount: after.sourceModelDayCount,
+            coveredModelDayKeys: after.coveredModelDayKeys, expectedModelDayKeys: after.sourceModelDayKeys,
+            rehearsalCoveredModelDayKeys: after.coveredModelDayKeys, rehearsalCoverageSha256,
+            existingEpoch: before.lifecycle?.unifiedRolloutEpoch });
+          preflight.rehearsalCoverage = { coveredModelDayKeys: after.coveredModelDayKeys, sha256: rehearsalCoverageSha256 };
           preflight.restoredSourceFingerprint = before.sourceFingerprint;
           preflight.preflightRunId = process.env.GITHUB_RUN_ID; preflight.preflightSha = process.env.GITHUB_SHA;
           preflight.capturedAt = process.env.BACKUP_STARTED_AT;
@@ -398,7 +405,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
             && "$DISPATCH_ACTOR_ID" == 126446430 \
-            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_57f2124e9a97c5d3bf12d7968d11341b8e28258f \
+            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3add9b49fc1fb3965f3414451c8a40368d5b4bba \
             && "$GITHUB_RUN_ATTEMPT" == 1 ]]
           [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$GITHUB_SHA" ]]
           gh api repos/krustallik/body-model/pulls/101 > "$RUNNER_TEMP/legacy-pr.json"
@@ -443,12 +450,15 @@ jobs:
           [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ ]]
           node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" <<'NODE'
           import { readFileSync } from "node:fs";
-          import { assertOneShotRecoveryState, assertArtifactBinding, migrationLedgerDigest, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
+          import { assertOneShotRecoveryState, assertArtifactBinding, assertRehearsedCoverageEvidence, migrationLedgerDigest, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
           const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const age = Math.floor((Date.now() - Date.parse(report.capturedAt)) / 1000);
           if (report.preflightRunId !== process.env.PREFLIGHT_RUN_ID || report.preflightSha !== process.env.PREFLIGHT_SHA
             || report.preflightSha !== process.env.EXPECTED_MAIN_SHA || report.sourceSha !== process.env.RECOVERY_SHA) throw new Error("Preflight artifact identity mismatch.");
           validatePublicationSourceEvidence({ blocks: report.evidence?.blocks, sourceEvidence: report.evidence?.sourceEvidence });
+          assertRehearsedCoverageEvidence({ sourceModelDayKeys: report.evidence?.sourceModelDayKeys,
+            coveredModelDayKeys: report.rehearsalCoverage?.coveredModelDayKeys,
+            coverageSha256: report.rehearsalCoverage?.sha256 });
           assertArtifactBinding({ ...JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`, "utf8")),
             ledgerRows: report.evidence.expectedMigrationRows.map((row) => ({ ...row, finishedAt: "verified-in-restored-ledger", rolledBackAt: null })) });
           if (migrationLedgerDigest(report.evidence.migrationRows) !== report.evidence.expectedLedgerDigest

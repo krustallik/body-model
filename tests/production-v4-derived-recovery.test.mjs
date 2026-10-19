@@ -7,10 +7,12 @@ import {
   assertApprovedRecoveryRuns,
   assertArtifactBinding,
   assertProductionIdentity,
+  assertRehearsedCoverageEvidence,
   assertRecoveryPostflight,
   assertOneShotRecoveryState,
   assertSchemaSignature,
   migrationLedgerDigest,
+  modelDayKeysDigest,
   validatePublicationSourceEvidence,
   publicationBlockDigest,
   sha256,
@@ -393,21 +395,36 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     expect(() => validatePublicationSourceEvidence(exactEventDate)).toThrow(/Training session 20/);
   });
 
-  it("rejects changed raw rows, reset epoch, stale generations, leftover blocks and incomplete coverage", () => {
-    const dates = ["2026-10-01", "2026-10-02", "2026-10-03"];
+  it("binds final V4 coverage exactly to the successful rehearsal output", () => {
+    const modelDayKeys = ["1|2026-10-01", "2|2026-10-01", "2|2026-10-02"];
     const result = { beforeFingerprint: "a".repeat(64), afterFingerprint: "a".repeat(64), existingEpoch: 1,
       lifecycle: { unifiedRolloutEpoch: 1, unifiedPublishedRolloutEpoch: 1,
         unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
         unifiedPublishedGeneration: 8, unifiedPublicationBlockedFromDate: null,
         productionStaleFromDate: null, invalidationGeneration: 8, productionPublishedGeneration: 8 },
-      blocks: 0, coveredDayCount: 3, persistedDayCount: 3, coveredDates: dates, persistedDates: dates };
+      blocks: 0, coveredModelDayCount: 3, expectedModelDayCount: 3,
+      coveredModelDayKeys: modelDayKeys, expectedModelDayKeys: modelDayKeys,
+      rehearsalCoveredModelDayKeys: modelDayKeys, rehearsalCoverageSha256: modelDayKeysDigest(modelDayKeys) };
     expect(assertRecoveryPostflight(result)).toBe(true);
+    const replayTail = [...modelDayKeys, "2|2026-10-03", "2|2026-10-04"];
+    expect(assertRecoveryPostflight({ ...result, coveredModelDayCount: replayTail.length,
+      coveredModelDayKeys: replayTail, rehearsalCoveredModelDayKeys: replayTail,
+      rehearsalCoverageSha256: modelDayKeysDigest(replayTail) })).toBe(true);
+    expect(assertRehearsedCoverageEvidence({ sourceModelDayKeys: modelDayKeys,
+      coveredModelDayKeys: replayTail, coverageSha256: modelDayKeysDigest(replayTail) })).toBe(true);
+    expect(() => assertRecoveryPostflight({ ...result, coveredModelDayCount: replayTail.length,
+      coveredModelDayKeys: replayTail })).toThrow(/rehearsed coverage/);
+    expect(() => assertRehearsedCoverageEvidence({ sourceModelDayKeys: modelDayKeys,
+      coveredModelDayKeys: [...replayTail, "2|2026-10-05"], coverageSha256: modelDayKeysDigest(replayTail) })).toThrow();
     for (const changed of [
       { afterFingerprint: "b".repeat(64) }, { existingEpoch: 2 },
       { lifecycle: { ...result.lifecycle, unifiedRolloutEpoch: 2 } },
       { lifecycle: { ...result.lifecycle, productionStaleFromDate: "2026-10-18" } },
-      { blocks: 1 }, { coveredDayCount: 364 },
-      { coveredDates: ["2026-10-01", "2026-10-02", "2026-10-04"] },
+      { blocks: 1 }, { coveredModelDayCount: 364 },
+      { coveredModelDayKeys: ["1|2026-10-01", "2|2026-10-02", "2|2026-10-03"] },
+      { coveredModelDayKeys: [...modelDayKeys, "2|2026-02-30"] },
+      { coveredModelDayKeys: [...modelDayKeys, modelDayKeys[0]] },
+      { expectedModelDayKeys: ["1|2026-10-01", "2|2026-10-01", "2|2026-10-01"] },
     ]) expect(() => assertRecoveryPostflight({ ...result, ...changed })).toThrow();
   });
 

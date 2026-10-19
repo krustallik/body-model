@@ -113,7 +113,7 @@ function prepare() {
     throughInstant,
     days: [sourceDay()],
   });
-  mocks.rebuildTransient.mockResolvedValue({ earliestModelDate: null, sourceToken: "transient-token" });
+  mocks.rebuildTransient.mockResolvedValue({ earliestModelDate: null, latestModelDate: null, sourceToken: "transient-token" });
   mocks.readSourceToken.mockResolvedValue("transient-token");
 }
 
@@ -258,11 +258,46 @@ describe("Unified V2 rebuild publication", () => {
     }));
   });
 
+  it("extends the replay end date through the latest removed transient shadow date", async () => {
+    const days = [1, 2, 3, 4].map((day) => {
+      const date = `2026-10-0${day}`;
+      return sourceDay({
+        date,
+        boundaryAt: `${date}T00:00:00.000Z`,
+        transientWaterBoundaries: [{ episodeId: 9, modelDate: date, boundaryInstant: `${date}T00:00:00.000Z` }],
+      });
+    });
+    mocks.loadRange.mockResolvedValue({
+      fromInstant: boundaryAt,
+      throughInstant: "2026-10-05T00:00:00.000Z",
+      days,
+    });
+    mocks.rebuildTransient.mockResolvedValue({
+      earliestModelDate: "2026-10-02",
+      latestModelDate: "2026-10-04",
+      sourceToken: "transient-token",
+    });
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 });
+
+    expect(mocks.loadRange.mock.calls[0]?.[0]).toMatchObject({
+      profileId: 4,
+      fromInstant: new Date("2026-10-01T00:00:00.000Z"),
+      throughInstant: new Date("2026-10-05T00:00:00.000Z"),
+    });
+    expect(mocks.tx.$executeRaw).toHaveBeenCalledTimes(1);
+    const query = mocks.tx.$executeRaw.mock.calls[0]![0] as { sql: string; values: unknown[] };
+    expect(query.sql).toContain('INSERT INTO "UnifiedExperimentalPhysiologyStateV2"');
+    expect(query.values.filter((value): value is string =>
+      typeof value === "string" && /^2026-10-0[1-4]$/.test(value)))
+      .toEqual(["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"]);
+  });
+
   it("forwards progress into transient-water candidate computation", async () => {
     const onProgress = vi.fn(async () => undefined);
     mocks.rebuildTransient.mockImplementationOnce(async (input: { onProgress?: () => Promise<void> }) => {
       await input.onProgress?.();
-      return { earliestModelDate: null, sourceToken: "transient-token", impulseCount: 1 };
+      return { earliestModelDate: null, latestModelDate: null, sourceToken: "transient-token", impulseCount: 1 };
     });
 
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4, onProgress });

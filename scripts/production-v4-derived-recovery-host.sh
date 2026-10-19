@@ -8,7 +8,7 @@ fail() { printf 'V4_RECOVERY_STOP %s\n' "$1" >&2; exit 1; }
 mode="${1:-}"
 [[ "$mode" == "preflight" || "$mode" == "execute" ]] || fail "invalid-mode"
 [[ "${BODYCAST_DEPLOY_PATH:-}" == "/srv/bodycast" ]] || fail "deploy-path"
-[[ "${BODYCAST_RECOVERY_SHA:-}" == "57f2124e9a97c5d3bf12d7968d11341b8e28258f" ]] || fail "source-sha"
+[[ "${BODYCAST_RECOVERY_SHA:-}" == "3add9b49fc1fb3965f3414451c8a40368d5b4bba" ]] || fail "source-sha"
 [[ "${BODYCAST_EXPECTED_APP_SHA:-}" == "f910d2a45dfa676fada5fab42c9e8946c97872b1" ]] || fail "expected-app-sha"
 [[ "${BODYCAST_OWNER_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || fail "owner-run-id"
 [[ "${BODYCAST_WORKFLOW_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || fail "workflow-sha"
@@ -109,7 +109,7 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
   throw new Error("Live database is not the expected stale 65-migration V4 source state.");
 }
-const output = { sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f",
+const output = { sourceSha: "3add9b49fc1fb3965f3414451c8a40368d5b4bba",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.argv[6], appImageId: process.argv[7], appSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   databaseContainerAddress: process.argv[8], evidence };
@@ -133,16 +133,32 @@ import { createHash } from "node:crypto";
 const expected = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const live = JSON.parse(readFileSync(process.argv[3], "utf8"));
 const fences = expected.evidence?.blocks ?? [];
+const modelDayKeyPattern = /^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/;
+const normalizeModelDayKeys = (keys) => {
+  if (!Array.isArray(keys) || keys.length < 1 || keys.some((key) => {
+    if (typeof key !== "string" || !modelDayKeyPattern.test(key)) return true;
+    const date = key.slice(key.indexOf("|") + 1);
+    const parsed = new Date(`${date}T00:00:00.000Z`);
+    return !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date;
+  }) || new Set(keys).size !== keys.length) throw new Error("Malformed or duplicate rehearsed model-day coverage.");
+  return [...keys].sort();
+};
+const rehearsalCoveredModelDayKeys = normalizeModelDayKeys(expected.rehearsalCoverage?.coveredModelDayKeys);
+const sourceModelDayKeys = normalizeModelDayKeys(expected.evidence?.sourceModelDayKeys);
+const rehearsalCoverageSha256 = createHash("sha256").update(`${rehearsalCoveredModelDayKeys.join("\n")}\n`).digest("hex");
 const fenceDigest = createHash("sha256").update([...fences].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`))
   .map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join("")).digest("hex");
 if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !== process.argv[5]
     || expected.databaseImageId !== process.argv[6] || expected.appContainerId !== process.argv[7]
     || expected.appImageId !== process.argv[8] || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
+    || JSON.stringify(expected.evidence?.sourceModelDayKeys) !== JSON.stringify(live.sourceModelDayKeys)
     || JSON.stringify(expected.evidence?.migrationRows) !== JSON.stringify(live.migrationRows)
     || JSON.stringify(expected.evidence?.blocks) !== JSON.stringify(live.blocks)
     || JSON.stringify(expected.evidence?.sourceEvidence) !== JSON.stringify(live.sourceEvidence)
     || JSON.stringify(expected.evidence?.lifecycle) !== JSON.stringify(live.lifecycle)
     || expected.preflightSha !== process.argv[10] || expected.sourceSha !== process.argv[11]
+    || sourceModelDayKeys.some((key) => !rehearsalCoveredModelDayKeys.includes(key))
+    || expected.rehearsalCoverage?.sha256 !== rehearsalCoverageSha256
     || expected.databaseContainerAddress !== process.argv[9]
     || live.database?.serverAddress !== process.argv[9] || live.database?.serverPort !== 5432) {
   throw new Error("Production identity, schema, raw data, lifecycle, or fences changed after isolated restore rehearsal.");
@@ -166,6 +182,18 @@ const [path, sourceSha, runId, imageId, archiveSha, workflowSha, attempt, prefli
   schemaSha, dbId, dbImage, appId, appImage] = process.argv.slice(2);
 const preflight = JSON.parse(await readFile(preflightPath, "utf8"));
 const fences = [...preflight.evidence.blocks].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`));
+const rehearsalCoveredModelDayKeys = preflight.rehearsalCoverage?.coveredModelDayKeys;
+if (!Array.isArray(rehearsalCoveredModelDayKeys) || rehearsalCoveredModelDayKeys.length < 1
+    || rehearsalCoveredModelDayKeys.some((key) => typeof key !== "string" || !/^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/.test(key))
+    || new Set(rehearsalCoveredModelDayKeys).size !== rehearsalCoveredModelDayKeys.length) {
+  throw new Error("Preflight rehearsal coverage is malformed or duplicated.");
+}
+const normalizedRehearsalCoverage = [...rehearsalCoveredModelDayKeys].sort();
+const rehearsalCoverageSha256 = createHash("sha256").update(`${normalizedRehearsalCoverage.join("\n")}\n`).digest("hex");
+if (preflight.rehearsalCoverage.sha256 !== rehearsalCoverageSha256
+    || preflight.evidence.sourceModelDayKeys.some((key) => !normalizedRehearsalCoverage.includes(key))) {
+  throw new Error("Rehearsal coverage digest or persisted-source coverage binding failed.");
+}
 const fenceDigest = createHash("sha256").update(fences.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join("")).digest("hex");
 const preflightDigest = createHash("sha256").update(await readFile(preflightPath)).digest("hex");
 const tmp = `${path}.tmp-${process.pid}`;
@@ -173,6 +201,7 @@ const file = await open(tmp, "wx", 0o600);
 await file.writeFile(`${JSON.stringify({ state: "started", sourceSha, ownerRunId: runId, workflowSha, attempt,
   imageId, archiveSha, preflightDigest, schemaSha, ledgerDigest: preflight.evidence.expectedLedgerDigest,
   fenceDigest, sourceFingerprint: preflight.evidence.sourceFingerprint, databaseContainerId: dbId,
+  rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: normalizedRehearsalCoverage,
   databaseImageId: dbImage, appContainerId: appId, appImageId: appImage, startedAt: new Date().toISOString() })}\n`);
 await file.sync(); await file.close(); await rename(tmp, path);
 NODE
@@ -209,9 +238,16 @@ schema_digest_after="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner
   || fail "production-container-identity-changed-during-recovery"
 node --input-type=module - "$marker" "$evidence_file" "$after_file" "$result_file" "$schema_digest" <<'NODE'
 import { readFileSync, writeFileSync, openSync, fsyncSync, closeSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
 const [path, beforePath, afterPath, resultPath, schemaSha256] = process.argv.slice(2);
 const before = JSON.parse(readFileSync(beforePath, "utf8")); const after = JSON.parse(readFileSync(afterPath, "utf8"));
 const result = JSON.parse(readFileSync(resultPath, "utf8").trim().split(/\r?\n/).at(-1));
+const preflight = JSON.parse(readFileSync(process.env.BODYCAST_PREFLIGHT_JSON_FILE, "utf8"));
+const modelDayKeyPattern = /^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/;
+const rehearsedKeys = preflight.rehearsalCoverage?.coveredModelDayKeys;
+const rehearsalCoverage = Array.isArray(rehearsedKeys) ? [...rehearsedKeys].sort() : [];
+const actualCoverage = Array.isArray(after.coveredModelDayKeys) ? [...after.coveredModelDayKeys].sort() : [];
+const rehearsalCoverageSha256 = createHash("sha256").update(`${rehearsalCoverage.join("\n")}\n`).digest("hex");
 if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedgerDigest !== after.expectedLedgerDigest
     || after.blocks.length !== 0
     || JSON.stringify(before.migrationRows) !== JSON.stringify(after.migrationRows)
@@ -221,10 +257,17 @@ if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedge
     || after.lifecycle?.unifiedPublicationBlockedFromDate !== null
     || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
     || after.lifecycle?.productionPublishedGeneration !== after.lifecycle?.invalidationGeneration
-    || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount !== after.persistedDayCount
+    || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount < after.sourceModelDayCount
     || after.coveredDayCount < 1
-    || JSON.stringify([...after.persistedDayDates].sort()) !== JSON.stringify([...after.coveredDayDates].sort())
-    || after.persistedDayDates.length !== after.persistedDayCount || after.coveredDayDates.length !== after.coveredDayCount
+    || !Array.isArray(rehearsedKeys) || rehearsedKeys.length < 1
+    || rehearsedKeys.some((key) => typeof key !== "string" || !modelDayKeyPattern.test(key))
+    || new Set(rehearsedKeys).size !== rehearsedKeys.length
+    || preflight.rehearsalCoverage.sha256 !== rehearsalCoverageSha256
+    || rehearsalCoverage.length !== actualCoverage.length
+    || rehearsalCoverage.some((key, index) => key !== actualCoverage[index])
+    || after.sourceModelDayKeys.some((key) => !rehearsalCoverage.includes(key))
+    || after.sourceModelDayCount !== after.sourceModelDayKeys.length || after.coveredDayCount !== after.coveredModelDayKeys.length
+    || JSON.stringify(before.sourceModelDayKeys) !== JSON.stringify(after.sourceModelDayKeys)
     || result.command !== "unified-v4-derived-recovery"
     || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.sourceFingerprint) {
   throw new Error("Read-only postflight did not prove strict raw parity and V4 CURRENT coverage at epoch 1.");
@@ -232,8 +275,9 @@ if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedge
 const prior = JSON.parse(readFileSync(path, "utf8")); const tmp = `${path}.terminal-${process.pid}`;
 writeFileSync(tmp, `${JSON.stringify({ ...prior, state: "completed", result: "current", finishedAt: new Date().toISOString(),
   sourceFingerprint: after.sourceFingerprint, postflightSchemaSha256: schemaSha256,
-  persistedDayDates: after.persistedDayDates, coveredDayDates: after.coveredDayDates,
-  coveredDayCount: after.coveredDayCount, persistedDayCount: after.persistedDayCount,
+  sourceModelDayKeys: after.sourceModelDayKeys, coveredModelDayKeys: after.coveredModelDayKeys,
+  rehearsalCoverageSha256: preflight.rehearsalCoverage.sha256,
+  sourceModelDayCount: after.sourceModelDayCount, coveredDayCount: after.coveredDayCount,
   blocksRemaining: after.blocks.length, unifiedPublishedGeneration: after.lifecycle.unifiedPublishedGeneration,
   productionPublishedGeneration: after.lifecycle.productionPublishedGeneration,
   unifiedTargetRevision: after.lifecycle.unifiedTargetRevision,

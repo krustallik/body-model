@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { prisma } from "@/lib/db/prisma";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
+import { buildTransientEpisodePartitionsV2, latestCompletedSessionModelDateV2, transientModelDayBoundariesV2 } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "@/modules/training/bodyweight-reference-v2";
 import { LOAD_ACCOUNTING_METHOD_V1 } from "@/modules/training/load-accounting-v1";
 import { buildMassResolutionIdentity, persistedPayloadFromUnknown } from "@/modules/training/persisted-load-accounting-v1";
@@ -43,6 +45,39 @@ const RECOVERY_RAW_INPUT_TABLES = [
   "StrengthSessionAccountingOperation",
 ] as const;
 const RECOVERY_RAW_FINGERPRINT_PAGE_SIZE = 32;
+
+async function readExpectedV4ModelDayBoundariesV1(client: typeof prisma, profileId: number) {
+  const episodes = await client.modelEpisode.findMany({
+    where: { profileId }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true },
+  });
+  const partitions = buildTransientEpisodePartitionsV2(episodes);
+  const first = partitions[0];
+  const last = partitions.at(-1);
+  if (!first || !last) throw new Error("V4 recovery evidence has no persisted model episode boundary");
+  const [latestDurable, completedSessions] = await Promise.all([
+    client.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } }),
+    client.strengthDiarySession.findMany({
+      where: { profileId, status: "COMPLETED" },
+      select: { effectiveAccountingAt: true, webStartedAt: true, createdAt: true,
+        matchedWorkout: { select: { startAt: true } } },
+    }),
+  ]);
+  const latestSessionDate = latestCompletedSessionModelDateV2(partitions, completedSessions);
+  const requestedToDate = [latestDurable?.date, latestSessionDate]
+    .filter((date): date is string => date !== null && date !== undefined)
+    .sort()
+    .at(-1) ?? first.episode.startDate;
+  const effectiveToDate = [requestedToDate, first.episode.startDate, last.episode.startDate]
+    .sort()
+    .at(-1)!;
+  const throughInstant = localDateTimeToInstant(addCalendarDays(effectiveToDate, 1), "00:00", last.episode.timezone);
+  return transientModelDayBoundariesV2({
+    partitions,
+    fromInstant: first.startInstant,
+    throughInstant,
+  });
+}
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -387,12 +422,11 @@ async function main() {
       const sourceFingerprint = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
       const sourceEvidence = await readPublicationSourceEvidenceV1(tx as unknown as typeof prisma,
         blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })));
-      const [persistedDayRows, coveredDayRows] = lifecycle ? await Promise.all([
-        tx.dailyModelState.findMany({ where: { episode: { profileId: 1, active: true } },
-          select: { date: true }, orderBy: { date: "asc" } }),
+      const [sourceModelDayRows, coveredDayRows] = lifecycle ? await Promise.all([
+        readExpectedV4ModelDayBoundariesV1(tx as unknown as typeof prisma, 1),
         tx.unifiedExperimentalPhysiologyStateV2.findMany({
           where: { profileId: 1, modelRevision: lifecycle.unifiedTargetRevision },
-          select: { date: true }, orderBy: { date: "asc" },
+          select: { modelEpisodeId: true, date: true }, orderBy: [{ date: "asc" }, { modelEpisodeId: "asc" }],
         }),
       ]) : [[], []];
       return {
@@ -402,9 +436,11 @@ async function main() {
         blocks: blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })),
         sourceEvidence,
         sourceFingerprint,
-        persistedDayDates: persistedDayRows.map((row) => dateKey(row.date)),
+        sourceModelDayKeys: sourceModelDayRows.map((row) => `${row.episodeId}|${row.modelDate}`),
+        sourceModelDayDates: sourceModelDayRows.map((row) => row.modelDate),
+        coveredModelDayKeys: coveredDayRows.map((row) => `${row.modelEpisodeId}|${dateKey(row.date)}`),
         coveredDayDates: coveredDayRows.map((row) => dateKey(row.date)),
-        persistedDayCount: persistedDayRows.length,
+        sourceModelDayCount: sourceModelDayRows.length,
         coveredDayCount: coveredDayRows.length,
       };
     }, {

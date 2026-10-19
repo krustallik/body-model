@@ -62,7 +62,7 @@ describe("active production release entrypoints", () => {
       expect(source).toContain("training-mutation-ledger-refresh-queue-v1");
     }
     expect(migration).toContain("standard exact-SHA execution");
-    expect(preflight).toContain("do not accept historical resume evidence");
+    expect(preflight).toContain("does not accept historical resume evidence");
     expect(runner).toContain("accepts standard exact-SHA execution only");
   });
 

@@ -458,10 +458,34 @@ jobs:
           npx prisma migrate deploy --schema prisma/schema.prisma
           node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
             --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-training-postflight.json"
+          set +e
           node scripts/production-migration-preflight.mjs --postflight \
             --manifest training-mutation-ledger-refresh-queue-v1 \
             --report "$RUNNER_TEMP/bodycast-training-postflight.json" \
             --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA"
+          postflight_status=$?
+          set -e
+          if [ "$postflight_status" -ne 0 ]; then
+            node --input-type=module - "$RUNNER_TEMP/bodycast-training-postflight.json" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { TRAINING_MUTATION_LEDGER_MANIFEST } from './scripts/production-migration-manifests.mjs';
+          const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const names = [
+            'UnifiedPublicationBlock_source_check',
+            'StepperCreateOperation_payloadVersion_check',
+            'StepperCreateOperation_state_check',
+            'StepperCreateOperation_result_check',
+          ];
+          for (const name of names) {
+            const object = report.objects?.find((candidate) => candidate.name === name);
+            const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name]
+              ?? TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureIncludes[name]
+              ?? null;
+            process.stdout.write(`[schema-signature-diagnostic] ${JSON.stringify({ name, present: object?.present ?? false, kind: object?.kind ?? null, actual: object?.signature ?? null, expected })}\n`);
+          }
+          NODE
+            exit "$postflight_status"
+          fi
 
       - name: Run production migration release-tooling shell regressions
         env:

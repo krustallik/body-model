@@ -192,7 +192,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": {
         migrationOriginBlob: null,
-        deployBlob: "597cb29038fe97d563091abf900018413274acbb",
+        deployBlob: "9e48dc5420355b97a5d3196f768844674b36c9e5",
       },
       "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
         migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
@@ -208,7 +208,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/training/training.service.ts": {
         migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",
-        deployBlob: "35491fb682d1f8424d34501cc389effeb225bd36",
+        deployBlob: "cf8d8e984b177e9cc41b079a14ec7eb664f427a5",
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",

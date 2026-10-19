@@ -25,6 +25,14 @@ artifact_dir="/var/lib/bodycast/recovery/artifacts/${BODYCAST_RECOVERY_SHA}/${BO
   || fail "headroom-script-identity"
 [[ "${BODYCAST_HEADROOM_SCRIPT_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "headroom-script-digest"
 [[ "$(sha256sum "$BODYCAST_HEADROOM_SCRIPT" | awk '{print $1}')" == "$BODYCAST_HEADROOM_SCRIPT_SHA256" ]] || fail "headroom-script-digest"
+[[ "${BODYCAST_SCHEMA_DIGEST_SCRIPT:-}" == "$artifact_dir/schema-digest.mjs" && -f "$BODYCAST_SCHEMA_DIGEST_SCRIPT" \
+  && ! -L "$BODYCAST_SCHEMA_DIGEST_SCRIPT" && "$(realpath -e "$BODYCAST_SCHEMA_DIGEST_SCRIPT" 2>/dev/null || true)" == "$BODYCAST_SCHEMA_DIGEST_SCRIPT" ]] \
+  || fail "schema-digest-script-identity"
+[[ "${BODYCAST_SCHEMA_DIGEST_HELPER_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "schema-digest-script-digest"
+[[ "$(sha256sum "$BODYCAST_SCHEMA_DIGEST_SCRIPT" | awk '{print $1}')" == "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" ]] \
+  || fail "schema-digest-script-digest"
+schema_digest_contract="$(node "$BODYCAST_SCHEMA_DIGEST_SCRIPT" --contract 2>/dev/null)" || fail "schema-digest-contract"
+[[ "$schema_digest_contract" == "bodycast-pg-dump-schema-v1" ]] || fail "schema-digest-contract"
 [[ "${BODYCAST_RECOVERY_HEADROOM_METRICS_JSON:-}" =~ ^\{.{2,1022}\}$ ]] || fail "headroom-metrics-missing"
 
 git_dir="$(git -C "$BODYCAST_DEPLOY_PATH" rev-parse --absolute-git-dir 2>/dev/null)" || fail "deploy-git-dir"
@@ -135,13 +143,13 @@ validate_source_evidence() {
 }
 validate_source_evidence
 schema_digest="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' \
-  | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')" || fail "schema-signature"
+  | node "$BODYCAST_SCHEMA_DIGEST_SCRIPT")" || fail "schema-signature"
 [[ "$schema_digest" =~ ^[a-f0-9]{64}$ ]] || fail "schema-signature"
 
 if [[ "$mode" == "preflight" ]]; then
   marker="/var/lib/bodycast/recovery/unified-v4-derived-${BODYCAST_RECOVERY_SHA}.json"
   [[ ! -e "$marker" && ! -L "$marker" ]] || fail "recovery-already-started-or-terminal"
-  node --input-type=module - "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" <<'NODE'
+  node --input-type=module - "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$schema_digest_contract" "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" <<'NODE'
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 const evidence = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -163,7 +171,8 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
 const output = { sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.argv[6], appImageId: process.argv[7], appSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  databaseContainerAddress: process.argv[8], evidence };
+  databaseContainerAddress: process.argv[8], schemaDigestContract: process.argv[9],
+  schemaDigestHelperSha256: process.argv[10], evidence };
 process.stdout.write(`${JSON.stringify(output)}\n`);
 NODE
   exit 0
@@ -178,7 +187,7 @@ marker="$marker_dir/unified-v4-derived-${BODYCAST_RECOVERY_SHA}.json"
 [[ ! -e "$marker" && ! -L "$marker" ]] || fail "one-shot-marker-exists"
 mkdir -p -m 700 "$marker_dir" || fail "marker-directory"
 [[ ! -L "$marker_dir" && -d "$marker_dir" && "$(realpath -e "$marker_dir")" == "$marker_dir" ]] || fail "marker-directory-identity"
-node --input-type=module - "$expected_file" "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$BODYCAST_WORKFLOW_SHA" "$BODYCAST_RECOVERY_SHA" <<'NODE'
+node --input-type=module - "$expected_file" "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$BODYCAST_WORKFLOW_SHA" "$BODYCAST_RECOVERY_SHA" "$schema_digest_contract" "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" <<'NODE'
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 const expected = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -208,6 +217,7 @@ if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !=
     || JSON.stringify(expected.evidence?.sourceEvidence) !== JSON.stringify(live.sourceEvidence)
     || JSON.stringify(expected.evidence?.lifecycle) !== JSON.stringify(live.lifecycle)
     || expected.preflightSha !== process.argv[10] || expected.sourceSha !== process.argv[11]
+    || expected.schemaDigestContract !== process.argv[12] || expected.schemaDigestHelperSha256 !== process.argv[13]
     || sourceModelDayKeys.some((key) => !rehearsalCoveredModelDayKeys.includes(key))
     || expected.rehearsalCoverage?.sha256 !== rehearsalCoverageSha256
     || expected.databaseContainerAddress !== process.argv[9]
@@ -265,7 +275,9 @@ if (preflight.rehearsalCoverage.sha256 !== rehearsalCoverageSha256
 const fenceDigest = createHash("sha256").update(fences.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join("")).digest("hex");
 const preflightDigest = createHash("sha256").update(await readFile(preflightPath)).digest("hex");
 const marker = { state: "started", sourceSha, ownerRunId: runId, workflowSha, attempt,
-  imageId, archiveSha, preflightDigest, schemaSha, ledgerDigest: preflight.evidence.expectedLedgerDigest,
+  imageId, archiveSha, preflightDigest, schemaSha,
+  schemaDigestContract: preflight.schemaDigestContract, schemaDigestHelperSha256: preflight.schemaDigestHelperSha256,
+  ledgerDigest: preflight.evidence.expectedLedgerDigest,
   fenceDigest, sourceFingerprint: preflight.evidence.sourceFingerprint, databaseContainerId: dbId,
   rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: normalizedRehearsalCoverage,
   databaseImageId: dbImage, appContainerId: appId, appImageId: appImage, startedAt: new Date().toISOString() };
@@ -320,7 +332,7 @@ NODE
   fail "recovery-failed-no-retry"
 fi
 schema_digest_after="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' \
-  | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')" || fail "postflight-schema-signature"
+  | node "$BODYCAST_SCHEMA_DIGEST_SCRIPT")" || fail "postflight-schema-signature"
 [[ "$schema_digest_after" == "$schema_digest" ]] || fail "schema-changed-during-recovery"
 [[ "$(docker inspect --format '{{.Id}}' "$db")" == "$db_id" \
   && "$(docker inspect --format '{{.Image}}' "$db")" == "$db_image" \
@@ -369,6 +381,7 @@ if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedge
 const prior = JSON.parse(readFileSync(path, "utf8")); const tmp = `${path}.terminal-${process.pid}`;
 const terminalContents = `${JSON.stringify({ ...prior, state: "completed", result: "current", finishedAt: new Date().toISOString(),
   sourceFingerprint: after.sourceFingerprint, postflightSchemaSha256: schemaSha256,
+  schemaDigestContract: preflight.schemaDigestContract, schemaDigestHelperSha256: preflight.schemaDigestHelperSha256,
   sourceModelDayKeys: after.sourceModelDayKeys, coveredModelDayKeys: after.coveredModelDayKeys,
   rehearsalCoverageSha256: preflight.rehearsalCoverage.sha256,
   sourceModelDayCount: after.sourceModelDayCount, coveredDayCount: after.coveredDayCount,

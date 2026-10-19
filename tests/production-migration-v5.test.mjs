@@ -138,6 +138,47 @@ describe("production schema signature normalization", () => {
     }
   });
 
+  it("canonicalizes only the four exact PostgreSQL 17.11 Training constraint renderings", async () => {
+    const [convergenceMigration, stepperMigration] = await Promise.all([
+      readFile(new URL("../prisma/migrations/20261017140000_active_energy_convergence_fence/migration.sql", import.meta.url), "utf8"),
+      readFile(new URL("../prisma/migrations/20261017130000_stepper_operation_recovery/migration.sql", import.meta.url), "utf8"),
+    ]);
+    expect(convergenceMigration).toContain('CHECK ("source" IN (\'health\', \'day\', \'training\', \'stepper\', \'active_energy\'))');
+    expect(stepperMigration).toContain('CHECK ("payloadVersion" = 1)');
+    expect(stepperMigration).toContain('CHECK ("state" IN (\'PENDING\', \'COMMITTED\', \'TOMBSTONED\'))');
+    expect(stepperMigration).toContain('("state" = \'PENDING\' AND "workoutId" IS NULL)');
+
+    const actualPg17 = {
+      UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
+      StepperCreateOperation_payloadVersion_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
+      StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
+      StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+    };
+
+    for (const [name, signature] of Object.entries(actualPg17)) {
+      const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
+      expect(expected).toBeTruthy();
+      const expectedObject = { name, present: true, kind: "constraint", signature: expected };
+      const pg17Object = { ...expectedObject, signature };
+      expect(schemaInventoryDigest([pg17Object])).toBe(schemaInventoryDigest([expectedObject]));
+      expect(schemaInventoryDifferenceSummary([expectedObject], [pg17Object]).changedObjects.find(({ name: changed }) => changed === name).normalizedSignaturesEqual).toBe(true);
+      expect(schemaInventoryDigest([{ ...pg17Object, signature: `${signature} OR TRUE` }])).not.toBe(schemaInventoryDigest([expectedObject]));
+    }
+
+    for (const [name, mutate] of [
+      ["UnifiedPublicationBlock_source_check", (signature) => signature.replace("'active_energy'", "'unknown'")],
+      ["StepperCreateOperation_payloadVersion_check", (signature) => signature.replace("= 1", "= 2")],
+      ["StepperCreateOperation_state_check", (signature) => signature.replace("'TOMBSTONED'", "'DELETED'")],
+      ["StepperCreateOperation_result_check", (signature) => signature.replace("'COMMITTED'", "'PENDING'")],
+    ]) {
+      const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
+      const sourceObject = { name, present: true, kind: "constraint", signature: expected };
+      const altered = { ...sourceObject, signature: mutate(actualPg17[name]) };
+      expect(schemaInventoryDigest([altered])).not.toBe(schemaInventoryDigest([sourceObject]));
+      expect(schemaInventoryDifferenceSummary([sourceObject], [altered]).changedObjects.find(({ name: changed }) => changed === name).normalizedSignaturesEqual).toBe(false);
+    }
+  });
+
   it("binds V4 baseline function signatures to the reviewed prior migration bodies", async () => {
     const [persistenceMigration, staleSuffixMigration, v4Migration] = await Promise.all([
       readFile(new URL("../prisma/migrations/20260918120000_add_v7_physiology_persistence/migration.sql", import.meta.url), "utf8"),

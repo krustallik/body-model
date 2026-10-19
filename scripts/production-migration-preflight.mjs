@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST, PRODUCTION_MIGRATION_MANIFESTS, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
+import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, PRODUCTION_MIGRATION_MANIFESTS, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
@@ -136,6 +136,13 @@ const PUBLICATION_SOURCE_SIGNATURE_PREFIX = 'c|validated=true|table="UnifiedPubl
 const PUBLICATION_SOURCE_CHECK_SIGNATURE = `${PUBLICATION_SOURCE_SIGNATURE_PREFIX}ARRAY[${PUBLICATION_SOURCE_VALUES.map((value) => `'${value}'::character varying`).join(", ")}]::text[]))`;
 const PUBLICATION_SOURCE_CHECK_RESTORED_SIGNATURE = `${PUBLICATION_SOURCE_SIGNATURE_PREFIX}ARRAY[${PUBLICATION_SOURCE_VALUES.map((value) => `'${value}'::character varying::text`).join(", ")}]))`;
 
+const TRAINING_PG17_RESTORED_CONSTRAINT_SIGNATURES = Object.freeze({
+  UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
+  StepperCreateOperation_payloadVersion_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
+  StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
+  StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+});
+
 function canonicalInventorySignature(object) {
   // PostgreSQL 17's dump/reparse moves the varchar[] -> text[] cast onto
   // individual literals in this reviewed CHECK. Admit only the complete exact
@@ -150,6 +157,16 @@ function canonicalInventorySignature(object) {
   if (object?.name === "UnifiedPublicationBlock_source_check" && object.present === true
     && object.kind === "constraint" && object.signature === PUBLICATION_SOURCE_CHECK_RESTORED_SIGNATURE) {
     return PUBLICATION_SOURCE_CHECK_SIGNATURE;
+  }
+  // PostgreSQL 17.11's pg_get_constraintdef emits these exact forms for the
+  // reviewed Training DDL. Canonicalize only the complete observed signature
+  // for each named constraint; any changed predicate remains a mismatch.
+  const trainingPg17Signature = TRAINING_PG17_RESTORED_CONSTRAINT_SIGNATURES[object?.name];
+  if (object?.present === true && object.kind === "constraint"
+    && typeof trainingPg17Signature === "string" && object.signature === trainingPg17Signature) {
+    return TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[object.name]
+      ?? TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureIncludes[object.name]
+      ?? object.signature;
   }
   return object?.signature ?? null;
 }

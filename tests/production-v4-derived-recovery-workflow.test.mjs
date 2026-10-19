@@ -27,6 +27,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     const archive = join(artifactDir, "image.tar");
     const hostScript = join(artifactDir, "host.sh");
     const helperScript = join(artifactDir, "headroom.mjs");
+    const schemaDigestScript = join(artifactDir, "schema-digest.mjs");
     const binDir = join(tempRoot, "bin");
     const dockerLog = join(tempRoot, "docker.log");
     mkdirSync(deployPath, { recursive: true });
@@ -44,6 +45,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     writeFileSync(hostScript, isolatedHost, { mode: 0o700 });
     chmodSync(hostScript, 0o700);
     writeFileSync(helperScript, readFileSync(new URL("../scripts/production-v4-recovery-headroom.mjs", import.meta.url)), { mode: 0o600 });
+    writeFileSync(schemaDigestScript, readFileSync(new URL("../scripts/production-v4-schema-digest.mjs", import.meta.url)), { mode: 0o600 });
     const dockerStub = `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$BODYCAST_DOCKER_TEST_LOG"
@@ -73,6 +75,7 @@ esac
       walPeakGrowthBytes: 0, temporaryPeakBytes: 0, recoveryStartMarkerBytes: 1, recoveryTerminalMarkerBytes: 1 });
     const scriptSha = createHash("sha256").update(readFileSync(hostScript)).digest("hex");
     const helperSha = createHash("sha256").update(readFileSync(helperScript)).digest("hex");
+    const schemaDigestHelperSha = createHash("sha256").update(readFileSync(schemaDigestScript)).digest("hex");
     const commonEnv = {
       ...process.env,
       PATH: `${binDir}:${process.env.PATH}`,
@@ -88,6 +91,8 @@ esac
       BODYCAST_HOST_SCRIPT_SHA256: scriptSha,
       BODYCAST_HEADROOM_SCRIPT: helperScript,
       BODYCAST_HEADROOM_SCRIPT_SHA256: helperSha,
+      BODYCAST_SCHEMA_DIGEST_SCRIPT: schemaDigestScript,
+      BODYCAST_SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha,
       BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: metrics,
       BODYCAST_IMAGE_ARCHIVE: archive,
     };
@@ -263,6 +268,8 @@ esac
     const artifactRoot = join(tempRoot, "bodycast-v4-artifact");
     mkdirSync(artifactRoot);
     const capturedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    const schemaDigestContract = "bodycast-pg-dump-schema-v1";
+    const schemaDigestHelperSha256 = createHash("sha256").update(readFileSync(new URL("../scripts/production-v4-schema-digest.mjs", import.meta.url))).digest("hex");
     const fingerprint = "a".repeat(64);
     const migrationNames = (await readdir(new URL("../prisma/migrations", import.meta.url), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().slice(0, 65);
@@ -341,6 +348,7 @@ esac
         cwd: repositoryRoot,
         env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
           BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "35c556772759ea03c2728de921c1825f454d59c2",
+          SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
           IMAGE_ID: `sha256:${"d".repeat(64)}`, ARCHIVE_SHA: "e".repeat(64), RESTORED_SCHEMA_SHA256: "f".repeat(64) },
         input: nodeSource,
         encoding: "utf8",
@@ -350,7 +358,8 @@ esac
       const markerTemplate = { state: "started", sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
         ownerRunId: "9".repeat(20), workflowSha: "0".repeat(40), attempt: "1",
         imageId: `sha256:${"d".repeat(64)}`, archiveSha: "0".repeat(64), preflightDigest: "0".repeat(64),
-        schemaSha: "f".repeat(64), ledgerDigest, fenceDigest: "0".repeat(64), sourceFingerprint: fingerprint,
+        schemaSha: "f".repeat(64), schemaDigestContract, schemaDigestHelperSha256,
+        ledgerDigest, fenceDigest: "0".repeat(64), sourceFingerprint: fingerprint,
         databaseContainerId: "0".repeat(64), rehearsalCoverageSha256: measurements.rehearsalCoverage.sha256,
         rehearsalCoveredModelDayKeys: [...replayCoverageKeys].sort(), databaseImageId: `sha256:${"0".repeat(64)}`,
         appContainerId: "0".repeat(64), appImageId: `sha256:${"0".repeat(64)}`, startedAt: "2000-01-01T00:00:00.000Z" };
@@ -372,6 +381,7 @@ esac
           dataPeakGrowthBytes: 100, walPeakGrowthBytes: 200 } });
 
       const preflight = { ...report, preflightRunId: "123456", preflightSha: "c".repeat(40), capturedAt,
+        schemaDigestContract, schemaDigestHelperSha256,
         restoredSourceFingerprint: fingerprint, expectedEntryBinding: binding,
         rehearsalCoverage: measurements.rehearsalCoverage, headroomMeasurements: measurements.headroomMeasurements };
 
@@ -380,12 +390,16 @@ esac
         sourceSha: "35c556772759ea03c2728de921c1825f454d59c2", imageId: `sha256:${"d".repeat(64)}`,
         imageDigest: `sha256:${"d".repeat(64)}`, archiveSha256: "e".repeat(64),
         archiveBytes: 5000, imageBytes: 9000, evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
+        schemaDigestContract, schemaDigestHelperSha256,
         migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
         effectiveCommand: ["node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery", "--owner-authorized", "--profile-id", "1"],
       };
       const artifactCore = { ...artifactManifest, ledgerDigest };
+      const legacyArtifactCore = { ...artifactCore };
+      delete legacyArtifactCore.schemaDigestContract;
+      delete legacyArtifactCore.schemaDigestHelperSha256;
       writeFileSync(join(artifactRoot, "artifact.json"), JSON.stringify({ ...artifactCore,
-        manifestSha256: createHash("sha256").update(JSON.stringify(artifactCore)).digest("hex") }));
+        manifestSha256: createHash("sha256").update(JSON.stringify(legacyArtifactCore)).digest("hex") }));
       const executeStep = workflow.split("      - name: Require fresh first-attempt evidence and unchanged exact main/source CI\n")[1]
         ?.split("      - name: Recheck owner and production SSH controls\n")[0];
       const executeStart = executeStep.indexOf("node --input-type=module - ");
@@ -400,6 +414,7 @@ esac
         env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
           GITHUB_RUN_ATTEMPT: "1", PREFLIGHT_RUN_ID: "123456", PREFLIGHT_SHA: "c".repeat(40),
           EXPECTED_MAIN_SHA: "c".repeat(40), RECOVERY_SHA: artifactManifest.sourceSha,
+          SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
           IMAGE_ID: artifactManifest.imageId, ARCHIVE_SHA: artifactManifest.archiveSha256 },
         input: executeSource,
         encoding: "utf8",

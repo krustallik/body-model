@@ -44,6 +44,8 @@ on:
       - "scripts/production-schema-deploy-handoff.mjs"
       - "scripts/production-v4-derived-recovery.mjs"
       - "scripts/production-v4-recovery-headroom.mjs"
+      - "scripts/production-v4-schema-digest.mjs"
+      - "scripts/ci/production-v4-schema-digest-postgres-smoke.mjs"
       - "scripts/ci/postgres-storage-peak-sampler.mjs"
       - "scripts/production-v4-recovery-evidence.ts"
       - "scripts/production-release-lock.sh"
@@ -104,6 +106,7 @@ on:
       - "tests/production-v4-derived-recovery.test.mjs"
       - "tests/production-v4-derived-recovery-workflow.test.mjs"
       - "tests/production-v4-recovery-headroom.test.mjs"
+      - "tests/production-v4-schema-digest.test.mjs"
       - "tests/postgres-storage-peak-sampler.test.mjs"
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
@@ -166,7 +169,7 @@ jobs:
         run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-no-app-preflight.test.mjs tests/production-no-app-workflow.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs tests/production-v4-recovery-headroom.test.mjs tests/postgres-storage-peak-sampler.test.mjs
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs tests/production-v4-recovery-headroom.test.mjs tests/production-v4-schema-digest.test.mjs tests/postgres-storage-peak-sampler.test.mjs
 
       - name: Run production recovery workflow protocol tests
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
@@ -270,6 +273,17 @@ jobs:
           docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" bodycast-v4-derived-recovery-ci \
             node /app/node_modules/prisma/build/index.js migrate deploy --schema /app/prisma/schema.prisma
 
+      - name: Create independently migrated canonical 65-schema test database
+        env:
+          PGPASSWORD: bodycast_ci_only
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_canonical65
+        run: |
+          set -Eeuo pipefail
+          psql --host=127.0.0.1 --username=bodycast --dbname=bodycast --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE bodycast_v4_canonical65'
+          docker run --rm --network host --env DATABASE_URL="$DATABASE_URL" --entrypoint node bodycast-v4-derived-recovery-ci \
+            /app/node_modules/prisma/build/index.js migrate deploy --schema /app/prisma/schema.prisma
+
       - name: Verify image-bound schema, source evidence and fail-closed empty state
         env:
           DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_recovery_test
@@ -302,6 +316,14 @@ jobs:
           BODYCAST_V4_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_recovery_test
           BODYCAST_V4_RECOVERY_TEST_IMAGE: bodycast-v4-derived-recovery-ci
         run: node scripts/ci/production-v4-fence-evidence-postgres-smoke.mjs
+
+      - name: Verify deterministic PostgreSQL 17.11 schema digest pipelines
+        env:
+          PGPASSWORD: bodycast_ci_only
+          BODYCAST_V4_SCHEMA_DIGEST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_recovery_test
+          BODYCAST_V4_SCHEMA_DIGEST_CANONICAL_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_v4_canonical65
+          BODYCAST_V4_SCHEMA_DIGEST_PG_IMAGE: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        run: node scripts/ci/production-v4-schema-digest-postgres-smoke.mjs
 
   postgres-recovery-integration:
     name: Disposable PostgreSQL recovery integration

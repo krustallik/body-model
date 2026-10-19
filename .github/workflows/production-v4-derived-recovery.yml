@@ -103,6 +103,8 @@ jobs:
       archive_sha256: ${{ steps.image.outputs.archive_sha256 }}
       archive_bytes: ${{ steps.image.outputs.archive_bytes }}
       image_bytes: ${{ steps.image.outputs.image_bytes }}
+      schema_digest_contract: ${{ steps.image.outputs.schema_digest_contract }}
+      schema_digest_helper_sha256: ${{ steps.image.outputs.schema_digest_helper_sha256 }}
     steps:
       - name: Checkout runner helpers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -111,6 +113,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Build tool from immutable recovery source SHA
+        id: image
         env:
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
         run: |
@@ -133,25 +136,34 @@ jobs:
           docker image save --output "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$image_id"
           archive_sha256="$(sha256sum "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" | awk '{print $1}')"
           archive_bytes="$(stat -c '%s' "$RUNNER_TEMP/bodycast-v4-artifact/image.tar")"
+          schema_digest_contract="$(node scripts/production-v4-schema-digest.mjs --contract)"
+          schema_digest_helper_sha256="$(sha256sum scripts/production-v4-schema-digest.mjs | awk '{print $1}')"
           [[ "$archive_sha256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$archive_bytes" =~ ^[1-9][0-9]*$ ]]
-          IMAGE_ID="$image_id" ARCHIVE_SHA="$archive_sha256" ARCHIVE_BYTES="$archive_bytes" IMAGE_BYTES="$image_bytes" RECOVERY_SHA="$RECOVERY_SHA" node --input-type=module <<'NODE'
+          [[ "$schema_digest_contract" == "bodycast-pg-dump-schema-v1" && "$schema_digest_helper_sha256" =~ ^[a-f0-9]{64}$ ]]
+          IMAGE_ID="$image_id" ARCHIVE_SHA="$archive_sha256" ARCHIVE_BYTES="$archive_bytes" IMAGE_BYTES="$image_bytes" RECOVERY_SHA="$RECOVERY_SHA" \
+            SCHEMA_DIGEST_CONTRACT="$schema_digest_contract" SCHEMA_DIGEST_HELPER_SHA256="$schema_digest_helper_sha256" node --input-type=module <<'NODE'
           import { writeFileSync } from "node:fs";
           import { LEGACY_V4_RECOVERY, sha256 } from "./scripts/production-v4-derived-recovery.mjs";
           const manifest = { sourceSha: process.env.RECOVERY_SHA, imageId: process.env.IMAGE_ID,
             imageDigest: process.env.IMAGE_ID, archiveSha256: process.env.ARCHIVE_SHA,
             archiveBytes: Number(process.env.ARCHIVE_BYTES), imageBytes: Number(process.env.IMAGE_BYTES),
+            schemaDigestContract: process.env.SCHEMA_DIGEST_CONTRACT,
+            schemaDigestHelperSha256: process.env.SCHEMA_DIGEST_HELPER_SHA256,
             evidenceBindingContract: LEGACY_V4_RECOVERY.evidenceBindingContract,
             migrationTree: LEGACY_V4_RECOVERY.migrationTree, prismaSchemaBlob: LEGACY_V4_RECOVERY.prismaSchemaBlob,
             effectiveCommand: LEGACY_V4_RECOVERY.command, ledgerDigest: LEGACY_V4_RECOVERY.ledgerDigest };
           if (manifest.sourceSha !== LEGACY_V4_RECOVERY.sourceSha) throw new Error("Wrong legacy source SHA.");
+          const { schemaDigestContract, schemaDigestHelperSha256, ...legacyManifest } = manifest;
           writeFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`,
-            `${JSON.stringify({ ...manifest, manifestSha256: sha256(JSON.stringify(manifest)) })}\n`, { mode: 0o600, flag: "wx" });
+            `${JSON.stringify({ ...manifest, manifestSha256: sha256(JSON.stringify(legacyManifest)) })}\n`, { mode: 0o600, flag: "wx" });
           NODE
           echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
           echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
           echo "archive_bytes=$archive_bytes" >> "$GITHUB_OUTPUT"
           echo "image_bytes=$image_bytes" >> "$GITHUB_OUTPUT"
+          echo "schema_digest_contract=$schema_digest_contract" >> "$GITHUB_OUTPUT"
+          echo "schema_digest_helper_sha256=$schema_digest_helper_sha256" >> "$GITHUB_OUTPUT"
       - name: Upload immutable image archive and manifest for this approved run
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -222,21 +234,30 @@ jobs:
           EXPECTED_ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
           EXPECTED_ARCHIVE_BYTES: ${{ needs.build-tool.outputs.archive_bytes }}
           EXPECTED_IMAGE_BYTES: ${{ needs.build-tool.outputs.image_bytes }}
+          SCHEMA_DIGEST_CONTRACT: ${{ needs.build-tool.outputs.schema_digest_contract }}
+          SCHEMA_DIGEST_HELPER_SHA256: ${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}
         run: |
           set -Eeuo pipefail
           sha256sum --check <(printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA" "$RUNNER_TEMP/bodycast-v4-artifact/image.tar")
           node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/artifact.json" <<'NODE'
           import { readFileSync } from "node:fs";
+          import { createHash } from "node:crypto";
           import { LEGACY_V4_RECOVERY, sha256 } from "./scripts/production-v4-derived-recovery.mjs";
+          import { SCHEMA_DIGEST_CONTRACT } from "./scripts/production-v4-schema-digest.mjs";
           const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const helperSha256 = createHash("sha256").update(readFileSync("scripts/production-v4-schema-digest.mjs")).digest("hex");
           if (manifest.sourceSha !== process.env.RECOVERY_SHA || manifest.imageId !== process.env.EXPECTED_IMAGE_ID
               || manifest.archiveSha256 !== process.env.EXPECTED_ARCHIVE_SHA
               || manifest.archiveBytes !== Number(process.env.EXPECTED_ARCHIVE_BYTES)
               || manifest.imageBytes !== Number(process.env.EXPECTED_IMAGE_BYTES)
-              || manifest.evidenceBindingContract !== LEGACY_V4_RECOVERY.evidenceBindingContract) throw new Error("Recovery artifact metadata mismatch.");
+              || manifest.evidenceBindingContract !== LEGACY_V4_RECOVERY.evidenceBindingContract
+              || manifest.schemaDigestContract !== SCHEMA_DIGEST_CONTRACT
+              || manifest.schemaDigestContract !== process.env.SCHEMA_DIGEST_CONTRACT
+              || manifest.schemaDigestHelperSha256 !== helperSha256
+              || manifest.schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256) throw new Error("Recovery artifact metadata mismatch.");
           // Exact embedded migration rows are checked against the live database evidence and the pinned ledger digest.
           if (manifest.ledgerDigest !== "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7") throw new Error("65-migration ledger binding mismatch.");
-          const { manifestSha256, ...manifestCore } = manifest;
+          const { manifestSha256, schemaDigestContract, schemaDigestHelperSha256, ...manifestCore } = manifest;
           if (manifestSha256 !== sha256(JSON.stringify(manifestCore))) throw new Error("Recovery artifact manifest digest mismatch.");
           NODE
       - name: Capture and encrypt production backup without stopping the app
@@ -268,6 +289,8 @@ jobs:
           IMAGE_BYTES: ${{ needs.build-tool.outputs.image_bytes }}
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
           BACKUP_STARTED_AT: ${{ steps.backup.outputs.snapshot_at }}
+          SCHEMA_DIGEST_CONTRACT: ${{ needs.build-tool.outputs.schema_digest_contract }}
+          SCHEMA_DIGEST_HELPER_SHA256: ${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}
           POSTGRES_SERVICE_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
           set -Eeuo pipefail
@@ -317,17 +340,19 @@ jobs:
           pg_image=docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
           restored_schema="$(docker run --rm --network host --env PGPASSWORD=isolated_restore_test_password --entrypoint pg_dump "$pg_image" \
             --schema-only --no-owner --no-privileges --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_restore \
-            | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')"
+            | node scripts/production-v4-schema-digest.mjs)"
           canonical_schema="$(docker run --rm --network host --env PGPASSWORD=isolated_restore_test_password --entrypoint pg_dump "$pg_image" \
             --schema-only --no-owner --no-privileges --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_canonical65 \
-            | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')"
+            | node scripts/production-v4-schema-digest.mjs)"
           [[ "$restored_schema" == "$canonical_schema" ]] || { echo "::error::Restore schema differs from canonical 65 migrations."; exit 1; }
           docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" "$IMAGE_ID" node /app/dist/production-v4-recovery-evidence.mjs \
             > "$RUNNER_TEMP/bodycast-v4-artifact/restored-after.json"
           RESTORED_SCHEMA_SHA256="$restored_schema" node --input-type=module - <<'NODE'
           import { statSync, readFileSync, writeFileSync } from "node:fs";
+          import { createHash } from "node:crypto";
           import { assertRehearsedCoverageEvidence, migrationLedgerDigest, modelDayKeysDigest, publicationBlockDigest, recoveryEvidenceBinding } from "./scripts/production-v4-derived-recovery.mjs";
           import { recoveryTerminalMarkerBudgetTemplate, serializedRecoveryMarkerBytes } from "./scripts/production-v4-recovery-headroom.mjs";
+          import { SCHEMA_DIGEST_CONTRACT } from "./scripts/production-v4-schema-digest.mjs";
           const root = `${process.env.RUNNER_TEMP}/bodycast-v4-artifact/`;
           const before = JSON.parse(readFileSync(`${root}restored-before.json`, "utf8"));
           const after = JSON.parse(readFileSync(`${root}restored-after.json`, "utf8"));
@@ -370,7 +395,9 @@ jobs:
           const recoveryStartMarkerTemplate = { state: "started", sourceSha: process.env.RECOVERY_SHA,
             ownerRunId: "9".repeat(20), workflowSha: "0".repeat(40), attempt: "1",
             imageId: process.env.IMAGE_ID, archiveSha: "0".repeat(64), preflightDigest: "0".repeat(64),
-            schemaSha: process.env.RESTORED_SCHEMA_SHA256, ledgerDigest: ledger, fenceDigest: "0".repeat(64),
+            schemaSha: process.env.RESTORED_SCHEMA_SHA256, schemaDigestContract: process.env.SCHEMA_DIGEST_CONTRACT,
+            schemaDigestHelperSha256: process.env.SCHEMA_DIGEST_HELPER_SHA256,
+            ledgerDigest: ledger, fenceDigest: "0".repeat(64),
             sourceFingerprint: before.sourceFingerprint, databaseContainerId: "0".repeat(64),
             rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: [...after.coveredModelDayKeys].sort(),
             databaseImageId: `sha256:${"0".repeat(64)}`, appContainerId: "0".repeat(64),
@@ -397,7 +424,13 @@ jobs:
           if (JSON.stringify(expectedEntryBinding) !== readFileSync(`${root}expected-entry-binding.json`, "utf8").trim()) {
             throw new Error("Exact-image rehearsal did not use the canonical persisted-source evidence binding.");
           }
+          const schemaDigestHelperSha256 = createHash("sha256").update(readFileSync("scripts/production-v4-schema-digest.mjs")).digest("hex");
+          if (SCHEMA_DIGEST_CONTRACT !== process.env.SCHEMA_DIGEST_CONTRACT
+              || schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256) {
+            throw new Error("Schema digest helper differs from the exact artifact binding.");
+          }
           writeFileSync(`${root}rehearsal-measurements.json`, `${JSON.stringify({ schemaSha256: process.env.RESTORED_SCHEMA_SHA256,
+            schemaDigestContract: SCHEMA_DIGEST_CONTRACT, schemaDigestHelperSha256,
             rehearsalCoverage: { coveredModelDayKeys: after.coveredModelDayKeys, sha256: rehearsalCoverageSha256 },
             restoredSourceFingerprint: before.sourceFingerprint, expectedEntryBinding, headroomMeasurements })}\n`,
             { mode: 0o600, flag: "wx" });
@@ -415,12 +448,18 @@ jobs:
           ARCHIVE_BYTES: ${{ needs.build-tool.outputs.archive_bytes }}
           IMAGE_BYTES: ${{ needs.build-tool.outputs.image_bytes }}
           BACKUP_STARTED_AT: ${{ steps.backup.outputs.snapshot_at }}
+          SCHEMA_DIGEST_CONTRACT: ${{ needs.build-tool.outputs.schema_digest_contract }}
+          SCHEMA_DIGEST_HELPER_SHA256: ${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}
         run: |
           set -Eeuo pipefail
           HEADROOM_METRICS_JSON="$(node -p 'JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).headroomMeasurements)' "$RUNNER_TEMP/bodycast-v4-artifact/rehearsal-measurements.json")"
           HOST_SCRIPT_SHA="$(sha256sum scripts/production-v4-derived-recovery-host.sh | awk '{print $1}')"
           HEADROOM_SCRIPT_SHA="$(sha256sum scripts/production-v4-recovery-headroom.mjs | awk '{print $1}')"
-          [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ && "$HEADROOM_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ ]]
+          SCHEMA_DIGEST_HELPER_SHA256="$(sha256sum scripts/production-v4-schema-digest.mjs | awk '{print $1}')"
+          SCHEMA_DIGEST_CONTRACT="$(node scripts/production-v4-schema-digest.mjs --contract)"
+          [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ && "$HEADROOM_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ \
+            && "$SCHEMA_DIGEST_HELPER_SHA256" == "${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}" \
+            && "$SCHEMA_DIGEST_CONTRACT" == "${{ needs.build-tool.outputs.schema_digest_contract }}" ]]
           artifact_dir="/var/lib/bodycast/recovery/artifacts/$RECOVERY_SHA/$GITHUB_RUN_ID"
           parent_dir="/var/lib/bodycast/recovery/artifacts/$RECOVERY_SHA"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
@@ -428,7 +467,8 @@ jobs:
           "${SSH[@]}" "$SSH_USER@$SSH_HOST" "install -d -m 700 '$parent_dir'; test ! -e '$artifact_dir' && test ! -L '$artifact_dir' && mkdir -m 700 '$artifact_dir'"
           "${SCP[@]}" scripts/production-v4-derived-recovery-host.sh "$SSH_USER@$SSH_HOST:$artifact_dir/host.sh"
           "${SCP[@]}" scripts/production-v4-recovery-headroom.mjs "$SSH_USER@$SSH_HOST:$artifact_dir/headroom.mjs"
-          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
+          "${SCP[@]}" scripts/production-v4-schema-digest.mjs "$SSH_USER@$SSH_HOST:$artifact_dir/schema-digest.mjs"
+          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_SCHEMA_DIGEST_SCRIPT='$artifact_dir/schema-digest.mjs' BODYCAST_SCHEMA_DIGEST_HELPER_SHA256='$SCHEMA_DIGEST_HELPER_SHA256' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$COMMON bash '$artifact_dir/host.sh' pretransfer" > "$RUNNER_TEMP/bodycast-v4-artifact/headroom-before-transfer.json"
           "${SCP[@]}" "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$SSH_USER@$SSH_HOST:$artifact_dir/image.tar"
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$COMMON bash '$artifact_dir/host.sh' preflight" > "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json"
@@ -437,15 +477,22 @@ jobs:
           EXPECTED_SCHEMA_SHA="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).schemaSha256' "$RUNNER_TEMP/bodycast-v4-artifact/rehearsal-measurements.json")" \
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
+          import { createHash } from "node:crypto";
           import { assertProductionIdentity, assertRehearsedCoverageEvidence, migrationLedgerDigest, modelDayKeysDigest,
             publicationBlockDigest, recoveryEvidenceBinding, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
           const measurements = JSON.parse(readFileSync(process.env.RECOVERY_MEASUREMENTS, "utf8"));
           const report = JSON.parse(readFileSync(process.env.PREFLIGHT_FILE, "utf8"));
+          const expectedSchemaHelperSha256 = createHash("sha256").update(readFileSync("scripts/production-v4-schema-digest.mjs")).digest("hex");
           const before = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/restored-before.json`, "utf8"));
           const rehearsal = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/restored-after.json`, "utf8"));
           const sameMigrationRows = (left, right) => JSON.stringify(left.map(({ name, checksum, finishedAt, rolledBackAt }) => ({ name, checksum, finishedAt, rolledBackAt })))
             === JSON.stringify(right.map(({ name, checksum, finishedAt, rolledBackAt }) => ({ name, checksum, finishedAt, rolledBackAt })));
           if (report.appSha !== "f910d2a45dfa676fada5fab42c9e8946c97872b1"
+              || report.schemaDigestContract !== measurements.schemaDigestContract
+              || report.schemaDigestContract !== process.env.SCHEMA_DIGEST_CONTRACT
+              || report.schemaDigestHelperSha256 !== measurements.schemaDigestHelperSha256
+              || report.schemaDigestHelperSha256 !== expectedSchemaHelperSha256
+              || report.schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256
               || report.evidence?.database?.database !== "bodycast" || report.evidence?.migrationRows?.length !== 65
               || report.evidence.lifecycle?.unifiedRolloutEpoch !== 1 || report.schemaSha256 !== measurements.schemaSha256
               || report.evidence.sourceFingerprint !== measurements.restoredSourceFingerprint
@@ -571,6 +618,8 @@ jobs:
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
           IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
           ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
+          SCHEMA_DIGEST_CONTRACT: ${{ needs.build-tool.outputs.schema_digest_contract }}
+          SCHEMA_DIGEST_HELPER_SHA256: ${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}
         run: |
           set -Eeuo pipefail
           HOST_SCRIPT_SHA="$(sha256sum scripts/production-v4-derived-recovery-host.sh | awk '{print $1}')"
@@ -583,7 +632,9 @@ jobs:
           const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const age = Math.floor((Date.now() - Date.parse(report.capturedAt)) / 1000);
           if (report.preflightRunId !== process.env.PREFLIGHT_RUN_ID || report.preflightSha !== process.env.PREFLIGHT_SHA
-            || report.preflightSha !== process.env.EXPECTED_MAIN_SHA || report.sourceSha !== process.env.RECOVERY_SHA) throw new Error("Preflight artifact identity mismatch.");
+            || report.preflightSha !== process.env.EXPECTED_MAIN_SHA || report.sourceSha !== process.env.RECOVERY_SHA
+            || report.schemaDigestContract !== process.env.SCHEMA_DIGEST_CONTRACT
+            || report.schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256) throw new Error("Preflight artifact identity mismatch.");
           validatePublicationSourceEvidence({ blocks: report.evidence?.blocks, sourceEvidence: report.evidence?.sourceEvidence });
           assertRehearsedCoverageEvidence({ sourceModelDayKeys: report.evidence?.sourceModelDayKeys,
             coveredModelDayKeys: report.rehearsalCoverage?.coveredModelDayKeys,
@@ -627,12 +678,22 @@ jobs:
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
           IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
           ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
+          SCHEMA_DIGEST_CONTRACT: ${{ needs.build-tool.outputs.schema_digest_contract }}
+          SCHEMA_DIGEST_HELPER_SHA256: ${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}
         run: |
           set -Eeuo pipefail
           artifact_dir="/var/lib/bodycast/recovery/artifacts/$RECOVERY_SHA/$GITHUB_RUN_ID"
+          HEADROOM_METRICS_JSON="$(node -p 'JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).headroomMeasurements)' "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json")"
+          HOST_SCRIPT_SHA="$(sha256sum scripts/production-v4-derived-recovery-host.sh | awk '{print $1}')"
+          HEADROOM_SCRIPT_SHA="$(sha256sum scripts/production-v4-recovery-headroom.mjs | awk '{print $1}')"
+          ACTUAL_SCHEMA_DIGEST_HELPER_SHA256="$(sha256sum scripts/production-v4-schema-digest.mjs | awk '{print $1}')"
+          ACTUAL_SCHEMA_DIGEST_CONTRACT="$(node scripts/production-v4-schema-digest.mjs --contract)"
+          [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ && "$HEADROOM_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ \
+            && "$ACTUAL_SCHEMA_DIGEST_HELPER_SHA256" == "$SCHEMA_DIGEST_HELPER_SHA256" \
+            && "$ACTUAL_SCHEMA_DIGEST_CONTRACT" == "$SCHEMA_DIGEST_CONTRACT" ]]
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           SCP=(scp -P "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS")
-          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
+          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_SCHEMA_DIGEST_SCRIPT='$artifact_dir/schema-digest.mjs' BODYCAST_SCHEMA_DIGEST_HELPER_SHA256='$SCHEMA_DIGEST_HELPER_SHA256' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$COMMON bash '$artifact_dir/host.sh' preexecute" > "$RUNNER_TEMP/bodycast-v4-artifact/headroom-before-execute-transfer.json"
           "${SCP[@]}" "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" "$SSH_USER@$SSH_HOST:$artifact_dir/execute-preflight.json"
           REMOTE="$COMMON BODYCAST_PREFLIGHT_JSON_FILE='$artifact_dir/execute-preflight.json' bash '$artifact_dir/host.sh' execute"

@@ -304,6 +304,73 @@ export class PhysiologyV7PersistenceRepository {
     });
   }
 
+  /** Clear a complete recovered source set atomically after every dependency refresh succeeds. */
+  async clearUnifiedPublicationBlocks(input: {
+    profileId: number;
+    blocks: readonly {
+      source: "health" | "training";
+      sourceKey: string;
+      expectedRevision: number;
+      expectedFromDate: string;
+    }[];
+  }): Promise<void> {
+    const identities = new Set<string>();
+    for (const block of input.blocks) {
+      const identity = `${block.source}\0${block.sourceKey}`;
+      const validDate = /^\d{4}-\d{2}-\d{2}$/.test(block.expectedFromDate)
+        && Number.isFinite(new Date(`${block.expectedFromDate}T00:00:00.000Z`).getTime())
+        && new Date(`${block.expectedFromDate}T00:00:00.000Z`).toISOString().slice(0, 10) === block.expectedFromDate;
+      const validHealth = block.source === "health" && block.sourceKey === block.expectedFromDate && validDate;
+      const validTraining = block.source === "training" && /^[1-9]\d*$/.test(block.sourceKey)
+        && Number.isSafeInteger(Number(block.sourceKey));
+      if (identities.has(identity) || (!validHealth && !validTraining) || !validDate
+          || !Number.isSafeInteger(block.expectedRevision) || block.expectedRevision < 1) {
+        throw new Error("Unified publication recovery fence set is malformed.");
+      }
+      identities.add(identity);
+    }
+    await this.withProfileLock(input.profileId, async (client) => {
+      const current = await client.unifiedPublicationBlock.findMany({
+        where: { profileId: input.profileId },
+        orderBy: [{ source: "asc" }, { sourceKey: "asc" }],
+        select: { source: true, sourceKey: true, revision: true, fromDate: true },
+      });
+      const expectedByIdentity = new Map(input.blocks.map((block) => [
+        `${block.source}\0${block.sourceKey}`,
+        block,
+      ]));
+      const currentByIdentity = new Map(current.map((block) => [`${block.source}\0${block.sourceKey}`, block]));
+      const changed = input.blocks.find((block) => {
+        const row = currentByIdentity.get(`${block.source}\0${block.sourceKey}`);
+        return !row || row.revision !== block.expectedRevision || row.fromDate !== block.expectedFromDate;
+      });
+      if (changed) {
+        const row = currentByIdentity.get(`${changed.source}\0${changed.sourceKey}`);
+        throw new Error(`${changed.source} source fence changed during dependent refresh (${changed.sourceKey}); expected ${changed.expectedRevision}/${changed.expectedFromDate}, current ${row?.revision ?? "missing"}/${row?.fromDate ?? "missing"}`);
+      }
+      const unexpected = current.find((block) => !expectedByIdentity.has(`${block.source}\0${block.sourceKey}`));
+      if (unexpected || current.length !== input.blocks.length) {
+        throw new Error(`A new source fence appeared during dependent refresh (${unexpected?.source ?? "unknown"}/${unexpected?.sourceKey ?? "unknown"}); no recovery fences were cleared`);
+      }
+
+      for (const block of input.blocks) {
+        const deleted = await client.unifiedPublicationBlock.deleteMany({
+          where: {
+            profileId: input.profileId,
+            source: block.source,
+            sourceKey: block.sourceKey,
+            revision: block.expectedRevision,
+            fromDate: block.expectedFromDate,
+          },
+        });
+        if (deleted.count !== 1) {
+          throw new Error(`${block.source} source fence changed while atomically clearing the recovery fence set (${block.sourceKey})`);
+        }
+      }
+      if (input.blocks.length > 0) await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+    });
+  }
+
   async ensureLifecycle(profileId: number, requestedFromDate: string) {
     const current = await this.client.physiologyV7Lifecycle.upsert({
       where: { profileId },

@@ -539,7 +539,10 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     }),
   ]);
   const latestSessionModelDate = latestCompletedSessionModelDateV2(episodePartitions, completedSessions);
-  const requestedToDate = [input.toDate, latestDurable?.date, latestSessionModelDate, transientRebuild.earliestModelDate]
+  // A deleted or relocated transient shadow can dirty an older day while its
+  // former model date lies after every current source. Replay must cover that
+  // whole affected interval, not stop at the earliest dirty date.
+  const requestedToDate = [input.toDate, latestDurable?.date, latestSessionModelDate, transientRebuild.latestModelDate]
     .filter((date): date is string => date !== null && date !== undefined)
     .sort()
     .at(-1) ?? earliestPartition.episode.startDate;

@@ -27,20 +27,24 @@ const mocks = vi.hoisted(() => {
   const assertTrainingReady = vi.fn(async ({ sessionId }: { sessionId: number }) => {
     if (state.invalidTrainingSession === sessionId) throw new Error("Training recovery requires the current persisted accounting snapshot");
   });
-  const clear = vi.fn(async (input: { source: string; sourceKey: string; expectedRevision: number; expectedFromDate: string }) => {
-    if (state.failClear === input.sourceKey) return false;
-    const oldCount = state.blocks.length;
-    state.blocks = state.blocks.filter((block) => !(block.source === input.source
-      && block.sourceKey === input.sourceKey && block.revision === input.expectedRevision
-      && block.fromDate === input.expectedFromDate));
-    return state.blocks.length !== oldCount;
+  const clearAll = vi.fn(async (input: { blocks: Array<{ source: string; sourceKey: string; expectedRevision: number; expectedFromDate: string }> }) => {
+    const failed = input.blocks.find((block) => block.sourceKey === state.failClear);
+    if (failed) throw new Error(`${failed.source} source fence changed during dependent refresh (${failed.sourceKey})`);
+    const current = [...state.blocks].sort((left, right) => `${left.source}\0${left.sourceKey}`.localeCompare(`${right.source}\0${right.sourceKey}`));
+    const expected = [...input.blocks].sort((left, right) => `${left.source}\0${left.sourceKey}`.localeCompare(`${right.source}\0${right.sourceKey}`));
+    if (current.length !== expected.length || expected.some((block, index) => current[index]?.source !== block.source
+      || current[index]?.sourceKey !== block.sourceKey || current[index]?.revision !== block.expectedRevision
+      || current[index]?.fromDate !== block.expectedFromDate)) {
+      throw new Error("Full publication fence set changed; no recovery fences were cleared");
+    }
+    state.blocks = [];
   });
   return {
     state,
     prisma,
     shadow,
     training,
-    clear,
+    clearAll,
     assertTrainingReady,
     inventory: vi.fn(async () => ({ fingerprint: "same-raw-source-fingerprint", tables: {} })),
     recalculate: vi.fn(async () => {
@@ -59,7 +63,7 @@ vi.mock("@/modules/model-episodes/full-history-recalculation.service", () => ({
 }));
 vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
   PhysiologyV7PersistenceRepository: class {
-    clearUnifiedPublicationBlock = mocks.clear;
+    clearUnifiedPublicationBlocks = mocks.clearAll;
   },
 }));
 vi.mock("@/modules/model-episodes/experimental-ffm-retention-shadow.service", () => ({ recordExperimentalFfmRetentionShadow: mocks.shadow }));
@@ -113,7 +117,7 @@ function reset(blocks = true) {
   mocks.prisma.dailyHealthData.findMany.mockImplementation(async () => dates.map((date) => ({ date, weightKg: 80 })));
   mocks.prisma.healthMetricSample.findMany.mockResolvedValue([]);
   mocks.prisma.strengthDiarySession.findFirst.mockResolvedValue({ id: 20 });
-  mocks.clear.mockClear();
+  mocks.clearAll.mockClear();
   mocks.shadow.mockClear();
   mocks.training.mockClear();
   mocks.assertTrainingReady.mockClear();
@@ -134,7 +138,7 @@ describe("persisted-source V4 derived recovery", () => {
     });
     expect(mocks.training.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25]);
     expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25, 20, 24, 25]);
-    expect(mocks.clear).toHaveBeenCalledTimes(11);
+    expect(mocks.clearAll).toHaveBeenCalledTimes(1);
     expect(mocks.state.blocks).toHaveLength(0);
     expect(mocks.replay).toHaveBeenCalledWith({ profileId: 1, client: mocks.prisma });
     expect(result).toMatchObject({ rolloutEpoch: 1, dayCount: 9, healthDatesRefreshed: dates, trainingSessionIdsRefreshed: [20, 24, 25] });
@@ -145,7 +149,7 @@ describe("persisted-source V4 derived recovery", () => {
     mocks.state.failAt = "health";
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
       .rejects.toMatchObject({ code: "P2034" });
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
     expect(mocks.state.blocks).toHaveLength(11);
   });
@@ -157,7 +161,7 @@ describe("persisted-source V4 derived recovery", () => {
     expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24]);
     expect(mocks.shadow).not.toHaveBeenCalled();
     expect(mocks.training).not.toHaveBeenCalled();
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
     expect(mocks.state.blocks).toHaveLength(11);
   });
@@ -167,15 +171,16 @@ describe("persisted-source V4 derived recovery", () => {
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
       .rejects.toMatchObject({ code: "P2034" });
     expect(mocks.training.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24]);
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
     expect(mocks.state.blocks).toHaveLength(11);
   });
 
-  it("fails closed on a changed block revision before V4 publication", async () => {
+  it("retains the complete fence set when the final CAS token no longer matches", async () => {
     mocks.state.failClear = dates[0]!;
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
       .rejects.toThrow("health source fence changed during dependent refresh");
+    expect(mocks.state.blocks).toHaveLength(11);
     expect(mocks.replay).not.toHaveBeenCalled();
   });
 
@@ -186,7 +191,7 @@ describe("persisted-source V4 derived recovery", () => {
     mocks.state.failAt = "production";
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
       .rejects.toThrow("Production generation remains stale");
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.recalculate).toHaveBeenCalledWith({ skipTrainingAccountingMaterialization: true });
     expect(mocks.replay).not.toHaveBeenCalled();
     expect(mocks.state.blocks).toHaveLength(8);
@@ -199,7 +204,7 @@ describe("persisted-source V4 derived recovery", () => {
       .rejects.toMatchObject({ code: "P2034" });
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
       .resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 9 });
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll.mock.calls.map(([input]) => input.blocks)).toEqual([[], []]);
     expect(mocks.shadow).not.toHaveBeenCalled();
   });
 
@@ -224,7 +229,7 @@ describe("persisted-source V4 derived recovery", () => {
       .rejects.toThrow("unsupported publication block set");
     expect(mocks.shadow).not.toHaveBeenCalled();
     expect(mocks.training).not.toHaveBeenCalled();
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
   });
 
@@ -234,7 +239,7 @@ describe("persisted-source V4 derived recovery", () => {
       .rejects.toThrow("unsupported publication block set");
     expect(mocks.shadow).not.toHaveBeenCalled();
     expect(mocks.training).not.toHaveBeenCalled();
-    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
   });
 });

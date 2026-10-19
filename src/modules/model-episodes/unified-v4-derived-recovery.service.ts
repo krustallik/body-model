@@ -208,22 +208,15 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
 
   // Training and Health fences clear only after every dependent shadow and the
   // final production generation have succeeded. Revision/fromDate CAS fails closed.
-  for (const block of [...supported.training, ...supported.health]) {
-    const cleared = await repository.clearUnifiedPublicationBlock({
-      profileId,
+  await repository.clearUnifiedPublicationBlocks({
+    profileId,
+    blocks: [...supported.training, ...supported.health].map((block) => ({
       source: block.source as "health" | "training",
       sourceKey: block.sourceKey,
       expectedRevision: block.revision,
       expectedFromDate: block.fromDate,
-    });
-    if (!cleared) {
-      const current = await client.unifiedPublicationBlock.findUnique({
-        where: { profileId_source_sourceKey: { profileId, source: block.source, sourceKey: block.sourceKey } },
-        select: { revision: true, fromDate: true },
-      });
-      throw new Error(`${block.source} source fence changed during dependent refresh (${block.sourceKey}); expected ${block.revision}/${block.fromDate}, current ${current?.revision ?? "missing"}/${current?.fromDate ?? "missing"}`);
-    }
-  }
+    })),
+  });
   const remainingBlocks = await client.unifiedPublicationBlock.count({ where: { profileId } });
   if (remainingBlocks !== 0) throw new Error("Unrefreshed source blocks remain; V4 publication is withheld");
 

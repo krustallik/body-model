@@ -399,7 +399,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       CREATE FUNCTION public.fixture_training_block_serialization_failure()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF OLD."source" = 'training' THEN
+        IF OLD."source" = 'training' AND OLD."sourceKey" = '24' THEN
           RAISE EXCEPTION 'injected isolated test serialization conflict' USING ERRCODE = '40001';
         END IF;
         RETURN OLD;
@@ -419,11 +419,11 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     serializationFunctionCreated = false;
 
     const { PhysiologyV7PersistenceRepository } = await import("@/modules/model-episodes/physiology-v7-persistence.repository");
-    const originalClear = PhysiologyV7PersistenceRepository.prototype.clearUnifiedPublicationBlock;
+    const originalClear = PhysiologyV7PersistenceRepository.prototype.clearUnifiedPublicationBlocks;
     let racedTrainingClear = false;
-    const clearSpy = vi.spyOn(PhysiologyV7PersistenceRepository.prototype, "clearUnifiedPublicationBlock");
+    const clearSpy = vi.spyOn(PhysiologyV7PersistenceRepository.prototype, "clearUnifiedPublicationBlocks");
     clearSpy.mockImplementation(async function (this: InstanceType<typeof PhysiologyV7PersistenceRepository>, input) {
-      if (input.source === "training" && !racedTrainingClear) {
+      if (input.blocks.some((block) => block.source === "training" && block.sourceKey === "20") && !racedTrainingClear) {
         racedTrainingClear = true;
         await prisma.unifiedPublicationBlock.update({
           where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: "20" } },

@@ -161,6 +161,7 @@ describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", (
     });
     expect(first.impulseCount).toBe(3);
     expect(first.earliestModelDate).toBe(boundaryDate);
+    expect(first.latestModelDate).toBe(boundaryDate);
     expect(rows.map((row) => row.sessionId).sort((a, b) => a - b)).toEqual([...sessionIds].sort((a, b) => a - b));
     expect(new Set(rows.map((row) => row.sessionId)).size).toBe(3);
     const matched = rows.find((row) => row.sessionId === sessionIds[2])!;
@@ -172,6 +173,7 @@ describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", (
     const timestamps = rows.map((row) => row.updatedAt.toISOString());
     const repeatedResult = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
     expect(repeatedResult.earliestModelDate).toBeNull();
+    expect(repeatedResult.latestModelDate).toBeNull();
     const repeated = await client.experimentalTransientExerciseWaterShadow.findMany({
       where: { profileId, modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION },
       orderBy: { sessionId: "asc" },
@@ -188,11 +190,105 @@ describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", (
     });
     const moved = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
     expect(moved.earliestModelDate).toBe(boundaryDate);
+    expect(moved.latestModelDate).toBe("2073-01-04");
     const movedRow = await client.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
       where: { sessionId: sessionIds[0] },
     });
     expect((movedRow.result as { impulse: { modelDate: string } }).impulse.modelDate)
       .toBe("2073-01-04");
+
+    await client.strengthDiarySession.update({
+      where: { id: sessionIds[0] },
+      data: {
+        effectiveAccountingAt: boundaryInstant,
+        webStartedAt: boundaryInstant,
+        revision: { increment: 1 },
+      },
+    });
+    const movedEarlier = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+    expect(movedEarlier.earliestModelDate).toBe(boundaryDate);
+    expect(movedEarlier.latestModelDate).toBe("2073-01-04");
+    const movedEarlierRow = await client.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
+      where: { sessionId: sessionIds[0] },
+    });
+    expect((movedEarlierRow.result as { impulse: { modelDate: string } }).impulse.modelDate).toBe(boundaryDate);
+  });
+
+  it("returns the full affected date range when deleting a later stale orphan shadow", async () => {
+    const sessionIds = await seed();
+    const baseSession = await client.strengthDiarySession.findUniqueOrThrow({ where: { id: sessionIds[0] } });
+    const program = await client.trainingProgram.findUniqueOrThrow({
+      where: { id: baseSession.programId },
+      select: { currentVersionId: true },
+    });
+    const cancelled = await client.strengthDiarySession.create({
+      data: {
+        profileId,
+        programId: baseSession.programId,
+        programVersionId: program.currentVersionId!,
+        status: "CANCELLED",
+        entryMode: "LIVE",
+        webStartedAt: new Date("2073-01-20T12:00:00.000Z"),
+      },
+    });
+    await client.experimentalTransientExerciseWaterShadow.create({
+      data: {
+        sessionId: cancelled.id,
+        profileId,
+        sourceFingerprint: "f".repeat(64),
+        modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+        features: {},
+        result: { impulse: { modelDate: "2073-01-20" } },
+      },
+    });
+
+    const result = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+
+    expect(result.earliestModelDate).toBe(boundaryDate);
+    expect(result.latestModelDate).toBe("2073-01-20");
+    await expect(client.experimentalTransientExerciseWaterShadow.findUnique({ where: { sessionId: cancelled.id } }))
+      .resolves.toBeNull();
+  });
+
+  it.each([
+    { name: "missing model date", result: { impulse: {} } },
+    { name: "invalid calendar date", result: { impulse: { modelDate: "2073-02-30" } } },
+  ])("fails closed and retains an orphan shadow with a $name", async ({ result }) => {
+    const sessionIds = await seed();
+    const baseSession = await client.strengthDiarySession.findUniqueOrThrow({ where: { id: sessionIds[0] } });
+    const program = await client.trainingProgram.findUniqueOrThrow({
+      where: { id: baseSession.programId },
+      select: { currentVersionId: true },
+    });
+    const cancelled = await client.strengthDiarySession.create({
+      data: {
+        profileId,
+        programId: baseSession.programId,
+        programVersionId: program.currentVersionId!,
+        status: "CANCELLED",
+        entryMode: "LIVE",
+        webStartedAt: new Date("2073-01-20T12:00:00.000Z"),
+      },
+    });
+    await client.experimentalTransientExerciseWaterShadow.create({
+      data: {
+        sessionId: cancelled.id,
+        profileId,
+        sourceFingerprint: "f".repeat(64),
+        modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+        features: {},
+        result,
+      },
+    });
+
+    await expect(rebuildExperimentalTransientExerciseWaterV2({ profileId, client }))
+      .rejects.toThrow(/persisted shadow for session .* has no valid model date/);
+
+    const remaining = await client.experimentalTransientExerciseWaterShadow.findMany({
+      where: { profileId, modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION },
+      select: { sessionId: true },
+    });
+    expect(remaining.map(({ sessionId }) => sessionId)).toEqual([cancelled.id]);
   });
 
   it("keeps PostgreSQL transient shadow and Unified loader aligned for equal absolute episode starts", async () => {

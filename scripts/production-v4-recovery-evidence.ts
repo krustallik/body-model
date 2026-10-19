@@ -376,7 +376,14 @@ async function main() {
         persistedDayCount: persistedDayRows.length,
         coveredDayCount: coveredDayRows.length,
       };
-    }, { isolationLevel: "RepeatableRead" }),
+    }, {
+      isolationLevel: "RepeatableRead",
+      maxWait: 10_000,
+      // Production HealthSyncSnapshot has several thousand rows. Keep the
+      // consistent read bounded, but allow enough time for all fingerprint
+      // pages to complete; Prisma's interactive transaction default is 5s.
+      timeout: 60_000,
+    }),
   ]);
   const output = { ...result, expectedMigrationRows: manifest.rows, expectedLedgerDigest: manifest.treeDigest };
   process.stdout.write(`${JSON.stringify(output)}\n`);

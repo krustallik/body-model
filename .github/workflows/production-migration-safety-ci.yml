@@ -108,6 +108,7 @@ on:
       - "tests/production-v4-recovery-headroom.test.mjs"
       - "tests/production-v4-schema-digest.test.mjs"
       - "tests/postgres-storage-peak-sampler.test.mjs"
+      - "tests/postgres-storage-peak-sampler.container.test.mjs"
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-deploy-rollback-safety.test.ts"
@@ -170,6 +171,11 @@ jobs:
 
       - name: Run production release boundary regressions
         run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs tests/production-v4-recovery-headroom.test.mjs tests/production-v4-schema-digest.test.mjs tests/postgres-storage-peak-sampler.test.mjs
+
+      - name: Run PostgreSQL 17.11 storage sampler real-container smoke
+        env:
+          BODYCAST_REQUIRE_POSTGRES_STORAGE_CONTAINER_TEST: "1"
+        run: npm run test:unit -- tests/postgres-storage-peak-sampler.container.test.mjs
 
       - name: Run production recovery workflow protocol tests
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
-import { publicationBlockDigest, validatePublicationSourceEvidence } from "../production-v4-derived-recovery.mjs";
+import { assertRecoveryPostflight, publicationBlockDigest, validatePublicationSourceEvidence } from "../production-v4-derived-recovery.mjs";
 
 const databaseUrl = process.env.BODYCAST_V4_RECOVERY_TEST_DATABASE_URL;
 const image = process.env.BODYCAST_V4_RECOVERY_TEST_IMAGE;
@@ -25,7 +25,23 @@ const trainingModelDate = "2025-01-11";
 const trainingEarlierFenceDate = "2025-01-10";
 const trainingTimeZone = "Europe/Bratislava";
 const trainingTimeZoneProvenance = "legacy-default";
-const trainingInputFingerprint = "a".repeat(64);
+const trainingSessions = [
+  { id: 20, status: "MATCHED", entryMode: "RETROSPECTIVE", matchedWorkoutId: 79,
+    effectiveAt: trainingEffectiveAt, localDate: trainingLocalDate, webStartedAt: null,
+    eventAt: trainingWorkoutStartAt, modelDate: trainingModelDate, fromDate: trainingEarlierFenceDate },
+  { id: 24, status: "PENDING", entryMode: "LIVE", matchedWorkoutId: null,
+    effectiveAt: "2025-01-10T23:30:00.000Z", localDate: "2025-01-11", webStartedAt: "2025-01-10T20:00:00.000Z",
+    eventAt: "2025-01-10T23:30:00.000Z", modelDate: trainingModelDate, fromDate: "2025-01-10" },
+  { id: 25, status: "UNMATCHED", entryMode: "RETROSPECTIVE", matchedWorkoutId: null,
+    effectiveAt: "2025-01-11T02:30:00.000Z", localDate: "2025-01-11", webStartedAt: null,
+    eventAt: "2025-01-11T02:30:00.000Z", modelDate: trainingModelDate, fromDate: trainingModelDate },
+].map((session, index) => ({
+  ...session,
+  revision: 24 + index,
+  accountingInputRevision: 22 + index,
+  snapshotRevision: 79 + index,
+  inputFingerprint: String.fromCharCode(97 + index).repeat(64),
+}));
 const rawFingerprintTables = [
   "Profile", "ModelEpisode", "StepperEquipmentAssignment", "DailyHealthData",
   "HealthMetricSample", "HeartRateSample", "RestingHeartRateSample", "SleepSegment",
@@ -34,6 +50,7 @@ const rawFingerprintTables = [
   "TrainingProgramVersion", "ProgramExercise", "StrengthDiarySession",
   "StrengthDiaryProgramChange", "StrengthSessionExercise", "StrengthSet",
   "WorkInterval", "StepperReconciliationGroup", "StepperReconciliationCandidate",
+  "StrengthSessionAccountingSnapshot", "StrengthSessionAccountingOperation",
 ];
 
 function canonicalJson(value) {
@@ -48,24 +65,24 @@ function unavailableMetric(unit) {
     coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] };
 }
 
-function trainingAccountingPayload() {
-  const massReference = { status: "unavailable", valueKg: null, localDate: trainingLocalDate, source: null, sourceId: null };
+function trainingAccountingPayload(session) {
+  const massReference = { status: "unavailable", valueKg: null, localDate: session.localDate, source: null, sourceId: null };
   const accountingMethodVersion = "bodycast-load-accounting-v1";
   const massResolutionMethodVersion = "bodycast-bodyweight-resolution-v2";
   const massResolutionIdentity = createHash("sha256").update(canonicalJson({
-    localDate: trainingLocalDate, timeZone: trainingTimeZone,
+    localDate: session.localDate, timeZone: trainingTimeZone,
     methodVersion: massResolutionMethodVersion, reference: massReference,
   })).digest("hex");
   return {
     schemaVersion: "bodycast-persisted-load-accounting-v1",
-    sessionId: 20,
-    snapshotRevision: 79,
-    accountingInputRevision: 22,
-    effectiveAccountingAt: trainingEffectiveAt,
-    effectiveLocalDate: trainingLocalDate,
+    sessionId: session.id,
+    snapshotRevision: session.snapshotRevision,
+    accountingInputRevision: session.accountingInputRevision,
+    effectiveAccountingAt: session.effectiveAt,
+    effectiveLocalDate: session.localDate,
     timeZone: trainingTimeZone,
     timeZoneProvenance: trainingTimeZoneProvenance,
-    inputFingerprint: trainingInputFingerprint,
+    inputFingerprint: session.inputFingerprint,
     accountingMethodVersion,
     massResolutionMethodVersion,
     massResolutionIdentity,
@@ -157,7 +174,7 @@ async function readEvidence() {
 }
 
 async function legacyUnpagedRawFingerprint() {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v1\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
   for (const table of rawFingerprintTables) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
@@ -249,32 +266,38 @@ try {
     `INSERT INTO public."TrainingProgramVersion" (id, "programId", "versionNumber", "createdAt")
      VALUES (1, 1, 1, CURRENT_TIMESTAMP)`,
   );
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO public."StrengthDiarySession" (id, "profileId", "programId", "programVersionId", status, revision, "accountingInputRevision",
-       "effectiveAccountingAt", "currentSnapshotRevision", "matchedWorkoutId", "matchStatus", "createdAt", "updatedAt")
-     VALUES (20, 1, 1, 1, 'COMPLETED', 24, 22, $1::timestamptz, NULL, 79, 'MATCHED', CURRENT_TIMESTAMP - INTERVAL '2 seconds', CURRENT_TIMESTAMP - INTERVAL '1 second')`,
-    trainingEffectiveAt,
-  );
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO public."StrengthSessionAccountingSnapshot" ("sessionId", "snapshotRevision", "accountingInputRevision",
-       "inputFingerprint", "effectiveLocalDate", "timeZone", "timeZoneProvenance", "accountingMethodVersion",
-       "massResolutionMethodVersion", "massResolutionIdentity", "payloadVersion", payload, "createdAt")
-     VALUES (20, 79, 22, $1, $2, $3, $4, 'bodycast-load-accounting-v1',
-       'bodycast-bodyweight-resolution-v2', $5, 'bodycast-persisted-load-accounting-v1', $6::jsonb,
-       CURRENT_TIMESTAMP - INTERVAL '2 seconds')`,
-    trainingInputFingerprint,
-    trainingLocalDate,
-    trainingTimeZone,
-    trainingTimeZoneProvenance,
-    trainingAccountingPayload().massResolutionIdentity,
-    JSON.stringify(trainingAccountingPayload()),
-  );
-  await prisma.$executeRawUnsafe(`UPDATE public."StrengthDiarySession" SET "currentSnapshotRevision" = 79 WHERE id = 20`);
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO public."UnifiedPublicationBlock" ("profileId", source, "sourceKey", "fromDate", revision, "createdAt", "updatedAt")
-     VALUES (1, 'training', '20', $1, 5, CURRENT_TIMESTAMP - INTERVAL '5 seconds', CURRENT_TIMESTAMP)`,
-    trainingModelDate,
-  );
+  for (const session of trainingSessions) {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO public."StrengthDiarySession" (id, "profileId", "programId", "programVersionId", status, "entryMode",
+         revision, "accountingInputRevision", "effectiveAccountingAt", "currentSnapshotRevision", "matchedWorkoutId",
+         "matchStatus", "webStartedAt", "createdAt", "updatedAt")
+       VALUES ($1, 1, 1, 1, 'COMPLETED', $2, $3, $4, $5::timestamptz, NULL, $6, $7, $8::timestamptz,
+         CURRENT_TIMESTAMP - INTERVAL '4 seconds', CURRENT_TIMESTAMP - INTERVAL '3 seconds')`,
+      session.id, session.entryMode, session.revision, session.accountingInputRevision,
+      session.effectiveAt, session.matchedWorkoutId, session.status, session.webStartedAt,
+    );
+    const payload = trainingAccountingPayload(session);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO public."StrengthSessionAccountingSnapshot" ("sessionId", "snapshotRevision", "accountingInputRevision",
+         "inputFingerprint", "effectiveLocalDate", "timeZone", "timeZoneProvenance", "accountingMethodVersion",
+         "massResolutionMethodVersion", "massResolutionIdentity", "payloadVersion", payload, "createdAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'bodycast-load-accounting-v1',
+         'bodycast-bodyweight-resolution-v2', $8, 'bodycast-persisted-load-accounting-v1', $9::jsonb,
+         CURRENT_TIMESTAMP - INTERVAL '2 seconds')`,
+      session.id, session.snapshotRevision, session.accountingInputRevision, session.inputFingerprint,
+      session.localDate, trainingTimeZone, trainingTimeZoneProvenance,
+      payload.massResolutionIdentity, JSON.stringify(payload),
+    );
+    await prisma.$executeRawUnsafe(
+      `UPDATE public."StrengthDiarySession" SET "currentSnapshotRevision" = $1, "updatedAt" = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $2`,
+      session.snapshotRevision, session.id,
+    );
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO public."UnifiedPublicationBlock" ("profileId", source, "sourceKey", "fromDate", revision, "createdAt", "updatedAt")
+       VALUES (1, 'training', $1, $2, $3, CURRENT_TIMESTAMP - INTERVAL '500 milliseconds', CURRENT_TIMESTAMP)`,
+      String(session.id), session.fromDate, session.id === 20 ? 5 : session.revision,
+    );
+  }
 
   const nineDayEvidence = await validateCurrentEvidence(9);
   const unpagedFingerprint = await legacyUnpagedRawFingerprint();
@@ -282,12 +305,33 @@ try {
     throw new Error("Paged strict source fingerprint differs from the legacy unpaged byte-for-byte digest.");
   }
   const trainingEvidence = nineDayEvidence.sourceEvidence.training;
-  if (trainingEvidence?.snapshotRevision !== 79 || trainingEvidence.modelDate !== trainingModelDate
-    || trainingEvidence.fromDate !== trainingModelDate || trainingEvidence.trainingEventAt !== trainingWorkoutStartAt
-    || trainingEvidence.effectiveAccountingAt !== trainingEffectiveAt
-    || trainingEvidence.accountingEffectiveLocalDate !== trainingLocalDate
-    || trainingEvidence.snapshotEffectiveLocalDate !== trainingLocalDate) {
-    throw new Error("Training fence event date and independent accounting snapshot dates were not bound separately.");
+  if (!Array.isArray(trainingEvidence) || trainingEvidence.map((row) => row.sessionId).join(",") !== "20,24,25") {
+    throw new Error("Exact legacy evidence did not return every Training session in stable numeric order.");
+  }
+  const matchedEvidence = trainingEvidence.find((row) => row.sessionId === 20);
+  if (matchedEvidence?.snapshotRevision !== 79 || matchedEvidence.modelDate !== trainingModelDate
+    || matchedEvidence.fromDate !== trainingEarlierFenceDate || matchedEvidence.trainingEventAt !== trainingWorkoutStartAt
+    || matchedEvidence.effectiveAccountingAt !== trainingEffectiveAt
+    || matchedEvidence.accountingEffectiveLocalDate !== trainingLocalDate
+    || matchedEvidence.snapshotEffectiveLocalDate !== trainingLocalDate
+    || matchedEvidence.matchedWorkoutTypeSupported !== true
+    || !/^[a-f0-9]{64}$/.test(matchedEvidence.matchedWorkoutSourceIdentitySha256)) {
+    throw new Error("Matched Training event, Workout provenance and independent accounting snapshot dates were not bound separately.");
+  }
+  const pendingEvidence = trainingEvidence.find((row) => row.sessionId === 24);
+  if (pendingEvidence?.matchStatus !== "PENDING" || pendingEvidence.entryMode !== "LIVE"
+    || pendingEvidence.matchedWorkoutId !== null || pendingEvidence.matchedWorkoutPresent !== false
+    || pendingEvidence.matchedWorkoutTypeSupported !== false || pendingEvidence.modelDate !== trainingModelDate
+    || pendingEvidence.snapshotRevision !== 80) {
+    throw new Error("Persisted LIVE/PENDING Training session without a Workout was not accepted as its own source.");
+  }
+  const retrospectiveUnmatchedEvidence = trainingEvidence.find((row) => row.sessionId === 25);
+  if (retrospectiveUnmatchedEvidence?.matchStatus !== "UNMATCHED"
+    || retrospectiveUnmatchedEvidence.entryMode !== "RETROSPECTIVE"
+    || retrospectiveUnmatchedEvidence.matchedWorkoutId !== null
+    || retrospectiveUnmatchedEvidence.matchedWorkoutPresent !== false
+    || retrospectiveUnmatchedEvidence.snapshotRevision !== 81) {
+    throw new Error("Persisted retrospective-unmatched Training session without a Workout was not accepted.");
   }
 
   // Repeated blockUnifiedPublication invalidation retains min(existing, new).
@@ -355,7 +399,104 @@ try {
   }
   if (!rejectedMissingSource) throw new Error("A Health fence without its persisted source row was accepted.");
 
+  // Rebuild a valid source set, then exercise the exact image's real derived-only
+  // entrypoint against the same isolated 65-migration database.
+  await prisma.$executeRawUnsafe(
+    `DELETE FROM public."UnifiedPublicationBlock" WHERE "profileId" = 1 AND source = 'health' AND "sourceKey" = '2025-01-10'`,
+  );
+  await prisma.$executeRawUnsafe(`DELETE FROM public."HealthMetricSample" WHERE date = '2025-01-10'`);
+  await prisma.$executeRawUnsafe(`DELETE FROM public."HealthSyncSnapshot" WHERE date = '2025-01-10'`);
+  await insertHealthDay("2025-01-10", 2, true);
+  const recoveryPreflight = await validateCurrentEvidence(9);
+  const recoveryRawBefore = await legacyUnpagedRawFingerprint();
+  if (recoveryPreflight.sourceFingerprint !== recoveryRawBefore) {
+    throw new Error("Exact-image recovery fixture source fingerprint is not bound before execution.");
+  }
+  const [sourceWorkoutCount, sourceSessionCount, sourceSetCount, ledgerBefore] = await Promise.all([
+    prisma.workout.count(), prisma.strengthDiarySession.count(), prisma.strengthSet.count(),
+    prisma.$queryRawUnsafe(`SELECT to_jsonb(migration_row)::text AS row FROM public."_prisma_migrations" AS migration_row ORDER BY migration_name`),
+  ]);
+  const evidenceBefore = await readEvidence();
+  const assertExactLedger = (report, rawRows) => {
+    const expectedRows = report.expectedMigrationRows;
+    const appliedRows = rawRows.map(({ row }) => JSON.parse(row));
+    const manifestDigest = createHash("sha256").update(expectedRows.map(({ name, checksum }) => `${name}\t${checksum}\n`).join("")).digest("hex");
+    if (report.database?.database !== "bodycast_v4_recovery_test" || !report.database.version.startsWith("17.")
+      || !Array.isArray(expectedRows) || expectedRows.length !== 65 || report.expectedLedgerDigest !== manifestDigest
+      || appliedRows.length !== 65 || appliedRows.some((row, index) => row.migration_name !== expectedRows[index]?.name
+        || row.checksum !== expectedRows[index]?.checksum || row.finished_at === null || row.rolled_back_at !== null)) {
+      throw new Error("Exact legacy image evidence does not match the complete applied 65-migration manifest.");
+    }
+  };
+  assertExactLedger(evidenceBefore, ledgerBefore);
+  const expectedTrainingIds = recoveryPreflight.blocks.filter((block) => block.source === "training")
+    .map((block) => Number(block.sourceKey)).sort((a, b) => a - b);
+  if (evidenceBefore.sourceFingerprint !== recoveryRawBefore || evidenceBefore.lifecycle?.unifiedRolloutEpoch !== 1
+    || JSON.stringify(expectedTrainingIds) !== JSON.stringify([20, 24, 25])
+    || evidenceBefore.blocks.length !== recoveryPreflight.blocks.length) {
+    throw new Error("Exact legacy image pre-recovery evidence differs from the validated isolated source set.");
+  }
+  let recoveryOutput;
+  try {
+    recoveryOutput = execFileSync("docker", ["run", "--rm", "--network", "host", "--env", `DATABASE_URL=${databaseUrl}`,
+      image, "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
+      "--owner-authorized", "--profile-id", "1"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch {
+    throw new Error("Exact legacy recovery image failed its derived-only execution rehearsal on the isolated fixture.");
+  }
+  const recoveryResult = JSON.parse(recoveryOutput.trim());
+  if (recoveryResult.command !== "unified-v4-derived-recovery" || recoveryResult.current !== true
+    || recoveryResult.rolloutEpoch !== 1 || recoveryResult.rawInputFingerprint !== recoveryRawBefore
+    || recoveryResult.healthDatesRefreshed.join(",") !== recoveryPreflight.blocks.filter((block) => block.source === "health")
+      .map((block) => block.sourceKey).sort().join(",")
+    || recoveryResult.trainingSessionIdsRefreshed.join(",") !== expectedTrainingIds.join(",")
+    || !Number.isSafeInteger(recoveryResult.dayCount) || recoveryResult.dayCount < 1) {
+    throw new Error("Exact legacy recovery image returned an incomplete or mismatched derived-only result.");
+  }
+  const [remainingFences, lifecycleRows, unifiedRows, ledgerAfter, sessionStates, finalWorkoutCount, finalSessionCount, finalSetCount]
+    = await Promise.all([
+      prisma.unifiedPublicationBlock.count({ where: { profileId: 1 } }),
+      prisma.$queryRawUnsafe(`SELECT "unifiedRolloutEpoch", "unifiedPublishedRolloutEpoch", "invalidationGeneration", "productionPublishedGeneration", "unifiedPublishedGeneration" FROM public."PhysiologyV7Lifecycle" WHERE "profileId" = 1`),
+      prisma.unifiedExperimentalPhysiologyStateV2.count({ where: { profileId: 1 } }),
+      prisma.$queryRawUnsafe(`SELECT to_jsonb(migration_row)::text AS row FROM public."_prisma_migrations" AS migration_row ORDER BY migration_name`),
+      prisma.strengthDiarySession.findMany({ where: { profileId: 1 }, orderBy: { id: "asc" },
+        select: { id: true, status: true, entryMode: true, matchStatus: true, matchedWorkoutId: true, currentSnapshotRevision: true } }),
+      prisma.workout.count(), prisma.strengthDiarySession.count(), prisma.strengthSet.count(),
+    ]);
+  const lifecycle = lifecycleRows[0];
+  const evidenceAfter = await readEvidence();
+  assertExactLedger(evidenceAfter, ledgerAfter);
+  if (JSON.stringify(ledgerBefore) !== JSON.stringify(ledgerAfter)) {
+    throw new Error("Exact-image recovery changed one or more persisted Prisma migration ledger rows.");
+  }
+  assertRecoveryPostflight({
+    beforeFingerprint: recoveryRawBefore,
+    afterFingerprint: evidenceAfter.sourceFingerprint,
+    lifecycle: evidenceAfter.lifecycle,
+    blocks: evidenceAfter.blocks.length,
+    coveredDayCount: evidenceAfter.coveredDayCount,
+    persistedDayCount: evidenceAfter.persistedDayCount,
+    coveredDates: evidenceAfter.coveredDayDates,
+    persistedDates: evidenceAfter.persistedDayDates,
+    existingEpoch: evidenceBefore.lifecycle.unifiedRolloutEpoch,
+  });
+  if (remainingFences !== 0 || lifecycleRows.length !== 1 || lifecycle?.unifiedRolloutEpoch !== 1
+    || lifecycle.unifiedPublishedRolloutEpoch !== 1 || lifecycle.invalidationGeneration !== lifecycle.productionPublishedGeneration
+    || lifecycle.invalidationGeneration !== lifecycle.unifiedPublishedGeneration
+    || unifiedRows !== recoveryResult.dayCount || evidenceAfter.coveredDayCount !== unifiedRows
+    || finalWorkoutCount !== sourceWorkoutCount || finalSessionCount !== sourceSessionCount || finalSetCount !== sourceSetCount
+    || JSON.stringify(sessionStates.map(({ id, status, entryMode, matchStatus, matchedWorkoutId, currentSnapshotRevision }) =>
+      [id, status, entryMode, matchStatus, matchedWorkoutId, currentSnapshotRevision]))
+      !== JSON.stringify([[20, "COMPLETED", "RETROSPECTIVE", "MATCHED", 79, 79],
+        [24, "COMPLETED", "LIVE", "PENDING", null, 80], [25, "COMPLETED", "RETROSPECTIVE", "UNMATCHED", null, 81]])) {
+    throw new Error("Exact-image rehearsal did not publish V4 epoch 1 from the unchanged persisted source set.");
+  }
+  if (await legacyUnpagedRawFingerprint() !== recoveryRawBefore) {
+    throw new Error("Exact legacy recovery image changed persisted raw Health, Training, provenance, timestamp, Workout or set data.");
+  }
+
   process.stdout.write("PASS: exact 65-migration legacy evidence accepted dynamic Health fences and nullable legacy Training accounting fields; validated the Training event date across a timezone/episode boundary independently from its accounting snapshot; retained an earlier repeated-invalidation fence date; rejected future fence dates, accounting-date mismatch, missing Health sources and unsupported snapshot timezones.\n");
+  process.stdout.write("PASS: exact legacy image refreshed all 9 persisted Health fences and 3 Training fences (MATCHED, LIVE/PENDING without Workout, RETROSPECTIVE/UNMATCHED), preserved raw fingerprint/workouts/sessions/sets and ledger 65, cleared fences only after success, and published V4 epoch 1/current generations.\n");
 } finally {
   await prisma.$disconnect();
 }

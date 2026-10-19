@@ -5,14 +5,14 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
   pullRequest: 101,
   branch: "codex/v4-recovery-audit",
   baseSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
+  sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f",
   productionAppSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   migrationCount: 65,
   migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
   ledgerDigest: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
   prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
   ownerId: "126446430",
-  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3968154f965597843b6a2c429fff178c0f1ac54c",
+  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_57f2124e9a97c5d3bf12d7968d11341b8e28258f",
   command: Object.freeze([
     "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
     "--owner-authorized", "--profile-id", "1",
@@ -139,9 +139,9 @@ export function publicationBlockDigest(blocks) {
     }
   }
   const training = sorted.filter((block) => block.source === "training");
-  const health = sorted.filter((block) => block.source === "health");
-  if (health.length < 1 || training.length !== 1 || training[0].sourceKey !== "20") {
-    fail("Current persisted fence set must contain one or more Health dates and only Training session 20.");
+  if (training.some((block) => !/^[1-9][0-9]*$/.test(String(block.sourceKey))
+    || !Number.isSafeInteger(Number(block.sourceKey)))) {
+    fail("Current persisted fence set contains a non-canonical positive Training session identity.");
   }
   return sha256(sorted.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join(""));
 }
@@ -183,35 +183,59 @@ export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
     }
   }
 
-  const trainingBlocks = blocks.filter((block) => block.source === "training");
-  const training = sourceEvidence?.training;
-  const trainingBlock = trainingBlocks[0];
-  if (!training || trainingBlocks.length !== 1 || training.sourceKey !== trainingBlock.sourceKey
-    || training.fromDate !== trainingBlock.fromDate || training.fenceRevision !== trainingBlock.revision
-    || training.sessionRows !== 1 || training.sessionId !== 20 || training.profileId !== 1
-    || training.status !== "COMPLETED" || !Number.isSafeInteger(training.sourceRevision) || training.sourceRevision < 1
-    || !Number.isSafeInteger(training.accountingInputRevision) || training.accountingInputRevision < 1
-    || !Number.isSafeInteger(training.currentSnapshotRevision) || training.currentSnapshotRevision < 1
-    || training.accountingSnapshotRows !== 1 || training.snapshotRevision !== training.currentSnapshotRevision
-    || training.snapshotAccountingInputRevision !== training.accountingInputRevision
-    || !isCalendarDate(training.accountingEffectiveLocalDate)
-    || !isTimestamp(training.effectiveAccountingAt) || !isValidTimeZone(training.accountingTimeZone)
-    || !["client-session", "legacy-default"].includes(training.accountingTimeZoneProvenance)
-    || !isCalendarDate(training.snapshotEffectiveLocalDate)
-    || training.snapshotEffectiveLocalDate !== training.accountingEffectiveLocalDate
-    || training.snapshotTimeZone !== training.accountingTimeZone || !training.snapshotTimeZoneValid
-    || training.snapshotTimeZoneProvenance !== training.accountingTimeZoneProvenance
-    || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
-    || training.matchStatus !== "MATCHED" || !Number.isSafeInteger(training.matchedWorkoutId) || training.matchedWorkoutId < 1
-    || training.matchedWorkoutPresent !== true || training.matchedWorkoutIdentityMatches !== true
-    || !isTimestamp(training.matchedWorkoutStartAt) || !isTimestamp(training.trainingEventAt)
-    || training.trainingEventAt !== training.matchedWorkoutStartAt
-    // blockUnifiedPublication retains min(existing.fromDate, new fromDate),
-    // so a valid fence may be earlier than today's event model date. It must
-    // never start after the current writer date, which would omit dependencies.
-    || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
-    || training.chronologyValid !== true) {
-    fail("Training session 20 is missing its current persisted source, accounting snapshot, model date, or revision chronology.");
+  const trainingBlocks = blocks.filter((block) => block.source === "training")
+    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
+  const trainingEvidence = sourceEvidence?.training;
+  if (!Array.isArray(trainingEvidence) || trainingEvidence.length !== trainingBlocks.length) {
+    fail("Every Training publication fence must have exactly one matching persisted source and accounting snapshot.");
+  }
+  for (const [index, trainingBlock] of trainingBlocks.entries()) {
+    const training = trainingEvidence[index];
+    const matched = training?.matchStatus === "MATCHED";
+    const noMatch = ["PENDING", "UNMATCHED", "AMBIGUOUS"].includes(training?.matchStatus);
+    const expectedEventAt = training?.matchedWorkoutStartAt ?? training?.persistedEffectiveAccountingAt
+      ?? training?.webStartedAt ?? training?.createdAt;
+    const expectedAccountingAt = training?.persistedEffectiveAccountingAt ?? training?.matchedWorkoutStartAt
+      ?? training?.webStartedAt ?? training?.createdAt;
+    const matchEvidenceValid = matched
+      ? Number.isSafeInteger(training?.matchedWorkoutId) && training.matchedWorkoutId > 0
+        && training.matchedWorkoutPresent === true && training.matchedWorkoutIdentityMatches === true
+        && isTimestamp(training.matchedWorkoutStartAt) && training.matchedWorkoutTypeSupported === true
+        && isDigest(training.matchedWorkoutSourceIdentitySha256)
+        && isCalendarDate(training.matchedWorkoutSourceHealthDate)
+      : noMatch && training?.matchedWorkoutId === null && training.matchedWorkoutPresent === false
+        && training.matchedWorkoutIdentityMatches === true && training.matchedWorkoutStartAt === null
+        && training.matchedWorkoutTypeSupported === false
+        && training.matchedWorkoutSourceIdentitySha256 === null
+        && training.matchedWorkoutSourceHealthDate === null
+        && (training.entryMode === "LIVE"
+          || (training.entryMode === "RETROSPECTIVE" && training.matchStatus === "UNMATCHED"));
+    if (!training || training.sourceKey !== trainingBlock.sourceKey
+      || training.fromDate !== trainingBlock.fromDate || training.fenceRevision !== trainingBlock.revision
+      || training.sessionRows !== 1 || training.sessionId !== Number(trainingBlock.sourceKey) || training.profileId !== 1
+      || training.status !== "COMPLETED" || !["LIVE", "RETROSPECTIVE"].includes(training.entryMode)
+      || !Number.isSafeInteger(training.sourceRevision) || training.sourceRevision < 1
+      || !Number.isSafeInteger(training.accountingInputRevision) || training.accountingInputRevision < 1
+      || !Number.isSafeInteger(training.currentSnapshotRevision) || training.currentSnapshotRevision < 1
+      || training.accountingSnapshotRows !== 1 || training.snapshotRevision !== training.currentSnapshotRevision
+      || training.snapshotAccountingInputRevision !== training.accountingInputRevision
+      || !isTimestamp(training.createdAt)
+      || (training.persistedEffectiveAccountingAt !== null && !isTimestamp(training.persistedEffectiveAccountingAt))
+      || !isTimestamp(training.effectiveAccountingAt) || !isTimestamp(training.trainingEventAt)
+      || training.trainingEventAt !== expectedEventAt
+      || training.effectiveAccountingAt !== expectedAccountingAt
+      || !isCalendarDate(training.accountingEffectiveLocalDate) || !isValidTimeZone(training.accountingTimeZone)
+      || !["client-session", "legacy-default"].includes(training.accountingTimeZoneProvenance)
+      || !isCalendarDate(training.snapshotEffectiveLocalDate)
+      || training.snapshotEffectiveLocalDate !== training.accountingEffectiveLocalDate
+      || training.snapshotTimeZone !== training.accountingTimeZone || !training.snapshotTimeZoneValid
+      || training.snapshotTimeZoneProvenance !== training.accountingTimeZoneProvenance
+      || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
+      || !matchEvidenceValid
+      || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
+      || training.chronologyValid !== true) {
+      fail(`Training session ${trainingBlock.sourceKey} is missing its current persisted source, accounting snapshot, event model date, or revision chronology.`);
+    }
   }
   return true;
 }

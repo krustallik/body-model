@@ -54,18 +54,21 @@ describe("legacy derived V4 recovery release workflow", () => {
         metricSampleRows: 1,
         linkedMetricSampleRows: 1, invalidMetricSampleRows: 0, unsupportedMetricSourceRows: 0, chronologyValid: true,
       })),
-      training: { sourceKey: "20", fromDate: "2025-01-01", fenceRevision: 9, sessionRows: 1,
-        sessionId: 20, profileId: 1, status: "COMPLETED", sourceRevision: 1, accountingInputRevision: 1,
+      training: [{ sourceKey: "20", fromDate: "2025-01-01", fenceRevision: 9, sessionRows: 1,
+        sessionId: 20, profileId: 1, status: "COMPLETED", entryMode: "RETROSPECTIVE", sourceRevision: 1, accountingInputRevision: 1,
         currentSnapshotRevision: 1, accountingSnapshotRows: 1, snapshotRevision: 1,
         snapshotAccountingInputRevision: 1, snapshotEffectiveLocalDate: "2025-01-01",
+        persistedEffectiveAccountingAt: "2025-01-01T12:00:00.000Z",
         effectiveAccountingAt: "2025-01-01T12:00:00.000Z", accountingEffectiveLocalDate: "2025-01-01",
         accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
         snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
         snapshotTimeZoneProvenance: "legacy-default", matchedWorkoutId: 20, matchStatus: "MATCHED",
         snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
         matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
+        matchedWorkoutTypeSupported: true, matchedWorkoutSourceIdentitySha256: "b".repeat(64),
+        matchedWorkoutSourceHealthDate: "2025-01-01",
         matchedWorkoutStartAt: "2025-01-01T12:00:00.000Z", trainingEventAt: "2025-01-01T12:00:00.000Z",
-        modelDate: "2025-01-01", chronologyValid: true },
+        createdAt: "2025-01-01T10:00:00.000Z", modelDate: "2025-01-01", chronologyValid: true }],
     };
     const lifecycle = {
       invalidationGeneration: 12, productionPublishedGeneration: 12, productionStaleFromDate: null,
@@ -79,7 +82,7 @@ describe("legacy derived V4 recovery release workflow", () => {
       lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11, unifiedPublicationBlockedFromDate: "2025-01-01" } };
     const after = { ...before, blocks: [], lifecycle, persistedDayDates: days, coveredDayDates: days,
       persistedDayCount: days.length, coveredDayCount: days.length };
-    const report = { sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c", evidence: {
+    const report = { sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f", evidence: {
       database: { database: "bodycast" }, migrationRows, expectedMigrationRows: migrationRows,
       expectedLedgerDigest: before.expectedLedgerDigest, blocks: before.blocks, sourceFingerprint: fingerprint,
       sourceEvidence, lifecycle: before.lifecycle,
@@ -99,13 +102,13 @@ describe("legacy derived V4 recovery release workflow", () => {
       const preflight = JSON.parse(readFileSync(join(artifactRoot, "preflight.json"), "utf8"));
       expect(preflight).toMatchObject({ preflightRunId: "123456", preflightSha: "c".repeat(40),
         capturedAt, restoredSourceFingerprint: fingerprint,
-        sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
+        sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f",
         evidence: { database: { database: "bodycast" }, sourceFingerprint: fingerprint,
           expectedLedgerDigest: ledgerDigest, migrationRows: expect.arrayContaining([expect.objectContaining({ name: migrationRows[0].name })]),
           blocks: expect.arrayContaining([expect.objectContaining({ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 })]) } });
 
       const artifactManifest = {
-        sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c", imageId: `sha256:${"d".repeat(64)}`,
+        sourceSha: "57f2124e9a97c5d3bf12d7968d11341b8e28258f", imageId: `sha256:${"d".repeat(64)}`,
         imageDigest: `sha256:${"d".repeat(64)}`, archiveSha256: "e".repeat(64),
         migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
         effectiveCommand: ["node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery", "--owner-authorized", "--profile-id", "1"],
@@ -149,12 +152,12 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(workflow).toMatch(/\[\[ "\$DISPATCH_SHA" == "\$GITHUB_SHA"/);
     expect(workflow).toContain("main-ci.ndjson");
     expect(workflow).toContain("Recheck exact owner approval, current main, and legacy CI immediately before execution");
-    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3968154f965597843b6a2c429fff178c0f1ac54c");
+    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_57f2124e9a97c5d3bf12d7968d11341b8e28258f");
     expect(workflow).toContain("needs.rehearse.result == 'success'");
   });
 
   it("requires the exact audited legacy SHA, 65-schema manifest, and derived-only entrypoint", () => {
-    expect(workflow).toContain("3968154f965597843b6a2c429fff178c0f1ac54c");
+    expect(workflow).toContain("57f2124e9a97c5d3bf12d7968d11341b8e28258f");
     expect(workflow).toContain("291b9c95924e196d66f9cdd555535b2e5a2b5990");
     expect(workflow).toContain("4fa84cb62262986d5f0c58d3c76db2ba52b5500e");
     expect(workflow).toContain("a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7");

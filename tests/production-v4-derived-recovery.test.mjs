@@ -42,21 +42,42 @@ const makeHealthSource = (block, overrides = {}) => ({
   chronologyValid: true, ...overrides,
 });
 const makeTrainingSource = (block, overrides = {}) => ({
+  ...(() => {
+    const sessionId = Number(block.sourceKey);
+    const matched = sessionId === 20;
+    const eventAt = matched ? "2026-10-09T12:00:00.000Z" : "2026-10-10T22:30:00.000Z";
+    const accountingAt = matched ? "2026-10-09T12:00:00.000Z" : "2026-10-10T22:30:00.000Z";
+    const status = matched ? "MATCHED" : "PENDING";
+    return {
+      sessionId, entryMode: matched ? "RETROSPECTIVE" : "LIVE", matchStatus: status,
+      matchedWorkoutId: matched ? 79 : null,
+      matchedWorkoutPresent: matched, matchedWorkoutIdentityMatches: true,
+      matchedWorkoutTypeSupported: matched,
+      matchedWorkoutSourceIdentitySha256: matched ? "b".repeat(64) : null,
+      matchedWorkoutSourceHealthDate: matched ? "2026-10-09" : null,
+      matchedWorkoutStartAt: matched ? eventAt : null,
+      trainingEventAt: matched ? eventAt : accountingAt,
+      effectiveAccountingAt: accountingAt,
+      persistedEffectiveAccountingAt: accountingAt,
+      webStartedAt: matched ? null : "2026-10-10T22:00:00.000Z",
+    };
+  })(),
   sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
-  sessionRows: 1, sessionId: 20, profileId: 1, status: "COMPLETED", sourceRevision: 24,
+  sessionRows: 1, profileId: 1, status: "COMPLETED", sourceRevision: 24,
   accountingInputRevision: 22, currentSnapshotRevision: 79, accountingSnapshotRows: 1,
-  snapshotRevision: 79, snapshotAccountingInputRevision: 22, snapshotEffectiveLocalDate: "2026-10-09",
-  effectiveAccountingAt: "2026-10-09T12:00:00.000Z", accountingEffectiveLocalDate: "2026-10-09",
+  snapshotRevision: 79, snapshotAccountingInputRevision: 22, snapshotEffectiveLocalDate: Number(block.sourceKey) === 20 ? "2026-10-09" : "2026-10-11",
+  accountingEffectiveLocalDate: Number(block.sourceKey) === 20 ? "2026-10-09" : "2026-10-11",
+  createdAt: "2026-10-08T00:00:00.000Z",
   accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
   snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
   snapshotTimeZoneProvenance: "legacy-default", snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
-  matchedWorkoutId: 79, matchStatus: "MATCHED", matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
-  matchedWorkoutStartAt: "2026-10-09T12:00:00.000Z", trainingEventAt: "2026-10-09T12:00:00.000Z", modelDate: block.fromDate,
+  modelDate: block.fromDate,
   chronologyValid: true, ...overrides,
 });
 const makeSourceEvidence = (value = blocks) => ({
   health: value.filter((block) => block.source === "health").map((block) => makeHealthSource(block)),
-  training: makeTrainingSource(value.find((block) => block.source === "training") ?? blocks.at(-1)),
+  training: value.filter((block) => block.source === "training")
+    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey)).map((block) => makeTrainingSource(block)),
 });
 const recoveryRun = (path) => [{ head_sha: LEGACY_V4_RECOVERY.sourceSha, head_branch: LEGACY_V4_RECOVERY.branch,
   event: "pull_request", path, status: "completed", conclusion: "success", run_attempt: 1 }];
@@ -157,7 +178,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     })).toThrow();
   });
 
-  it("accepts eight, nine, and more valid Health dates while keeping the exact Training 20 fence", () => {
+  it("accepts eight, nine, and more valid Health dates with a dynamic Training fence set", () => {
     const additionalDate = { source: "health", sourceKey: "2026-10-10", fromDate: "2026-10-10", revision: 3,
       createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" };
     expect(publicationBlockDigest(blocks)).toMatch(/^[a-f0-9]{64}$/);
@@ -168,6 +189,11 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
         createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" })),
       blocks.at(-1)];
     expect(validatePublicationSourceEvidence({ blocks: tenHealthBlocks, sourceEvidence: makeSourceEvidence(tenHealthBlocks) })).toBe(true);
+  });
+
+  it("accepts a valid Training-only fence set when no Health source is blocked", () => {
+    const trainingOnly = blocks.filter((block) => block.source === "training");
+    expect(validatePublicationSourceEvidence({ blocks: trainingOnly, sourceEvidence: makeSourceEvidence(trainingOnly) })).toBe(true);
   });
 
   it("accepts both Health sync write orders while requiring valid persisted chronology", () => {
@@ -182,8 +208,16 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
 
   it("rejects missing, malformed, duplicate, unsupported, or provenance-free source fences", () => {
     expect(() => publicationBlockDigest([...blocks, blocks[0]])).toThrow(/duplicate/);
-    expect(() => publicationBlockDigest(blocks.filter((block) => block.sourceKey !== "20"))).toThrow(/Training session 20/);
-    expect(() => publicationBlockDigest([...blocks, { source: "training", sourceKey: "21", fromDate: "2026-10-09", revision: 1 }])).toThrow(/only Training session 20/);
+    const noTraining = blocks.filter((block) => block.source !== "training");
+    expect(publicationBlockDigest(noTraining)).toMatch(/^[a-f0-9]{64}$/);
+    const additionalTraining = [
+      ...blocks,
+      { source: "training", sourceKey: "24", fromDate: "2026-10-10", revision: 3,
+        createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" },
+    ];
+    expect(validatePublicationSourceEvidence({ blocks: additionalTraining,
+      sourceEvidence: makeSourceEvidence(additionalTraining) })).toBe(true);
+    expect(() => publicationBlockDigest([...blocks, { source: "training", sourceKey: "0", fromDate: "2026-10-09", revision: 1 }])).toThrow(/unsupported or malformed/);
     expect(() => publicationBlockDigest([...blocks, { source: "health", sourceKey: "2026-02-30", fromDate: "2026-02-30", revision: 1 }])).toThrow(/unsupported or malformed/);
     expect(() => publicationBlockDigest([...blocks, { source: "day", sourceKey: "2026-10-10", fromDate: "2026-10-10", revision: 1 }])).toThrow(/unsupported or malformed/);
     expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: { ...makeSourceEvidence(), health: makeSourceEvidence().health.slice(1) } })).toThrow(/matching source provenance/);
@@ -209,21 +243,114 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("requires Training accounting snapshot timezone and provenance to match session fallback inputs", () => {
     const sourceEvidence = makeSourceEvidence();
     expect(validatePublicationSourceEvidence({ blocks, sourceEvidence })).toBe(true);
-    const changedSnapshot = { ...sourceEvidence, training: {
-      ...sourceEvidence.training, snapshotTimeZone: "America/New_York", snapshotEvidenceSha256: "b".repeat(64),
-    } };
-    expect(changedSnapshot.training.snapshotEvidenceSha256).not.toBe(sourceEvidence.training.snapshotEvidenceSha256);
+    const changedSnapshot = { ...sourceEvidence, training: sourceEvidence.training.map((row, index) => index === 0
+      ? { ...row, snapshotTimeZone: "America/New_York", snapshotEvidenceSha256: "b".repeat(64) } : row) };
+    expect(changedSnapshot.training[0].snapshotEvidenceSha256).not.toBe(sourceEvidence.training[0].snapshotEvidenceSha256);
     expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: changedSnapshot })).toThrow(/Training session 20/);
-    const changedProvenance = { ...sourceEvidence, training: {
-      ...sourceEvidence.training, snapshotTimeZoneProvenance: "user-selected",
-    } };
+    const changedProvenance = { ...sourceEvidence, training: sourceEvidence.training.map((row, index) => index === 0
+      ? { ...row, snapshotTimeZoneProvenance: "user-selected" } : row) };
     expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: changedProvenance })).toThrow(/Training session 20/);
-    const unsupportedProvenance = { ...sourceEvidence, training: {
-      ...sourceEvidence.training,
-      accountingTimeZoneProvenance: "user-selected",
-      snapshotTimeZoneProvenance: "user-selected",
-    } };
+    const unsupportedProvenance = { ...sourceEvidence, training: sourceEvidence.training.map((row, index) => index === 0
+      ? { ...row, accountingTimeZoneProvenance: "user-selected", snapshotTimeZoneProvenance: "user-selected" } : row) };
     expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: unsupportedProvenance })).toThrow(/Training session 20/);
+  });
+
+  it("accepts a completed LIVE PENDING session without a Workout and rejects contradictory match evidence", () => {
+    const pendingBlock = { source: "training", sourceKey: "24", fromDate: "2026-10-10", revision: 4,
+      createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" };
+    const pendingBlocks = [...blocks.filter((block) => block.source === "health"), pendingBlock];
+    const sourceEvidence = makeSourceEvidence(pendingBlocks);
+    expect(sourceEvidence.training[0]).toMatchObject({
+      sessionId: 24, status: "COMPLETED", entryMode: "LIVE", matchStatus: "PENDING",
+      matchedWorkoutId: null, matchedWorkoutPresent: false, matchedWorkoutIdentityMatches: true,
+      effectiveAccountingAt: "2026-10-10T22:30:00.000Z", modelDate: "2026-10-10",
+      accountingEffectiveLocalDate: "2026-10-11", snapshotEffectiveLocalDate: "2026-10-11",
+    });
+    expect(validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence })).toBe(true);
+
+    const retrospectiveUnmatched = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, entryMode: "RETROSPECTIVE", matchStatus: "UNMATCHED",
+    })) };
+    expect(validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: retrospectiveUnmatched })).toBe(true);
+    const retrospectivePending = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, entryMode: "RETROSPECTIVE",
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: retrospectivePending }))
+      .toThrow(/Training session 24/);
+
+    const withInventedWorkout = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, matchedWorkoutId: 99, matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
+      matchedWorkoutStartAt: "2026-10-10T22:30:00.000Z",
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: withInventedWorkout })).toThrow(/Training session 24/);
+    const missingMatchedWorkout = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, matchStatus: "MATCHED", matchedWorkoutId: 79, matchedWorkoutPresent: false,
+      matchedWorkoutIdentityMatches: false,
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: missingMatchedWorkout })).toThrow(/Training session 24/);
+    const staleAccounting = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, snapshotContractValid: false, snapshotAccountingInputRevision: row.accountingInputRevision - 1,
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: staleAccounting })).toThrow(/Training session 24/);
+  });
+
+  it("requires an existing supported strength Workout with persisted source provenance for MATCHED sessions", () => {
+    const matchedEvidence = makeSourceEvidence();
+    expect(validatePublicationSourceEvidence({ blocks, sourceEvidence: matchedEvidence })).toBe(true);
+    for (const invalid of [
+      { matchedWorkoutTypeSupported: false },
+      { matchedWorkoutSourceIdentitySha256: null },
+      { matchedWorkoutSourceHealthDate: null },
+    ]) {
+      const sourceEvidence = { ...matchedEvidence, training: matchedEvidence.training.map((row, index) => index === 0
+        ? { ...row, ...invalid } : row) };
+      expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence })).toThrow(/Training session 20/);
+    }
+  });
+
+  it("accepts legacy NULL session accounting timestamps only when the persisted snapshot follows fallback clocks", () => {
+    const pendingBlock = { source: "training", sourceKey: "24", fromDate: "2026-10-10", revision: 4,
+      createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" };
+    const pendingBlocks = [...blocks.filter((block) => block.source === "health"), pendingBlock];
+    const sourceEvidence = makeSourceEvidence(pendingBlocks);
+    sourceEvidence.training[0] = {
+      ...sourceEvidence.training[0],
+      persistedEffectiveAccountingAt: null,
+      matchedWorkoutStartAt: null,
+      webStartedAt: "2026-10-10T22:30:00.000Z",
+      effectiveAccountingAt: "2026-10-10T22:30:00.000Z",
+      trainingEventAt: "2026-10-10T22:30:00.000Z",
+      modelDate: "2026-10-10",
+      accountingEffectiveLocalDate: "2026-10-11",
+      snapshotEffectiveLocalDate: "2026-10-11",
+    };
+    expect(validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence })).toBe(true);
+    const driftedSnapshot = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, effectiveAccountingAt: "2026-10-11T22:30:00.000Z",
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: driftedSnapshot }))
+      .toThrow(/Training session 24/);
+    const malformedPersistedTimestamp = { ...sourceEvidence, training: sourceEvidence.training.map((row) => ({
+      ...row, persistedEffectiveAccountingAt: "not-a-timestamp",
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: pendingBlocks, sourceEvidence: malformedPersistedTimestamp }))
+      .toThrow(/Training session 24/);
+  });
+
+  it("requires a deterministic one-to-one mapping between Training fences and persisted sessions", () => {
+    const training24 = { source: "training", sourceKey: "24", fromDate: "2026-10-10", revision: 2,
+      createdAt: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z" };
+    const training25 = { ...training24, sourceKey: "25", revision: 3, fromDate: "2026-10-11" };
+    const dynamicBlocks = [...blocks, training24, training25];
+    const sourceEvidence = makeSourceEvidence(dynamicBlocks);
+    expect(sourceEvidence.training.map((row) => row.sessionId)).toEqual([20, 24, 25]);
+    expect(validatePublicationSourceEvidence({ blocks: dynamicBlocks, sourceEvidence })).toBe(true);
+    expect(() => validatePublicationSourceEvidence({ blocks: dynamicBlocks,
+      sourceEvidence: { ...sourceEvidence, training: [...sourceEvidence.training].reverse() } })).toThrow(/Training session/);
+    expect(() => validatePublicationSourceEvidence({ blocks: dynamicBlocks,
+      sourceEvidence: { ...sourceEvidence, training: sourceEvidence.training.slice(0, 2) } })).toThrow(/exactly one/);
+    expect(() => validatePublicationSourceEvidence({ blocks: dynamicBlocks,
+      sourceEvidence: { ...sourceEvidence, training: [...sourceEvidence.training, sourceEvidence.training[0]] } })).toThrow(/exactly one/);
   });
 
   it("uses the matched workout event date for its fence while validating accounting by its own timestamp", () => {
@@ -234,11 +361,12 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     const withFenceDate = (fromDate) => {
       const datedBlocks = blocks.map((block) => block.source === "training" ? { ...block, fromDate } : block);
       const sourceEvidence = makeSourceEvidence(datedBlocks);
-      sourceEvidence.training = {
-        ...sourceEvidence.training,
+      sourceEvidence.training[0] = {
+        ...sourceEvidence.training[0],
         fromDate,
         matchedWorkoutStartAt: trainingEventAt,
         trainingEventAt,
+        persistedEffectiveAccountingAt: effectiveAccountingAt,
         modelDate: eventModelDate,
         effectiveAccountingAt,
         accountingEffectiveLocalDate: accountingDate,
@@ -250,8 +378,8 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     // The fence date follows the legacy writer's matchedWorkout.startAt date;
     // its accounting snapshot remains bound to effectiveAccountingAt.
     const exactEventDate = withFenceDate(eventModelDate);
-    expect(exactEventDate.sourceEvidence.training.snapshotEffectiveLocalDate)
-      .not.toBe(exactEventDate.sourceEvidence.training.modelDate);
+    expect(exactEventDate.sourceEvidence.training[0].snapshotEffectiveLocalDate)
+      .not.toBe(exactEventDate.sourceEvidence.training[0].modelDate);
     expect(validatePublicationSourceEvidence(exactEventDate)).toBe(true);
 
     // Repeated invalidation preserves an earlier persisted fromDate via min().
@@ -261,7 +389,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     expect(() => validatePublicationSourceEvidence(withFenceDate("2026-10-11")))
       .toThrow(/Training session 20/);
     const wrongEventTimestamp = exactEventDate.sourceEvidence;
-    wrongEventTimestamp.training.trainingEventAt = effectiveAccountingAt;
+    wrongEventTimestamp.training[0].trainingEventAt = effectiveAccountingAt;
     expect(() => validatePublicationSourceEvidence(exactEventDate)).toThrow(/Training session 20/);
   });
 

@@ -2,9 +2,65 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { prisma } from "@/lib/db/prisma";
-import { inventoryV4RecoveryRawSourcesV1 } from "@/modules/model-episodes/unified-v4-derived-recovery.service";
+
+// Keep this exact allowlist aligned with the audited legacy recovery source.
+// It is repeated here because this evidence wrapper must also typecheck on
+// current main, which intentionally does not carry the legacy recovery service.
+const RECOVERY_RAW_INPUT_TABLES = [
+  "Profile",
+  "ModelEpisode",
+  "StepperEquipmentAssignment",
+  "DailyHealthData",
+  "HealthMetricSample",
+  "HeartRateSample",
+  "RestingHeartRateSample",
+  "SleepSegment",
+  "HealthSyncSnapshot",
+  "HealthSyncAudit",
+  "HealthActivityInterval",
+  "Workout",
+  "ExerciseCatalog",
+  "ExerciseLoadConfiguration",
+  "TrainingProgram",
+  "TrainingProgramVersion",
+  "ProgramExercise",
+  "StrengthDiarySession",
+  "StrengthDiaryProgramChange",
+  "StrengthSessionExercise",
+  "StrengthSet",
+  "WorkInterval",
+  "StepperReconciliationGroup",
+  "StepperReconciliationCandidate",
+] as const;
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+
+async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<string> {
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v1\0");
+  for (const table of RECOVERY_RAW_INPUT_TABLES) {
+    const rawRowExpression = table === "ModelEpisode"
+      ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
+      : "to_jsonb(source_row)";
+    const rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
+      `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+       FROM public."${table}" AS source_row
+       ORDER BY source_row.id`,
+    );
+    const tableDigest = createHash("sha256").update(`${table}\0${rows.length}\0`);
+    for (const row of rows) {
+      if (!Number.isSafeInteger(row.id) || typeof row.raw_row !== "string") {
+        throw new Error(`V4 strict source fingerprint returned invalid ${table} row`);
+      }
+      tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+    }
+    digest.update(`${table}\0${tableDigest.digest("hex")}\0`);
+  }
+  return digest.digest("hex");
+}
+
+function dateKey(value: Date | string): string {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value;
+}
 
 async function migrationManifest() {
   const root = "/app/prisma/migrations";
@@ -57,10 +113,10 @@ async function main() {
         database: identity,
         migrationRows: migrations,
         lifecycle,
-        blocks: blocks.map((block) => ({ ...block, fromDate: block.fromDate.toISOString().slice(0, 10) })),
-        sourceFingerprint: sourceFingerprint.fingerprint,
-        persistedDayDates: persistedDayRows.map((row) => row.date.toISOString().slice(0, 10)),
-        coveredDayDates: coveredDayRows.map((row) => row.date.toISOString().slice(0, 10)),
+        blocks: blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })),
+        sourceFingerprint,
+        persistedDayDates: persistedDayRows.map((row) => dateKey(row.date)),
+        coveredDayDates: coveredDayRows.map((row) => dateKey(row.date)),
         persistedDayCount: persistedDayRows.length,
         coveredDayCount: coveredDayRows.length,
       };

@@ -13,7 +13,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(workflow.match(/environment: production/g)).toHaveLength(2);
     expect(workflow).toContain("github.actor_id == '126446430'");
     expect(workflow).toContain("github.ref == 'refs/heads/main'");
-    expect(workflow).toContain("$DISPATCH_SHA == \"$GITHUB_SHA\"");
+    expect(workflow).toMatch(/\[\[ "\$DISPATCH_SHA" == "\$GITHUB_SHA"/);
     expect(workflow).toContain("main-ci.ndjson");
     expect(workflow).toContain("Recheck exact owner approval, current main, and legacy CI immediately before execution");
     expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3968154f965597843b6a2c429fff178c0f1ac54c");
@@ -43,7 +43,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(workflow).toContain("migrationLedgerDigest(before.migrationRows) !== ledger");
     expect(host).toContain("bodycast-production-release.lock");
     expect(host).toContain("flock -n 9");
-    expect(host).toContain('"state": "started"');
+    expect(host).toContain('state: "started"');
     expect(host).toContain("terminal-failed");
     expect(host).toContain("recovery-failed-no-retry");
     expect(host).toContain("production-container-identity-changed-during-recovery");

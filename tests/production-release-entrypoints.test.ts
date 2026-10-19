@@ -10,6 +10,7 @@ const releaseWorkflows = [
   "production-full-history-recalculate.yml",
   "production-database-cutback.yml",
   "production-no-app-preflight.yml",
+  "production-v4-derived-recovery.yml",
 ];
 const legacyWorkflows = [
   "production-recovery-phase-a.yml",
@@ -72,7 +73,12 @@ describe("active production release entrypoints", () => {
       expect(source, name).toContain("126446430");
       expect(source, name).toContain("bodycast-production-release");
       expect(source, name).toContain("refs/heads/main");
-      expect(source, name).toContain("assertTrustedOwnerWorkflowRun");
+      if (name === "production-v4-derived-recovery.yml") {
+        expect(source, name).toContain("assertApprovedRecoveryRuns");
+        expect(source, name).toContain("environment: production");
+      } else {
+        expect(source, name).toContain("assertTrustedOwnerWorkflowRun");
+      }
       expect(source, name).toContain("commits/main");
     }
   });

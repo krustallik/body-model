@@ -84,7 +84,16 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       effectiveCommand: [...LEGACY_V4_RECOVERY.command],
       ledgerRows,
     };
-    const manifest = { ...artifact, ledgerDigest: migrationLedgerDigest(ledgerRows) };
+    const manifest = {
+      sourceSha: artifact.sourceSha,
+      imageId: artifact.imageId,
+      imageDigest: artifact.imageDigest,
+      archiveSha256: artifact.archiveSha256,
+      migrationTree: artifact.migrationTree,
+      prismaSchemaBlob: artifact.prismaSchemaBlob,
+      effectiveCommand: artifact.effectiveCommand,
+      ledgerDigest: migrationLedgerDigest(ledgerRows),
+    };
     artifact.manifestSha256 = sha256(JSON.stringify(manifest));
     expect(assertArtifactBinding(artifact)).toBe(manifest.ledgerDigest);
     expect(() => assertArtifactBinding({ ...artifact, imageId: "bodycast:latest" })).toThrow();
@@ -119,7 +128,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("rejects duplicate or changed persisted fence identities", () => {
     expect(() => publicationBlockDigest([...blocks, blocks[0]])).toThrow(/duplicate/);
     expect(() => publicationBlockDigest(blocks.filter((block) => block.sourceKey !== "20"))).toThrow(/Training/);
-    expect(() => publicationBlockDigest(blocks.filter((block) => block.source === "training"))).toThrow(/Health\/Training fence set/);
+    expect(() => publicationBlockDigest(blocks.filter((block) => block.source === "training"))).toThrow(/exactly 8 Health dates/);
     expect(() => publicationBlockDigest(blocks.filter((block) => block.sourceKey !== "2026-10-08"))).toThrow(/exactly 8 Health dates/);
     expect(() => publicationBlockDigest([...blocks, { source: "health", sourceKey: "2026-10-09",
       fromDate: "2026-10-09", revision: 1 }])).toThrow(/exactly 8 Health dates/);

@@ -15,7 +15,6 @@ on:
         options:
           - active-energy-unified-v2
           - unified-v4-republication-v1
-          - programless-workouts-health-sync-v1
           - training-mutation-ledger-refresh-queue-v1
       confirm_production_preflight:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
@@ -109,13 +108,11 @@ jobs:
           NODE
           [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact maintenance/preflight confirmation is required."; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
             || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
-          if [[ ( "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-              || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ) \
+          if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
             && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
-            echo "::error::The programless workout and Training queue manifests do not accept historical resume evidence."; exit 1;
+            echo "::error::The nine-migration Training manifest does not accept historical resume evidence."; exit 1;
           fi
           REFRESH_CAPTURE=0
           if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then

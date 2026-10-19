@@ -14,7 +14,6 @@ on:
         options:
           - active-energy-unified-v2
           - unified-v4-republication-v1
-          - programless-workouts-health-sync-v1
           - training-mutation-ledger-refresh-queue-v1
       confirmation:
         description: Type MIGRATE_PRODUCTION to request a signed, current-state authorization
@@ -103,11 +102,9 @@ jobs:
             [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "::error::A failed-run ID is only valid with explicit forward-resume mode."; exit 1; }
           fi
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
             || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
-          if [[ ( "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-              || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ) && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "::error::The programless workout and Training queue manifests accept only standard exact-SHA execution."; exit 1;
+          if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "$EXECUTION_MODE" != "standard" ]]; then
+            echo "::error::The nine-migration Training manifest accepts only standard exact-SHA execution."; exit 1;
           fi
           if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" && "$EXECUTION_MODE" != "standard" ]]; then
             echo "::error::The V4 republication manifest does not accept historical forward-resume evidence."; exit 1;
@@ -482,11 +479,9 @@ jobs:
           FORWARD_RESUME_FAILED_RUN_ID="${11}"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA." >&2; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
             || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
-          if [[ ( "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-              || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ) && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "Forward-resume is unavailable for the programless workout and Training queue manifests." >&2; exit 1;
+          if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "$EXECUTION_MODE" != "standard" ]]; then
+            echo "Forward-resume is unavailable for the nine-migration Training manifest." >&2; exit 1;
           fi
           [[ "$AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
             echo "Invalid authorization workflow identity." >&2; exit 1;

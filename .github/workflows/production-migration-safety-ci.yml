@@ -67,6 +67,8 @@ on:
       - "scripts/run-prisma-migrate-with-lock-timeout.mjs"
       - "scripts/ci/production-migration-prisma-checksum.integration.mjs"
       - "scripts/ci/programless-session-migration-postgres-smoke.mjs"
+      - "scripts/production-migration-manifests.mjs"
+      - "tests/production-migration-v5.test.mjs"
       - "scripts/ci/production-v4-fence-evidence-postgres-smoke.mjs"
       - "docs/development/production-migration-v5-runbook.md"
       - "docs/architecture/unified-glycogen-v4-rollout.md"
@@ -433,6 +435,33 @@ jobs:
         env:
           BODYCAST_DYNAMIC_MIGRATION_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: node scripts/ci/programless-session-migration-postgres-smoke.mjs
+
+      - name: Rehearse the exact Training manifest from the 65-migration baseline
+        env:
+          BASELINE_SHA: 35c556772759ea03c2728de921c1825f454d59c2
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+        run: |
+          set -Eeuo pipefail
+          baseline_root="$RUNNER_TEMP/bodycast-training-nine-baseline"
+          git fetch --no-tags https://github.com/krustallik/body-model.git "$BASELINE_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$BASELINE_SHA"
+          mkdir -p "$baseline_root"
+          git archive "$BASELINE_SHA" prisma/schema.prisma prisma/migrations | tar -x -C "$baseline_root"
+          baseline_count="$(find "$baseline_root/prisma/migrations" -mindepth 2 -maxdepth 2 -name migration.sql -type f | wc -l | tr -d ' ')"
+          test "$baseline_count" = 65
+          npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"
+          applied_before="$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            --command='SELECT count(*) FROM public."_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL')"
+          test "$applied_before" = 65
+          node scripts/production-migration-preflight.mjs --verify-release-tree \
+            --manifest training-mutation-ledger-refresh-queue-v1 --repository "$GITHUB_WORKSPACE"
+          npx prisma migrate deploy --schema prisma/schema.prisma
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+            --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-training-postflight.json"
+          node scripts/production-migration-preflight.mjs --postflight \
+            --manifest training-mutation-ledger-refresh-queue-v1 \
+            --report "$RUNNER_TEMP/bodycast-training-postflight.json" \
+            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA"
 
       - name: Run production migration release-tooling shell regressions
         env:

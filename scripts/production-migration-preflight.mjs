@@ -45,6 +45,30 @@ export const ALL_REVIEWED_OBJECTS = [...new Set([
 function sorted(values) { return [...values].sort(); }
 function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right)); }
 
+export function evaluateProductionMigrationTree(migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
+  const manifest = getProductionMigrationManifest(manifestId);
+  const expectedDirectories = [
+    ...(manifest.requiredAppliedMigrations ?? []).map(({ name }) => name),
+    ...manifest.migrations.map(({ name }) => name),
+  ];
+  const blockers = [];
+  if (!sameArray(migrationDirectories, [...new Set(migrationDirectories)])) {
+    blockers.push("Release tree contains duplicate migration directory names.");
+  }
+  if (manifest.requireCompleteReleaseTree === true
+    && (!sameArray(expectedDirectories, [...new Set(expectedDirectories)])
+      || !sameArray(expectedDirectories, migrationDirectories))) {
+    blockers.push("Reviewed predecessor and pending sets do not cover the complete release migration tree exactly.");
+  }
+  return {
+    manifestId: manifest.id,
+    expectedDirectories: sorted(expectedDirectories),
+    actualDirectories: sorted(migrationDirectories),
+    ready: blockers.length === 0,
+    blockers,
+  };
+}
+
 function isValidPreparedTransactionTimestamp(value) {
   const match = typeof value === "string"
     ? value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/)
@@ -419,14 +443,8 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
   const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
-  if (manifest.requireCompleteReleaseTree === true) {
-    const reviewedTree = [...(manifest.requiredAppliedMigrations ?? []).map(({ name }) => name), ...manifest.migrations.map(({ name }) => name)];
-    if (!sameArray(reviewedTree, [...new Set(reviewedTree)]) || !sameArray(reviewedTree, migrationDirectories)) {
-      blockers.push("Reviewed predecessor and pending sets do not cover the complete release migration tree exactly.");
-    }
-  }
+  blockers.push(...evaluateProductionMigrationTree(migrationDirectories, manifestId).blockers);
   const expectedPending = sorted(manifest.migrations.map(({ name }) => name));
-  if (!sameArray(migrationDirectories, [...new Set(migrationDirectories)])) blockers.push("Release tree contains duplicate migration directory names.");
   if (!sameArray(pending, expectedPending)) blockers.push(`Full release-tree pending set differs from manifest ${manifest.id}: ${sorted(pending).join(", ") || "none"}.`);
 
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
@@ -536,6 +554,7 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   const manifest = getProductionMigrationManifest(manifestId);
   const state = migrationState(report, migrationDirectories);
   const blockers = [...state.blockers];
+  blockers.push(...evaluateProductionMigrationTree(migrationDirectories, manifestId).blockers);
   appendRequiredAppliedMigrationBlockers(manifest, state.rowGroups, state.applied, blockers);
   if (state.pending.length) blockers.push(`Pending migrations remain after DDL: ${state.pending.join(", ")}.`);
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
@@ -668,14 +687,23 @@ async function main() {
     }
     return;
   }
-  if (mode === "--preflight" || mode === "--postflight") {
+  if (mode === "--verify-release-tree" || mode === "--preflight" || mode === "--postflight") {
     const value = (flag) => { const index = args.indexOf(flag); return index < 0 ? null : args[index + 1]; };
-    const reportPath = value("--report");
     const manifestId = value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id;
     const repositoryPath = value("--repository") ?? process.cwd();
-    const report = await readJsonInput(reportPath);
     const migrationDirectories = (await readdir(path.resolve(repositoryPath, "prisma/migrations"), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    if (mode === "--verify-release-tree") {
+      const result = evaluateProductionMigrationTree(migrationDirectories, manifestId);
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      if (!result.ready) {
+        process.stderr.write(`Release migration tree verification failed (blocker-count=${result.blockers.length}).\n`);
+        process.exitCode = 1;
+      }
+      return;
+    }
+    const reportPath = value("--report");
+    const report = await readJsonInput(reportPath);
     let result;
     if (mode === "--preflight") {
       result = evaluateProductionPreflight(report, migrationDirectories, manifestId);
@@ -714,7 +742,7 @@ async function main() {
     }
     return;
   }
-  throw new Error("Usage: production-migration-preflight.mjs --preflight|--postflight|--execution-integrity|--verify-restore|--verify-authorization ...");
+  throw new Error("Usage: production-migration-preflight.mjs --verify-release-tree|--preflight|--postflight|--execution-integrity|--verify-restore|--verify-authorization ...");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

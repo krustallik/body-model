@@ -773,7 +773,7 @@ function assertTrainingMutationOriginContract(repo, originSha) {
     reject("Training migration origin does not contain its reviewed Prisma migration tree");
   }
   if (JSON.stringify(directories) !== JSON.stringify(expectedDirectories)) {
-    reject("Training migration origin does not match the exact predecessor-plus-seven migration directory set");
+    reject("Training migration origin does not match the exact 65-predecessor-plus-nine migration directory set");
   }
   for (const migration of migrations) {
     let bytes;

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
-import { assertRecoveryPostflight, modelDayKeysDigest, publicationBlockDigest, validatePublicationSourceEvidence } from "../production-v4-derived-recovery.mjs";
+import { assertRecoveryPostflight, modelDayKeysDigest, publicationBlockDigest, recoveryEvidenceBinding,
+  validatePublicationSourceEvidence } from "../production-v4-derived-recovery.mjs";
 
 const databaseUrl = process.env.BODYCAST_V4_RECOVERY_TEST_DATABASE_URL;
 const image = process.env.BODYCAST_V4_RECOVERY_TEST_IMAGE;
@@ -448,6 +449,8 @@ try {
   await prisma.$executeRawUnsafe(`DELETE FROM public."HealthSyncSnapshot" WHERE date = '2025-01-10'`);
   await insertHealthDay("2025-01-10", 2, true);
   const recoveryPreflight = await validateCurrentEvidence(9);
+  const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: recoveryPreflight.sourceFingerprint,
+    blocks: recoveryPreflight.blocks, lifecycle: recoveryPreflight.lifecycle });
   const recoveryRawBefore = await legacyUnpagedRawFingerprint();
   if (recoveryPreflight.sourceFingerprint !== recoveryRawBefore) {
     throw new Error("Exact-image recovery fixture source fingerprint is not bound before execution.");
@@ -479,6 +482,7 @@ try {
   let recoveryOutput;
   try {
     recoveryOutput = execFileSync("docker", ["run", "--rm", "--network", "host", "--env", `DATABASE_URL=${databaseUrl}`,
+      "--env", `BODYCAST_V4_EXPECTED_EVIDENCE_BINDING=${JSON.stringify(expectedEntryBinding)}`,
       image, "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
       "--owner-authorized", "--profile-id", "1"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   } catch {

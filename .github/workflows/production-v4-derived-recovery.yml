@@ -120,6 +120,7 @@ jobs:
           git archive "$RECOVERY_SHA" | tar -x -C "$context"
           cp Dockerfile.v4-derived-recovery "$context/Dockerfile.v4-derived-recovery"
           cp scripts/production-v4-recovery-evidence.ts "$context/scripts/production-v4-recovery-evidence.ts"
+          cp scripts/production-v4-derived-recovery.mjs "$context/scripts/production-v4-derived-recovery.mjs"
           [[ "$(git rev-parse "$RECOVERY_SHA:prisma/migrations")" == 291b9c95924e196d66f9cdd555535b2e5a2b5990 ]]
           [[ "$(git rev-parse "$RECOVERY_SHA:prisma/schema.prisma")" == 4fa84cb62262986d5f0c58d3c76db2ba52b5500e ]]
           docker build --file "$context/Dockerfile.v4-derived-recovery" --tag bodycast-v4-recovery:"$RECOVERY_SHA" "$context"
@@ -246,11 +247,12 @@ jobs:
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE" > "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json"
           node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" <<'NODE'
           import { readFileSync } from "node:fs";
-          import { assertProductionIdentity, publicationBlockDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          import { assertProductionIdentity, publicationBlockDigest, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
           const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
           if (report.appSha !== "f910d2a45dfa676fada5fab42c9e8946c97872b1" || report.evidence?.database?.database !== "bodycast"
             || report.evidence?.migrationRows?.length !== 65 || report.evidence?.blocks?.length < 1
             || report.evidence.lifecycle?.unifiedRolloutEpoch !== 1) throw new Error("Live production identity or stale V4 source state is not approved.");
+          validatePublicationSourceEvidence({ blocks: report.evidence.blocks, sourceEvidence: report.evidence.sourceEvidence });
           const expected = { ledgerDigest: report.evidence.expectedLedgerDigest, schemaSha256: report.schemaSha256,
             sourceFingerprint: report.evidence.sourceFingerprint, blockDigest: publicationBlockDigest(report.evidence.blocks),
             database: { containerId: report.databaseContainerId, imageId: report.databaseImageId },
@@ -260,7 +262,7 @@ jobs:
             app: { name: "bodycast-app-prod", health: "healthy", releaseSha: report.appSha, ...expected.app },
             migrationRows: report.evidence.migrationRows, schemaSha256: report.schemaSha256,
             sourceFingerprint: report.evidence.sourceFingerprint, lifecycle: report.evidence.lifecycle,
-            blocks: report.evidence.blocks, sourceRowsValid: true, expected });
+            blocks: report.evidence.blocks, sourceEvidence: report.evidence.sourceEvidence, expected });
           NODE
           echo "capture_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Capture and encrypt production backup without stopping the app
@@ -330,6 +332,7 @@ jobs:
             || before.expectedLedgerDigest !== ledger
             || rows(before.migrationRows) !== rows(preflight.evidence.migrationRows)
             || publicationBlockDigest(before.blocks) !== publicationBlockDigest(preflight.evidence.blocks)
+            || JSON.stringify(before.sourceEvidence) !== JSON.stringify(preflight.evidence.sourceEvidence)
             || before.sourceFingerprint !== after.sourceFingerprint || after.blocks.length !== 0
             || after.lifecycle?.unifiedRolloutEpoch !== 1 || after.lifecycle?.unifiedPublishedRolloutEpoch !== 1
             || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
@@ -340,7 +343,8 @@ jobs:
             || result.command !== "unified-v4-derived-recovery" || result.rolloutEpoch !== 1
             || result.rawInputFingerprint !== before.sourceFingerprint) throw new Error("Isolated exact-image V4 recovery rehearsal did not pass raw parity/CURRENT.");
           if (preflight.evidence?.sourceFingerprint !== before.sourceFingerprint) throw new Error("Production sources changed while the backup snapshot was captured.");
-          const { assertRecoveryPostflight } = await import("./scripts/production-v4-derived-recovery.mjs");
+          const { assertRecoveryPostflight, validatePublicationSourceEvidence } = await import("./scripts/production-v4-derived-recovery.mjs");
+          validatePublicationSourceEvidence({ blocks: before.blocks, sourceEvidence: before.sourceEvidence });
           assertRecoveryPostflight({ beforeFingerprint: before.sourceFingerprint, afterFingerprint: after.sourceFingerprint,
             lifecycle: after.lifecycle, blocks: after.blocks.length, coveredDayCount: after.coveredDayCount,
             persistedDayCount: after.persistedDayCount, coveredDates: after.coveredDayDates,
@@ -439,11 +443,12 @@ jobs:
           [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ ]]
           node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" <<'NODE'
           import { readFileSync } from "node:fs";
-          import { assertOneShotRecoveryState, assertArtifactBinding, migrationLedgerDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          import { assertOneShotRecoveryState, assertArtifactBinding, migrationLedgerDigest, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
           const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const age = Math.floor((Date.now() - Date.parse(report.capturedAt)) / 1000);
           if (report.preflightRunId !== process.env.PREFLIGHT_RUN_ID || report.preflightSha !== process.env.PREFLIGHT_SHA
             || report.preflightSha !== process.env.EXPECTED_MAIN_SHA || report.sourceSha !== process.env.RECOVERY_SHA) throw new Error("Preflight artifact identity mismatch.");
+          validatePublicationSourceEvidence({ blocks: report.evidence?.blocks, sourceEvidence: report.evidence?.sourceEvidence });
           assertArtifactBinding({ ...JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`, "utf8")),
             ledgerRows: report.evidence.expectedMigrationRows.map((row) => ({ ...row, finishedAt: "verified-in-restored-ledger", rolledBackAt: null })) });
           if (migrationLedgerDigest(report.evidence.migrationRows) !== report.evidence.expectedLedgerDigest

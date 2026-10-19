@@ -39,9 +39,33 @@ describe("legacy derived V4 recovery release workflow", () => {
     const ledgerDigest = createHash("sha256").update(migrationRows.map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
     const blocks = Array.from({ length: 8 }, (_, index) => {
       const date = `2025-01-${String(index + 1).padStart(2, "0")}`;
-      return { source: "health", sourceKey: date, fromDate: date, revision: index + 1 };
+      return { source: "health", sourceKey: date, fromDate: date, revision: index + 1,
+        createdAt: "2025-01-03T00:00:00.000Z", updatedAt: "2025-01-03T00:00:00.000Z" };
     });
-    blocks.push({ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 });
+    blocks.push({ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9,
+      createdAt: "2025-01-03T00:00:00.000Z", updatedAt: "2025-01-03T00:00:00.000Z" });
+    const sourceEvidence = {
+      health: blocks.filter((block) => block.source === "health").map((block) => ({
+        sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
+        dailyDataRows: 1, snapshotRows: 1, linkedSnapshotRows: 1, invalidSnapshotRows: 0,
+        snapshotsWithReceivedAt: 1, snapshotsWithSyncedAt: 1, snapshotsWithNullSyncedAt: 0, invalidSnapshotTimes: 0,
+        snapshotsWithValidTimeZone: 1, invalidSnapshotTimeZones: 0,
+        dailyUpdatedAt: "2025-01-03T00:00:01.000Z",
+        metricSampleRows: 1,
+        linkedMetricSampleRows: 1, invalidMetricSampleRows: 0, unsupportedMetricSourceRows: 0, chronologyValid: true,
+      })),
+      training: { sourceKey: "20", fromDate: "2025-01-01", fenceRevision: 9, sessionRows: 1,
+        sessionId: 20, profileId: 1, status: "COMPLETED", sourceRevision: 1, accountingInputRevision: 1,
+        currentSnapshotRevision: 1, accountingSnapshotRows: 1, snapshotRevision: 1,
+        snapshotAccountingInputRevision: 1, snapshotEffectiveLocalDate: "2025-01-01",
+        effectiveAccountingAt: "2025-01-01T12:00:00.000Z", accountingEffectiveLocalDate: "2025-01-01",
+        accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
+        snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
+        snapshotTimeZoneProvenance: "legacy-default", matchedWorkoutId: 20, matchStatus: "MATCHED",
+        snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
+        matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
+        modelDate: "2025-01-01", chronologyValid: true },
+    };
     const lifecycle = {
       invalidationGeneration: 12, productionPublishedGeneration: 12, productionStaleFromDate: null,
       unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
@@ -50,13 +74,14 @@ describe("legacy derived V4 recovery release workflow", () => {
     };
     const days = ["2025-01-01", "2025-01-02"];
     const before = { database: { database: "bodycast_restore" }, migrationRows, expectedLedgerDigest: ledgerDigest,
-      blocks, sourceFingerprint: fingerprint, lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11, unifiedPublicationBlockedFromDate: "2025-01-01" } };
+      blocks, sourceEvidence, sourceFingerprint: fingerprint,
+      lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11, unifiedPublicationBlockedFromDate: "2025-01-01" } };
     const after = { ...before, blocks: [], lifecycle, persistedDayDates: days, coveredDayDates: days,
       persistedDayCount: days.length, coveredDayCount: days.length };
     const report = { sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c", evidence: {
       database: { database: "bodycast" }, migrationRows, expectedMigrationRows: migrationRows,
       expectedLedgerDigest: before.expectedLedgerDigest, blocks: before.blocks, sourceFingerprint: fingerprint,
-      lifecycle: before.lifecycle,
+      sourceEvidence, lifecycle: before.lifecycle,
     } };
     writeFileSync(join(artifactRoot, "restored-before.json"), JSON.stringify(before));
     writeFileSync(join(artifactRoot, "restored-after.json"), JSON.stringify(after));
@@ -76,7 +101,7 @@ describe("legacy derived V4 recovery release workflow", () => {
         sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
         evidence: { database: { database: "bodycast" }, sourceFingerprint: fingerprint,
           expectedLedgerDigest: ledgerDigest, migrationRows: expect.arrayContaining([expect.objectContaining({ name: migrationRows[0].name })]),
-          blocks: expect.arrayContaining([{ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 }]) } });
+          blocks: expect.arrayContaining([expect.objectContaining({ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 })]) } });
 
       const artifactManifest = {
         sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c", imageId: `sha256:${"d".repeat(64)}`,
@@ -137,7 +162,10 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(workflow).not.toContain("docker compose up");
     expect(workflow).not.toContain("production-traffic-cutover");
     expect(host).toContain("node /app/dist/production-v4-recovery-evidence.mjs");
+    expect(host).toContain("validatePublicationSourceEvidence");
+    expect(host).not.toContain("healthBlocks.length === 8");
     expect(image).toContain("/app/dist/production-full-history-recalculate.mjs");
+    expect(image).toContain("production-v4-derived-recovery.mjs");
     expect(image).toContain("--derived-v4-recovery");
     expect(host).not.toContain("migrate deploy");
     expect(host).not.toContain("docker compose");

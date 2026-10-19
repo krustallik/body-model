@@ -75,6 +75,14 @@ printf 'DATABASE_URL=%s\n' "$database_url" > "$database_env_file"
 trap 'rm -f -- "$evidence_file" "$database_env_file"' EXIT
 docker run --rm --network "$network" --env-file "$database_env_file" "$BODYCAST_IMAGE_ID" \
   node /app/dist/production-v4-recovery-evidence.mjs > "$evidence_file" || fail "read-only-db-evidence"
+validate_source_evidence() {
+  local validation_result
+  validation_result="$(docker run --rm --interactive --network "$network" "$BODYCAST_IMAGE_ID" \
+    node --input-type=module -e 'import { readFileSync } from "node:fs"; import { validatePublicationSourceEvidence } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); validatePublicationSourceEvidence({ blocks: report.blocks, sourceEvidence: report.sourceEvidence }); process.stdout.write("source-evidence-valid");' \
+    < "$evidence_file")" || fail "source-fence-provenance"
+  [[ "$validation_result" == "source-evidence-valid" ]] || fail "source-fence-provenance"
+}
+validate_source_evidence
 schema_digest="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' \
   | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')" || fail "schema-signature"
 [[ "$schema_digest" =~ ^[a-f0-9]{64}$ ]] || fail "schema-signature"
@@ -88,21 +96,6 @@ import { createHash } from "node:crypto";
 const evidence = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const ledgerDigest = createHash("sha256").update(evidence.expectedMigrationRows
   .map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
-const identities = new Set();
-const healthBlocks = evidence.blocks?.filter((block) => block.source === "health") ?? [];
-const trainingBlocks = evidence.blocks?.filter((block) => block.source === "training") ?? [];
-const fenceSetValid = healthBlocks.length === 8 && trainingBlocks.length === 1 && trainingBlocks[0].sourceKey === "20"
-  && evidence.blocks.every((block) => {
-    const identity = `${block.source}\0${block.sourceKey}`;
-    if (identities.has(identity) || !Number.isSafeInteger(block.revision) || block.revision < 1) return false;
-    identities.add(identity);
-    if (block.source === "health") {
-      const date = new Date(`${block.fromDate}T00:00:00.000Z`);
-      return block.sourceKey === block.fromDate && /^\d{4}-\d{2}-\d{2}$/.test(block.fromDate)
-        && Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === block.fromDate;
-    }
-    return block.source === "training" && /^[1-9][0-9]*$/.test(block.sourceKey);
-  });
 if (evidence.database?.database !== "bodycast" || !evidence.database.version.startsWith("17.")
     || evidence.migrationRows?.length !== 65 || evidence.expectedMigrationRows?.length !== 65
     || ledgerDigest !== "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7"
@@ -112,7 +105,8 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || evidence.database?.serverPort !== 5432
     || evidence.lifecycle?.unifiedPublishedGeneration === evidence.lifecycle?.invalidationGeneration
     || !/^[a-f0-9]{64}$/.test(evidence.sourceFingerprint)
-    || !fenceSetValid) {
+    || !Array.isArray(evidence.blocks) || evidence.blocks.length < 1
+    || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
   throw new Error("Live database is not the expected stale 65-migration V4 source state.");
 }
 const output = { sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
@@ -146,6 +140,7 @@ if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !=
     || expected.appImageId !== process.argv[8] || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
     || JSON.stringify(expected.evidence?.migrationRows) !== JSON.stringify(live.migrationRows)
     || JSON.stringify(expected.evidence?.blocks) !== JSON.stringify(live.blocks)
+    || JSON.stringify(expected.evidence?.sourceEvidence) !== JSON.stringify(live.sourceEvidence)
     || JSON.stringify(expected.evidence?.lifecycle) !== JSON.stringify(live.lifecycle)
     || expected.preflightSha !== process.argv[10] || expected.sourceSha !== process.argv[11]
     || expected.databaseContainerAddress !== process.argv[9]

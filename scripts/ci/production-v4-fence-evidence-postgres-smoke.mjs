@@ -16,8 +16,13 @@ if (parsedUrl.protocol !== "postgresql:" || parsedUrl.hostname !== "127.0.0.1"
 
 const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
 const healthDates = Array.from({ length: 9 }, (_, index) => `2025-01-${String(index + 1).padStart(2, "0")}`);
-const trainingEffectiveAt = "2025-01-09T12:00:00.000Z";
-const trainingLocalDate = "2025-01-09";
+// The event clock crosses an episode/timezone boundary and lands on Jan 11;
+// accounting remains bound to the distinct persisted Jan 10 local date.
+const trainingEffectiveAt = "2025-01-09T23:30:00.000Z";
+const trainingWorkoutStartAt = "2025-01-10T11:00:00.000Z";
+const trainingLocalDate = "2025-01-10";
+const trainingModelDate = "2025-01-11";
+const trainingEarlierFenceDate = "2025-01-10";
 const trainingTimeZone = "Europe/Bratislava";
 const trainingTimeZoneProvenance = "legacy-default";
 const trainingInputFingerprint = "a".repeat(64);
@@ -110,6 +115,27 @@ async function insertHealthDay(date, revision = 1, fenceAfterSource = false) {
   }
 }
 
+async function insertEpisode(startDate, timezone, active, deactivatedAt) {
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO public."ModelEpisode" (
+       "profileId", "startDate", timezone, "modelVersion", active, "deactivatedAt", "ecfPolicy",
+       "baselineEnergyIntakeKcalPerDay", "baselineCarbIntakeG", "baselineWindowStartDate", "baselineWindowEndDate",
+       "baselineNutritionDayCount", "baselineWeightObservationCount", "baselineWeightTrendKgPerWeek",
+       "baselineWeightTrendPercentPerWeek", "baselineDerivationMethod", "initialFatMassKg", "initialLeanTissueKg",
+       "initialGlycogenKg", "baselineExtracellularFluidLiters", "initialExtracellularFluidDeviationLiters",
+       "initialAdaptiveThermogenesisKcalPerDay", "initialFilteredWeightKg", "initialWeightFilterVarianceKg2",
+       "initialRmrKcalPerDay", "dynamicRmrFatCoefficient", "dynamicRmrLeanCoefficient",
+       "dynamicRmrCalibrationOffsetKcalPerDay", "adaptiveThermogenesisBeta", "adaptiveThermogenesisTimeConstantDays",
+       "weightProcessNoiseVarianceKg2PerDay", "weightMeasurementNoiseVarianceKg2", "calibrationDiagnostics",
+       "createdAt", "updatedAt")
+     VALUES (1, $1, $2, 'bodycast-physiology-v7', $3, $4, 'hold-ecf',
+       2400, 220, $1, $1, 1, 1, 0, 0, 'v4-recovery-date-parity-fixture',
+       16, 55, 0.5, 18, 0, 0, 80, 1, 1700, 3.2, 22, 0, 0.14, 14, 0.01, 0.25, '{}'::jsonb,
+       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    startDate, timezone, active, deactivatedAt,
+  );
+}
+
 async function readEvidence() {
   let output;
   try {
@@ -157,14 +183,16 @@ try {
        'unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once', 1, NULL,
        '2025-01-01', 'health', 'fixture', 'fixture', 'fixture', 'fixture', 'fixture', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
   );
+  await insertEpisode("2025-01-01", "UTC", false, new Date("2025-01-10T00:00:00.000Z"));
+  await insertEpisode("2025-01-10", "Pacific/Kiritimati", true, null);
   for (const date of healthDates) await insertHealthDay(date);
 
   const [trainingDay] = await prisma.$queryRawUnsafe(`SELECT id FROM public."DailyHealthData" WHERE date = $1`, "2025-01-09");
   await prisma.$executeRawUnsafe(
     `INSERT INTO public."Workout" (id, "dailyHealthDataId", "sourceIdentity", type, "startAt", "endAt", "createdAt", "updatedAt")
      VALUES (79, $1, 'fixture:training-session-20', 'Traditional Strength Training',
-       TIMESTAMP WITH TIME ZONE '2025-01-09 12:00:00+00', TIMESTAMP WITH TIME ZONE '2025-01-09 13:00:00+00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-    trainingDay.id,
+       $2::timestamptz, $2::timestamptz + INTERVAL '1 hour', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    trainingDay.id, trainingWorkoutStartAt,
   );
   await prisma.$executeRawUnsafe(
     `INSERT INTO public."TrainingProgram" (id, "profileId", name, "createdAt", "updatedAt")
@@ -177,7 +205,8 @@ try {
   await prisma.$executeRawUnsafe(
     `INSERT INTO public."StrengthDiarySession" (id, "profileId", "programId", "programVersionId", status, revision, "accountingInputRevision",
        "effectiveAccountingAt", "currentSnapshotRevision", "matchedWorkoutId", "matchStatus", "createdAt", "updatedAt")
-     VALUES (20, 1, 1, 1, 'COMPLETED', 24, 22, TIMESTAMP WITH TIME ZONE '2025-01-09 12:00:00+00', NULL, 79, 'MATCHED', CURRENT_TIMESTAMP - INTERVAL '2 seconds', CURRENT_TIMESTAMP - INTERVAL '1 second')`,
+     VALUES (20, 1, 1, 1, 'COMPLETED', 24, 22, $1::timestamptz, NULL, 79, 'MATCHED', CURRENT_TIMESTAMP - INTERVAL '2 seconds', CURRENT_TIMESTAMP - INTERVAL '1 second')`,
+    trainingEffectiveAt,
   );
   await prisma.$executeRawUnsafe(
     `INSERT INTO public."StrengthSessionAccountingSnapshot" ("sessionId", "snapshotRevision", "accountingInputRevision",
@@ -196,13 +225,57 @@ try {
   await prisma.$executeRawUnsafe(`UPDATE public."StrengthDiarySession" SET "currentSnapshotRevision" = 79 WHERE id = 20`);
   await prisma.$executeRawUnsafe(
     `INSERT INTO public."UnifiedPublicationBlock" ("profileId", source, "sourceKey", "fromDate", revision, "createdAt", "updatedAt")
-     VALUES (1, 'training', '20', '2025-01-09', 5, CURRENT_TIMESTAMP - INTERVAL '5 seconds', CURRENT_TIMESTAMP)`,
+     VALUES (1, 'training', '20', $1, 5, CURRENT_TIMESTAMP - INTERVAL '5 seconds', CURRENT_TIMESTAMP)`,
+    trainingModelDate,
   );
 
   const nineDayEvidence = await validateCurrentEvidence(9);
-  if (nineDayEvidence.sourceEvidence.training?.snapshotRevision !== 79) {
-    throw new Error("Training source evidence did not bind session 20 to its current accounting snapshot.");
+  const trainingEvidence = nineDayEvidence.sourceEvidence.training;
+  if (trainingEvidence?.snapshotRevision !== 79 || trainingEvidence.modelDate !== trainingModelDate
+    || trainingEvidence.fromDate !== trainingModelDate || trainingEvidence.trainingEventAt !== trainingWorkoutStartAt
+    || trainingEvidence.effectiveAccountingAt !== trainingEffectiveAt
+    || trainingEvidence.accountingEffectiveLocalDate !== trainingLocalDate
+    || trainingEvidence.snapshotEffectiveLocalDate !== trainingLocalDate) {
+    throw new Error("Training fence event date and independent accounting snapshot dates were not bound separately.");
   }
+
+  // Repeated blockUnifiedPublication invalidation retains min(existing, new).
+  await prisma.$executeRawUnsafe(
+    `UPDATE public."UnifiedPublicationBlock" SET "fromDate" = $1 WHERE source = 'training' AND "sourceKey" = '20'`,
+    trainingEarlierFenceDate,
+  );
+  await validateCurrentEvidence(9);
+  await prisma.$executeRawUnsafe(
+    `UPDATE public."UnifiedPublicationBlock" SET "fromDate" = '2025-01-12' WHERE source = 'training' AND "sourceKey" = '20'`,
+  );
+  let rejectedFutureTrainingFence = false;
+  try {
+    await validateCurrentEvidence(9);
+  } catch {
+    rejectedFutureTrainingFence = true;
+  }
+  if (!rejectedFutureTrainingFence) throw new Error("A Training fence after the legacy writer event model date was accepted.");
+  await prisma.$executeRawUnsafe(
+    `UPDATE public."UnifiedPublicationBlock" SET "fromDate" = $1 WHERE source = 'training' AND "sourceKey" = '20'`,
+    trainingModelDate,
+  );
+
+  // The accounting snapshot date must still be checked against effective time.
+  await prisma.$executeRawUnsafe(
+    `UPDATE public."StrengthSessionAccountingSnapshot" SET "effectiveLocalDate" = $1 WHERE "sessionId" = 20 AND "snapshotRevision" = 79`,
+    trainingModelDate,
+  );
+  let rejectedSnapshotOnEventDate = false;
+  try {
+    await validateCurrentEvidence(9);
+  } catch {
+    rejectedSnapshotOnEventDate = true;
+  }
+  if (!rejectedSnapshotOnEventDate) throw new Error("Training accounting snapshot validation followed the event date instead of accounting time.");
+  await prisma.$executeRawUnsafe(
+    `UPDATE public."StrengthSessionAccountingSnapshot" SET "effectiveLocalDate" = $1 WHERE "sessionId" = 20 AND "snapshotRevision" = 79`,
+    trainingLocalDate,
+  );
 
   await prisma.$executeRawUnsafe(
     `DELETE FROM public."UnifiedPublicationBlock" WHERE "profileId"=1 AND source='health' AND "sourceKey"='2025-01-09'`,
@@ -231,7 +304,7 @@ try {
   }
   if (!rejectedMissingSource) throw new Error("A Health fence without its persisted source row was accepted.");
 
-  process.stdout.write("PASS: exact 65-migration legacy evidence accepted 8, 9 and an additional Health date with both source/fence write orders; accepted nullable legacy Training accounting fields; rejected missing Health sources and unsupported snapshot timezones.\n");
+  process.stdout.write("PASS: exact 65-migration legacy evidence accepted dynamic Health fences and nullable legacy Training accounting fields; validated the Training event date across a timezone/episode boundary independently from its accounting snapshot; retained an earlier repeated-invalidation fence date; rejected future fence dates, accounting-date mismatch, missing Health sources and unsupported snapshot timezones.\n");
 } finally {
   await prisma.$disconnect();
 }

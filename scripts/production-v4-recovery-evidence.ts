@@ -171,14 +171,22 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
     where: { profileId: 1 }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true },
   }) : [];
+  // Keep the publication fence event clock aligned with the legacy writer:
+  // matched workout start first, then persisted accounting/event fallbacks.
+  // Accounting snapshots intentionally retain their separate effective-time
+  // contract below.
+  const trainingEventAt = session?.matchedWorkout?.startAt ?? session?.effectiveAccountingAt
+    ?? session?.webStartedAt ?? session?.createdAt ?? null;
+  // Accounting snapshots retain the persisted accounting-time contract. Do
+  // not change this fallback order to match the independent fence event clock.
   const effectiveAccountingAt = session?.effectiveAccountingAt ?? session?.matchedWorkout?.startAt
     ?? session?.webStartedAt ?? session?.createdAt ?? null;
   const accountingTimeZone = session?.accountingTimeZone ?? DEFAULT_TIME_ZONE;
   const accountingTimeZoneProvenance = session?.accountingTimeZoneProvenance ?? "legacy-default";
   const accountingEffectiveLocalDate = effectiveAccountingAt && isValidTimeZone(accountingTimeZone)
     ? instantToLocalDateTime(effectiveAccountingAt, accountingTimeZone).date : null;
-  const modelDate = effectiveAccountingAt
-    ? episodeTimeContextForInstantV1(episodes, effectiveAccountingAt).date : null;
+  const modelDate = trainingEventAt
+    ? episodeTimeContextForInstantV1(episodes, trainingEventAt).date : null;
   const snapshot = accountingSnapshot.length === 1 ? accountingSnapshot[0] : null;
   let snapshotTimeZoneValid = false;
   if (snapshot?.timeZone) {
@@ -243,6 +251,8 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
     sourceRevision: session?.revision ?? null,
     accountingInputRevision: session?.accountingInputRevision ?? null,
     currentSnapshotRevision: session?.currentSnapshotRevision ?? null,
+    trainingEventAt: trainingEventAt?.toISOString() ?? null,
+    matchedWorkoutStartAt: session?.matchedWorkout?.startAt?.toISOString() ?? null,
     effectiveAccountingAt: effectiveAccountingAt?.toISOString() ?? null,
     accountingTimeZone,
     accountingTimeZoneProvenance,

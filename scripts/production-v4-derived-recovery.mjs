@@ -204,8 +204,13 @@ export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
     || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
     || training.matchStatus !== "MATCHED" || !Number.isSafeInteger(training.matchedWorkoutId) || training.matchedWorkoutId < 1
     || training.matchedWorkoutPresent !== true || training.matchedWorkoutIdentityMatches !== true
-    || training.modelDate !== trainingBlock.fromDate
-    || !isCalendarDate(training.modelDate) || training.chronologyValid !== true) {
+    || !isTimestamp(training.matchedWorkoutStartAt) || !isTimestamp(training.trainingEventAt)
+    || training.trainingEventAt !== training.matchedWorkoutStartAt
+    // blockUnifiedPublication retains min(existing.fromDate, new fromDate),
+    // so a valid fence may be earlier than today's event model date. It must
+    // never start after the current writer date, which would omit dependencies.
+    || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
+    || training.chronologyValid !== true) {
     fail("Training session 20 is missing its current persisted source, accounting snapshot, model date, or revision chronology.");
   }
   return true;

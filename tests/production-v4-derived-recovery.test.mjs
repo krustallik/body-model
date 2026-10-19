@@ -50,7 +50,8 @@ const makeTrainingSource = (block, overrides = {}) => ({
   accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
   snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
   snapshotTimeZoneProvenance: "legacy-default", snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
-  matchedWorkoutId: 79, matchStatus: "MATCHED", matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true, modelDate: block.fromDate,
+  matchedWorkoutId: 79, matchStatus: "MATCHED", matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
+  matchedWorkoutStartAt: "2026-10-09T12:00:00.000Z", trainingEventAt: "2026-10-09T12:00:00.000Z", modelDate: block.fromDate,
   chronologyValid: true, ...overrides,
 });
 const makeSourceEvidence = (value = blocks) => ({
@@ -223,6 +224,45 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       snapshotTimeZoneProvenance: "user-selected",
     } };
     expect(() => validatePublicationSourceEvidence({ blocks, sourceEvidence: unsupportedProvenance })).toThrow(/Training session 20/);
+  });
+
+  it("uses the matched workout event date for its fence while validating accounting by its own timestamp", () => {
+    const eventModelDate = "2026-10-10";
+    const accountingDate = "2026-10-09";
+    const trainingEventAt = "2026-10-10T00:30:00.000Z";
+    const effectiveAccountingAt = "2026-10-09T20:30:00.000Z";
+    const withFenceDate = (fromDate) => {
+      const datedBlocks = blocks.map((block) => block.source === "training" ? { ...block, fromDate } : block);
+      const sourceEvidence = makeSourceEvidence(datedBlocks);
+      sourceEvidence.training = {
+        ...sourceEvidence.training,
+        fromDate,
+        matchedWorkoutStartAt: trainingEventAt,
+        trainingEventAt,
+        modelDate: eventModelDate,
+        effectiveAccountingAt,
+        accountingEffectiveLocalDate: accountingDate,
+        snapshotEffectiveLocalDate: accountingDate,
+      };
+      return { blocks: datedBlocks, sourceEvidence };
+    };
+
+    // The fence date follows the legacy writer's matchedWorkout.startAt date;
+    // its accounting snapshot remains bound to effectiveAccountingAt.
+    const exactEventDate = withFenceDate(eventModelDate);
+    expect(exactEventDate.sourceEvidence.training.snapshotEffectiveLocalDate)
+      .not.toBe(exactEventDate.sourceEvidence.training.modelDate);
+    expect(validatePublicationSourceEvidence(exactEventDate)).toBe(true);
+
+    // Repeated invalidation preserves an earlier persisted fromDate via min().
+    expect(validatePublicationSourceEvidence(withFenceDate(accountingDate))).toBe(true);
+
+    // A fence after the event date cannot be produced by the legacy writer.
+    expect(() => validatePublicationSourceEvidence(withFenceDate("2026-10-11")))
+      .toThrow(/Training session 20/);
+    const wrongEventTimestamp = exactEventDate.sourceEvidence;
+    wrongEventTimestamp.training.trainingEventAt = effectiveAccountingAt;
+    expect(() => validatePublicationSourceEvidence(exactEventDate)).toThrow(/Training session 20/);
   });
 
   it("rejects changed raw rows, reset epoch, stale generations, leftover blocks and incomplete coverage", () => {

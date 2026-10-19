@@ -64,6 +64,7 @@ describe("legacy derived V4 recovery release workflow", () => {
         snapshotTimeZoneProvenance: "legacy-default", matchedWorkoutId: 20, matchStatus: "MATCHED",
         snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
         matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
+        matchedWorkoutStartAt: "2025-01-01T12:00:00.000Z", trainingEventAt: "2025-01-01T12:00:00.000Z",
         modelDate: "2025-01-01", chronologyValid: true },
     };
     const lifecycle = {

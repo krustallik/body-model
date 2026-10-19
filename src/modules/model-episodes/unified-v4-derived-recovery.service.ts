@@ -81,6 +81,64 @@ export function createV4RecoveryEvidenceBindingV1(input: {
   };
 }
 
+const V4_RECOVERY_RAW_INVENTORY_PAGE_SIZE = 250;
+const V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES = 8 * 1024 * 1024;
+const V4_RECOVERY_RAW_INVENTORY_CHUNK_CHARACTERS = 1024 * 1024;
+// A single JSONB row is rendered once for bounded chunk transfer. Refuse an
+// unexpectedly huge payload rather than allowing unbounded DB temp usage or
+// an unbounded Prisma/N-API result allocation during the one-shot rehearsal.
+const V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES = 64 * 1024 * 1024;
+
+type V4RecoveryRawRowMetadata = {
+  id: number;
+  raw_row_bytes: bigint | number | string;
+};
+
+function safeNonNegativeInteger(value: bigint | number | string, label: string): number {
+  const parsed = typeof value === "bigint" ? Number(value)
+    : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`V4 strict source fingerprint returned an invalid ${label}`);
+  }
+  return parsed;
+}
+
+function unicodeCodePointLength(value: string): number {
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff
+        && index + 1 < value.length
+        && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      index += 1;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function updateV4RecoveryRawRowDigest(
+  tableDigest: ReturnType<typeof createHash>,
+  row: { id: number; raw_row: string },
+  expectedBytes: number,
+  table: string,
+): void {
+  if (!Number.isSafeInteger(row.id) || typeof row.raw_row !== "string"
+      || Buffer.byteLength(row.raw_row, "utf8") !== expectedBytes) {
+    throw new Error(`V4 strict source fingerprint returned an invalid ${table} row`);
+  }
+  tableDigest.update(`${row.id}:${expectedBytes}:${row.raw_row}\n`);
+}
+
+async function runV4RecoveryInventoryQueryV1<T>(table: string, stage: string, query: () => Promise<T>): Promise<T> {
+  try {
+    return await query();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "unknown database error";
+    throw new Error(`V4 strict source fingerprint query failed for ${table} (${stage}): ${detail}`, { cause: error });
+  }
+}
+
 async function readConsistentRecoveryEvidenceV1(client: PrismaClient, profileId: number) {
   return client.$transaction(async (tx) => {
     const lifecycle = await tx.physiologyV7Lifecycle.findUnique({ where: { profileId } });
@@ -90,7 +148,7 @@ async function readConsistentRecoveryEvidenceV1(client: PrismaClient, profileId:
       orderBy: [{ source: "asc" }, { sourceKey: "asc" }],
       select: { source: true, sourceKey: true, fromDate: true, revision: true },
     });
-    const raw = await inventoryV4RecoveryRawSourcesV1(tx as unknown as PrismaClient);
+    const raw = await inventoryV4RecoveryRawSourcesInSnapshotV1(tx as unknown as PrismaClient);
     return { lifecycle, blocks, raw };
   }, { isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000 });
 }
@@ -147,6 +205,16 @@ export async function inventoryV4RecoveryRawSourcesV1(client: PrismaClient): Pro
   fingerprint: string;
   tables: Record<string, string>;
 }> {
+  return client.$transaction(
+    (tx) => inventoryV4RecoveryRawSourcesInSnapshotV1(tx as unknown as PrismaClient),
+    { isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000 },
+  );
+}
+
+async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): Promise<{
+  fingerprint: string;
+  tables: Record<string, string>;
+}> {
   const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
   const tables: Record<string, string> = {};
   const immutableTables = [
@@ -159,17 +227,140 @@ export async function inventoryV4RecoveryRawSourcesV1(client: PrismaClient): Pro
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
       : "to_jsonb(source_row)";
-    const rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
-      `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
-       FROM public."${table}" AS source_row
-       ORDER BY source_row.id`,
-    );
-    const tableDigest = createHash("sha256").update(`${table}\0${rows.length}\0`);
-    for (const row of rows) {
-      if (!Number.isSafeInteger(row.id) || typeof row.raw_row !== "string") {
-        throw new Error(`V4 strict source fingerprint returned invalid ${table} row`);
+    const [countRow] = await runV4RecoveryInventoryQueryV1(table, "row-count", () =>
+      client.$queryRawUnsafe<Array<{ row_count: bigint | number | string }>>(
+        `SELECT COUNT(*)::bigint AS row_count FROM public."${table}" AS source_row`,
+      ));
+    if (!countRow) throw new Error(`V4 strict source fingerprint could not count ${table} rows`);
+    const expectedRowCount = safeNonNegativeInteger(countRow.row_count, `${table} row count`);
+    const tableDigest = createHash("sha256").update(`${table}\0${expectedRowCount}\0`);
+    let scannedRowCount = 0;
+    let afterId = -2_147_483_649;
+    let pendingRows: V4RecoveryRawRowMetadata[] = [];
+
+    while (true) {
+      if (pendingRows.length === 0) {
+        pendingRows = await runV4RecoveryInventoryQueryV1(table, `metadata-page-after-${afterId}`, () =>
+          client.$queryRawUnsafe<V4RecoveryRawRowMetadata[]>(
+            `SELECT source_row.id,
+               octet_length((${rawRowExpression})::text)::bigint AS raw_row_bytes
+             FROM public."${table}" AS source_row
+             WHERE source_row.id > $1::bigint
+             ORDER BY source_row.id
+             LIMIT $2::integer`,
+            afterId,
+            V4_RECOVERY_RAW_INVENTORY_PAGE_SIZE,
+          ));
+        if (pendingRows.length > V4_RECOVERY_RAW_INVENTORY_PAGE_SIZE) {
+          throw new Error(`V4 strict source fingerprint returned an oversized ${table} metadata page`);
+        }
+        if (pendingRows.length === 0) break;
       }
-      tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+
+      const first = pendingRows[0]!;
+      if (!Number.isSafeInteger(first.id) || first.id <= afterId) {
+        throw new Error(`V4 strict source fingerprint returned invalid ${table} row ordering`);
+      }
+      const firstBytes = safeNonNegativeInteger(first.raw_row_bytes, `${table} row byte length`);
+      if (firstBytes > V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES) {
+        throw new Error(`V4 strict source fingerprint found an oversized ${table} row id=${first.id} bytes=${firstBytes}`);
+      }
+
+      if (firstBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES) {
+        const chunksDigestPrefix = `${first.id}:${firstBytes}:`;
+        tableDigest.update(chunksDigestPrefix);
+        let observedBytes = 0;
+        const chunks = await runV4RecoveryInventoryQueryV1(table, `row-${first.id}-bounded-chunks`, () =>
+          client.$queryRawUnsafe<Array<{ chunk_index: number; raw_row_chunk: string }>>(
+            `WITH rendered_row AS MATERIALIZED (
+               SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+               FROM public."${table}" AS source_row
+               WHERE source_row.id = $1::integer
+             )
+             SELECT chunks.chunk_index::integer AS chunk_index,
+               substring(rendered_row.raw_row
+                 FROM (chunks.chunk_index * $2::integer + 1)::integer FOR $2::integer) AS raw_row_chunk
+             FROM rendered_row
+             CROSS JOIN LATERAL generate_series(
+               0,
+               (char_length(rendered_row.raw_row) - 1) / $2::integer
+             ) AS chunks(chunk_index)
+             ORDER BY chunks.chunk_index`,
+            first.id,
+            V4_RECOVERY_RAW_INVENTORY_CHUNK_CHARACTERS,
+          ));
+        if (chunks.length === 0 || chunks.length > Math.ceil(V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES
+          / V4_RECOVERY_RAW_INVENTORY_CHUNK_CHARACTERS)) {
+          throw new Error(`V4 strict source fingerprint returned invalid ${table} chunk count`);
+        }
+        for (let index = 0; index < chunks.length; index += 1) {
+          const chunk = chunks[index]!;
+          const chunkCharacters = typeof chunk.raw_row_chunk === "string"
+            ? unicodeCodePointLength(chunk.raw_row_chunk)
+            : 0;
+          if (chunk.chunk_index !== index || typeof chunk.raw_row_chunk !== "string"
+              || chunkCharacters === 0
+              || chunkCharacters > V4_RECOVERY_RAW_INVENTORY_CHUNK_CHARACTERS
+              || (index < chunks.length - 1 && chunkCharacters !== V4_RECOVERY_RAW_INVENTORY_CHUNK_CHARACTERS)) {
+            throw new Error(`V4 strict source fingerprint returned invalid ${table} row chunk ordering`);
+          }
+          observedBytes += Buffer.byteLength(chunk.raw_row_chunk, "utf8");
+          tableDigest.update(chunk.raw_row_chunk);
+        }
+        if (observedBytes !== firstBytes) {
+          throw new Error(`V4 strict source fingerprint found a changed ${table} row length`);
+        }
+        tableDigest.update("\n");
+        pendingRows.shift();
+        afterId = first.id;
+        scannedRowCount += 1;
+        continue;
+      }
+
+      const batch: V4RecoveryRawRowMetadata[] = [];
+      let batchBytes = 0;
+      for (const candidate of pendingRows) {
+        const candidateBytes = safeNonNegativeInteger(candidate.raw_row_bytes, `${table} row byte length`);
+        if (candidateBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES
+            || batchBytes + candidateBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES) break;
+        batch.push(candidate);
+        batchBytes += candidateBytes;
+      }
+      if (batch.length === 0) throw new Error(`V4 strict source fingerprint could not form a bounded ${table} batch`);
+
+      const batchThroughId = batch.at(-1)!.id;
+      const rows = await runV4RecoveryInventoryQueryV1(table, `data-batch-through-${batchThroughId}`, () =>
+        client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
+          `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+           FROM public."${table}" AS source_row
+           WHERE source_row.id > $1::bigint AND source_row.id <= $2::bigint
+           ORDER BY source_row.id`,
+          afterId,
+          batchThroughId,
+        ));
+      if (rows.length !== batch.length) {
+        throw new Error(`V4 strict source fingerprint found a changed ${table} batch`);
+      }
+      for (let index = 0; index < batch.length; index += 1) {
+        const metadata = batch[index]!;
+        const row = rows[index]!;
+        if (row.id !== metadata.id || row.id <= afterId) {
+          throw new Error(`V4 strict source fingerprint returned invalid ${table} row ordering`);
+        }
+        updateV4RecoveryRawRowDigest(
+          tableDigest,
+          row,
+          safeNonNegativeInteger(metadata.raw_row_bytes, `${table} row byte length`),
+          table,
+        );
+        afterId = row.id;
+        scannedRowCount += 1;
+      }
+      pendingRows.splice(0, batch.length);
+    }
+
+    if (scannedRowCount !== expectedRowCount) {
+      throw new Error(`V4 strict source fingerprint row count changed for ${table}`);
     }
     tables[table] = tableDigest.digest("hex");
     digest.update(`${table}\0${tables[table]}\0`);

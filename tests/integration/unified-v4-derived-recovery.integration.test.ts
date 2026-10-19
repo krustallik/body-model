@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
@@ -17,6 +18,24 @@ const trainingDates = ["2026-10-19", "2026-10-23", "2026-10-25"] as const;
 const healthDates = Array.from({ length: 9 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
 const localHypertrophyWeekStarts = ["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19"];
 const recoveryDerivedDates = Array.from({ length: 25 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
+const pagedInventoryFixtureDate = "2099-12-30";
+const pagedInventoryFixtureMarker = "v4-recovery-bounded-inventory";
+const referenceChunkCharacters = 1024 * 1024;
+const referenceMaxRowBytes = 64 * 1024 * 1024;
+
+function referenceCodePointLength(value: string): number {
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff
+        && index + 1 < value.length
+        && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      index += 1;
+    }
+    count += 1;
+  }
+  return count;
+}
 const episodeFixture = {
   profileId,
   startDate: fromDate,
@@ -67,6 +86,94 @@ async function captureRecoveryBinding() {
   return createV4RecoveryEvidenceBindingV1({ rawFingerprint: raw.fingerprint, blocks, lifecycle });
 }
 
+async function referenceHealthSnapshotDigestV2(): Promise<string> {
+  return prisma.$transaction(async (tx) => {
+    const [countRow] = await tx.$queryRawUnsafe<Array<{ row_count: bigint }>>(
+      'SELECT COUNT(*)::bigint AS row_count FROM public."HealthSyncSnapshot"',
+    );
+    if (!countRow) throw new Error("Could not count HealthSyncSnapshot rows for the independent fingerprint reference.");
+    const rowCount = Number(countRow.row_count);
+    if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new Error("HealthSyncSnapshot reference row count is invalid.");
+    const digest = createHash("sha256").update(`HealthSyncSnapshot\0${rowCount}\0`);
+    let afterId = -2_147_483_649;
+    let scanned = 0;
+
+    while (true) {
+      const metadata = await tx.$queryRawUnsafe<Array<{
+        id: number;
+        raw_row_bytes: bigint;
+        raw_row_characters: bigint;
+      }>>(
+        `SELECT source_row.id,
+           octet_length(to_jsonb(source_row)::text)::bigint AS raw_row_bytes,
+           char_length(to_jsonb(source_row)::text)::bigint AS raw_row_characters
+         FROM public."HealthSyncSnapshot" AS source_row
+         WHERE source_row.id > $1::bigint
+         ORDER BY source_row.id
+         LIMIT 250`,
+        afterId,
+      );
+      if (metadata.length === 0) break;
+
+      for (const row of metadata) {
+        const bytes = Number(row.raw_row_bytes);
+        const characters = Number(row.raw_row_characters);
+        if (!Number.isSafeInteger(row.id) || row.id <= afterId || !Number.isSafeInteger(bytes) || bytes < 0
+            || !Number.isSafeInteger(characters) || characters < 1 || bytes > referenceMaxRowBytes) {
+          throw new Error("HealthSyncSnapshot reference metadata is invalid or exceeds its bounded row limit.");
+        }
+        digest.update(`${row.id}:${bytes}:`);
+        if (bytes <= 8 * 1024 * 1024) {
+          const [data] = await tx.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
+            `SELECT source_row.id, to_jsonb(source_row)::text AS raw_row
+             FROM public."HealthSyncSnapshot" AS source_row
+             WHERE source_row.id = $1::integer`,
+            row.id,
+          );
+          if (!data || data.id !== row.id || Buffer.byteLength(data.raw_row, "utf8") !== bytes) {
+            throw new Error("HealthSyncSnapshot reference row changed during its snapshot scan.");
+          }
+          digest.update(data.raw_row);
+        } else {
+          let chunkBytes = 0;
+          let chunkCount = 0;
+          for (let offset = 0; offset < characters; offset += referenceChunkCharacters) {
+            const [chunk] = await tx.$queryRawUnsafe<Array<{ raw_row_chunk: string }>>(
+              `SELECT substring(to_jsonb(source_row)::text
+                 FROM $2::integer FOR $3::integer) AS raw_row_chunk
+               FROM public."HealthSyncSnapshot" AS source_row
+               WHERE source_row.id = $1::integer`,
+              row.id,
+              offset + 1,
+              referenceChunkCharacters,
+            );
+            if (!chunk || typeof chunk.raw_row_chunk !== "string" || chunk.raw_row_chunk.length === 0) {
+              throw new Error("HealthSyncSnapshot reference row chunk was missing.");
+            }
+            const chunkCharacters = referenceCodePointLength(chunk.raw_row_chunk);
+            if (chunkCharacters > referenceChunkCharacters
+                || (offset + chunkCharacters < characters && chunkCharacters !== referenceChunkCharacters)) {
+              throw new Error("HealthSyncSnapshot reference row chunks were malformed.");
+            }
+            chunkCount += 1;
+            if (chunkCount > Math.ceil(referenceMaxRowBytes / referenceChunkCharacters)) {
+              throw new Error("HealthSyncSnapshot reference row exceeded its bounded chunk count.");
+            }
+            chunkBytes += Buffer.byteLength(chunk.raw_row_chunk, "utf8");
+            digest.update(chunk.raw_row_chunk);
+          }
+          if (chunkBytes !== bytes) throw new Error("HealthSyncSnapshot reference row chunks changed byte length.");
+        }
+        digest.update("\n");
+        afterId = row.id;
+        scanned += 1;
+      }
+    }
+    if (scanned !== rowCount) throw new Error("HealthSyncSnapshot reference row count changed during its snapshot scan.");
+    return digest.digest("hex");
+  }, { isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000 });
+}
+
 async function recoverWithCurrentEvidence(expectedEvidenceBinding?: Awaited<ReturnType<typeof captureRecoveryBinding>>) {
   const { recoverUnifiedV4FromPersistedSourcesV1 } =
     await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
@@ -91,6 +198,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
   let trainingFailureTriggerCreated = false;
   let serializationFunctionCreated = false;
   let serializationTriggerCreated = false;
+  let pagedInventoryFixtureReserved = false;
   const dailyHealthDataIds: number[] = [];
 
   beforeAll(async () => {
@@ -315,6 +423,9 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
 
   afterAll(async () => {
     try {
+      if (pagedInventoryFixtureReserved) {
+        await prisma.healthSyncSnapshot.deleteMany({ where: { date: pagedInventoryFixtureDate } });
+      }
       if (fixtureNamespaceReserved && profileCreated) {
         if (serializationTriggerCreated) await prisma.$executeRawUnsafe('DROP TRIGGER "fixture_training_block_serialization_failure" ON public."UnifiedPublicationBlock"');
         if (serializationFunctionCreated) await prisma.$executeRawUnsafe('DROP FUNCTION public.fixture_training_block_serialization_failure()');
@@ -355,6 +466,51 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       }
     }
   });
+
+  it("fingerprints a multi-page and oversized Health snapshot set byte-for-byte without modifying it", async () => {
+    const existingFixtureRows = await prisma.healthSyncSnapshot.count({ where: { date: pagedInventoryFixtureDate } });
+    if (existingFixtureRows !== 0) {
+      throw new Error("V4 recovery bounded-inventory fixture date is already occupied in the isolated database.");
+    }
+    pagedInventoryFixtureReserved = true;
+    const ordinaryPayload = "p".repeat(32 * 1024);
+    const snapshotData = Array.from({ length: 257 }, (_, index) => ({
+      date: pagedInventoryFixtureDate,
+      timezone: "UTC",
+      rawPayload: { fixture: pagedInventoryFixtureMarker, index, payload: ordinaryPayload },
+    }));
+    snapshotData.push({
+      date: pagedInventoryFixtureDate,
+      timezone: "UTC",
+      rawPayload: { fixture: pagedInventoryFixtureMarker, index: 257,
+        payload: `${"q".repeat(1024 * 1024)}💪${"q".repeat(7 * 1024 * 1024)}` },
+    });
+    await prisma.healthSyncSnapshot.createMany({ data: snapshotData });
+    const fixtureRawDigestsBefore = await prisma.$queryRawUnsafe<Array<{ id: number; raw_digest: string; raw_bytes: bigint }>>(
+      `SELECT id, md5("rawPayload"::text) AS raw_digest,
+         octet_length("rawPayload"::text)::bigint AS raw_bytes
+       FROM public."HealthSyncSnapshot"
+       WHERE date = $1
+       ORDER BY id`,
+      pagedInventoryFixtureDate,
+    );
+    expect(fixtureRawDigestsBefore).toHaveLength(258);
+    expect(fixtureRawDigestsBefore.some((row) => row.raw_bytes > BigInt(8 * 1024 * 1024))).toBe(true);
+
+    const { inventoryV4RecoveryRawSourcesV1 } = await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
+    const actual = await inventoryV4RecoveryRawSourcesV1(prisma);
+    expect(actual.tables.HealthSyncSnapshot).toBe(await referenceHealthSnapshotDigestV2());
+    const fixtureRawDigestsAfter = await prisma.$queryRawUnsafe<Array<{ id: number; raw_digest: string; raw_bytes: bigint }>>(
+      `SELECT id, md5("rawPayload"::text) AS raw_digest,
+         octet_length("rawPayload"::text)::bigint AS raw_bytes
+       FROM public."HealthSyncSnapshot"
+       WHERE date = $1
+       ORDER BY id`,
+      pagedInventoryFixtureDate,
+    );
+    expect(fixtureRawDigestsAfter).toEqual(fixtureRawDigestsBefore);
+    expect(actual.tables.HealthSyncSnapshot).toMatch(/^[a-f0-9]{64}$/);
+  }, 60_000);
 
   it("rebuilds 8- and 9-Health fence sets across matched and unmatched Training sessions without changing sources", async () => {
     const { inventoryV4RecoveryRawSourcesV1 } = await import("@/modules/model-episodes/unified-v4-derived-recovery.service");

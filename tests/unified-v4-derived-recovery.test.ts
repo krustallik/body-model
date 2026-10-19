@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 const mocks = vi.hoisted(() => {
   const state: {
@@ -7,9 +8,60 @@ const mocks = vi.hoisted(() => {
     failAt: string | null;
     failClear: string | null;
     invalidTrainingSession: number | null;
-  } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null };
+    inventoryRows: Record<string, Array<{ id: number; raw_row: string }>>;
+    inventoryMetadataByteOverrides: Record<string, number>;
+    inventoryReturnedBytes: number[];
+  } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null,
+    inventoryRows: {}, inventoryMetadataByteOverrides: {}, inventoryReturnedBytes: [] };
+  const queryRaw = vi.fn(async (query: string, ...parameters: unknown[]) => {
+    const table = /FROM public\."([^"]+)"/.exec(query)?.[1];
+    if (!table) return [];
+    const rows = [...(state.inventoryRows[table] ?? [])].sort((left, right) => left.id - right.id);
+    if (query.includes("COUNT(*)")) return [{ row_count: BigInt(rows.length) }];
+    if (query.includes("AS raw_row_bytes")) {
+      const afterId = Number(parameters[0]);
+      const limit = Number(parameters[1]);
+      return rows.filter((row) => row.id > afterId).slice(0, limit).map((row) => ({
+        id: row.id,
+        raw_row_bytes: BigInt(state.inventoryMetadataByteOverrides[`${table}:${row.id}`]
+          ?? Buffer.byteLength(row.raw_row, "utf8")),
+      }));
+    }
+    if (query.includes("rendered_row.raw_row")) {
+      const id = Number(parameters[0]);
+      const length = Number(parameters[1]);
+      const row = rows.find((candidate) => candidate.id === id);
+      if (!row) return [];
+      const chunks: Array<{ chunk_index: number; raw_row_chunk: string }> = [];
+      let chunkText = "";
+      let chunkCharacters = 0;
+      for (const character of row.raw_row) {
+        chunkText += character;
+        chunkCharacters += 1;
+        if (chunkCharacters === length) {
+          chunks.push({ chunk_index: chunks.length, raw_row_chunk: chunkText });
+          state.inventoryReturnedBytes.push(Buffer.byteLength(chunkText, "utf8"));
+          chunkText = "";
+          chunkCharacters = 0;
+        }
+      }
+      if (chunkText.length > 0) {
+        chunks.push({ chunk_index: chunks.length, raw_row_chunk: chunkText });
+        state.inventoryReturnedBytes.push(Buffer.byteLength(chunkText, "utf8"));
+      }
+      return chunks;
+    }
+    if (query.includes("AS raw_row")) {
+      const afterId = Number(parameters[0]);
+      const throughId = Number(parameters[1]);
+      const selected = rows.filter((row) => row.id > afterId && row.id <= throughId);
+      state.inventoryReturnedBytes.push(selected.reduce((sum, row) => sum + Buffer.byteLength(row.raw_row, "utf8"), 0));
+      return selected;
+    }
+    return [];
+  });
   const prisma = {
-    $queryRawUnsafe: vi.fn(async () => []),
+    $queryRawUnsafe: queryRaw,
     $transaction: vi.fn(),
     physiologyV7Lifecycle: { findUnique: vi.fn() },
     unifiedPublicationBlock: { findMany: vi.fn(), findUnique: vi.fn(), count: vi.fn() },
@@ -43,6 +95,7 @@ const mocks = vi.hoisted(() => {
   return {
     state,
     prisma,
+    queryRaw,
     shadow,
     training,
     clearAll,
@@ -110,6 +163,9 @@ function reset(blocks = true) {
   mocks.state.failAt = null;
   mocks.state.failClear = null;
   mocks.state.invalidTrainingSession = null;
+  mocks.state.inventoryRows = {};
+  mocks.state.inventoryMetadataByteOverrides = {};
+  mocks.state.inventoryReturnedBytes = [];
   mocks.prisma.physiologyV7Lifecycle.findUnique.mockImplementation(async () => ({ ...mocks.state.lifecycle }));
   mocks.prisma.unifiedPublicationBlock.findMany.mockImplementation(async () => mocks.state.blocks.map((block) => ({ ...block })));
   mocks.prisma.unifiedPublicationBlock.findUnique.mockImplementation(async (args: { where: { profileId_source_sourceKey: { source: string; sourceKey: string } } }) => {
@@ -141,6 +197,53 @@ async function recover(expectedEvidenceBinding?: ReturnType<typeof createV4Recov
 
 describe("persisted-source V4 derived recovery", () => {
   beforeEach(() => reset());
+
+  it("preserves the exact V2 fingerprint while reading bounded pages and oversized rows", async () => {
+    const rows = Array.from({ length: 257 }, (_, index) => ({
+      id: (index + 1) * 2,
+      raw_row: JSON.stringify({ fixture: "paged-recovery", index }),
+    }));
+    rows[251] = {
+      id: rows[251]!.id,
+      raw_row: JSON.stringify({ fixture: "paged-recovery-large", payload: `${"x".repeat(1_048_500)}${"💪".repeat(2 * 1024 * 1024)}` }),
+    };
+    mocks.state.inventoryRows.ModelEpisode = rows;
+
+    const result = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
+    const modelEpisodeDigest = createHash("sha256").update(`ModelEpisode\0${rows.length}\0`);
+    for (const row of rows) {
+      modelEpisodeDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+    }
+    const expectedTables: Record<string, string> = {
+      ModelEpisode: modelEpisodeDigest.digest("hex"),
+    };
+    for (const table of ["StrengthDiarySession", "StrengthSessionAccountingSnapshot", "StrengthSessionAccountingOperation"]) {
+      expectedTables[table] = createHash("sha256").update(`${table}\0${0}\0`).digest("hex");
+    }
+    const expectedFingerprint = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
+    for (const [table, tableDigest] of Object.entries(expectedTables)) expectedFingerprint.update(`${table}\0${tableDigest}\0`);
+
+    expect(result.tables).toEqual(expectedTables);
+    expect(result.fingerprint).toBe(expectedFingerprint.digest("hex"));
+    expect(mocks.state.inventoryReturnedBytes.every((bytes) => bytes <= 8 * 1024 * 1024)).toBe(true);
+    expect(mocks.state.inventoryReturnedBytes.some((bytes) => bytes > 0 && bytes < 8 * 1024 * 1024)).toBe(true);
+    const metadataQueries = mocks.queryRaw.mock.calls.filter(([query]) => String(query).includes("AS raw_row_bytes"));
+    expect(metadataQueries.length).toBeGreaterThan(1);
+    expect(metadataQueries.every(([query]) => !String(query).includes("MATERIALIZED"))).toBe(true);
+    expect(mocks.queryRaw.mock.calls.filter(([query]) => String(query).includes("WITH rendered_row AS MATERIALIZED"))).toHaveLength(1);
+    expect(mocks.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000,
+    });
+  });
+
+  it("fails closed before rendering an oversized single source row", async () => {
+    mocks.state.inventoryRows.ModelEpisode = [{ id: 1, raw_row: "{}" }];
+    mocks.state.inventoryMetadataByteOverrides["ModelEpisode:1"] = 64 * 1024 * 1024 + 1;
+
+    await expect(inventoryV4RecoveryRawSourcesV1(mocks.prisma as never))
+      .rejects.toThrow("oversized ModelEpisode row id=1 bytes=67108865");
+    expect(mocks.queryRaw.mock.calls.some(([query]) => String(query).includes("WITH rendered_row AS MATERIALIZED"))).toBe(false);
+  });
 
   it("refreshes every persisted Training dependency deterministically and CAS-clears all fences", async () => {
     const result = await recover();

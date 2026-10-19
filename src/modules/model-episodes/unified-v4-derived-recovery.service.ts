@@ -11,7 +11,11 @@ import { activateAndReplayUnifiedV4 } from "./unified-rollout-v4.service";
 import { recordExperimentalStepperActiveEnergyShadowsForLocalDate, recordExperimentalStepperActiveEnergyShadowsForMassWindow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 import { recalculateActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
-import { refreshPersistedTrainingSessionDependenciesV1, recordExperimentalStrengthShadowsForWeightDate } from "@/modules/training/training.service";
+import {
+  assertPersistedTrainingSessionRecoveryReadyV1,
+  refreshPersistedTrainingSessionDependenciesV1,
+  recordExperimentalStrengthShadowsForWeightDate,
+} from "@/modules/training/training.service";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 
 type PublicationBlock = {
@@ -32,11 +36,15 @@ function assertSupportedBlockSet(blocks: readonly PublicationBlock[]): {
   training: PublicationBlock[];
 } {
   const health = blocks.filter((block) => block.source === "health");
-  const training = blocks.filter((block) => block.source === "training");
+  const training = blocks.filter((block) => block.source === "training")
+    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
+  const identities = new Set(blocks.map((block) => `${block.source}\0${block.sourceKey}`));
   if (health.length + training.length !== blocks.length
+      || identities.size !== blocks.length
       || health.some((block) => block.sourceKey !== block.fromDate || !validDate(block.fromDate))
-      || training.length > 1
-      || training.some((block) => !/^[1-9]\d*$/.test(block.sourceKey))) {
+      || blocks.some((block) => !Number.isSafeInteger(block.revision) || block.revision < 1)
+      || training.some((block) => !/^[1-9]\d*$/.test(block.sourceKey)
+        || !Number.isSafeInteger(Number(block.sourceKey)) || !validDate(block.fromDate))) {
     throw new Error("V4 derived recovery found an unsupported publication block set");
   }
   return { health, training };
@@ -48,9 +56,15 @@ export async function inventoryV4RecoveryRawSourcesV1(client: PrismaClient): Pro
   fingerprint: string;
   tables: Record<string, string>;
 }> {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v1\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
   const tables: Record<string, string> = {};
-  for (const table of FULL_HISTORY_RAW_INPUT_TABLES) {
+  const immutableTables = [
+    ...FULL_HISTORY_RAW_INPUT_TABLES,
+    // Recovery must consume, never rematerialize, persisted Training accounting.
+    "StrengthSessionAccountingSnapshot",
+    "StrengthSessionAccountingOperation",
+  ] as const;
+  for (const table of immutableTables) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
       : "to_jsonb(source_row)";
@@ -110,6 +124,17 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     select: { source: true, sourceKey: true, fromDate: true, revision: true },
   });
   const supported = assertSupportedBlockSet(initialBlocks);
+  for (const block of supported.training) {
+    const sessionId = Number(block.sourceKey);
+    await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId, profileId });
+    const currentBlock = await client.unifiedPublicationBlock.findUnique({
+      where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
+      select: { revision: true, fromDate: true },
+    });
+    if (currentBlock === null || currentBlock.revision !== block.revision || currentBlock.fromDate !== block.fromDate) {
+      throw new Error(`Training source fence changed during recovery preflight (${block.sourceKey}); recovery stopped`);
+    }
+  }
   if (supported.health.length > 0) {
     const dates = supported.health.map((block) => block.sourceKey).sort();
     const persistedDays = await client.dailyHealthData.findMany({
@@ -155,13 +180,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   const refreshedSessionIds: number[] = [];
   for (const block of supported.training) {
     const sessionId = Number(block.sourceKey);
-    const currentSession = await client.strengthDiarySession.findFirst({
-      where: { id: sessionId, profileId, status: "COMPLETED" },
-      select: { id: true },
-    });
-    if (currentSession === null) {
-      throw new Error("Training publication block has no current completed persisted session");
-    }
+    await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId, profileId });
     const currentBlock = await client.unifiedPublicationBlock.findUnique({
       where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
       select: { revision: true, fromDate: true },
@@ -226,7 +245,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     const afterFailureRaw = await inventoryV4RecoveryRawSourcesV1(client);
     if (afterFailureRaw.fingerprint !== beforeRaw.fingerprint) {
       throw new AggregateError(
-        [error, new Error(`Strict source table hashes changed: ${FULL_HISTORY_RAW_INPUT_TABLES.filter((table) => afterFailureRaw.tables[table] !== beforeRaw.tables[table]).join(", ")}`)],
+        [error, new Error(`Strict source table hashes changed: ${Object.keys(beforeRaw.tables).filter((table) => afterFailureRaw.tables[table] !== beforeRaw.tables[table]).join(", ")}`)],
         "V4 recovery failed and its raw-source preservation check detected a change",
       );
     }

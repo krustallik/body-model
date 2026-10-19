@@ -421,6 +421,61 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   };
 }
 
+/** Validate a persisted Training source before derived-only V4 recovery. */
+export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
+  sessionId: number;
+  profileId: number;
+}): Promise<void> {
+  if (!Number.isSafeInteger(input.sessionId) || input.sessionId <= 0) {
+    throw new Error("Training recovery session identity must be a positive integer");
+  }
+  const session = await new TrainingRepository(prisma).getSession(input.sessionId, input.profileId);
+  if (session === null) throw new Error("Training publication fence has no persisted session for this profile");
+  const persistedIdentity = await prisma.strengthDiarySession.findUnique({
+    where: { id: input.sessionId },
+    select: { profileId: true, entryMode: true },
+  });
+  if (persistedIdentity === null || persistedIdentity.profileId !== input.profileId
+      || (persistedIdentity.entryMode !== ENTRY_MODE.LIVE
+        && persistedIdentity.entryMode !== ENTRY_MODE.RETROSPECTIVE)
+      || session.entryMode !== persistedIdentity.entryMode) {
+    throw new Error("Training recovery found an unsupported persisted entry mode or source identity");
+  }
+  if (session.status !== SESSION_STATUS.COMPLETED) {
+    throw new Error("Training recovery supports only completed persisted sessions");
+  }
+  if (session.materializationState !== "current") {
+    throw new Error("Training recovery requires the current persisted accounting snapshot");
+  }
+  if (session.entryMode !== ENTRY_MODE.LIVE && session.entryMode !== ENTRY_MODE.RETROSPECTIVE) {
+    throw new Error("Training recovery found an unsupported persisted entry mode");
+  }
+  const matched = session.matchStatus === MATCH_STATUS.MATCHED;
+  const noMatch = session.matchStatus === MATCH_STATUS.PENDING
+    || session.matchStatus === MATCH_STATUS.UNMATCHED
+    || session.matchStatus === MATCH_STATUS.AMBIGUOUS;
+  if (matched) {
+    const persistedWorkout = session.matchedWorkoutId === null ? null : await prisma.workout.findUnique({
+      where: { id: session.matchedWorkoutId },
+      select: { id: true, type: true, sourceIdentity: true, dailyHealthData: { select: { date: true } } },
+    });
+    if (!Number.isSafeInteger(session.matchedWorkoutId) || session.matchedWorkoutId === null
+        || session.matchedWorkout?.id !== session.matchedWorkoutId || persistedWorkout === null) {
+      throw new Error("Matched Training recovery source has no correctly linked persisted Workout");
+    }
+    if (persistedWorkout.id !== session.matchedWorkoutId
+        || canonicalizeWorkoutType(persistedWorkout.type).classification !== "traditional-strength-training"
+        || persistedWorkout.sourceIdentity.length === 0
+        || persistedWorkout.dailyHealthData?.date === undefined) {
+      throw new Error("Matched Training recovery source has no correctly linked persisted Workout");
+    }
+  } else if (!noMatch || session.matchedWorkoutId !== null || session.matchedWorkout !== null
+      || (session.entryMode === ENTRY_MODE.RETROSPECTIVE
+        && session.matchStatus !== MATCH_STATUS.UNMATCHED)) {
+    throw new Error("Unmatched Training recovery source has an unsupported status or linked Workout");
+  }
+}
+
 /**
  * Retry the derived dependency chain for an already persisted completed
  * session. This deliberately does not mutate the session, workout, or sets;
@@ -436,11 +491,7 @@ export async function refreshPersistedTrainingSessionDependenciesV1(input: {
     throw new Error("sessionId must be a positive integer");
   }
   const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
-  const session = await new TrainingRepository(prisma).getSession(input.sessionId, profileId);
-  if (session === null) throw new Error("training source disappeared before dependent-shadow refresh");
-  if (session.status !== SESSION_STATUS.COMPLETED) {
-    throw new Error("persisted training dependency recovery requires a completed session");
-  }
+  await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId: input.sessionId, profileId });
   await recordExperimentalStrengthShadowsBySessionId({
     sessionId: input.sessionId,
     profileId,

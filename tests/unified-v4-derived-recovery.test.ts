@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => {
     blocks: Array<{ source: string; sourceKey: string; fromDate: string; revision: number }>;
     failAt: string | null;
     failClear: string | null;
-  } = { lifecycle: {}, blocks: [], failAt: null, failClear: null };
+    invalidTrainingSession: number | null;
+  } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null };
   const prisma = {
     $queryRawUnsafe: vi.fn(async () => []),
     physiologyV7Lifecycle: { findUnique: vi.fn() },
@@ -18,8 +19,13 @@ const mocks = vi.hoisted(() => {
   const shadow = vi.fn(async () => {
     if (state.failAt === "health") throw Object.assign(new Error("transaction conflict"), { code: "P2034" });
   });
-  const training = vi.fn(async () => {
-    if (state.failAt === "training") throw Object.assign(new Error("transaction conflict"), { code: "P2034" });
+  const training = vi.fn(async (input: { sessionId: number }) => {
+    if (state.failAt === "training" || state.failAt === `training:${input.sessionId}`) {
+      throw Object.assign(new Error("transaction conflict"), { code: "P2034" });
+    }
+  });
+  const assertTrainingReady = vi.fn(async ({ sessionId }: { sessionId: number }) => {
+    if (state.invalidTrainingSession === sessionId) throw new Error("Training recovery requires the current persisted accounting snapshot");
   });
   const clear = vi.fn(async (input: { source: string; sourceKey: string; expectedRevision: number; expectedFromDate: string }) => {
     if (state.failClear === input.sourceKey) return false;
@@ -35,6 +41,7 @@ const mocks = vi.hoisted(() => {
     shadow,
     training,
     clear,
+    assertTrainingReady,
     inventory: vi.fn(async () => ({ fingerprint: "same-raw-source-fingerprint", tables: {} })),
     recalculate: vi.fn(async () => {
       if (state.failAt === "production") return null;
@@ -67,6 +74,7 @@ vi.mock("@/modules/profile/experimental-stepper-active-energy-shadow.service", (
 vi.mock("@/modules/profile/experimental-stepper-glycogen-demand-shadow.service", () => ({ recordExperimentalStepperGlycogenDemandShadowsForLocalDate: mocks.shadow }));
 vi.mock("@/modules/activity/active-energy-publication", () => ({ recalculateActiveEnergyChangesV1: mocks.recalculate }));
 vi.mock("@/modules/training/training.service", () => ({
+  assertPersistedTrainingSessionRecoveryReadyV1: mocks.assertTrainingReady,
   refreshPersistedTrainingSessionDependenciesV1: mocks.training,
   recordExperimentalStrengthShadowsForWeightDate: mocks.shadow,
 }));
@@ -88,10 +96,13 @@ function reset(blocks = true) {
     ? [
       ...dates.map((date) => ({ source: "health", sourceKey: date, fromDate: date, revision: 1 })),
       { source: "training", sourceKey: "20", fromDate: "2071-01-09", revision: 3 },
+      { source: "training", sourceKey: "24", fromDate: "2071-01-10", revision: 1 },
+      { source: "training", sourceKey: "25", fromDate: "2071-01-11", revision: 4 },
     ]
     : [];
   mocks.state.failAt = null;
   mocks.state.failClear = null;
+  mocks.state.invalidTrainingSession = null;
   mocks.prisma.physiologyV7Lifecycle.findUnique.mockImplementation(async () => ({ ...mocks.state.lifecycle }));
   mocks.prisma.unifiedPublicationBlock.findMany.mockImplementation(async () => mocks.state.blocks.map((block) => ({ ...block })));
   mocks.prisma.unifiedPublicationBlock.findUnique.mockImplementation(async (args: { where: { profileId_source_sourceKey: { source: string; sourceKey: string } } }) => {
@@ -105,6 +116,7 @@ function reset(blocks = true) {
   mocks.clear.mockClear();
   mocks.shadow.mockClear();
   mocks.training.mockClear();
+  mocks.assertTrainingReady.mockClear();
   mocks.inventory.mockClear();
   mocks.recalculate.mockClear();
   mocks.replay.mockClear();
@@ -113,17 +125,19 @@ function reset(blocks = true) {
 describe("persisted-source V4 derived recovery", () => {
   beforeEach(() => reset());
 
-  it("refreshes all persisted dependencies, CAS-clears nine fences, and preserves epoch 1", async () => {
+  it("refreshes every persisted Training dependency deterministically and CAS-clears all fences", async () => {
     const result = await recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true });
     expect(mocks.shadow).toHaveBeenCalled();
     expect(mocks.training).toHaveBeenCalledWith({
       sessionId: 20, profileId: 1,
       expectedTrainingFence: { revision: 3, fromDate: "2071-01-09" },
     });
-    expect(mocks.clear).toHaveBeenCalledTimes(9);
+    expect(mocks.training.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25]);
+    expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25, 20, 24, 25]);
+    expect(mocks.clear).toHaveBeenCalledTimes(11);
     expect(mocks.state.blocks).toHaveLength(0);
     expect(mocks.replay).toHaveBeenCalledWith({ profileId: 1, client: mocks.prisma });
-    expect(result).toMatchObject({ rolloutEpoch: 1, dayCount: 9, healthDatesRefreshed: dates, trainingSessionIdsRefreshed: [20] });
+    expect(result).toMatchObject({ rolloutEpoch: 1, dayCount: 9, healthDatesRefreshed: dates, trainingSessionIdsRefreshed: [20, 24, 25] });
     expect(result.rawInputFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -133,7 +147,29 @@ describe("persisted-source V4 derived recovery", () => {
       .rejects.toMatchObject({ code: "P2034" });
     expect(mocks.clear).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
-    expect(mocks.state.blocks).toHaveLength(9);
+    expect(mocks.state.blocks).toHaveLength(11);
+  });
+
+  it("validates every Training source before refreshing any Health dependency", async () => {
+    mocks.state.invalidTrainingSession = 24;
+    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+      .rejects.toThrow("current persisted accounting snapshot");
+    expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24]);
+    expect(mocks.shadow).not.toHaveBeenCalled();
+    expect(mocks.training).not.toHaveBeenCalled();
+    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
+    expect(mocks.state.blocks).toHaveLength(11);
+  });
+
+  it("withholds fence clearing and V4 publication if the second Training refresh fails", async () => {
+    mocks.state.failAt = "training:24";
+    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+      .rejects.toMatchObject({ code: "P2034" });
+    expect(mocks.training.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24]);
+    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
+    expect(mocks.state.blocks).toHaveLength(11);
   });
 
   it("fails closed on a changed block revision before V4 publication", async () => {
@@ -175,5 +211,30 @@ describe("persisted-source V4 derived recovery", () => {
     mocks.state.blocks.push({ source: "day", sourceKey: "2071-01-01", fromDate: "2071-01-01", revision: 1 });
     await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
       .rejects.toThrow("unsupported publication block set");
+  });
+
+  it.each([
+    ["non-canonical Training identity", { source: "training", sourceKey: "020", fromDate: "2071-01-20", revision: 1 }],
+    ["invalid Training model date", { source: "training", sourceKey: "26", fromDate: "2071-02-30", revision: 1 }],
+    ["zero Training revision", { source: "training", sourceKey: "26", fromDate: "2071-01-20", revision: 0 }],
+    ["unsupported fence identity", { source: "garmin", sourceKey: "26", fromDate: "2071-01-20", revision: 1 }],
+  ])("rejects %s before refreshing or clearing any source", async (_name, invalidBlock) => {
+    mocks.state.blocks.push(invalidBlock);
+    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+      .rejects.toThrow("unsupported publication block set");
+    expect(mocks.shadow).not.toHaveBeenCalled();
+    expect(mocks.training).not.toHaveBeenCalled();
+    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate Training fence identities before dependent work", async () => {
+    mocks.state.blocks.push({ ...mocks.state.blocks.find((block) => block.source === "training" && block.sourceKey === "24")! });
+    await expect(recoverUnifiedV4FromPersistedSourcesV1({ profileId: 1, ownerAuthorized: true }))
+      .rejects.toThrow("unsupported publication block set");
+    expect(mocks.shadow).not.toHaveBeenCalled();
+    expect(mocks.training).not.toHaveBeenCalled();
+    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
   });
 });

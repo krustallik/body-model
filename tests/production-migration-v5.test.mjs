@@ -1682,8 +1682,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const ownerIdentity = await readFile(new URL("../scripts/github-owner-identity.mjs", import.meta.url), "utf8");
     expect(ownerIdentity).toContain("run.triggering_actor?.id");
     expect(deployWorkflow).toContain("workflow_dispatch:");
-    expect(deployWorkflow).toContain("workflow_run:");
-    expect(deployWorkflow).toContain("BodyCast CI/CD");
+    expect(deployWorkflow).not.toMatch(/^  workflow_run:\s*$/m);
     expect(deployWorkflow).toContain('[[ "$DISPATCH_ACTOR_ID" == "126446430" ]]');
     expect(deployWorkflow).toContain('[[ "$TIP" == "$DEPLOY_SHA" ]]');
     expect(ciWorkflow).not.toContain("deploy-production.yml");

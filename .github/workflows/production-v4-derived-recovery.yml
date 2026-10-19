@@ -1,0 +1,496 @@
+name: Owner-authorized legacy derived V4 recovery
+run-name: Legacy V4 derived recovery ${{ inputs.release_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact current main SHA carrying this reviewed recovery runner
+        required: true
+        type: string
+      recovery_sha:
+        description: Type the exact approved 65-migration recovery SHA
+        required: true
+        type: string
+      confirmation:
+        description: Type the exact owner confirmation shown in the release report
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: bodycast-production-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify pinned owner, exact main and legacy CI
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.gate.outputs.release_sha }}
+      recovery_sha: ${{ steps.gate.outputs.recovery_sha }}
+    steps:
+      - name: Checkout exact main-side release runner
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify owner dispatch, PR #101, exact green CI and immutable source refs
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          DISPATCH_SHA: ${{ inputs.release_sha }}
+          RECOVERY_SHA: ${{ inputs.recovery_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
+            && "$DISPATCH_ACTOR_ID" == 126446430 ]] || { echo "::error::Pinned owner and canonical main are required."; exit 1; }
+          [[ "$RECOVERY_SHA" == 3968154f965597843b6a2c429fff178c0f1ac54c \
+            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3968154f965597843b6a2c429fff178c0f1ac54c ]] \
+            || { echo "::error::Exact approved SHA and confirmation are required."; exit 1; }
+          [[ "$DISPATCH_SHA" == "$GITHUB_SHA" && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$GITHUB_SHA" ]] \
+            || { echo "::error::Requested runner SHA is not current main."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/owner-run.json"
+          gh api repos/krustallik/body-model/pulls/101 > "$RUNNER_TEMP/legacy-pr.json"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?head_sha=$RECOVERY_SHA&event=pull_request&per_page=100" \
+            > "$RUNNER_TEMP/legacy-ci.ndjson"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?head_sha=$RECOVERY_SHA&event=pull_request&per_page=100" \
+            > "$RUNNER_TEMP/legacy-safety-ci.ndjson"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" \
+            > "$RUNNER_TEMP/main-ci.ndjson"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertApprovedRecoveryRuns } from "./scripts/production-v4-derived-recovery.mjs";
+          const readLines = (path) => readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse);
+          const pr = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/legacy-pr.json`, "utf8"));
+          assertApprovedRecoveryRuns({
+            actorId: process.env.DISPATCH_ACTOR_ID, confirmation: process.env.CONFIRMATION,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT, repository: process.env.GITHUB_REPOSITORY,
+            workflowRef: process.env.GITHUB_REF, workflowPath: ".github/workflows/production-v4-derived-recovery.yml",
+            workflowSha: process.env.GITHUB_SHA, currentMainSha: process.env.GITHUB_SHA,
+            sourceSha: process.env.RECOVERY_SHA,
+            sourcePr: { number: pr.number, state: pr.state, head: { ref: pr.head.ref, sha: pr.head.sha },
+              base: { ref: pr.base.ref, sha: pr.base.sha } },
+            ciRuns: readLines(`${process.env.RUNNER_TEMP}/legacy-ci.ndjson`),
+            safetyRuns: readLines(`${process.env.RUNNER_TEMP}/legacy-safety-ci.ndjson`),
+            mainCiRuns: readLines(`${process.env.RUNNER_TEMP}/main-ci.ndjson`),
+          });
+          NODE
+          echo "release_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "recovery_sha=$RECOVERY_SHA" >> "$GITHUB_OUTPUT"
+          echo "- Exact main and legacy CI verified; no production credentials were used in this job." >> "$GITHUB_STEP_SUMMARY"
+
+  build-tool:
+    name: Build exact legacy schema recovery image
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image_id: ${{ steps.image.outputs.image_id }}
+      archive_sha256: ${{ steps.image.outputs.archive_sha256 }}
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build tool from immutable recovery source SHA
+        env:
+          RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
+        run: |
+          set -Eeuo pipefail
+          context="$RUNNER_TEMP/bodycast-v4-tool"
+          mkdir -p "$context/scripts" "$RUNNER_TEMP/bodycast-v4-artifact"
+          git fetch --no-tags https://github.com/krustallik/body-model.git "$RECOVERY_SHA"
+          [[ "$(git rev-parse FETCH_HEAD)" == "$RECOVERY_SHA" ]]
+          git archive "$RECOVERY_SHA" | tar -x -C "$context"
+          cp Dockerfile.v4-derived-recovery "$context/Dockerfile.v4-derived-recovery"
+          cp scripts/production-v4-recovery-evidence.ts "$context/scripts/production-v4-recovery-evidence.ts"
+          [[ "$(git rev-parse "$RECOVERY_SHA:prisma/migrations")" == 291b9c95924e196d66f9cdd555535b2e5a2b5990 ]]
+          [[ "$(git rev-parse "$RECOVERY_SHA:prisma/schema.prisma")" == 4fa84cb62262986d5f0c58d3c76db2ba52b5500e ]]
+          docker build --file "$context/Dockerfile.v4-derived-recovery" --tag bodycast-v4-recovery:"$RECOVERY_SHA" "$context"
+          image_id="$(docker image inspect --format '{{.Id}}' bodycast-v4-recovery:"$RECOVERY_SHA")"
+          [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker image save --output "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$image_id"
+          archive_sha256="$(sha256sum "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" | awk '{print $1}')"
+          [[ "$archive_sha256" =~ ^[a-f0-9]{64}$ ]]
+          IMAGE_ID="$image_id" ARCHIVE_SHA="$archive_sha256" RECOVERY_SHA="$RECOVERY_SHA" node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { LEGACY_V4_RECOVERY, sha256 } from "./scripts/production-v4-derived-recovery.mjs";
+          const manifest = { sourceSha: process.env.RECOVERY_SHA, imageId: process.env.IMAGE_ID,
+            imageDigest: process.env.IMAGE_ID, archiveSha256: process.env.ARCHIVE_SHA,
+            migrationTree: LEGACY_V4_RECOVERY.migrationTree, prismaSchemaBlob: LEGACY_V4_RECOVERY.prismaSchemaBlob,
+            effectiveCommand: LEGACY_V4_RECOVERY.command, ledgerDigest: LEGACY_V4_RECOVERY.ledgerDigest };
+          if (manifest.sourceSha !== LEGACY_V4_RECOVERY.sourceSha) throw new Error("Wrong legacy source SHA.");
+          writeFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`,
+            `${JSON.stringify({ ...manifest, manifestSha256: sha256(JSON.stringify(manifest)) })}\n`, { mode: 0o600, flag: "wx" });
+          NODE
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload immutable image archive and manifest for this approved run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: legacy-v4-recovery-image-${{ needs.authorize.outputs.recovery_sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bodycast-v4-artifact/**
+          if-no-files-found: error
+          retention-days: 7
+
+  rehearse:
+    name: Backup and rehearse exact recovery on isolated restore
+    needs: [authorize, build-tool]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: production
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast_restore
+          POSTGRES_USER: bodycast_restore
+          POSTGRES_PASSWORD: isolated_restore_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast_restore -d bodycast_restore"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout exact release helpers
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download exact image archive
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: legacy-v4-recovery-image-${{ needs.authorize.outputs.recovery_sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bodycast-v4-artifact
+      - name: Validate protected SSH and backup inputs
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 ))
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ && "$DEPLOY_PATH" == /* ]]
+          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY)'
+          install -d -m 700 "$RUNNER_TEMP/bodycast-v4-ssh" "$RUNNER_TEMP/bodycast-v4-artifact"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-v4-ssh/id"; chmod 600 "$RUNNER_TEMP/bodycast-v4-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-v4-ssh/candidate" 2>/dev/null
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-v4-ssh/candidate" "$RUNNER_TEMP/bodycast-v4-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-v4-ssh/known_hosts"
+          echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-v4-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-v4-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Verify image manifest and archive bytes
+        env:
+          RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
+          EXPECTED_IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          EXPECTED_ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          sha256sum --check <(printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA" "$RUNNER_TEMP/bodycast-v4-artifact/image.tar")
+          node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/artifact.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertArtifactBinding } from "./scripts/production-v4-derived-recovery.mjs";
+          const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (manifest.sourceSha !== process.env.RECOVERY_SHA || manifest.imageId !== process.env.EXPECTED_IMAGE_ID
+              || manifest.archiveSha256 !== process.env.EXPECTED_ARCHIVE_SHA) throw new Error("Recovery artifact metadata mismatch.");
+          // Exact embedded migration rows are checked against the live database evidence and the pinned ledger digest.
+          if (manifest.ledgerDigest !== "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7") throw new Error("65-migration ledger binding mismatch.");
+          NODE
+      - name: Transfer tool artifact to host and capture read-only production evidence
+        id: live
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
+          IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          HOST_SCRIPT_SHA="$(sha256sum scripts/production-v4-derived-recovery-host.sh | awk '{print $1}')"
+          [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ ]]
+          artifact_dir="/var/lib/bodycast/recovery/artifacts/$RECOVERY_SHA/$GITHUB_RUN_ID"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          SCP=(scp -P "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS")
+          parent_dir="/var/lib/bodycast/recovery/artifacts/$RECOVERY_SHA"
+          "${SSH[@]}" "$SSH_USER@$SSH_HOST" "install -d -m 700 '$parent_dir'; test ! -e '$artifact_dir' && test ! -L '$artifact_dir' && mkdir -m 700 '$artifact_dir'"
+          "${SCP[@]}" "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$SSH_USER@$SSH_HOST:$artifact_dir/image.tar"
+          "${SCP[@]}" scripts/production-v4-derived-recovery-host.sh "$SSH_USER@$SSH_HOST:$artifact_dir/host.sh"
+          REMOTE="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar' bash '$artifact_dir/host.sh' preflight"
+          timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE" > "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json"
+          node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertProductionIdentity, publicationBlockDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (report.appSha !== "f910d2a45dfa676fada5fab42c9e8946c97872b1" || report.evidence?.database?.database !== "bodycast"
+            || report.evidence?.migrationRows?.length !== 65 || report.evidence?.blocks?.length < 1
+            || report.evidence.lifecycle?.unifiedRolloutEpoch !== 1) throw new Error("Live production identity or stale V4 source state is not approved.");
+          const expected = { ledgerDigest: report.evidence.expectedLedgerDigest, schemaSha256: report.schemaSha256,
+            sourceFingerprint: report.evidence.sourceFingerprint, blockDigest: publicationBlockDigest(report.evidence.blocks),
+            database: { containerId: report.databaseContainerId, imageId: report.databaseImageId },
+            app: { containerId: report.appContainerId, imageId: report.appImageId } };
+          assertProductionIdentity({ database: { name: report.evidence.database.database,
+              version: report.evidence.database.version, ...expected.database },
+            app: { name: "bodycast-app-prod", health: "healthy", releaseSha: report.appSha, ...expected.app },
+            migrationRows: report.evidence.migrationRows, schemaSha256: report.schemaSha256,
+            sourceFingerprint: report.evidence.sourceFingerprint, lifecycle: report.evidence.lifecycle,
+            blocks: report.evidence.blocks, sourceRowsValid: true, expected });
+          NODE
+          echo "capture_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Capture and encrypt production backup without stopping the app
+        id: backup
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          BACKUP="$RUNNER_TEMP/bodycast-v4-artifact/production-backup.pgdump.enc"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          "${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker exec bodycast-db-prod sh -c '\''printf "BODYCAST_BACKUP_STARTED_AT=%s\\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exec pg_dump --format=custom --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast'\''' \
+            2> "$RUNNER_TEMP/bodycast-v4-artifact/pgdump.log" | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP"
+          chmod 600 "$BACKUP"
+          snapshot_at="$(sed -n 's/^BODYCAST_BACKUP_STARTED_AT=//p' "$RUNNER_TEMP/bodycast-v4-artifact/pgdump.log" | tail -n1)"
+          [[ "$snapshot_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+          echo "snapshot_at=$snapshot_at" >> "$GITHUB_OUTPUT"
+      - name: Restore backup and rehearse exact image against isolated 65-schema PostgreSQL
+        env:
+          BACKUP_FILE: ${{ runner.temp }}/bodycast-v4-artifact/production-backup.pgdump.enc
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          PGPASSWORD: isolated_restore_test_password
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          POSTGRES_IMAGE: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          BACKUP_STARTED_AT: ${{ steps.backup.outputs.snapshot_at }}
+        run: |
+          set -Eeuo pipefail
+          node scripts/restore-encrypted-postgres-backup.mjs
+          docker image load --input "$RUNNER_TEMP/bodycast-v4-artifact/image.tar"
+          docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" "$IMAGE_ID" node /app/dist/production-v4-recovery-evidence.mjs \
+            > "$RUNNER_TEMP/bodycast-v4-artifact/restored-before.json"
+          psql --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_restore --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE bodycast_canonical65'
+          DATABASE_URL=postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_canonical65 \
+            docker run --rm --network host --env DATABASE_URL=postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_canonical65 \
+            "$IMAGE_ID" node /app/node_modules/prisma/build/index.js migrate deploy --schema /app/prisma/schema.prisma
+          pg_image=docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          restored_schema="$(docker run --rm --network host --env PGPASSWORD=isolated_restore_test_password --entrypoint pg_dump "$pg_image" \
+            --schema-only --no-owner --no-privileges --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_restore \
+            | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')"
+          canonical_schema="$(docker run --rm --network host --env PGPASSWORD=isolated_restore_test_password --entrypoint pg_dump "$pg_image" \
+            --schema-only --no-owner --no-privileges --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_canonical65 \
+            | sed -E '/^-- Dumped (from database|by pg_dump) version /d' | sha256sum | awk '{print $1}')"
+          live_schema="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).schemaSha256' "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json")"
+          [[ "$restored_schema" == "$canonical_schema" && "$live_schema" == "$canonical_schema" ]] || { echo "::error::Production/restore schema differs from canonical 65 migrations."; exit 1; }
+          docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" "$IMAGE_ID" > "$RUNNER_TEMP/bodycast-v4-artifact/rehearsal-result.json"
+          docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" "$IMAGE_ID" node /app/dist/production-v4-recovery-evidence.mjs \
+            > "$RUNNER_TEMP/bodycast-v4-artifact/restored-after.json"
+          node --input-type=module - <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { migrationLedgerDigest, publicationBlockDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          const root = `${process.env.RUNNER_TEMP}/bodycast-v4-artifact/`;
+          const preflightPath = `${root}preflight.json`;
+          const before = JSON.parse(readFileSync(`${root}restored-before.json`, "utf8"));
+          const after = JSON.parse(readFileSync(`${root}restored-after.json`, "utf8"));
+          const result = JSON.parse(readFileSync(`${root}rehearsal-result.json`, "utf8").trim().split(/\r?\n/).at(-1));
+          const preflight = JSON.parse(readFileSync(`${root}preflight.json`, "utf8"));
+          const ledger = "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7";
+          const rows = (value) => JSON.stringify(value.map(({ name, checksum, finishedAt, rolledBackAt }) => ({
+            name, checksum, finishedAt, rolledBackAt,
+          })));
+          if (before.database?.database !== "bodycast_restore" || before.migrationRows.length !== 65
+            || migrationLedgerDigest(before.migrationRows) !== ledger
+            || before.expectedLedgerDigest !== ledger
+            || rows(before.migrationRows) !== rows(preflight.evidence.migrationRows)
+            || publicationBlockDigest(before.blocks) !== publicationBlockDigest(preflight.evidence.blocks)
+            || before.sourceFingerprint !== after.sourceFingerprint || after.blocks.length !== 0
+            || after.lifecycle?.unifiedRolloutEpoch !== 1 || after.lifecycle?.unifiedPublishedRolloutEpoch !== 1
+            || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
+            || after.lifecycle?.productionPublishedGeneration !== after.lifecycle?.invalidationGeneration
+            || after.lifecycle?.productionStaleFromDate !== null || after.coveredDayCount !== after.persistedDayCount
+            || after.coveredDayCount < 1 || JSON.stringify([...after.persistedDayDates].sort()) !== JSON.stringify([...after.coveredDayDates].sort())
+            || after.persistedDayDates.length !== after.persistedDayCount || after.coveredDayDates.length !== after.coveredDayCount
+            || result.command !== "unified-v4-derived-recovery" || result.rolloutEpoch !== 1
+            || result.rawInputFingerprint !== before.sourceFingerprint) throw new Error("Isolated exact-image V4 recovery rehearsal did not pass raw parity/CURRENT.");
+          if (preflight.evidence?.sourceFingerprint !== before.sourceFingerprint) throw new Error("Production sources changed while the backup snapshot was captured.");
+          const { assertRecoveryPostflight } = await import("./scripts/production-v4-derived-recovery.mjs");
+          assertRecoveryPostflight({ beforeFingerprint: before.sourceFingerprint, afterFingerprint: after.sourceFingerprint,
+            lifecycle: after.lifecycle, blocks: after.blocks.length, coveredDayCount: after.coveredDayCount,
+            persistedDayCount: after.persistedDayCount, coveredDates: after.coveredDayDates,
+            persistedDates: after.persistedDayDates, existingEpoch: before.lifecycle?.unifiedRolloutEpoch });
+          preflight.restoredSourceFingerprint = before.sourceFingerprint;
+          preflight.preflightRunId = process.env.GITHUB_RUN_ID; preflight.preflightSha = process.env.GITHUB_SHA;
+          preflight.capturedAt = process.env.BACKUP_STARTED_AT;
+          const { writeFileSync } = await import("node:fs"); writeFileSync(preflightPath, `${JSON.stringify(preflight)}\n`, { mode: 0o600 });
+          NODE
+      - name: Upload encrypted backup and successful restore rehearsal evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: legacy-v4-recovery-preflight-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/bodycast-v4-artifact/preflight.json
+            ${{ runner.temp }}/bodycast-v4-artifact/production-backup.pgdump.enc
+          if-no-files-found: error
+          retention-days: 7
+
+  execute:
+    name: One-shot derived-only recovery under existing production lock
+    needs: [authorize, build-tool, rehearse]
+    if: needs.rehearse.result == 'success' && github.actor_id == '126446430'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - name: Checkout exact reviewed runner
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download exact image and rehearsed production evidence
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: legacy-v4-recovery-image-${{ needs.authorize.outputs.recovery_sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bodycast-v4-artifact
+      - name: Download fresh backup and restore evidence
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: legacy-v4-recovery-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/bodycast-v4-artifact
+      - name: Recheck exact owner approval, current main, and legacy CI immediately before execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
+            && "$DISPATCH_ACTOR_ID" == 126446430 \
+            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_3968154f965597843b6a2c429fff178c0f1ac54c \
+            && "$GITHUB_RUN_ATTEMPT" == 1 ]]
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$GITHUB_SHA" ]]
+          gh api repos/krustallik/body-model/pulls/101 > "$RUNNER_TEMP/legacy-pr.json"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?head_sha=$RECOVERY_SHA&event=pull_request&per_page=100" \
+            > "$RUNNER_TEMP/legacy-ci.ndjson"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?head_sha=$RECOVERY_SHA&event=pull_request&per_page=100" \
+            > "$RUNNER_TEMP/legacy-safety-ci.ndjson"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" \
+            > "$RUNNER_TEMP/main-ci.ndjson"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertApprovedRecoveryRuns } from "./scripts/production-v4-derived-recovery.mjs";
+          const readLines = (path) => readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse);
+          const pr = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/legacy-pr.json`, "utf8"));
+          assertApprovedRecoveryRuns({
+            actorId: process.env.DISPATCH_ACTOR_ID, confirmation: process.env.CONFIRMATION,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT, repository: process.env.GITHUB_REPOSITORY,
+            workflowRef: process.env.GITHUB_REF, workflowPath: ".github/workflows/production-v4-derived-recovery.yml",
+            workflowSha: process.env.GITHUB_SHA, currentMainSha: process.env.GITHUB_SHA,
+            sourceSha: process.env.RECOVERY_SHA,
+            sourcePr: { number: pr.number, state: pr.state, head: { ref: pr.head.ref, sha: pr.head.sha },
+              base: { ref: pr.base.ref, sha: pr.base.sha } },
+            ciRuns: readLines(`${process.env.RUNNER_TEMP}/legacy-ci.ndjson`),
+            safetyRuns: readLines(`${process.env.RUNNER_TEMP}/legacy-safety-ci.ndjson`),
+            mainCiRuns: readLines(`${process.env.RUNNER_TEMP}/main-ci.ndjson`),
+          });
+          NODE
+      - name: Require fresh first-attempt evidence and unchanged exact main/source CI
+        env:
+          PREFLIGHT_RUN_ID: ${{ github.run_id }}
+          PREFLIGHT_SHA: ${{ github.sha }}
+          EXPECTED_MAIN_SHA: ${{ needs.authorize.outputs.release_sha }}
+          RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
+          IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          HOST_SCRIPT_SHA="$(sha256sum scripts/production-v4-derived-recovery-host.sh | awk '{print $1}')"
+          [[ "$HOST_SCRIPT_SHA" =~ ^[a-f0-9]{64}$ ]]
+          node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertOneShotRecoveryState, assertArtifactBinding, migrationLedgerDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const age = Math.floor((Date.now() - Date.parse(report.capturedAt)) / 1000);
+          if (report.preflightRunId !== process.env.PREFLIGHT_RUN_ID || report.preflightSha !== process.env.PREFLIGHT_SHA
+            || report.preflightSha !== process.env.EXPECTED_MAIN_SHA || report.sourceSha !== process.env.RECOVERY_SHA) throw new Error("Preflight artifact identity mismatch.");
+          assertArtifactBinding({ ...JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`, "utf8")),
+            ledgerRows: report.evidence.expectedMigrationRows.map((row) => ({ ...row, finishedAt: "verified-in-restored-ledger", rolledBackAt: null })) });
+          if (migrationLedgerDigest(report.evidence.migrationRows) !== report.evidence.expectedLedgerDigest
+            || report.evidence.sourceFingerprint !== report.restoredSourceFingerprint) throw new Error("Backup source and live production fingerprint differ.");
+          assertOneShotRecoveryState({ marker: { state: "ready", sourceSha: process.env.RECOVERY_SHA,
+            preflightRunId: report.preflightRunId, workflowSha: report.preflightSha, terminal: false },
+            lockHeld: true, preflightRunId: report.preflightRunId, preflightSha: report.preflightSha,
+            preflightConclusion: "success", preflightAgeSeconds: age, currentRunAttempt: process.env.GITHUB_RUN_ATTEMPT });
+          NODE
+      - name: Recheck owner and production SSH controls
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main && "$GITHUB_ACTOR_ID" == 126446430 ]]
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ && "$DEPLOY_PATH" == /* ]]
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 ))
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]
+          install -d -m 700 "$RUNNER_TEMP/bodycast-v4-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-v4-ssh/id"; chmod 600 "$RUNNER_TEMP/bodycast-v4-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-v4-ssh/candidate" 2>/dev/null
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-v4-ssh/candidate" "$RUNNER_TEMP/bodycast-v4-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-v4-ssh/known_hosts"
+          echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-v4-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-v4-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Transfer immutable artifact/evidence and execute the pinned derived-only entrypoint
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
+          IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          artifact_dir="/var/lib/bodycast/recovery/artifacts/$RECOVERY_SHA/$GITHUB_RUN_ID"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          SCP=(scp -P "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS")
+          "${SCP[@]}" "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" "$SSH_USER@$SSH_HOST:$artifact_dir/execute-preflight.json"
+          REMOTE="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar' BODYCAST_PREFLIGHT_JSON_FILE='$artifact_dir/execute-preflight.json' bash '$artifact_dir/host.sh' execute"
+          timeout 35m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE"
+      - name: Remove only temporary SSH key material
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/bodycast-v4-ssh"

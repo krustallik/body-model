@@ -457,7 +457,8 @@ describe("workflow mutation boundary", () => {
     expect(sql).toContain("JOIN ddl_targets t ON t.table_name = c.relname");
     expect(sql).toContain("l.pid IS NULL OR l.pid <> pg_backend_pid()");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
-    expect(safetyWorkflow.match(/image:\s+docker\.io\/library\/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(5);
+    expect(safetyWorkflow).toContain("name: Exact legacy 65-schema V4 recovery tool image");
+    expect(safetyWorkflow.match(/image:\s+docker\.io\/library\/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(6);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres@sha256:/);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");

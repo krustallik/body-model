@@ -17,11 +17,9 @@ const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 const modelForecastService = readFileSync(resolve("src/modules/model-forecast/model-forecast.service.ts"), "utf8");
 
 describe("production maintenance-first deploy safety contracts", () => {
-  it("automatically deploys after exact-current-main CI and keeps manual cutover owner-gated", () => {
+  it("pauses automatic serving deploys and keeps manual non-serving deploy owner-gated", () => {
     expect(deployWorkflow).toContain("workflow_dispatch:");
-    expect(deployWorkflow).toContain("workflow_run:");
-    expect(deployWorkflow).toContain("workflows:\n      - BodyCast CI/CD");
-    expect(deployWorkflow).toContain("branches:\n      - main");
+    expect(deployWorkflow).not.toMatch(/^  workflow_run:\s*$/m);
     expect(deployWorkflow).toContain('github.actor_id }}');
     expect(deployWorkflow).toContain('"126446430"');
     expect(deployWorkflow).toContain("assertTrustedOwnerWorkflowRun");

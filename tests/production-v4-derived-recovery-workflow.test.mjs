@@ -1,12 +1,119 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(new URL("../.github/workflows/production-v4-derived-recovery.yml", import.meta.url), "utf8");
 const host = readFileSync(new URL("../scripts/production-v4-derived-recovery-host.sh", import.meta.url), "utf8");
 const image = readFileSync(new URL("../Dockerfile.v4-derived-recovery", import.meta.url), "utf8");
 const evidence = readFileSync(new URL("../scripts/production-v4-recovery-evidence.ts", import.meta.url), "utf8");
+const repositoryRoot = new URL("..", import.meta.url).pathname;
 
 describe("legacy derived V4 recovery release workflow", () => {
+  it("executes the final rehearsal Node step and writes bound preflight evidence", async () => {
+    const rehearsalStep = workflow.split("      - name: Restore backup and rehearse exact image against isolated 65-schema PostgreSQL\n")[1]
+      ?.split("      - name: Upload encrypted backup and successful restore rehearsal evidence\n")[0];
+    expect(rehearsalStep).toBeDefined();
+    const commandStart = rehearsalStep.indexOf("node --input-type=module - <<'NODE'\n");
+    expect(commandStart).toBeGreaterThanOrEqual(0);
+    const sourceStart = commandStart + "node --input-type=module - <<'NODE'\n".length;
+    const sourceEnd = rehearsalStep.indexOf("\n          NODE", sourceStart);
+    expect(sourceEnd).toBeGreaterThan(sourceStart);
+    const nodeSource = rehearsalStep.slice(sourceStart, sourceEnd).split("\n")
+      .map((line) => line.replace(/^          /, "")).join("\n");
+    const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-rehearsal-step-"));
+    const artifactRoot = join(tempRoot, "bodycast-v4-artifact");
+    mkdirSync(artifactRoot);
+    const capturedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    const fingerprint = "a".repeat(64);
+    const migrationNames = (await readdir(new URL("../prisma/migrations", import.meta.url), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().slice(0, 65);
+    const migrationRows = await Promise.all(migrationNames.map(async (name) => ({
+      name,
+      checksum: createHash("sha256").update(await readFile(new URL(`../prisma/migrations/${name}/migration.sql`, import.meta.url))).digest("hex"),
+      finishedAt: "2025-01-01T00:00:00.000Z", rolledBackAt: null,
+    })));
+    const ledgerDigest = createHash("sha256").update(migrationRows.map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
+    const blocks = Array.from({ length: 8 }, (_, index) => {
+      const date = `2025-01-${String(index + 1).padStart(2, "0")}`;
+      return { source: "health", sourceKey: date, fromDate: date, revision: index + 1 };
+    });
+    blocks.push({ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 });
+    const lifecycle = {
+      invalidationGeneration: 12, productionPublishedGeneration: 12, productionStaleFromDate: null,
+      unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, unifiedPublishedGeneration: 12, unifiedPublishedRolloutEpoch: 1,
+      unifiedPublicationBlockedFromDate: null,
+    };
+    const days = ["2025-01-01", "2025-01-02"];
+    const before = { database: { database: "bodycast_restore" }, migrationRows, expectedLedgerDigest: ledgerDigest,
+      blocks, sourceFingerprint: fingerprint, lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11, unifiedPublicationBlockedFromDate: "2025-01-01" } };
+    const after = { ...before, blocks: [], lifecycle, persistedDayDates: days, coveredDayDates: days,
+      persistedDayCount: days.length, coveredDayCount: days.length };
+    const report = { sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c", evidence: {
+      database: { database: "bodycast" }, migrationRows, expectedMigrationRows: migrationRows,
+      expectedLedgerDigest: before.expectedLedgerDigest, blocks: before.blocks, sourceFingerprint: fingerprint,
+      lifecycle: before.lifecycle,
+    } };
+    writeFileSync(join(artifactRoot, "restored-before.json"), JSON.stringify(before));
+    writeFileSync(join(artifactRoot, "restored-after.json"), JSON.stringify(after));
+    writeFileSync(join(artifactRoot, "rehearsal-result.json"), JSON.stringify({ command: "unified-v4-derived-recovery", rolloutEpoch: 1, rawInputFingerprint: fingerprint }));
+    writeFileSync(join(artifactRoot, "preflight.json"), JSON.stringify(report));
+    try {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+        cwd: repositoryRoot,
+        env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40), BACKUP_STARTED_AT: capturedAt },
+        input: nodeSource,
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const preflight = JSON.parse(readFileSync(join(artifactRoot, "preflight.json"), "utf8"));
+      expect(preflight).toMatchObject({ preflightRunId: "123456", preflightSha: "c".repeat(40),
+        capturedAt, restoredSourceFingerprint: fingerprint,
+        sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c",
+        evidence: { database: { database: "bodycast" }, sourceFingerprint: fingerprint,
+          expectedLedgerDigest: ledgerDigest, migrationRows: expect.arrayContaining([expect.objectContaining({ name: migrationRows[0].name })]),
+          blocks: expect.arrayContaining([{ source: "training", sourceKey: "20", fromDate: "2025-01-01", revision: 9 }]) } });
+
+      const artifactManifest = {
+        sourceSha: "3968154f965597843b6a2c429fff178c0f1ac54c", imageId: `sha256:${"d".repeat(64)}`,
+        imageDigest: `sha256:${"d".repeat(64)}`, archiveSha256: "e".repeat(64),
+        migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
+        effectiveCommand: ["node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery", "--owner-authorized", "--profile-id", "1"],
+      };
+      writeFileSync(join(artifactRoot, "artifact.json"), JSON.stringify({ ...artifactManifest,
+        manifestSha256: createHash("sha256").update(JSON.stringify({ ...artifactManifest, ledgerDigest })).digest("hex") }));
+      writeFileSync(join(artifactRoot, "preflight.json"), JSON.stringify(preflight));
+      const executeStep = workflow.split("      - name: Require fresh first-attempt evidence and unchanged exact main/source CI\n")[1]
+        ?.split("      - name: Recheck owner and production SSH controls\n")[0];
+      const executeStart = executeStep.indexOf("node --input-type=module - ");
+      const executeSourceStart = executeStep.indexOf("\n", executeStart) + 1;
+      const executeSourceEnd = executeStep.indexOf("\n          NODE", executeSourceStart);
+      expect(executeStart).toBeGreaterThanOrEqual(0);
+      expect(executeSourceEnd).toBeGreaterThan(executeSourceStart);
+      const executeSource = executeStep.slice(executeSourceStart, executeSourceEnd).split("\n")
+        .map((line) => line.replace(/^          /, "")).join("\n");
+      const executeGate = spawnSync(process.execPath, ["--input-type=module", "-", join(artifactRoot, "preflight.json")], {
+        cwd: repositoryRoot,
+        env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
+          GITHUB_RUN_ATTEMPT: "1", PREFLIGHT_RUN_ID: "123456", PREFLIGHT_SHA: "c".repeat(40),
+          EXPECTED_MAIN_SHA: "c".repeat(40), RECOVERY_SHA: artifactManifest.sourceSha,
+          IMAGE_ID: artifactManifest.imageId, ARCHIVE_SHA: artifactManifest.archiveSha256 },
+        input: executeSource,
+        encoding: "utf8",
+      });
+      expect(executeGate.status, executeGate.stderr).toBe(0);
+      expect(workflow.match(/name: legacy-v4-recovery-preflight-\$\{\{ github\.run_id \}\}/g)).toHaveLength(2);
+      expect(workflow).toContain("${{ runner.temp }}/bodycast-v4-artifact/preflight.json");
+      expect(workflow).toContain("BODYCAST_PREFLIGHT_JSON_FILE='$artifact_dir/execute-preflight.json'");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("is manual-only, pinned to the owner, current main, and protected production environment", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).not.toMatch(/^  (push|pull_request|workflow_run|schedule):/m);

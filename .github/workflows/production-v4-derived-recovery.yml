@@ -316,6 +316,7 @@ jobs:
           import { readFileSync } from "node:fs";
           import { migrationLedgerDigest, publicationBlockDigest } from "./scripts/production-v4-derived-recovery.mjs";
           const root = `${process.env.RUNNER_TEMP}/bodycast-v4-artifact/`;
+          const preflightPath = `${root}preflight.json`;
           const before = JSON.parse(readFileSync(`${root}restored-before.json`, "utf8"));
           const after = JSON.parse(readFileSync(`${root}restored-after.json`, "utf8"));
           const result = JSON.parse(readFileSync(`${root}rehearsal-result.json`, "utf8").trim().split(/\r?\n/).at(-1));

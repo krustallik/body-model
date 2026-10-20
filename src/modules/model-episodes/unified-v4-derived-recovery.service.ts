@@ -83,15 +83,21 @@ export function createV4RecoveryEvidenceBindingV1(input: {
 
 const V4_RECOVERY_RAW_INVENTORY_PAGE_SIZE = 250;
 const V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES = 8 * 1024 * 1024;
+// Bound JSONB values retained together while deriving text-size bounds. A
+// single larger row is handled alone, up to the existing per-row ceiling.
+const V4_RECOVERY_RAW_INVENTORY_MAX_BOUND_BATCH_JSONB_BYTES = 1024 * 1024;
 const V4_RECOVERY_RAW_INVENTORY_CHUNK_CHARACTERS = 1024 * 1024;
-// A single JSONB row is rendered once for bounded chunk transfer. Refuse an
-// unexpectedly huge payload rather than allowing unbounded DB temp usage or
-// an unbounded Prisma/N-API result allocation during the one-shot rehearsal.
+// Refuse an unexpectedly large JSON rendering before the text cast. The
+// metadata query uses a conservative JSONB/string expansion bound plus each
+// numeric's binary weight and scale, so a compact JSONB value cannot evade the
+// limit by expanding during PostgreSQL text output.
 const V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES = 64 * 1024 * 1024;
 
 type V4RecoveryRawRowMetadata = {
   id: number;
-  raw_row_bytes: bigint | number | string;
+  raw_row_jsonb_bytes: bigint | number | string;
+  raw_row_upper_bytes?: bigint | number | string;
+  raw_row_bytes?: bigint | number | string | null;
 };
 
 function safeNonNegativeInteger(value: bigint | number | string, label: string): number {
@@ -242,8 +248,10 @@ async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): 
       if (pendingRows.length === 0) {
         pendingRows = await runV4RecoveryInventoryQueryV1(table, `metadata-page-after-${afterId}`, () =>
           client.$queryRawUnsafe<V4RecoveryRawRowMetadata[]>(
+            // Keep only ids and scalar sizes in the 250-row page. Full JSONB
+            // values are loaded for a separately bounded set below.
             `SELECT source_row.id,
-               octet_length((${rawRowExpression})::text)::bigint AS raw_row_bytes
+               pg_column_size((${rawRowExpression})::jsonb)::bigint AS raw_row_jsonb_bytes
              FROM public."${table}" AS source_row
              WHERE source_row.id > $1::bigint
              ORDER BY source_row.id
@@ -257,13 +265,111 @@ async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): 
         if (pendingRows.length === 0) break;
       }
 
+      if (pendingRows[0]!.raw_row_upper_bytes === undefined) {
+        const boundBatch: V4RecoveryRawRowMetadata[] = [];
+        let boundBatchJsonbBytes = 0;
+        for (const candidate of pendingRows) {
+          if (!Number.isSafeInteger(candidate.id) || candidate.id <= afterId) {
+            throw new Error(`V4 strict source fingerprint returned invalid ${table} row ordering`);
+          }
+          const candidateJsonbBytes = safeNonNegativeInteger(candidate.raw_row_jsonb_bytes, `${table} JSONB row byte length`);
+          if (candidateJsonbBytes > V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES) {
+            throw new Error(`V4 strict source fingerprint found a row whose JSONB size exceeds its limit ${table} row id=${candidate.id} bytes=${candidateJsonbBytes}`);
+          }
+          if (boundBatch.length > 0
+              && boundBatchJsonbBytes + candidateJsonbBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BOUND_BATCH_JSONB_BYTES) break;
+          boundBatch.push(candidate);
+          boundBatchJsonbBytes += candidateJsonbBytes;
+          if (boundBatchJsonbBytes >= V4_RECOVERY_RAW_INVENTORY_MAX_BOUND_BATCH_JSONB_BYTES) break;
+        }
+        if (boundBatch.length === 0) throw new Error(`V4 strict source fingerprint could not form a bounded ${table} size-check batch`);
+
+        // JSON strings may expand to six ASCII bytes per UTF-8 byte. JSONB
+        // numeric storage omits display zeroes, so add a conservative text
+        // bound derived from numeric_send weight and scale before the CASE
+        // permits any whole-row ::text conversion. This query retains at most
+        // 1 MiB of JSONB inputs, except one individually bounded large row.
+        const boundedRows = await runV4RecoveryInventoryQueryV1(table, `size-bounds-through-${boundBatch.at(-1)!.id}`, () =>
+          client.$queryRawUnsafe<Array<Omit<V4RecoveryRawRowMetadata, "raw_row_jsonb_bytes">>>(
+            `WITH RECURSIVE raw_rows AS MATERIALIZED (
+               SELECT source_row.id, (${rawRowExpression}) AS raw_row_jsonb
+               FROM public."${table}" AS source_row
+               WHERE source_row.id > $1::bigint AND source_row.id <= $2::bigint
+             ), nodes(id, value) AS (
+               SELECT raw_rows.id, raw_rows.raw_row_jsonb FROM raw_rows
+               UNION ALL
+               SELECT nodes.id, nested.value
+               FROM nodes
+               CROSS JOIN LATERAL (
+                 SELECT item.value
+                 FROM jsonb_each(CASE WHEN jsonb_typeof(nodes.value) = 'object' THEN nodes.value ELSE '{}'::jsonb END) AS item(key, value)
+                 UNION ALL
+                 SELECT item.value
+                 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(nodes.value) = 'array' THEN nodes.value ELSE '[]'::jsonb END) AS item(value)
+               ) AS nested
+             ), numeric_values AS MATERIALIZED (
+               SELECT nodes.id, nodes.value::numeric AS numeric_value,
+                 pg_catalog.numeric_send(nodes.value::numeric) AS numeric_wire
+               FROM nodes
+               WHERE jsonb_typeof(nodes.value) = 'number'
+             ), numeric_sizes AS (
+               SELECT id,
+                 CASE WHEN (get_byte(numeric_wire, 2)::bigint * 256 + get_byte(numeric_wire, 3)::bigint) >= 32768
+                   THEN (get_byte(numeric_wire, 2)::bigint * 256 + get_byte(numeric_wire, 3)::bigint) - 65536
+                   ELSE (get_byte(numeric_wire, 2)::bigint * 256 + get_byte(numeric_wire, 3)::bigint) END AS weight,
+                 scale(numeric_value) AS decimal_scale
+               FROM numeric_values
+             ), numeric_bounds AS (
+               SELECT id, sum(
+                 (CASE WHEN weight >= 0 THEN (weight + 1) * 4 ELSE 1 END)
+                 + decimal_scale + CASE WHEN decimal_scale > 0 THEN 1 ELSE 0 END + 1
+               )::bigint AS numeric_text_upper_bytes
+               FROM numeric_sizes
+               GROUP BY id
+             ), row_bounds AS MATERIALIZED (
+               SELECT raw_rows.id, raw_rows.raw_row_jsonb,
+                 (pg_column_size(raw_rows.raw_row_jsonb)::bigint * 6
+                   + COALESCE(numeric_bounds.numeric_text_upper_bytes, 0)) AS raw_row_upper_bytes
+               FROM raw_rows
+               LEFT JOIN numeric_bounds ON numeric_bounds.id = raw_rows.id
+             )
+             SELECT id, raw_row_upper_bytes,
+               CASE WHEN raw_row_upper_bytes <= $3::bigint
+                 THEN octet_length(raw_row_jsonb::text)::bigint
+                 ELSE NULL
+               END AS raw_row_bytes
+             FROM row_bounds
+             ORDER BY id`,
+            afterId,
+            boundBatch.at(-1)!.id,
+            V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES,
+          ));
+        if (boundedRows.length !== boundBatch.length || boundedRows.some((row, index) => row.id !== boundBatch[index]?.id)) {
+          throw new Error(`V4 strict source fingerprint returned incomplete ${table} size bounds`);
+        }
+        for (let index = 0; index < boundBatch.length; index += 1) {
+          pendingRows[index] = { ...boundBatch[index]!, ...boundedRows[index]! };
+        }
+        continue;
+      }
+
       const first = pendingRows[0]!;
       if (!Number.isSafeInteger(first.id) || first.id <= afterId) {
         throw new Error(`V4 strict source fingerprint returned invalid ${table} row ordering`);
       }
+      if (first.raw_row_upper_bytes === undefined) {
+        throw new Error(`V4 strict source fingerprint is missing the ${table} row size bound`);
+      }
+      const firstUpperBytes = safeNonNegativeInteger(first.raw_row_upper_bytes, `${table} row serialized-size upper bound`);
+      if (firstUpperBytes > V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES) {
+        throw new Error(`V4 strict source fingerprint found a row whose serialized-size upper bound exceeds its limit ${table} row id=${first.id} upperBytes=${firstUpperBytes}`);
+      }
+      if (first.raw_row_bytes == null) {
+        throw new Error(`V4 strict source fingerprint could not verify bounded ${table} row serialization id=${first.id}`);
+      }
       const firstBytes = safeNonNegativeInteger(first.raw_row_bytes, `${table} row byte length`);
-      if (firstBytes > V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES) {
-        throw new Error(`V4 strict source fingerprint found an oversized ${table} row id=${first.id} bytes=${firstBytes}`);
+      if (firstBytes > V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES || firstBytes > firstUpperBytes) {
+        throw new Error(`V4 strict source fingerprint found invalid bounded ${table} row length id=${first.id} bytes=${firstBytes} upperBytes=${firstUpperBytes}`);
       }
 
       if (firstBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES) {
@@ -320,8 +426,12 @@ async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): 
       const batch: V4RecoveryRawRowMetadata[] = [];
       let batchBytes = 0;
       for (const candidate of pendingRows) {
+        if (candidate.raw_row_upper_bytes === undefined || candidate.raw_row_bytes === undefined
+            || candidate.raw_row_bytes === null) break;
+        const candidateUpperBytes = safeNonNegativeInteger(candidate.raw_row_upper_bytes, `${table} row serialized-size upper bound`);
+        if (candidateUpperBytes > V4_RECOVERY_RAW_INVENTORY_MAX_ROW_BYTES) break;
         const candidateBytes = safeNonNegativeInteger(candidate.raw_row_bytes, `${table} row byte length`);
-        if (candidateBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES
+        if (candidateBytes > candidateUpperBytes || candidateBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES
             || batchBytes + candidateBytes > V4_RECOVERY_RAW_INVENTORY_MAX_BATCH_BYTES) break;
         batch.push(candidate);
         batchBytes += candidateBytes;
@@ -346,6 +456,9 @@ async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): 
         const row = rows[index]!;
         if (row.id !== metadata.id || row.id <= afterId) {
           throw new Error(`V4 strict source fingerprint returned invalid ${table} row ordering`);
+        }
+        if (metadata.raw_row_bytes == null) {
+          throw new Error(`V4 strict source fingerprint is missing the ${table} row byte length`);
         }
         updateV4RecoveryRawRowDigest(
           tableDigest,

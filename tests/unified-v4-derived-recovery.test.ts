@@ -11,20 +11,37 @@ const mocks = vi.hoisted(() => {
     inventoryRows: Record<string, Array<{ id: number; raw_row: string }>>;
     inventoryMetadataByteOverrides: Record<string, number>;
     inventoryReturnedBytes: number[];
+    inventoryBoundBatchSizes: Array<{ rowCount: number; jsonbBytes: number }>;
   } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null,
-    inventoryRows: {}, inventoryMetadataByteOverrides: {}, inventoryReturnedBytes: [] };
+    inventoryRows: {}, inventoryMetadataByteOverrides: {}, inventoryReturnedBytes: [], inventoryBoundBatchSizes: [] };
   const queryRaw = vi.fn(async (query: string, ...parameters: unknown[]) => {
     const table = /FROM public\."([^"]+)"/.exec(query)?.[1];
     if (!table) return [];
     const rows = [...(state.inventoryRows[table] ?? [])].sort((left, right) => left.id - right.id);
     if (query.includes("COUNT(*)")) return [{ row_count: BigInt(rows.length) }];
-    if (query.includes("AS raw_row_bytes")) {
+    if (query.includes("AS raw_row_jsonb_bytes")) {
       const afterId = Number(parameters[0]);
       const limit = Number(parameters[1]);
       return rows.filter((row) => row.id > afterId).slice(0, limit).map((row) => ({
         id: row.id,
-        raw_row_bytes: BigInt(state.inventoryMetadataByteOverrides[`${table}:${row.id}`]
-          ?? Buffer.byteLength(row.raw_row, "utf8")),
+        raw_row_jsonb_bytes: BigInt(Buffer.byteLength(row.raw_row, "utf8")),
+      }));
+    }
+    if (query.includes("AS raw_row_upper_bytes")) {
+      const afterId = Number(parameters[0]);
+      const throughId = Number(parameters[1]);
+      const maxRowBytes = Number(parameters[2]);
+      const selected = rows.filter((row) => row.id > afterId && row.id <= throughId);
+      state.inventoryBoundBatchSizes.push({
+        rowCount: selected.length,
+        jsonbBytes: selected.reduce((sum, row) => sum + Buffer.byteLength(row.raw_row, "utf8"), 0),
+      });
+      return selected.map((row) => ({
+        id: row.id,
+        raw_row_upper_bytes: BigInt(state.inventoryMetadataByteOverrides[`${table}:${row.id}`]
+          ?? Buffer.byteLength(row.raw_row, "utf8") * 6),
+        raw_row_bytes: (state.inventoryMetadataByteOverrides[`${table}:${row.id}`] ?? 0) > maxRowBytes
+          ? null : BigInt(Buffer.byteLength(row.raw_row, "utf8")),
       }));
     }
     if (query.includes("rendered_row.raw_row")) {
@@ -51,7 +68,7 @@ const mocks = vi.hoisted(() => {
       }
       return chunks;
     }
-    if (query.includes("AS raw_row")) {
+    if (query.includes("AS raw_row\n")) {
       const afterId = Number(parameters[0]);
       const throughId = Number(parameters[1]);
       const selected = rows.filter((row) => row.id > afterId && row.id <= throughId);
@@ -166,6 +183,7 @@ function reset(blocks = true) {
   mocks.state.inventoryRows = {};
   mocks.state.inventoryMetadataByteOverrides = {};
   mocks.state.inventoryReturnedBytes = [];
+  mocks.state.inventoryBoundBatchSizes = [];
   mocks.prisma.physiologyV7Lifecycle.findUnique.mockImplementation(async () => ({ ...mocks.state.lifecycle }));
   mocks.prisma.unifiedPublicationBlock.findMany.mockImplementation(async () => mocks.state.blocks.map((block) => ({ ...block })));
   mocks.prisma.unifiedPublicationBlock.findUnique.mockImplementation(async (args: { where: { profileId_source_sourceKey: { source: string; sourceKey: string } } }) => {
@@ -227,9 +245,21 @@ describe("persisted-source V4 derived recovery", () => {
     expect(result.fingerprint).toBe(expectedFingerprint.digest("hex"));
     expect(mocks.state.inventoryReturnedBytes.every((bytes) => bytes <= 8 * 1024 * 1024)).toBe(true);
     expect(mocks.state.inventoryReturnedBytes.some((bytes) => bytes > 0 && bytes < 8 * 1024 * 1024)).toBe(true);
-    const metadataQueries = mocks.queryRaw.mock.calls.filter(([query]) => String(query).includes("AS raw_row_bytes"));
+    const metadataQueries = mocks.queryRaw.mock.calls.filter(([query]) => String(query).includes("AS raw_row_jsonb_bytes"));
     expect(metadataQueries.length).toBeGreaterThan(1);
-    expect(metadataQueries.every(([query]) => !String(query).includes("MATERIALIZED"))).toBe(true);
+    expect(metadataQueries.every(([query]) => String(query).includes("pg_column_size((to_jsonb(source_row)")
+      && !String(query).includes("WITH RECURSIVE")
+      && !String(query).includes("raw_row_jsonb::text")
+      && !String(query).includes("octet_length"))).toBe(true);
+    const boundQueries = mocks.queryRaw.mock.calls.filter(([query]) => String(query).includes("AS raw_row_upper_bytes"));
+    expect(boundQueries.length).toBeGreaterThan(1);
+    expect(boundQueries.every(([query]) => String(query).includes("pg_catalog.numeric_send")
+      && String(query).includes("pg_column_size(raw_rows.raw_row_jsonb)::bigint * 6")
+      && String(query).includes("CASE WHEN raw_row_upper_bytes <= $3::bigint")
+      && String(query).includes("THEN octet_length(raw_row_jsonb::text)::bigint"))).toBe(true);
+    expect(mocks.state.inventoryBoundBatchSizes.length).toBeGreaterThan(1);
+    expect(mocks.state.inventoryBoundBatchSizes.every(({ rowCount, jsonbBytes }) =>
+      jsonbBytes <= 1024 * 1024 || rowCount === 1)).toBe(true);
     expect(mocks.queryRaw.mock.calls.filter(([query]) => String(query).includes("WITH rendered_row AS MATERIALIZED"))).toHaveLength(1);
     expect(mocks.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000,
@@ -241,8 +271,9 @@ describe("persisted-source V4 derived recovery", () => {
     mocks.state.inventoryMetadataByteOverrides["ModelEpisode:1"] = 64 * 1024 * 1024 + 1;
 
     await expect(inventoryV4RecoveryRawSourcesV1(mocks.prisma as never))
-      .rejects.toThrow("oversized ModelEpisode row id=1 bytes=67108865");
+      .rejects.toThrow(/serialized-size upper bound exceeds its limit ModelEpisode row id=1 upperBytes=67108865/);
     expect(mocks.queryRaw.mock.calls.some(([query]) => String(query).includes("WITH rendered_row AS MATERIALIZED"))).toBe(false);
+    expect(mocks.queryRaw.mock.calls.some(([query]) => String(query).includes("THEN octet_length(raw_row_jsonb::text)::bigint"))).toBe(true);
   });
 
   it("refreshes every persisted Training dependency deterministically and CAS-clears all fences", async () => {

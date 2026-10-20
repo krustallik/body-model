@@ -512,6 +512,61 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     expect(actual.tables.HealthSyncSnapshot).toMatch(/^[a-f0-9]{64}$/);
   }, 60_000);
 
+  it("rejects JSONB whose numeric rendering exceeds the row cap before rendering the full row", async () => {
+    const snapshot = await prisma.healthSyncSnapshot.create({
+      data: {
+        date: pagedInventoryFixtureDate,
+        timezone: "UTC",
+        rawPayload: { fixture: `${pagedInventoryFixtureMarker}-numeric-bound` },
+      },
+    });
+    try {
+      await prisma.$executeRaw`
+        UPDATE public."HealthSyncSnapshot"
+        SET "rawPayload" = jsonb_build_object(
+          'fixture', ${pagedInventoryFixtureMarker},
+          'values', (
+            SELECT jsonb_agg(('0.' || repeat('0', 16000) || '1')::numeric)
+            FROM generate_series(1, 5000)
+          )
+        )
+        WHERE id = ${snapshot.id}
+      `;
+      const [rawState] = await prisma.$queryRawUnsafe<Array<{
+        jsonb_bytes: bigint;
+        value_count: number;
+        value_scale: number;
+      }>>(
+        `SELECT pg_column_size("rawPayload")::bigint AS jsonb_bytes,
+           jsonb_array_length("rawPayload"->'values')::integer AS value_count,
+           scale(("rawPayload"->'values'->>0)::numeric)::integer AS value_scale
+         FROM public."HealthSyncSnapshot" WHERE id = $1::integer`,
+        snapshot.id,
+      );
+      expect(rawState).toBeDefined();
+      expect(rawState!.jsonb_bytes).toBeLessThan(BigInt(1024 * 1024));
+      expect(rawState).toMatchObject({ value_count: 5000, value_scale: 16001 });
+
+      const { inventoryV4RecoveryRawSourcesV1 } =
+        await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
+      await expect(inventoryV4RecoveryRawSourcesV1(prisma))
+        .rejects.toThrow(new RegExp(`serialized-size upper bound exceeds its limit HealthSyncSnapshot row id=${snapshot.id} upperBytes=\\d+`));
+
+      const [rawStateAfter] = await prisma.$queryRawUnsafe<Array<{
+        value_count: number;
+        value_scale: number;
+      }>>(
+        `SELECT jsonb_array_length("rawPayload"->'values')::integer AS value_count,
+           scale(("rawPayload"->'values'->>0)::numeric)::integer AS value_scale
+         FROM public."HealthSyncSnapshot" WHERE id = $1::integer`,
+        snapshot.id,
+      );
+      expect(rawStateAfter).toEqual({ value_count: 5000, value_scale: 16001 });
+    } finally {
+      await prisma.healthSyncSnapshot.delete({ where: { id: snapshot.id } });
+    }
+  }, 60_000);
+
   it("rebuilds 8- and 9-Health fence sets across matched and unmatched Training sessions without changing sources", async () => {
     const { inventoryV4RecoveryRawSourcesV1 } = await import("@/modules/model-episodes/unified-v4-derived-recovery.service");
     const { assertPersistedTrainingSessionRecoveryReadyV1 } = await import("@/modules/training/training.service");

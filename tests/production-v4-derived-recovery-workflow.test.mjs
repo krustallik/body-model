@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -91,9 +91,11 @@ esac
     writeFileSync(archive, "isolated image archive fixture");
     const archiveSha = createHash("sha256").update(readFileSync(archive)).digest("hex");
     const metrics = JSON.stringify({ archiveBytes: 1, imageBytes: 1, dataPeakGrowthBytes: Number.MAX_SAFE_INTEGER,
-      walPeakGrowthBytes: 1, temporaryPeakBytes: 1, recoveryStartMarkerBytes: 100_000, recoveryTerminalMarkerBytes: 100_000 });
+      walPeakGrowthBytes: 1, temporaryPeakBytes: 1, recoveryDiagnosticLogBytes: 1,
+      recoveryStartMarkerBytes: 100_000, recoveryTerminalMarkerBytes: 100_000 });
     const lowMetrics = JSON.stringify({ archiveBytes: 1, imageBytes: 1, dataPeakGrowthBytes: 0,
-      walPeakGrowthBytes: 0, temporaryPeakBytes: 0, recoveryStartMarkerBytes: 1, recoveryTerminalMarkerBytes: 1 });
+      walPeakGrowthBytes: 0, temporaryPeakBytes: 0, recoveryDiagnosticLogBytes: 0,
+      recoveryStartMarkerBytes: 1, recoveryTerminalMarkerBytes: 1 });
     const scriptSha = createHash("sha256").update(readFileSync(hostScript)).digest("hex");
     const helperSha = createHash("sha256").update(readFileSync(helperScript)).digest("hex");
     const schemaDigestHelperSha = createHash("sha256").update(readFileSync(schemaDigestScript)).digest("hex");
@@ -603,6 +605,12 @@ esac
     expect(host).toContain("flock -n 9");
     expect(host).toContain('state: "started"');
     expect(host).toContain("terminal-failed");
+    expect(host).toContain('tail -c 65536 < "$diagnostic_pipe" > "$diagnostic_file"');
+    expect(host).toContain('2> "$diagnostic_pipe"');
+    expect(host).toContain("recoveryFailureDiagnostics");
+    expect(host).toContain("V4_RECOVERY_DIAGNOSTICS path=");
+    expect(host).toContain('sync -f "$marker_dir" || fail "failure-marker-sync"');
+    expect(workflow).toContain("recoveryDiagnosticLogBytes: 65_536");
     expect(host).toContain("recovery-failed-no-retry");
     expect(host).toContain("production-container-identity-changed-during-recovery");
     expect(host).toContain("schema-changed-during-recovery");
@@ -675,6 +683,80 @@ esac
       expect(extraUnboundTail.stderr).toContain("Read-only postflight did not prove strict raw parity");
       const missingSourceDay = run(["1|2025-01-02", "2|2025-01-03"]);
       expect(missingSourceDay.status).not.toBe(0);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("captures fake-Docker stderr within 64 KiB and preserves the started marker when postflight fails", () => {
+    const markerCommand = 'node --input-type=module - "$marker" "$diagnostic_file" <<\'NODE\'\n';
+    const commandStart = host.indexOf(markerCommand);
+    expect(commandStart).toBeGreaterThanOrEqual(0);
+    const sourceStart = commandStart + markerCommand.length;
+    const sourceEnd = host.indexOf("\nNODE", sourceStart);
+    expect(sourceEnd).toBeGreaterThan(sourceStart);
+    const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-fake-docker-stderr-"));
+    const artifactRoot = join(tempRoot, "artifacts").replaceAll("\\", "/");
+    const markerSource = host.slice(sourceStart, sourceEnd)
+      .replaceAll("/var/lib/bodycast/recovery/artifacts", artifactRoot);
+    const sourceSha = "ad902e2172d6343061624b35d2350284e0a1c219";
+    const runId = "70001";
+    const artifactDir = join(tempRoot, "artifacts", sourceSha, runId);
+    const markerPath = join(artifactDir, "recovery-marker.json");
+    const diagnosticPath = join(artifactDir, "recovery-stderr.log");
+    const pipePath = join(artifactDir, "recovery-stderr.pipe");
+    mkdirSync(artifactDir, { recursive: true, mode: 0o700 });
+    chmodSync(artifactDir, 0o700);
+    writeFileSync(markerPath, JSON.stringify({ state: "started", sourceSha, ownerRunId: runId }) + "\n", { mode: 0o600 });
+    const script = `set -Eeuo pipefail
+diagnostic_file="$BODYCAST_TEST_DIAGNOSTIC_FILE"
+diagnostic_pipe="$BODYCAST_TEST_DIAGNOSTIC_PIPE"
+marker="$BODYCAST_TEST_MARKER"
+artifact_dir="$BODYCAST_TEST_ARTIFACT_DIR"
+: > "$diagnostic_file"
+chmod 600 "$diagnostic_file"
+mkfifo -m 600 "$diagnostic_pipe"
+tail -c 65536 < "$diagnostic_pipe" > "$diagnostic_file" &
+diagnostic_capture_pid=$!
+docker() {
+  [[ "$1" == run ]] || return 98
+  head -c 65000 /dev/zero | tr '\\000' A >&2
+  head -c 35000 /dev/zero | tr '\\000' B >&2
+  return 7
+}
+if docker run --rm test-recovery-image > /dev/null 2> "$diagnostic_pipe"; then result_status=success; else result_status=failed; fi
+wait "$diagnostic_capture_pid"
+rm -f -- "$diagnostic_pipe"
+sync -f "$diagnostic_file"
+if [[ "$result_status" != success ]]; then
+  node --input-type=module - "$marker" "$diagnostic_file" <<'NODE'
+${markerSource}
+NODE
+  sync -f "$artifact_dir"
+fi
+if bash -c 'exit 91'; then postflight_status=0; else postflight_status=$?; fi
+exit "$postflight_status"
+`;
+    try {
+      const result = spawnSync("bash", ["-euo", "pipefail", "-c", script], {
+        env: { ...process.env, BODYCAST_TEST_DIAGNOSTIC_FILE: diagnosticPath,
+          BODYCAST_TEST_DIAGNOSTIC_PIPE: pipePath, BODYCAST_TEST_MARKER: markerPath,
+          BODYCAST_TEST_ARTIFACT_DIR: artifactDir,
+          BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: JSON.stringify({ recoveryTerminalMarkerBytes: 100_000 }) },
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(91);
+      const diagnostic = readFileSync(diagnosticPath);
+      const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+      expect(diagnostic.byteLength).toBe(65_536);
+      expect(diagnostic.subarray(0, 30_536).every((byte) => byte === "A".charCodeAt(0))).toBe(true);
+      expect(diagnostic.subarray(30_536).every((byte) => byte === "B".charCodeAt(0))).toBe(true);
+      expect(statSync(diagnosticPath).mode & 0o777).toBe(0o600);
+      expect(marker).toMatchObject({ state: "started", recoveryFailureDiagnostics: {
+        path: diagnosticPath, bytes: 65_536, sha256: createHash("sha256").update(diagnostic).digest("hex"),
+      } });
+      expect(host.indexOf('sync -f "$marker_dir" || fail "recovery-diagnostic-marker-sync"'))
+        .toBeLessThan(host.indexOf('after_file="$(mktemp /var/tmp/bodycast-v4-after.XXXXXX)"'));
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

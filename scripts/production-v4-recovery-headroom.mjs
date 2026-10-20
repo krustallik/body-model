@@ -15,7 +15,12 @@ export function recoveryTerminalMarkerBudgetTemplate(startMarker, input) {
     blocksRemaining: Number.MAX_SAFE_INTEGER, unifiedPublishedGeneration: Number.MAX_SAFE_INTEGER,
     productionPublishedGeneration: Number.MAX_SAFE_INTEGER,
     unifiedTargetRevision: input.unifiedTargetRevision, unifiedPublicationBlockedFromDate: null,
-    rolloutEpoch: Number.MAX_SAFE_INTEGER };
+    rolloutEpoch: Number.MAX_SAFE_INTEGER,
+    recoveryFailureDiagnostics: {
+      path: `/var/lib/bodycast/recovery/artifacts/${startMarker.sourceSha}/${startMarker.ownerRunId}/recovery-stderr.log`,
+      bytes: Number.MAX_SAFE_INTEGER,
+      sha256: "f".repeat(64),
+    } };
 }
 
 export function serializedRecoveryMarkerBytes(marker) {
@@ -62,7 +67,7 @@ function livePostgresUsage(postgresData, postgresWal, measureDirectoryUsage) {
 export function calculateRecoveryHeadroom({ phase, metrics, paths, imagePresent, measureFilesystem = filesystem,
   measureDirectoryUsage = directoryAllocatedBytes }) {
   if (!["before-transfer", "before-load", "before-execute"].includes(phase)) fail("Unknown gate phase.");
-  for (const key of ["archiveBytes", "imageBytes", "dataPeakGrowthBytes", "walPeakGrowthBytes", "temporaryPeakBytes"]) {
+  for (const key of ["archiveBytes", "imageBytes", "dataPeakGrowthBytes", "walPeakGrowthBytes", "temporaryPeakBytes", "recoveryDiagnosticLogBytes"]) {
     positiveSafeInteger(metrics[key], key, true);
   }
   for (const key of ["archiveBytes", "imageBytes", "recoveryStartMarkerBytes", "recoveryTerminalMarkerBytes"]) {
@@ -119,6 +124,9 @@ export function calculateRecoveryHeadroom({ phase, metrics, paths, imagePresent,
   if (phase !== "before-execute" && !imagePresent) {
     add(locations.docker, 2 * metrics.imageBytes, "image-load-staging-plus-retained-image-layers");
   }
+  const diagnosticAllocationBytes = Math.ceil(metrics.recoveryDiagnosticLogBytes / locations.artifact.blockSize)
+    * locations.artifact.blockSize;
+  add(locations.artifact, diagnosticAllocationBytes, "bounded-recovery-failure-diagnostics");
   add(locations.temporary, metrics.temporaryPeakBytes, "measured-recovery-temporary-files");
   const markerBlocks = (bytes) => Math.ceil(bytes / locations.recoveryState.blockSize) + 1;
   const markerPeakBytes = (markerBlocks(metrics.recoveryStartMarkerBytes)

@@ -146,9 +146,16 @@ NODE
 )" || fail "app-database-endpoint-identity"
 database_env_file="$(mktemp /var/tmp/bodycast-v4-database-env.XXXXXX)"
 evidence_file="$(mktemp /var/tmp/bodycast-v4-evidence.XXXXXX)"
+diagnostic_pipe=""
+diagnostic_capture_pid=""
 chmod 600 "$database_env_file" || fail "database-env-file"
 printf 'DATABASE_URL=%s\n' "$database_url" > "$database_env_file"
-trap 'rm -f -- "$evidence_file" "$database_env_file"' EXIT
+cleanup_recovery_temps() {
+  if [[ -n "${diagnostic_capture_pid:-}" ]]; then kill "$diagnostic_capture_pid" 2>/dev/null || true; fi
+  if [[ -n "${diagnostic_pipe:-}" ]]; then rm -f -- "$diagnostic_pipe"; fi
+  rm -f -- "$evidence_file" "$database_env_file"
+}
+trap cleanup_recovery_temps EXIT
 docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" \
   node /app/dist/production-v4-recovery-evidence.mjs > "$evidence_file" || fail "read-only-db-evidence"
 validate_source_evidence() {
@@ -327,18 +334,61 @@ await file.sync(); await file.close(); await rename(tmp, path);
 NODE
 sync -f "$marker_dir" || fail "marker-sync"
 result_file="$(mktemp /var/tmp/bodycast-v4-result.XXXXXX)"
-if docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" > "$result_file"; then
+diagnostic_file="$artifact_dir/recovery-stderr.log"
+diagnostic_pipe="$artifact_dir/recovery-stderr.pipe"
+[[ ! -e "$diagnostic_file" && ! -L "$diagnostic_file" && ! -e "$diagnostic_pipe" && ! -L "$diagnostic_pipe" ]] \
+  || fail "recovery-diagnostic-artifact-exists"
+[[ "$(node --input-type=module -e 'const m=JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON); process.stdout.write(String(m.recoveryDiagnosticLogBytes));')" == "65536" ]] \
+  || fail "recovery-diagnostic-budget"
+: > "$diagnostic_file"
+chmod 600 "$diagnostic_file" || fail "recovery-diagnostic-permissions"
+mkfifo -m 600 "$diagnostic_pipe" || fail "recovery-diagnostic-pipe"
+tail -c 65536 < "$diagnostic_pipe" > "$diagnostic_file" &
+diagnostic_capture_pid=$!
+if docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" > "$result_file" 2> "$diagnostic_pipe"; then
   result_status=success
 else
   result_status=failed
+fi
+wait "$diagnostic_capture_pid" || fail "recovery-diagnostic-capture"
+diagnostic_capture_pid=""
+rm -f -- "$diagnostic_pipe"
+diagnostic_pipe=""
+sync -f "$diagnostic_file" || fail "recovery-diagnostic-sync"
+if [[ "$result_status" != success ]]; then
+  node --input-type=module - "$marker" "$diagnostic_file" <<'NODE'
+import { readFileSync, writeFileSync, openSync, fsyncSync, closeSync, renameSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+const [path, diagnosticPath] = process.argv.slice(2); const prior = JSON.parse(readFileSync(path, "utf8"));
+const expectedDiagnosticPath = `/var/lib/bodycast/recovery/artifacts/${prior.sourceSha}/${prior.ownerRunId}/recovery-stderr.log`;
+const diagnosticStat = statSync(diagnosticPath);
+if (prior.state !== "started" || diagnosticPath !== expectedDiagnosticPath || !diagnosticStat.isFile()
+    || (diagnosticStat.mode & 0o777) !== 0o600 || diagnosticStat.size > 65_536) {
+  throw new Error("Recovery failure diagnostics are malformed or exceed their bounded budget.");
+}
+const diagnosticSha256 = createHash("sha256").update(readFileSync(diagnosticPath)).digest("hex");
+const recoveryFailureDiagnostics = { path: diagnosticPath, bytes: diagnosticStat.size, sha256: diagnosticSha256 };
+const metrics = JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON ?? "null");
+const contents = `${JSON.stringify({ ...prior, recoveryFailureDiagnostics })}\n`;
+if (!Number.isSafeInteger(metrics?.recoveryTerminalMarkerBytes) || metrics.recoveryTerminalMarkerBytes < Buffer.byteLength(contents)) {
+  throw new Error("Failure-diagnostics marker exceeds the measured disk headroom allowance.");
+}
+const tmp = `${path}.diagnostics-${process.pid}`; writeFileSync(tmp, contents, { mode: 0o600, flag: "wx" });
+const fd = openSync(tmp, "r+"); fsyncSync(fd); closeSync(fd); renameSync(tmp, path);
+NODE
+  sync -f "$marker_dir" || fail "recovery-diagnostic-marker-sync"
 fi
 after_file="$(mktemp /var/tmp/bodycast-v4-after.XXXXXX)"
 docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" \
   node /app/dist/production-v4-recovery-evidence.mjs > "$after_file" || fail "postflight-evidence-unknown"
 if [[ "$result_status" != success ]]; then
-  node --input-type=module - "$marker" "$result_status" <<'NODE'
+  node --input-type=module - "$marker" "$result_status" "$diagnostic_file" <<'NODE'
 import { readFileSync, writeFileSync, openSync, fsyncSync, closeSync, renameSync } from "node:fs";
-const [path, status] = process.argv.slice(2); const prior = JSON.parse(readFileSync(path, "utf8"));
+const [path, status, diagnosticPath] = process.argv.slice(2); const prior = JSON.parse(readFileSync(path, "utf8"));
+const expectedDiagnosticPath = `/var/lib/bodycast/recovery/artifacts/${prior.sourceSha}/${prior.ownerRunId}/recovery-stderr.log`;
+if (prior.state !== "started" || diagnosticPath !== expectedDiagnosticPath || prior.recoveryFailureDiagnostics?.path !== diagnosticPath) {
+  throw new Error("Recovery failure diagnostics are not durably bound to the started marker.");
+}
 const terminalContents = `${JSON.stringify({ ...prior, state: "terminal-failed", result: status, finishedAt: new Date().toISOString() })}\n`;
 const metrics = JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON ?? "null");
 if (!Number.isSafeInteger(metrics?.recoveryTerminalMarkerBytes) || metrics.recoveryTerminalMarkerBytes < Buffer.byteLength(terminalContents)) {
@@ -347,7 +397,10 @@ if (!Number.isSafeInteger(metrics?.recoveryTerminalMarkerBytes) || metrics.recov
 const tmp = `${path}.terminal-${process.pid}`; writeFileSync(tmp, terminalContents, { mode: 0o600, flag: "wx" });
 const fd = openSync(tmp, "r+"); fsyncSync(fd); closeSync(fd); renameSync(tmp, path);
 NODE
-  sync -f "$marker_dir" || true
+  sync -f "$marker_dir" || fail "failure-marker-sync"
+  diagnostic_bytes="$(wc -c < "$diagnostic_file" | tr -d '[:space:]')"
+  diagnostic_sha256="$(sha256sum "$diagnostic_file" | awk '{print $1}')"
+  printf 'V4_RECOVERY_DIAGNOSTICS path=%s bytes=%s sha256=%s\n' "$diagnostic_file" "$diagnostic_bytes" "$diagnostic_sha256" >&2
   fail "recovery-failed-no-retry"
 fi
 schema_digest_after="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' \
@@ -421,4 +474,4 @@ sync -f "$marker_dir" || fail "terminal-marker-sync"
 printf 'V4_RECOVERY_CURRENT epoch=1 covered=%s raw_fingerprint=%s\n' \
   "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).coveredDayCount' "$after_file")" \
   "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).sourceFingerprint' "$after_file")"
-rm -f -- "$result_file" "$after_file"
+rm -f -- "$result_file" "$after_file" "$diagnostic_file"

@@ -3,7 +3,7 @@ import { calculateRecoveryHeadroom } from "../scripts/production-v4-recovery-hea
 
 const GiB = 1024 ** 3;
 const metrics = { archiveBytes: 500, imageBytes: 1_000,
-  dataPeakGrowthBytes: 200, walPeakGrowthBytes: 300, temporaryPeakBytes: 100,
+  dataPeakGrowthBytes: 200, walPeakGrowthBytes: 300, temporaryPeakBytes: 100, recoveryDiagnosticLogBytes: 65_536,
   recoveryStartMarkerBytes: 3000, recoveryTerminalMarkerBytes: 5000 };
 const paths = { root: "/root", artifact: "/artifact", docker: "/docker", postgresData: "/pgdata",
   postgresWal: "/pgwal", temporary: "/temporary", recoveryState: "/recovery" };
@@ -24,7 +24,7 @@ describe("V4 recovery filesystem headroom gate", () => {
   it("sums archive, image staging, measured PostgreSQL/WAL, temp, and reserves on a shared filesystem", () => {
     const devices = Object.fromEntries(Object.values(paths).map((path) => [path, "root"]));
     const required = 10 * GiB + liveUsage[paths.postgresData] + liveUsage[paths.postgresWal]
-      + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + markerPeakAllocation
+      + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + metrics.recoveryDiagnosticLogBytes + markerPeakAllocation
       + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
     const report = calculateRecoveryHeadroom({ phase: "before-transfer", metrics, paths, imagePresent: false,
       measureFilesystem: measureWith(devices, { root: required }), measureDirectoryUsage: measureUsage() });
@@ -34,16 +34,18 @@ describe("V4 recovery filesystem headroom gate", () => {
   });
 
   it("keeps PostgreSQL/WAL requirements separate when the real mount devices differ", () => {
-    const devices = { "/root": "root", "/artifact": "root", "/docker": "root", "/temporary": "root",
+    const devices = { "/root": "root", "/artifact": "artifact", "/docker": "root", "/temporary": "root",
       "/pgdata": "pg", "/pgwal": "wal", "/recovery": "state" };
-    const rootRequired = 10 * GiB + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes;
+    const rootRequired = 10 * GiB + 2 * metrics.imageBytes + metrics.temporaryPeakBytes;
+    const artifactRequired = metrics.archiveBytes + metrics.recoveryDiagnosticLogBytes;
     const pgRequired = liveUsage[paths.postgresData] + metrics.dataPeakGrowthBytes;
     const walRequired = liveUsage[paths.postgresWal] + metrics.walPeakGrowthBytes;
     const report = calculateRecoveryHeadroom({ phase: "before-transfer", metrics, paths, imagePresent: false,
-      measureFilesystem: measureWith(devices, { root: rootRequired, pg: pgRequired, wal: walRequired, state: markerPeakAllocation }),
+      measureFilesystem: measureWith(devices, { root: rootRequired, artifact: artifactRequired,
+        pg: pgRequired, wal: walRequired, state: markerPeakAllocation }),
       measureDirectoryUsage: measureUsage() });
     expect(report.filesystems.map((item) => [item.device, item.requiredBytes])).toEqual([
-      ["pg", pgRequired], ["root", rootRequired], ["state", markerPeakAllocation], ["wal", walRequired],
+      ["artifact", artifactRequired], ["pg", pgRequired], ["root", rootRequired], ["state", markerPeakAllocation], ["wal", walRequired],
     ]);
   });
 
@@ -56,12 +58,12 @@ describe("V4 recovery filesystem headroom gate", () => {
   it("rechecks image load and execute using only the still-unconsumed bytes", () => {
     const devices = Object.fromEntries(Object.values(paths).map((path) => [path, "root"]));
     const beforeLoad = 10 * GiB + liveUsage[paths.postgresData] + liveUsage[paths.postgresWal]
-      + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + markerPeakAllocation
+      + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + metrics.recoveryDiagnosticLogBytes + markerPeakAllocation
       + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
     expect(calculateRecoveryHeadroom({ phase: "before-load", metrics, paths, imagePresent: false,
       measureFilesystem: measureWith(devices, { root: beforeLoad }), measureDirectoryUsage: measureUsage() }).filesystems[0].requiredBytes).toBe(beforeLoad);
     const beforeExecute = 10 * GiB + liveUsage[paths.postgresData] + liveUsage[paths.postgresWal]
-      + metrics.temporaryPeakBytes + markerPeakAllocation + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
+      + metrics.temporaryPeakBytes + metrics.recoveryDiagnosticLogBytes + markerPeakAllocation + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
     expect(calculateRecoveryHeadroom({ phase: "before-execute", metrics, paths, imagePresent: true,
       measureFilesystem: measureWith(devices, { root: beforeExecute }), measureDirectoryUsage: measureUsage() }).filesystems[0].requiredBytes).toBe(beforeExecute);
     expect(() => calculateRecoveryHeadroom({ phase: "before-execute", metrics, paths, imagePresent: true,
@@ -71,7 +73,7 @@ describe("V4 recovery filesystem headroom gate", () => {
   it("fails the later gate if filesystem availability falls after an earlier successful check", () => {
     const devices = Object.fromEntries(Object.values(paths).map((path) => [path, "root"]));
     const beforeTransferRequired = 10 * GiB + liveUsage[paths.postgresData] + liveUsage[paths.postgresWal]
-      + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + markerPeakAllocation
+      + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + metrics.recoveryDiagnosticLogBytes + markerPeakAllocation
       + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
     let available = beforeTransferRequired;
     const measureFilesystem = measureWith(devices, { get root() { return available; } });
@@ -86,7 +88,7 @@ describe("V4 recovery filesystem headroom gate", () => {
   it("rechecks filesystem availability after PGDATA/WAL scans instead of trusting a stale pre-scan snapshot", () => {
     const devices = Object.fromEntries(Object.values(paths).map((path) => [path, "root"]));
     const required = 10 * GiB + liveUsage[paths.postgresData] + liveUsage[paths.postgresWal]
-      + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + markerPeakAllocation
+      + metrics.archiveBytes + 2 * metrics.imageBytes + metrics.temporaryPeakBytes + metrics.recoveryDiagnosticLogBytes + markerPeakAllocation
       + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
     let scanningStarted = false;
     const measureFilesystem = (path) => ({ path, device: devices[path], availableBytes: scanningStarted ? required - 1 : required, blockSize: 4096 });
@@ -114,10 +116,30 @@ describe("V4 recovery filesystem headroom gate", () => {
       .toThrow(/recoveryTerminalMarkerBytes is malformed/);
   });
 
+  it("fails closed when the bounded failure-diagnostics budget is absent", () => {
+    const missingDiagnosticsBudget = { ...metrics };
+    delete missingDiagnosticsBudget.recoveryDiagnosticLogBytes;
+    const devices = Object.fromEntries(Object.values(paths).map((path) => [path, "root"]));
+    expect(() => calculateRecoveryHeadroom({ phase: "before-execute", metrics: missingDiagnosticsBudget, paths, imagePresent: true,
+      measureFilesystem: measureWith(devices, { root: 100 * GiB }), measureDirectoryUsage: measureUsage() }))
+      .toThrow(/recoveryDiagnosticLogBytes is malformed/);
+  });
+
+  it("rounds the failure-diagnostics reservation up to the artifact filesystem allocation block", () => {
+    const devices = Object.fromEntries(Object.values(paths).map((path) => [path, path === paths.artifact ? "artifact" : "root"]));
+    const blockSize = 128 * 1024;
+    const report = calculateRecoveryHeadroom({ phase: "before-execute",
+      metrics: { ...metrics, recoveryDiagnosticLogBytes: blockSize + 1 }, paths, imagePresent: true,
+      measureFilesystem: (path) => ({ path, device: devices[path], availableBytes: 100 * GiB,
+        blockSize: path === paths.artifact ? blockSize : 4096 }), measureDirectoryUsage: measureUsage() });
+    expect(report.filesystems.find((entry) => entry.device === "artifact").reasons)
+      .toContainEqual({ reason: "bounded-recovery-failure-diagnostics", bytes: 2 * blockSize });
+  });
+
   it("fails before execute when only the start marker, not the simultaneous terminal receipt, fits", () => {
     const devices = Object.fromEntries(Object.values(paths).map((path) => [path, "root"]));
     const requiredWithoutMarkers = 10 * GiB + liveUsage[paths.postgresData] + liveUsage[paths.postgresWal]
-      + metrics.temporaryPeakBytes + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
+      + metrics.temporaryPeakBytes + metrics.recoveryDiagnosticLogBytes + metrics.dataPeakGrowthBytes + metrics.walPeakGrowthBytes;
     const startOnly = requiredWithoutMarkers + markerAllocation(metrics.recoveryStartMarkerBytes);
     expect(startOnly).toBeLessThan(requiredWithoutMarkers + markerPeakAllocation);
     expect(() => calculateRecoveryHeadroom({ phase: "before-execute", metrics, paths, imagePresent: true,

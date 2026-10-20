@@ -111,6 +111,51 @@ describe("encrypted PostgreSQL backup schema digest", () => {
     }
   });
 
+  it("authenticates the full encrypted archive when schema-only pg_restore closes stdin early", async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-archive-schema-early-close-"));
+    const key = Buffer.alloc(32, 41);
+    const archive = path.join(scratch, "large-data-archive.pgdump.enc");
+    const tamperedArchive = path.join(scratch, "large-data-archive-tampered.pgdump.enc");
+    const payload = Buffer.alloc(4 * 1024 * 1024, 73);
+    const logged = [];
+    try {
+      await encryptBackupStream(Readable.from([payload]), archive, key);
+      const tampered = await readFile(archive);
+      tampered[tampered.length - 1] ^= 1;
+      await writeFile(tamperedArchive, tampered, { flag: "wx", mode: 0o600 });
+
+      const earlyClose = [
+        "process.stdin.once('data', () => {",
+        `  process.stdout.write(${JSON.stringify(schemaDump.toString("utf8"))}, () => {`,
+        "    process.stdin.destroy();",
+        "    process.exit(0);",
+        "  });",
+        "});",
+      ].join("\n");
+      const actual = await digestEncryptedPostgresBackupSchema({
+        inputPath: archive,
+        key,
+        command: process.execPath,
+        args: ["-e", earlyClose],
+        env: {},
+        log: (message) => logged.push(message),
+      });
+      expect(actual).toBe(schemaDumpSha256(schemaDump));
+      expect(logged.join("\n")).toContain("remaining encrypted archive was fully consumed and authenticated");
+
+      await expect(digestEncryptedPostgresBackupSchema({
+        inputPath: tamperedArchive,
+        key,
+        command: process.execPath,
+        args: ["-e", earlyClose],
+        env: {},
+        log: () => {},
+      })).rejects.toThrow("Backup decryption/streaming failed");
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed on malformed schema output and nonzero pg_restore status", async () => {
     const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-archive-schema-failure-"));
     try {

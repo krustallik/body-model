@@ -450,6 +450,7 @@ jobs:
             dataPeakGrowthBytes: storagePeak.dataPeakGrowthBytes,
             walPeakGrowthBytes: storagePeak.walPeakGrowthBytes,
             temporaryPeakBytes,
+            recoveryDiagnosticLogBytes: 65_536,
             recoveryStartMarkerBytes: serializedRecoveryMarkerBytes(recoveryStartMarkerTemplate),
             recoveryTerminalMarkerBytes: serializedRecoveryMarkerBytes(terminalMarkerTemplate),
           };

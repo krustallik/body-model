@@ -31,6 +31,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     const schemaDigestScript = join(artifactDir, "schema-digest.mjs");
     const binDir = join(tempRoot, "bin");
     const dockerLog = join(tempRoot, "docker.log");
+    const headroomLog = join(tempRoot, "headroom.log");
     mkdirSync(deployPath, { recursive: true });
     mkdirSync(dockerRoot, { recursive: true });
     mkdirSync(join(pgdata, "pg_wal"), { recursive: true });
@@ -65,8 +66,8 @@ case "$1:$2:$3" in
   inspect:--format:'{{json .NetworkSettings.Networks}}') printf '{"bodycast-test-net":{"IPAddress":"172.30.0.2","Aliases":["bodycast-db-prod"]}}\\n' ;;
   image:inspect:*)
     candidate="\${!#}"
+    if [[ "$candidate" == "$BODYCAST_TEST_IMAGE_ID" && "$BODYCAST_TEST_CONFIG_IMAGE_PRESENT" == true ]]; then printf '%s\\n' "$candidate"; exit 0; fi
     if grep -Fq 'load --input' "$BODYCAST_DOCKER_TEST_LOG"; then
-      if [[ "$candidate" == "$BODYCAST_TEST_IMAGE_ID" && "$BODYCAST_TEST_CONFIG_IMAGE_PRESENT" == true ]]; then printf '%s\\n' "$candidate"; exit 0; fi
       if [[ "$candidate" == "$BODYCAST_TEST_IMAGE_DIGEST" && "$BODYCAST_TEST_LOADED_IMAGE_ID" == "$candidate" ]]; then printf '%s\\n' "$candidate"; exit 0; fi
     fi
     exit 1 ;;
@@ -170,11 +171,12 @@ esac
       // helper's arithmetic and statfs integration are covered above; this
       // fixture supplies successful headroom and a Docker 29-style manifest ID.
       // The read-only evidence command then stops at its deliberate fixture.
-      const successfulHeadroomFixture = `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ phase: process.argv[3], filesystems: [] }) + "\\n");\n`;
+      const successfulHeadroomFixture = `#!/usr/bin/env node\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.BODYCAST_TEST_HEADROOM_LOG, process.argv[3] + "\\n", { flag: "a" });\nprocess.stdout.write(JSON.stringify({ phase: process.argv[3], filesystems: [] }) + "\\n");\n`;
       writeFileSync(helperScript, successfulHeadroomFixture, { mode: 0o600 });
       const successfulHelperSha = createHash("sha256").update(readFileSync(helperScript)).digest("hex");
       const successEnv = { ...commonEnv,
-        BODYCAST_HEADROOM_SCRIPT_SHA256: successfulHelperSha, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics };
+        BODYCAST_HEADROOM_SCRIPT_SHA256: successfulHelperSha, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics,
+        BODYCAST_TEST_HEADROOM_LOG: headroomLog };
 
       writeFileSync(dockerLog, "");
       const successfulPretransfer = spawnSync("bash", [hostScript, "pretransfer"], { env: successEnv, encoding: "utf8" });
@@ -195,12 +197,15 @@ esac
       expect(readFileSync(dockerLog, "utf8")).toContain(commonEnv.BODYCAST_TEST_IMAGE_DIGEST);
 
       writeFileSync(dockerLog, "");
+      writeFileSync(headroomLog, "");
       const legacyStorePreflight = spawnSync("bash", [hostScript, "preflight"], { env: {
         ...successEnv, BODYCAST_TEST_CONFIG_IMAGE_PRESENT: "true",
       }, encoding: "utf8" });
       expect(legacyStorePreflight.status).toBe(1);
       expect(legacyStorePreflight.stderr).toContain("read-only-db-evidence");
+      expect(readFileSync(headroomLog, "utf8")).toContain("before-load");
       expect(readFileSync(dockerLog, "utf8")).toContain(commonEnv.BODYCAST_TEST_IMAGE_ID);
+      expect(readFileSync(dockerLog, "utf8")).not.toContain("load --input");
 
       writeFileSync(dockerLog, "");
       const unknownLoadedImage = spawnSync("bash", [hostScript, "preflight"], { env: {

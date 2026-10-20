@@ -125,7 +125,7 @@ esac
         env: { ...commonEnv, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics }, encoding: "utf8",
       });
       expect(beforeTransfer.status).toBe(beforeTransferExpected.status);
-      if (beforeTransferExpected.status === 0) expect(beforeTransfer.stdout).toContain("phase=before-transfer");
+      if (beforeTransferExpected.status === 0) expect(JSON.parse(beforeTransfer.stdout).phase).toBe("before-transfer");
       else expect(beforeTransfer.stderr).toContain("disk-headroom-before-transfer");
       expect(readFileSync(dockerLog, "utf8")).not.toMatch(/(^|\\n)load /);
 
@@ -163,7 +163,7 @@ esac
         env: { ...commonEnv, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics }, encoding: "utf8",
       });
       expect(beforeExecute.status).toBe(beforeExecuteExpected.status);
-      if (beforeExecuteExpected.status === 0) expect(beforeExecute.stdout).toContain("phase=before-execute");
+      if (beforeExecuteExpected.status === 0) expect(JSON.parse(beforeExecute.stdout).phase).toBe("before-execute");
       else expect(beforeExecute.stderr).toContain("disk-headroom-before-execute");
 
       // Exercise successful host orchestration deterministically. The actual
@@ -179,12 +179,17 @@ esac
       writeFileSync(dockerLog, "");
       const successfulPretransfer = spawnSync("bash", [hostScript, "pretransfer"], { env: successEnv, encoding: "utf8" });
       expect(successfulPretransfer.status, successfulPretransfer.stderr).toBe(0);
-      expect(successfulPretransfer.stdout).toContain("phase=before-transfer");
+      const transferReport = JSON.parse(successfulPretransfer.stdout);
+      expect(transferReport.phase).toBe("before-transfer");
+      expect(successfulPretransfer.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+      expect(successfulPretransfer.stderr).toContain("V4_RECOVERY_HEADROOM_OK phase=before-transfer");
 
       writeFileSync(dockerLog, "");
       const successfulPreflight = spawnSync("bash", [hostScript, "preflight"], { env: successEnv, encoding: "utf8" });
       expect(successfulPreflight.status).toBe(1);
       expect(successfulPreflight.stderr).toContain("read-only-db-evidence");
+      expect(successfulPreflight.stdout).toBe("");
+      expect(successfulPreflight.stderr).toContain(`V4_RECOVERY_IMAGE_LOAD Loaded image ID: ${commonEnv.BODYCAST_TEST_LOADED_IMAGE_ID}`);
       expect(readFileSync(dockerLog, "utf8")).toContain("load --input");
       expect(readFileSync(dockerLog, "utf8")).toContain("run --rm --network bodycast-test-net --env-file");
       expect(readFileSync(dockerLog, "utf8")).toContain(commonEnv.BODYCAST_TEST_IMAGE_DIGEST);
@@ -208,7 +213,10 @@ esac
       writeFileSync(dockerLog, "");
       const successfulPreexecute = spawnSync("bash", [hostScript, "preexecute"], { env: successEnv, encoding: "utf8" });
       expect(successfulPreexecute.status, successfulPreexecute.stderr).toBe(0);
-      expect(successfulPreexecute.stdout).toContain("phase=before-execute");
+      const executeReport = JSON.parse(successfulPreexecute.stdout);
+      expect(executeReport.phase).toBe("before-execute");
+      expect(successfulPreexecute.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+      expect(successfulPreexecute.stderr).toContain("V4_RECOVERY_HEADROOM_OK phase=before-execute");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -279,6 +287,64 @@ esac
       expect(terminalRejected.status).not.toBe(0);
       expect(terminalRejected.stderr).toContain("terminal marker peak exceeds the measured disk headroom allowance");
       expect(() => readFileSync(join(tempRoot, "terminal-rejected.json"))).toThrow();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("emits the successful preflight as one JSON report with bound before-load headroom", async () => {
+    expect(host).toContain('HEADROOM_REPORT="$(node "$BODYCAST_HEADROOM_SCRIPT" --check "$phase"');
+    expect(host).toContain("printf 'V4_RECOVERY_IMAGE_LOAD %s\\n' \"$load_output\" >&2");
+    expect(workflow).toContain('report.headroomBeforeLoad?.phase !== "before-load"');
+
+    const commandStart = host.indexOf('BODYCAST_HEADROOM_BEFORE_LOAD_JSON="$HEADROOM_REPORT" node --input-type=module - "$evidence_file"');
+    expect(commandStart).toBeGreaterThanOrEqual(0);
+    const sourceStart = host.indexOf("\n", commandStart) + 1;
+    const sourceEnd = host.indexOf("\nNODE", sourceStart);
+    expect(sourceEnd).toBeGreaterThan(sourceStart);
+    const nodeSource = host.slice(sourceStart, sourceEnd);
+    const migrationNames = (await readdir(new URL("../prisma/migrations", import.meta.url), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().slice(0, 65);
+    const migrationRows = await Promise.all(migrationNames.map(async (name) => ({
+      name,
+      checksum: createHash("sha256").update((await readFile(new URL(`../prisma/migrations/${name}/migration.sql`, import.meta.url)))
+        .toString("utf8").replaceAll("\r\n", "\n")).digest("hex"),
+      finishedAt: "2025-01-01T00:00:00.000Z",
+      rolledBackAt: null,
+    })));
+    const ledgerDigest = createHash("sha256").update(migrationRows.map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
+    expect(ledgerDigest).toBe("a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7");
+    const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-preflight-report-"));
+    const evidencePath = join(tempRoot, "evidence.json");
+    const sourceFingerprint = "a".repeat(64);
+    writeFileSync(evidencePath, JSON.stringify({
+      database: { database: "bodycast", version: "17.11", serverAddress: "172.30.0.2", serverPort: 5432 },
+      expectedMigrationRows: migrationRows,
+      migrationRows,
+      lifecycle: {
+        invalidationGeneration: 12,
+        unifiedPublishedGeneration: 11,
+        unifiedRolloutEpoch: 1,
+        unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      },
+      sourceFingerprint,
+      blocks: [{ source: "health", sourceKey: "2025-01-01", fromDate: "2025-01-01", revision: 1 }],
+    }));
+    try {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-", evidencePath, "f".repeat(64), "1".repeat(64),
+        `sha256:${"2".repeat(64)}`, "3".repeat(64), `sha256:${"4".repeat(64)}`, "172.30.0.2",
+        "bodycast-pg-dump-schema-v1", "5".repeat(64)], {
+        env: { ...process.env, BODYCAST_HEADROOM_BEFORE_LOAD_JSON: JSON.stringify({ phase: "before-load", filesystems: [] }) },
+        input: nodeSource,
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+      const report = JSON.parse(result.stdout);
+      expect(report.headroomBeforeLoad).toEqual({ phase: "before-load", filesystems: [] });
+      expect(report.evidence.sourceFingerprint).toBe(sourceFingerprint);
+      expect(report.schemaSha256).toBe("f".repeat(64));
+      expect(result.stderr).toBe("");
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

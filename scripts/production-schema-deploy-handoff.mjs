@@ -70,7 +70,7 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
   "src/modules/activity/active-energy-materialization.ts": Object.freeze({
     migrationOriginBlob: "ec066afe744ec0de47f8c5503266764eff311608",
-    deployBlob: "dd43f11d6e0a797a503bcaf70abf1aaa9eb58854",
+    deployBlob: "3e49808b1be3e7188a004d202778eddd78f9a30b",
   }),
   "src/modules/activity/active-energy-publication.ts": Object.freeze({
     migrationOriginBlob: "3c1fcfec0ca73ac6b599ae6a7527c067b77adb2f",

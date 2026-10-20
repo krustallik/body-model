@@ -27,8 +27,9 @@ import {
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
-import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
+import { STAIR_CLIMBING_TYPE, TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { calculateHistoricalBodyweightAsOfV1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
@@ -1109,6 +1110,167 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { id: finalEvent.id } });
     await prisma.workout.delete({ where: { id: workout.id } });
     await prisma.healthActivityInterval.deleteMany({ where: { sourceFingerprint: { startsWith: "active-energy-post-replay-" } } });
+  }, 60_000);
+
+  it("keeps unmatched strength resolution stable across replay-only generation and row timestamp changes", async () => {
+    await recalculateModelEpisode({ episodeId, now });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: finalDate } });
+    const modelDayBefore = await prisma.dailyModelState.findUniqueOrThrow({
+      where: { episodeId_date: { episodeId, date: finalDate } },
+    });
+    const workout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: health.id,
+        sourceIdentity: "active-energy-unmatched-strength-replay",
+        type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        startAt: new Date("2041-03-30T08:00:00.000Z"),
+        endAt: new Date("2041-03-30T08:20:00.000Z"),
+        durationMinutes: 20,
+        activeEnergyKcal: 90,
+      },
+    });
+    const lifecycleOriginal = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    await prisma.physiologyV7Lifecycle.update({
+      where: { profileId: 1 },
+      data: {
+        productionStaleFromDate: null,
+        productionPublishedGeneration: lifecycleOriginal.invalidationGeneration,
+      },
+    });
+    const lifecycleBefore = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(isProductionGenerationCurrentV1(lifecycleBefore)).toBe(true);
+    const rawHealthBefore = await prisma.dailyHealthData.findUniqueOrThrow({
+      where: { date: finalDate },
+      select: { id: true, date: true, weightKg: true, bodyFatPercent: true, caloriesKcal: true, rawPayload: true },
+    });
+    const snapshotsBefore = await prisma.healthSyncSnapshot.findMany({
+      where: { date: { gte: testRangeStart, lte: finalDate } },
+      orderBy: [{ date: "asc" }, { id: "asc" }],
+      select: { id: true, date: true, receivedAt: true, rawPayload: true },
+    });
+    const unifiedRowsBefore = await prisma.unifiedExperimentalPhysiologyStateV2.count({
+      where: { profileId: 1, modelEpisodeId: episodeId },
+    });
+    try {
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId, date: finalDate } },
+        data: { status: "incomplete", dynamicRmrKcalPerDay: null, filteredWeightKg: null, endWeightKg: null },
+      });
+      const firstMaterialization = await materializeActiveEnergyCandidatesV1(1);
+      expect(firstMaterialization.changedDates).toContain(finalDate);
+
+      const event = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
+        where: { profileId_logicalEventKey: { profileId: 1, logicalEventKey: `workout:${workout.id}` } },
+        include: { candidates: true },
+      });
+      expect(event).toMatchObject({ currentSource: "device-kcal", currentKcal: 90, isStale: false });
+      expect(event.candidates.find((candidate) => candidate.source === "device-kcal")?.sourceFingerprint)
+        .toBe(event.currentProvenance && typeof event.currentProvenance === "object"
+          ? (event.currentProvenance as { sourceFingerprint?: string }).sourceFingerprint
+          : null);
+      const stableResolution = {
+        currentResolutionFingerprint: event.currentResolutionFingerprint,
+        resolutionRevision: event.resolutionRevision,
+        currentSource: event.currentSource,
+        currentKcal: event.currentKcal,
+      };
+
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId, date: finalDate } },
+        data: { updatedAt: new Date(modelDayBefore.updatedAt.getTime() + 10_000) },
+      });
+      await prisma.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          invalidationGeneration: lifecycleBefore.invalidationGeneration + 1,
+          productionPublishedGeneration: lifecycleBefore.invalidationGeneration + 1,
+        },
+      });
+      const replayRefresh = await materializeActiveEnergyCandidatesV1(1);
+      const afterMetadataRefresh = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({ where: { id: event.id } });
+      const afterMetadataDay = await prisma.dailyModelState.findUniqueOrThrow({ where: { episodeId_date: { episodeId, date: finalDate } } });
+      const afterMetadataWorkout = await prisma.workout.findUniqueOrThrow({ where: { id: workout.id } });
+      const afterMetadataLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(afterMetadataDay).toMatchObject({
+        id: modelDayBefore.id, status: "incomplete", dynamicRmrKcalPerDay: null,
+        filteredWeightKg: null, endWeightKg: null,
+      });
+      expect(afterMetadataDay.updatedAt).not.toEqual(modelDayBefore.updatedAt);
+      expect(afterMetadataWorkout.updatedAt).toEqual(workout.updatedAt);
+      expect(afterMetadataLifecycle).toMatchObject({
+        invalidationGeneration: lifecycleBefore.invalidationGeneration + 1,
+        productionPublishedGeneration: lifecycleBefore.invalidationGeneration + 1,
+        productionStaleFromDate: null,
+      });
+      expect(afterMetadataRefresh.inputFingerprint).toBe(event.inputFingerprint);
+      expect(afterMetadataRefresh).toMatchObject(stableResolution);
+      expect(replayRefresh.changedDates).not.toContain(finalDate);
+
+      await materializeActiveEnergyCandidatesV1(1);
+      expect(await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({ where: { id: event.id } }))
+        .toMatchObject(stableResolution);
+
+      expect(modelDayBefore.status).toBe("complete");
+      expect(modelDayBefore.dynamicRmrKcalPerDay).not.toBeNull();
+      expect(modelDayBefore.filteredWeightKg ?? modelDayBefore.endWeightKg).not.toBeNull();
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId, date: finalDate } },
+        data: {
+          status: modelDayBefore.status,
+          dynamicRmrKcalPerDay: modelDayBefore.dynamicRmrKcalPerDay,
+          filteredWeightKg: modelDayBefore.filteredWeightKg,
+          endWeightKg: modelDayBefore.endWeightKg,
+        },
+      });
+      const semanticRefresh = await materializeActiveEnergyCandidatesV1(1);
+      const afterSemanticRefresh = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
+        where: { id: event.id }, include: { candidates: true },
+      });
+      expect(semanticRefresh.changedDates).toContain(finalDate);
+      expect(afterSemanticRefresh.currentSource).toBe("bodycast-strength-met-fallback");
+      expect(afterSemanticRefresh.currentResolutionFingerprint).not.toBe(stableResolution.currentResolutionFingerprint);
+      expect(afterSemanticRefresh.resolutionRevision).toBeGreaterThan(stableResolution.resolutionRevision);
+      expect(afterSemanticRefresh.candidates.some((candidate) => candidate.source === "bodycast-strength-met-fallback"))
+        .toBe(true);
+
+      const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(lifecycle.invalidationGeneration).toBe(lifecycleBefore.invalidationGeneration + 1);
+      expect(lifecycle.productionPublishedGeneration).toBe(lifecycleBefore.invalidationGeneration + 1);
+      expect(lifecycle.unifiedPublishedRolloutEpoch).toBeNull();
+      expect(await prisma.unifiedExperimentalPhysiologyStateV2.count({
+        where: { profileId: 1, modelEpisodeId: episodeId },
+      })).toBe(unifiedRowsBefore);
+      expect(await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: finalDate }, select: { id: true, date: true, weightKg: true, bodyFatPercent: true, caloriesKcal: true, rawPayload: true } }))
+        .toEqual(rawHealthBefore);
+      expect(await prisma.healthSyncSnapshot.findMany({
+        where: { date: { gte: testRangeStart, lte: finalDate } },
+        orderBy: [{ date: "asc" }, { id: "asc" }],
+        select: { id: true, date: true, receivedAt: true, rawPayload: true },
+      })).toEqual(snapshotsBefore);
+    } finally {
+      await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, logicalEventKey: `workout:${workout.id}` } });
+      await prisma.workout.deleteMany({ where: { id: workout.id } });
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId, date: finalDate } },
+        data: {
+          status: modelDayBefore.status,
+          dynamicRmrKcalPerDay: modelDayBefore.dynamicRmrKcalPerDay,
+          filteredWeightKg: modelDayBefore.filteredWeightKg,
+          endWeightKg: modelDayBefore.endWeightKg,
+          updatedAt: modelDayBefore.updatedAt,
+        },
+      });
+      await prisma.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          invalidationGeneration: lifecycleOriginal.invalidationGeneration,
+          productionPublishedGeneration: lifecycleOriginal.productionPublishedGeneration,
+          productionStaleFromDate: lifecycleOriginal.productionStaleFromDate,
+          staleFromDate: lifecycleOriginal.staleFromDate,
+          currentThroughDate: lifecycleOriginal.currentThroughDate,
+        },
+      });
+    }
   }, 60_000);
 
   it("persists a compatible production suffix without touching its prefix and falls back to full replay when incompatible", async () => {

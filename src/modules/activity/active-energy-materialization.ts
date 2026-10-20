@@ -403,8 +403,7 @@ async function recordUnmatchedStrengthWorkoutV1(input: { workoutId: number; prof
     episode: episode ? [episode.id, episode.modelVersion, episode.startDate, episode.timezone] : null,
     modelDate: context.date,
     modelDay: modelDay ? [modelDay.id, modelDay.status, modelDay.modelVersion,
-      modelDay.dynamicRmrKcalPerDay, massKg, modelDay.updatedAt.toISOString()] : null,
-    productionGeneration: productionCurrent ? lifecycle?.invalidationGeneration : null,
+      modelDay.dynamicRmrKcalPerDay, massKg] : null,
   };
   const inputFingerprint = stableSha256(JSON.stringify(fingerprintInputs));
   const candidates: ActiveEnergyCandidateV1[] = [

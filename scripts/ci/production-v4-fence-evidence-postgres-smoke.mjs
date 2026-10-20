@@ -181,7 +181,15 @@ async function readEvidence() {
   } catch {
     throw new Error("Exact legacy recovery image could not read the isolated 65-migration fixture database.");
   }
-  return JSON.parse(output.trim());
+  const report = JSON.parse(output.trim());
+  const [endpoint] = await prisma.$queryRawUnsafe(`SELECT host(inet_server_addr()) AS "serverAddress",
+    inet_server_port() AS "serverPort"`);
+  const evidenceAddress = report.database?.serverAddress;
+  if (typeof evidenceAddress !== "string" || evidenceAddress.includes("/")
+    || evidenceAddress !== endpoint?.serverAddress || report.database?.serverPort !== endpoint?.serverPort) {
+    throw new Error("Recovery evidence did not report the canonical PostgreSQL host address and port.");
+  }
+  return report;
 }
 
 function validateWithExactImage(report, expectedRejection) {

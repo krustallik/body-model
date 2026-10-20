@@ -14,6 +14,7 @@ mode="${1:-}"
 [[ "${BODYCAST_WORKFLOW_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || fail "workflow-sha"
 [[ "${BODYCAST_WORKFLOW_ATTEMPT:-}" == "1" ]] || fail "workflow-attempt"
 [[ "${BODYCAST_IMAGE_ID:-}" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "image-id"
+[[ "${BODYCAST_IMAGE_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "image-manifest-digest"
 [[ "${BODYCAST_IMAGE_ARCHIVE_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "image-archive-digest"
 [[ "${BODYCAST_HOST_SCRIPT_SHA256:-}" =~ ^[a-f0-9]{64}$ && -f "$0" && ! -L "$0" ]] || fail "host-script-identity"
 [[ "$(sha256sum "$0" | awk '{print $1}')" == "$BODYCAST_HOST_SCRIPT_SHA256" ]] || fail "host-script-digest"
@@ -43,6 +44,17 @@ flock -n 9 || fail "release-lock-contended"
 
 db=bodycast-db-prod
 app=bodycast-app-prod
+recovery_image_id() {
+  local expected observed
+  for expected in "$BODYCAST_IMAGE_ID" "$BODYCAST_IMAGE_DIGEST"; do
+    observed="$(docker image inspect --format '{{.Id}}' "$expected" 2>/dev/null || true)"
+    if [[ "$observed" == "$expected" ]]; then
+      printf '%s' "$expected"
+      return 0
+    fi
+  done
+  return 1
+}
 db_id="$(docker inspect --format '{{.Id}}' "$db" 2>/dev/null)" || fail "db-container-missing"
 db_image="$(docker inspect --format '{{.Image}}' "$db")"
 db_status="$(docker inspect --format '{{.State.Status}}' "$db")"
@@ -80,7 +92,7 @@ NODE
     && -d "${pg_host_paths[0]}" && -d "${pg_host_paths[1]}" ]] || fail "postgres-mount-identity"
   node "$BODYCAST_HEADROOM_SCRIPT" --check "$phase" "$BODYCAST_RECOVERY_HEADROOM_METRICS_JSON" \
     "$artifact_dir" "$docker_root" "${pg_host_paths[0]}" "${pg_host_paths[1]}" /var/tmp /var/lib/bodycast/recovery \
-    "$(docker image inspect "$BODYCAST_IMAGE_ID" >/dev/null 2>&1 && printf true || printf false)" \
+    "$(recovery_image_id >/dev/null && printf true || printf false)" \
     || fail "disk-headroom-${phase}"
 }
 
@@ -98,12 +110,13 @@ fi
 if [[ ! -f "$BODYCAST_IMAGE_ARCHIVE" || -L "$BODYCAST_IMAGE_ARCHIVE" ]]; then fail "image-archive-missing"; fi
 [[ "$(realpath -e "$BODYCAST_IMAGE_ARCHIVE" 2>/dev/null || true)" == "$BODYCAST_IMAGE_ARCHIVE" ]] || fail "image-path-identity"
 [[ "$(sha256sum "$BODYCAST_IMAGE_ARCHIVE" | awk '{print $1}')" == "$BODYCAST_IMAGE_ARCHIVE_SHA256" ]] || fail "image-archive-digest"
-if ! docker image inspect "$BODYCAST_IMAGE_ID" >/dev/null 2>&1; then
+if ! recovery_image_id >/dev/null; then
   [[ "$mode" == "preflight" ]] || fail "immutable-recovery-image-not-loaded"
   headroom_check before-load
-  docker load --input "$BODYCAST_IMAGE_ARCHIVE" >/dev/null || fail "image-load"
+  load_output="$(docker load --input "$BODYCAST_IMAGE_ARCHIVE" 2>&1)" || { printf '%s\n' "$load_output" >&2; fail "image-load"; }
+  printf 'V4_RECOVERY_IMAGE_LOAD %s\n' "$load_output"
 fi
-[[ "$(docker image inspect --format '{{.Id}}' "$BODYCAST_IMAGE_ID" 2>/dev/null)" == "$BODYCAST_IMAGE_ID" ]] || fail "loaded-image-id"
+recovery_image_ref="$(recovery_image_id)" || fail "loaded-image-id"
 
 mapfile -t app_networks < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$app" | sort)
 mapfile -t db_networks < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$db" | sort)
@@ -132,11 +145,11 @@ evidence_file="$(mktemp /var/tmp/bodycast-v4-evidence.XXXXXX)"
 chmod 600 "$database_env_file" || fail "database-env-file"
 printf 'DATABASE_URL=%s\n' "$database_url" > "$database_env_file"
 trap 'rm -f -- "$evidence_file" "$database_env_file"' EXIT
-docker run --rm --network "$network" --env-file "$database_env_file" "$BODYCAST_IMAGE_ID" \
+docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" \
   node /app/dist/production-v4-recovery-evidence.mjs > "$evidence_file" || fail "read-only-db-evidence"
 validate_source_evidence() {
   local validation_result
-  validation_result="$(docker run --rm --interactive --network "$network" "$BODYCAST_IMAGE_ID" \
+  validation_result="$(docker run --rm --interactive --network "$network" "$recovery_image_ref" \
     node --input-type=module -e 'import { readFileSync } from "node:fs"; import { validatePublicationSourceEvidence } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); validatePublicationSourceEvidence({ blocks: report.blocks, sourceEvidence: report.sourceEvidence }); process.stdout.write("source-evidence-valid");' \
     < "$evidence_file")" || fail "source-fence-provenance"
   [[ "$validation_result" == "source-evidence-valid" ]] || fail "source-fence-provenance"
@@ -227,7 +240,7 @@ if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !=
 process.stdout.write(JSON.stringify({ preflightDigest: createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"),
   ledgerDigest: expected.evidence.expectedLedgerDigest, fenceDigest, sourceFingerprint: live.sourceFingerprint }) + "\n");
 NODE
-binding_json="$(docker run --rm --interactive --network "$network" "$BODYCAST_IMAGE_ID" \
+binding_json="$(docker run --rm --interactive --network "$network" "$recovery_image_ref" \
   node --input-type=module -e 'import { readFileSync } from "node:fs"; import { recoveryEvidenceBinding } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); const binding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint, blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle }); process.stdout.write(JSON.stringify(binding));' \
   < "$expected_file")" || fail "canonical-recovery-binding"
 BODYCAST_BINDING_JSON="$binding_json" BODYCAST_EXPECTED_FILE="$expected_file" node --input-type=module <<'NODE'
@@ -308,13 +321,13 @@ await file.sync(); await file.close(); await rename(tmp, path);
 NODE
 sync -f "$marker_dir" || fail "marker-sync"
 result_file="$(mktemp /var/tmp/bodycast-v4-result.XXXXXX)"
-if docker run --rm --network "$network" --env-file "$database_env_file" "$BODYCAST_IMAGE_ID" > "$result_file"; then
+if docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" > "$result_file"; then
   result_status=success
 else
   result_status=failed
 fi
 after_file="$(mktemp /var/tmp/bodycast-v4-after.XXXXXX)"
-docker run --rm --network "$network" --env-file "$database_env_file" "$BODYCAST_IMAGE_ID" \
+docker run --rm --network "$network" --env-file "$database_env_file" "$recovery_image_ref" \
   node /app/dist/production-v4-recovery-evidence.mjs > "$after_file" || fail "postflight-evidence-unknown"
 if [[ "$result_status" != success ]]; then
   node --input-type=module - "$marker" "$result_status" <<'NODE'

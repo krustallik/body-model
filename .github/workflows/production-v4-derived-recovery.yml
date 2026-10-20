@@ -100,6 +100,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       image_id: ${{ steps.image.outputs.image_id }}
+      image_digest: ${{ steps.image.outputs.image_digest }}
       archive_sha256: ${{ steps.image.outputs.archive_sha256 }}
       archive_bytes: ${{ steps.image.outputs.archive_bytes }}
       image_bytes: ${{ steps.image.outputs.image_bytes }}
@@ -134,6 +135,38 @@ jobs:
           [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]
           [[ "$image_bytes" =~ ^[1-9][0-9]*$ ]]
           docker image save --output "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$image_id"
+          image_digest="$(node --input-type=module - "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$image_id" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { execFileSync } from "node:child_process";
+          const [archivePath, expectedConfig] = process.argv.slice(2);
+          const readTarJson = (entry) => JSON.parse(execFileSync("tar", ["-xOf", archivePath, entry], { encoding: "utf8" }));
+          const index = readTarJson("index.json");
+          if (index.schemaVersion !== 2 || !Array.isArray(index.manifests) || index.manifests.length !== 1) {
+            throw new Error("Recovery archive must contain exactly one OCI image manifest.");
+          }
+          const descriptor = index.manifests[0];
+          const match = /^sha256:([a-f0-9]{64})$/.exec(String(descriptor.digest ?? ""));
+          if (!match || descriptor.mediaType !== "application/vnd.oci.image.manifest.v1+json") {
+            throw new Error("Recovery archive OCI manifest descriptor is malformed.");
+          }
+          const manifestBytes = execFileSync("tar", ["-xOf", archivePath, `blobs/sha256/${match[1]}`]);
+          if (createHash("sha256").update(manifestBytes).digest("hex") !== match[1]) {
+            throw new Error("Recovery archive OCI manifest digest does not match its bytes.");
+          }
+          const manifest = JSON.parse(manifestBytes.toString("utf8"));
+          if (manifest.schemaVersion !== 2 || manifest.config?.digest !== expectedConfig
+              || !Array.isArray(manifest.layers) || manifest.layers.length < 1) {
+            throw new Error("Recovery archive OCI manifest does not bind the expected config and layers.");
+          }
+          const configMatch = /^sha256:([a-f0-9]{64})$/.exec(manifest.config.digest);
+          const configBytes = execFileSync("tar", ["-xOf", archivePath, `blobs/sha256/${configMatch[1]}`]);
+          if (createHash("sha256").update(configBytes).digest("hex") !== expectedConfig.slice("sha256:".length)) {
+            throw new Error("Recovery archive config digest does not match the built Docker image ID.");
+          }
+          process.stdout.write(descriptor.digest);
+          NODE
+          )"
+          [[ "$image_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           archive_sha256="$(sha256sum "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" | awk '{print $1}')"
           archive_bytes="$(stat -c '%s' "$RUNNER_TEMP/bodycast-v4-artifact/image.tar")"
           schema_digest_contract="$(node scripts/production-v4-schema-digest.mjs --contract)"
@@ -141,12 +174,12 @@ jobs:
           [[ "$archive_sha256" =~ ^[a-f0-9]{64}$ ]]
           [[ "$archive_bytes" =~ ^[1-9][0-9]*$ ]]
           [[ "$schema_digest_contract" == "bodycast-pg-dump-schema-v1" && "$schema_digest_helper_sha256" =~ ^[a-f0-9]{64}$ ]]
-          IMAGE_ID="$image_id" ARCHIVE_SHA="$archive_sha256" ARCHIVE_BYTES="$archive_bytes" IMAGE_BYTES="$image_bytes" RECOVERY_SHA="$RECOVERY_SHA" \
+          IMAGE_ID="$image_id" IMAGE_DIGEST="$image_digest" ARCHIVE_SHA="$archive_sha256" ARCHIVE_BYTES="$archive_bytes" IMAGE_BYTES="$image_bytes" RECOVERY_SHA="$RECOVERY_SHA" \
             SCHEMA_DIGEST_CONTRACT="$schema_digest_contract" SCHEMA_DIGEST_HELPER_SHA256="$schema_digest_helper_sha256" node --input-type=module <<'NODE'
           import { writeFileSync } from "node:fs";
           import { LEGACY_V4_RECOVERY, sha256 } from "./scripts/production-v4-derived-recovery.mjs";
           const manifest = { sourceSha: process.env.RECOVERY_SHA, imageId: process.env.IMAGE_ID,
-            imageDigest: process.env.IMAGE_ID, archiveSha256: process.env.ARCHIVE_SHA,
+            imageDigest: process.env.IMAGE_DIGEST, archiveSha256: process.env.ARCHIVE_SHA,
             archiveBytes: Number(process.env.ARCHIVE_BYTES), imageBytes: Number(process.env.IMAGE_BYTES),
             schemaDigestContract: process.env.SCHEMA_DIGEST_CONTRACT,
             schemaDigestHelperSha256: process.env.SCHEMA_DIGEST_HELPER_SHA256,
@@ -159,6 +192,7 @@ jobs:
             `${JSON.stringify({ ...manifest, manifestSha256: sha256(JSON.stringify(legacyManifest)) })}\n`, { mode: 0o600, flag: "wx" });
           NODE
           echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
           echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
           echo "archive_bytes=$archive_bytes" >> "$GITHUB_OUTPUT"
           echo "image_bytes=$image_bytes" >> "$GITHUB_OUTPUT"
@@ -231,6 +265,7 @@ jobs:
         env:
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
           EXPECTED_IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          EXPECTED_IMAGE_DIGEST: ${{ needs.build-tool.outputs.image_digest }}
           EXPECTED_ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
           EXPECTED_ARCHIVE_BYTES: ${{ needs.build-tool.outputs.archive_bytes }}
           EXPECTED_IMAGE_BYTES: ${{ needs.build-tool.outputs.image_bytes }}
@@ -247,6 +282,7 @@ jobs:
           const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const helperSha256 = createHash("sha256").update(readFileSync("scripts/production-v4-schema-digest.mjs")).digest("hex");
           if (manifest.sourceSha !== process.env.RECOVERY_SHA || manifest.imageId !== process.env.EXPECTED_IMAGE_ID
+              || manifest.imageDigest !== process.env.EXPECTED_IMAGE_DIGEST
               || manifest.archiveSha256 !== process.env.EXPECTED_ARCHIVE_SHA
               || manifest.archiveBytes !== Number(process.env.EXPECTED_ARCHIVE_BYTES)
               || manifest.imageBytes !== Number(process.env.EXPECTED_IMAGE_BYTES)
@@ -445,6 +481,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
           IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          IMAGE_DIGEST: ${{ needs.build-tool.outputs.image_digest }}
           ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
           ARCHIVE_BYTES: ${{ needs.build-tool.outputs.archive_bytes }}
           IMAGE_BYTES: ${{ needs.build-tool.outputs.image_bytes }}
@@ -469,7 +506,7 @@ jobs:
           "${SCP[@]}" scripts/production-v4-derived-recovery-host.sh "$SSH_USER@$SSH_HOST:$artifact_dir/host.sh"
           "${SCP[@]}" scripts/production-v4-recovery-headroom.mjs "$SSH_USER@$SSH_HOST:$artifact_dir/headroom.mjs"
           "${SCP[@]}" scripts/production-v4-schema-digest.mjs "$SSH_USER@$SSH_HOST:$artifact_dir/schema-digest.mjs"
-          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_SCHEMA_DIGEST_SCRIPT='$artifact_dir/schema-digest.mjs' BODYCAST_SCHEMA_DIGEST_HELPER_SHA256='$SCHEMA_DIGEST_HELPER_SHA256' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
+          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_DIGEST='$IMAGE_DIGEST' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_SCHEMA_DIGEST_SCRIPT='$artifact_dir/schema-digest.mjs' BODYCAST_SCHEMA_DIGEST_HELPER_SHA256='$SCHEMA_DIGEST_HELPER_SHA256' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$COMMON bash '$artifact_dir/host.sh' pretransfer" > "$RUNNER_TEMP/bodycast-v4-artifact/headroom-before-transfer.json"
           "${SCP[@]}" "$RUNNER_TEMP/bodycast-v4-artifact/image.tar" "$SSH_USER@$SSH_HOST:$artifact_dir/image.tar"
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$COMMON bash '$artifact_dir/host.sh' preflight" > "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json"
@@ -678,6 +715,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           RECOVERY_SHA: ${{ needs.authorize.outputs.recovery_sha }}
           IMAGE_ID: ${{ needs.build-tool.outputs.image_id }}
+          IMAGE_DIGEST: ${{ needs.build-tool.outputs.image_digest }}
           ARCHIVE_SHA: ${{ needs.build-tool.outputs.archive_sha256 }}
           SCHEMA_DIGEST_CONTRACT: ${{ needs.build-tool.outputs.schema_digest_contract }}
           SCHEMA_DIGEST_HELPER_SHA256: ${{ needs.build-tool.outputs.schema_digest_helper_sha256 }}
@@ -694,7 +732,7 @@ jobs:
             && "$ACTUAL_SCHEMA_DIGEST_CONTRACT" == "$SCHEMA_DIGEST_CONTRACT" ]]
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           SCP=(scp -P "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS")
-          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_SCHEMA_DIGEST_SCRIPT='$artifact_dir/schema-digest.mjs' BODYCAST_SCHEMA_DIGEST_HELPER_SHA256='$SCHEMA_DIGEST_HELPER_SHA256' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
+          COMMON="BODYCAST_DEPLOY_PATH='$DEPLOY_PATH' BODYCAST_RECOVERY_SHA='$RECOVERY_SHA' BODYCAST_EXPECTED_APP_SHA='f910d2a45dfa676fada5fab42c9e8946c97872b1' BODYCAST_OWNER_RUN_ID='$GITHUB_RUN_ID' BODYCAST_WORKFLOW_SHA='$GITHUB_SHA' BODYCAST_WORKFLOW_ATTEMPT='$GITHUB_RUN_ATTEMPT' BODYCAST_IMAGE_ID='$IMAGE_ID' BODYCAST_IMAGE_DIGEST='$IMAGE_DIGEST' BODYCAST_IMAGE_ARCHIVE_SHA256='$ARCHIVE_SHA' BODYCAST_HOST_SCRIPT_SHA256='$HOST_SCRIPT_SHA' BODYCAST_HEADROOM_SCRIPT='$artifact_dir/headroom.mjs' BODYCAST_HEADROOM_SCRIPT_SHA256='$HEADROOM_SCRIPT_SHA' BODYCAST_SCHEMA_DIGEST_SCRIPT='$artifact_dir/schema-digest.mjs' BODYCAST_SCHEMA_DIGEST_HELPER_SHA256='$SCHEMA_DIGEST_HELPER_SHA256' BODYCAST_RECOVERY_HEADROOM_METRICS_JSON='$HEADROOM_METRICS_JSON' BODYCAST_IMAGE_ARCHIVE='$artifact_dir/image.tar'"
           timeout 15m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$COMMON bash '$artifact_dir/host.sh' preexecute" > "$RUNNER_TEMP/bodycast-v4-artifact/headroom-before-execute-transfer.json"
           "${SCP[@]}" "$RUNNER_TEMP/bodycast-v4-artifact/preflight.json" "$SSH_USER@$SSH_HOST:$artifact_dir/execute-preflight.json"
           REMOTE="$COMMON BODYCAST_PREFLIGHT_JSON_FILE='$artifact_dir/execute-preflight.json' bash '$artifact_dir/host.sh' execute"

@@ -60,8 +60,18 @@ case "$1:$2:$3" in
   info:--format:'{{.DockerRootDir}}') printf '%s\\n' '${dockerRoot}' ;;
   exec:bodycast-db-prod:sh)
     [[ "$*" == *'readlink -f'* ]] && printf '/var/lib/postgresql/data/pg_wal\\n' || printf '/var/lib/postgresql/data\\n' ;;
-  image:inspect:*) exit 1 ;;
-  load:*) printf 'loaded isolated fixture\\n' ;;
+  inspect:--format:'{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}') printf 'bodycast-test-net\\n' ;;
+  inspect:--format:'{{range .Config.Env}}{{println .}}{{end}}') printf 'DATABASE_URL=postgresql://bodycast-db-prod:5432/bodycast\\n' ;;
+  inspect:--format:'{{json .NetworkSettings.Networks}}') printf '{"bodycast-test-net":{"IPAddress":"172.30.0.2","Aliases":["bodycast-db-prod"]}}\\n' ;;
+  image:inspect:*)
+    candidate="\${!#}"
+    if grep -Fq 'load --input' "$BODYCAST_DOCKER_TEST_LOG"; then
+      if [[ "$candidate" == "$BODYCAST_TEST_IMAGE_ID" && "$BODYCAST_TEST_CONFIG_IMAGE_PRESENT" == true ]]; then printf '%s\\n' "$candidate"; exit 0; fi
+      if [[ "$candidate" == "$BODYCAST_TEST_IMAGE_DIGEST" && "$BODYCAST_TEST_LOADED_IMAGE_ID" == "$candidate" ]]; then printf '%s\\n' "$candidate"; exit 0; fi
+    fi
+    exit 1 ;;
+  load:*) printf 'Loaded image ID: %s\\n' "$BODYCAST_TEST_LOADED_IMAGE_ID" ;;
+  run:*) exit 94 ;;
   *) printf 'unexpected docker invocation: %s\\n' "$*" >&2; exit 94 ;;
 esac
 `;
@@ -88,6 +98,11 @@ esac
       BODYCAST_WORKFLOW_SHA: "c".repeat(40),
       BODYCAST_WORKFLOW_ATTEMPT: "1",
       BODYCAST_IMAGE_ID: `sha256:${"e".repeat(64)}`,
+      BODYCAST_IMAGE_DIGEST: `sha256:${"f".repeat(64)}`,
+      BODYCAST_TEST_IMAGE_ID: `sha256:${"e".repeat(64)}`,
+      BODYCAST_TEST_IMAGE_DIGEST: `sha256:${"f".repeat(64)}`,
+      BODYCAST_TEST_LOADED_IMAGE_ID: `sha256:${"f".repeat(64)}`,
+      BODYCAST_TEST_CONFIG_IMAGE_PRESENT: "false",
       BODYCAST_IMAGE_ARCHIVE_SHA256: archiveSha,
       BODYCAST_HOST_SCRIPT_SHA256: scriptSha,
       BODYCAST_HEADROOM_SCRIPT: helperScript,
@@ -137,8 +152,9 @@ esac
         expect(beforeLoad.stderr).toContain("disk-headroom-before-load");
         expect(readFileSync(dockerLog, "utf8")).not.toContain("load --input");
       } else {
-        expect(beforeLoad.stderr).toContain("loaded-image-id");
+        expect(beforeLoad.stderr).toContain("read-only-db-evidence");
         expect(readFileSync(dockerLog, "utf8")).toContain("load --input");
+        expect(readFileSync(dockerLog, "utf8")).toContain(commonEnv.BODYCAST_TEST_IMAGE_DIGEST);
       }
 
       const beforeExecuteExpected = expectedFor("before-execute", lowMetrics);
@@ -152,9 +168,8 @@ esac
 
       // Exercise successful host orchestration deterministically. The actual
       // helper's arithmetic and statfs integration are covered above; this
-      // fixture supplies a successful helper response so the host must proceed
-      // through the transfer and load gates before the Docker identity stub
-      // deliberately stops it.
+      // fixture supplies successful headroom and a Docker 29-style manifest ID.
+      // The read-only evidence command then stops at its deliberate fixture.
       const successfulHeadroomFixture = `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ phase: process.argv[3], filesystems: [] }) + "\\n");\n`;
       writeFileSync(helperScript, successfulHeadroomFixture, { mode: 0o600 });
       const successfulHelperSha = createHash("sha256").update(readFileSync(helperScript)).digest("hex");
@@ -169,8 +184,26 @@ esac
       writeFileSync(dockerLog, "");
       const successfulPreflight = spawnSync("bash", [hostScript, "preflight"], { env: successEnv, encoding: "utf8" });
       expect(successfulPreflight.status).toBe(1);
-      expect(successfulPreflight.stderr).toContain("loaded-image-id");
+      expect(successfulPreflight.stderr).toContain("read-only-db-evidence");
       expect(readFileSync(dockerLog, "utf8")).toContain("load --input");
+      expect(readFileSync(dockerLog, "utf8")).toContain("run --rm --network bodycast-test-net --env-file");
+      expect(readFileSync(dockerLog, "utf8")).toContain(commonEnv.BODYCAST_TEST_IMAGE_DIGEST);
+
+      writeFileSync(dockerLog, "");
+      const legacyStorePreflight = spawnSync("bash", [hostScript, "preflight"], { env: {
+        ...successEnv, BODYCAST_TEST_CONFIG_IMAGE_PRESENT: "true",
+      }, encoding: "utf8" });
+      expect(legacyStorePreflight.status).toBe(1);
+      expect(legacyStorePreflight.stderr).toContain("read-only-db-evidence");
+      expect(readFileSync(dockerLog, "utf8")).toContain(commonEnv.BODYCAST_TEST_IMAGE_ID);
+
+      writeFileSync(dockerLog, "");
+      const unknownLoadedImage = spawnSync("bash", [hostScript, "preflight"], { env: {
+        ...successEnv, BODYCAST_TEST_LOADED_IMAGE_ID: `sha256:${"a".repeat(64)}`,
+      }, encoding: "utf8" });
+      expect(unknownLoadedImage.status).toBe(1);
+      expect(unknownLoadedImage.stderr).toContain("loaded-image-id");
+      expect(readFileSync(dockerLog, "utf8")).not.toContain("run ");
 
       writeFileSync(dockerLog, "");
       const successfulPreexecute = spawnSync("bash", [hostScript, "preexecute"], { env: successEnv, encoding: "utf8" });
@@ -397,7 +430,7 @@ esac
       writeFileSync(join(artifactRoot, "preflight.json"), JSON.stringify(preflight));
       const artifactManifest = {
         sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219", imageId: `sha256:${"d".repeat(64)}`,
-        imageDigest: `sha256:${"d".repeat(64)}`, archiveSha256: "e".repeat(64),
+        imageDigest: `sha256:${"c".repeat(64)}`, archiveSha256: "e".repeat(64),
         archiveBytes: 5000, imageBytes: 9000, evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
         schemaDigestContract, schemaDigestHelperSha256,
         migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
@@ -456,11 +489,17 @@ esac
     expect(workflow).toContain("4fa84cb62262986d5f0c58d3c76db2ba52b5500e");
     expect(workflow).toContain("a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7");
     expect(workflow).toContain("node /app/dist/production-v4-recovery-evidence.mjs");
+    expect(workflow).toContain('readTarJson("index.json")');
+    expect(workflow).toContain("manifest.config?.digest !== expectedConfig");
+    expect(workflow).toContain("imageDigest: process.env.IMAGE_DIGEST");
+    expect(workflow).toContain("manifest.imageDigest !== process.env.EXPECTED_IMAGE_DIGEST");
     expect(workflow).not.toMatch(/docker run[^\n]*migrate deploy[^\n]*bodycast-db-prod/);
     expect(workflow).not.toContain("docker compose up");
     expect(workflow).not.toContain("production-traffic-cutover");
     expect(host).toContain("node /app/dist/production-v4-recovery-evidence.mjs");
     expect(host).toContain("validatePublicationSourceEvidence");
+    expect(host).toContain('for expected in "$BODYCAST_IMAGE_ID" "$BODYCAST_IMAGE_DIGEST"');
+    expect(host).toContain('recovery_image_ref="$(recovery_image_id)" || fail "loaded-image-id"');
     expect(host).not.toContain("healthBlocks.length === 8");
     expect(image).toContain("/app/dist/production-full-history-recalculate.mjs");
     expect(image).toContain("production-v4-derived-recovery.mjs");

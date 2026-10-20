@@ -61,14 +61,24 @@ actualContainerTest("measures real PostgreSQL 17.11 PGDATA and mounted WAL alloc
     expect(docker(["inspect", "--format", "{{.Config.Image}}", containerName])).toBe(POSTGRES_IMAGE);
 
     const readyDeadline = Date.now() + 90_000;
+    let postgresReady = false;
+    let lastReadinessError = "PostgreSQL did not accept TCP connections yet.";
     while (Date.now() < readyDeadline) {
-      const ready = spawnSync("docker", ["exec", containerId, "pg_isready", "-U", "postgres", "-d", "postgres"], {
+      // The official image briefly starts a socket-only server while initializing the data directory.
+      // Probe loopback TCP so this gate cannot mistake that temporary server for the final server.
+      const ready = spawnSync("docker", ["exec", containerId, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"], {
         encoding: "utf8", timeout: 5_000, windowsHide: true,
       });
-      if (ready.status === 0) break;
+      if (ready.error) throw new Error(`PostgreSQL TCP readiness probe failed: ${ready.error.message}`);
+      if (ready.status === 0) {
+        postgresReady = true;
+        break;
+      }
+      lastReadinessError = (ready.stderr || ready.stdout || `pg_isready exited with ${ready.status ?? "unknown"}`).trim();
       await delay(250);
     }
-    const version = docker(["exec", containerId, "psql", "--no-psqlrc", "-U", "postgres", "-d", "postgres", "-Atqc", "SELECT version()"]);
+    if (!postgresReady) throw new Error(`PostgreSQL did not become TCP-ready within 90 seconds: ${lastReadinessError}`);
+    const version = docker(["exec", containerId, "psql", "--no-psqlrc", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres", "-Atqc", "SELECT version()"]);
     expect(version).toContain("PostgreSQL 17.11");
     expect(version).toContain("linux-musl");
 

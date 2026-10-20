@@ -55,8 +55,8 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
             && "$DISPATCH_ACTOR_ID" == 126446430 ]] || { echo "::error::Pinned owner and canonical main are required."; exit 1; }
-          [[ "$RECOVERY_SHA" == 35c556772759ea03c2728de921c1825f454d59c2 \
-            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_35c556772759ea03c2728de921c1825f454d59c2 ]] \
+          [[ "$RECOVERY_SHA" == 83b75dcdea7aace88b44d4457a60fd5a0ed682c1 \
+            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_83b75dcdea7aace88b44d4457a60fd5a0ed682c1 ]] \
             || { echo "::error::Exact approved SHA and confirmation are required."; exit 1; }
           [[ "$DISPATCH_SHA" == "$GITHUB_SHA" && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$GITHUB_SHA" ]] \
             || { echo "::error::Requested runner SHA is not current main."; exit 1; }
@@ -579,7 +579,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
             && "$DISPATCH_ACTOR_ID" == 126446430 \
-            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_35c556772759ea03c2728de921c1825f454d59c2 \
+            && "$CONFIRMATION" == RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_83b75dcdea7aace88b44d4457a60fd5a0ed682c1 \
             && "$GITHUB_RUN_ATTEMPT" == 1 ]]
           [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$GITHUB_SHA" ]]
           gh api repos/krustallik/body-model/pulls/101 > "$RUNNER_TEMP/legacy-pr.json"

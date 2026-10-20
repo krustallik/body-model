@@ -16,6 +16,7 @@ const fromDate = "2026-10-01";
 const trainingSessionIds = [20, 24, 25] as const;
 const trainingDates = ["2026-10-19", "2026-10-23", "2026-10-25"] as const;
 const healthDates = Array.from({ length: 9 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
+const replayBoundaryHealthDates = ["2026-10-15"] as const;
 const localHypertrophyWeekStarts = ["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19"];
 const recoveryDerivedDates = Array.from({ length: 25 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
 const pagedInventoryFixtureDate = "2099-12-30";
@@ -205,8 +206,8 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     await prisma.$connect();
     const existingFixtureCounts = await Promise.all([
       prisma.profile.count({ where: { id: profileId } }),
-      prisma.dailyHealthData.count({ where: { date: { in: healthDates } } }),
-      prisma.healthSyncSnapshot.count({ where: { date: { in: healthDates } } }),
+      prisma.dailyHealthData.count({ where: { date: { in: [...healthDates, ...replayBoundaryHealthDates] } } }),
+      prisma.healthSyncSnapshot.count({ where: { date: { in: [...healthDates, ...replayBoundaryHealthDates] } } }),
       prisma.healthSyncAudit.count({ where: { rawBody: { contains: "durable-health-audit" } } }),
       prisma.healthMetricSample.count({ where: { date: { in: healthDates } } }),
       prisma.workout.count({ where: { sourceIdentity: { startsWith: "recovery-fixture:" } } }),
@@ -217,7 +218,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       prisma.unifiedPublicationBlock.count({ where: { profileId } }),
       prisma.experimentalFfmRetentionShadow.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
       prisma.experimentalLocalHypertrophyResponseShadow.count({ where: { profileId, weekStartDate: { in: localHypertrophyWeekStarts } } }),
-      prisma.experimentalGlycogenStateShadow.count({ where: { profileId, date: { in: healthDates } } }),
+      prisma.experimentalGlycogenStateShadow.count({ where: { profileId, date: { in: [...healthDates, ...replayBoundaryHealthDates] } } }),
       prisma.physiologyV7ShadowDiagnostic.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
       prisma.fatWeightShadowV1Result.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
       prisma.experimentalFatWeightUncertaintyShadow.count({ where: { profileId, date: { in: recoveryDerivedDates } } }),
@@ -302,6 +303,25 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         },
       });
       healthMetricSampleIds.push(metricSample.id);
+    }
+    for (const [index, date] of replayBoundaryHealthDates.entries()) {
+      const healthDay = await prisma.dailyHealthData.create({
+        data: {
+          date, weightKg: null, bodyFatPercent: null, caloriesKcal: 2_200, proteinG: 160,
+          carbsG: 200, fatG: 70, steps: 7_000, workoutFeedObserved: true,
+          rawPayload: { fixture: "persisted-source-recovery-replay-boundary", index },
+        },
+      });
+      dailyHealthDataIds.push(healthDay.id);
+      const snapshot = await prisma.healthSyncSnapshot.create({
+        data: {
+          dailyHealthDataId: healthDay.id, date, timezone: "America/Los_Angeles",
+          receivedAt: new Date(`${date}T12:00:00.000Z`), syncedAt: new Date(`${date}T12:01:00.000Z`),
+          weightKg: healthDay.weightKg, caloriesKcal: 2_200, proteinG: 160, fatG: 70, carbsG: 200, steps: 7_000,
+          rawPayload: { fixture: "durable-health-provenance", source: "recovery-boundary", nonce: "raw-exact" },
+        },
+      });
+      healthSnapshotIds.push(snapshot.id);
     }
     const workout = await prisma.workout.create({
       data: {
@@ -450,7 +470,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         if (healthMetricSampleIds.length > 0) await prisma.healthMetricSample.deleteMany({ where: { id: { in: healthMetricSampleIds } } });
         await prisma.experimentalFfmRetentionShadow.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
         await prisma.experimentalLocalHypertrophyResponseShadow.deleteMany({ where: { profileId, weekStartDate: { in: localHypertrophyWeekStarts } } });
-        await prisma.experimentalGlycogenStateShadow.deleteMany({ where: { profileId, date: { in: healthDates } } });
+        await prisma.experimentalGlycogenStateShadow.deleteMany({ where: { profileId, date: { in: [...healthDates, ...replayBoundaryHealthDates] } } });
         await prisma.physiologyV7ShadowDiagnostic.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
         await prisma.fatWeightShadowV1Result.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
         await prisma.experimentalFatWeightUncertaintyShadow.deleteMany({ where: { profileId, date: { in: recoveryDerivedDates } } });
@@ -947,16 +967,38 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     });
     await prisma.strengthDiarySession.delete({ where: { id: 27 } });
 
-    const createCompletedTrainingSource = async (sessionId: number, day: number) => {
+    const createCompletedTrainingSource = async (sessionId: number, day: number, matchedWorkoutDay?: number) => {
       const dayText = `2026-10-${String(day).padStart(2, "0")}`;
+      const matchedWorkoutDate = matchedWorkoutDay === undefined
+        ? null : `2026-10-${String(matchedWorkoutDay).padStart(2, "0")}`;
+      const matchedHealthDay = matchedWorkoutDate === null ? null : await prisma.dailyHealthData.findUniqueOrThrow({
+        where: { date: matchedWorkoutDate }, select: { id: true },
+      });
+      const matchedWorkout = matchedWorkoutDate === null ? null : await prisma.workout.create({
+        data: {
+          dailyHealthDataId: matchedHealthDay!.id,
+          sourceIdentity: `recovery-fixture:training-workout-${sessionId}`,
+          type: "Traditional Strength Training",
+          startAt: new Date(`${matchedWorkoutDate}T20:00:00.000Z`),
+          endAt: new Date(`${matchedWorkoutDate}T21:00:00.000Z`),
+          durationMinutes: 60,
+          // Keep this synthetic matched row out of the independent Stepper
+          // activity source; the test exercises Training event-date evidence.
+          hiddenFromHistory: true,
+        },
+      });
       await prisma.strengthDiarySession.create({
         data: {
-          id: sessionId, profileId, programId, programVersionId, status: "COMPLETED", entryMode: "LIVE",
-          webStartedAt: new Date(`${dayText}T20:00:00.000Z`),
-          webEndedAt: new Date(`${dayText}T21:00:00.000Z`),
+          id: sessionId, profileId, programId, programVersionId, status: "COMPLETED",
+          entryMode: matchedWorkout === null ? "LIVE" : "RETROSPECTIVE",
+          webStartedAt: matchedWorkout === null ? new Date(`${dayText}T20:00:00.000Z`) : null,
+          webEndedAt: matchedWorkout === null ? new Date(`${dayText}T21:00:00.000Z`) : null,
           effectiveAccountingAt: new Date(`${dayText}T20:00:00.000Z`),
           accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "client-session",
-          matchStatus: "PENDING",
+          matchedWorkoutId: matchedWorkout?.id ?? null,
+          matchStatus: matchedWorkout === null ? "PENDING" : "MATCHED",
+          matchMethod: matchedWorkout === null ? null : "DIRECT_BACKFILL",
+          matchedAt: matchedWorkout === null ? null : new Date(`${dayText}T21:05:00.000Z`),
         },
       });
       const exercise = await prisma.strengthSessionExercise.create({
@@ -972,7 +1014,7 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
         sessionId, profileId, mode: "ordinary", idempotencyKey: `recovery-delete-fixture-${sessionId}`,
       });
       sessionCreated = true;
-      return { exerciseId: exercise.id, setId: set.id };
+      return { exerciseId: exercise.id, setId: set.id, workoutId: matchedWorkout?.id };
     };
 
     const hardDeleted = await createCompletedTrainingSource(28, 12);
@@ -1013,19 +1055,33 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     // and the parent/tombstone pair at a later date after the matched Workout
     // moved. Recovery must accept the exact identities and replay from the
     // earliest date in the complete group.
-    const movedWorkoutSource = await createCompletedTrainingSource(33, 19);
+    const movedWorkoutSource = await createCompletedTrainingSource(33, 15, 15);
+    const preexistingSessionFence = await prisma.unifiedPublicationBlock.findUnique({
+      where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: "33" } },
+      select: { revision: true, fromDate: true },
+    });
+    if (preexistingSessionFence !== null) {
+      expect(await new PhysiologyV7PersistenceRepository(prisma).clearUnifiedPublicationBlock({
+        profileId, source: "training", sourceKey: "33",
+        expectedRevision: preexistingSessionFence.revision, expectedFromDate: preexistingSessionFence.fromDate,
+      })).toBe(true);
+    }
     await new TrainingRepository(prisma).deleteSet(movedWorkoutSource.setId, 33, profileId);
-    await new TrainingRepository(prisma).deleteDiarySession(33, profileId);
-    await prisma.unifiedPublicationBlock.update({
+    const oldDateChildFence = await prisma.unifiedPublicationBlock.findUniqueOrThrow({
       where: { profileId_source_sourceKey: {
         profileId, source: "training", sourceKey: `training-delete-set:33:${movedWorkoutSource.setId}`,
       } },
-      data: { fromDate: "2026-10-15" },
+      select: { fromDate: true, revision: true },
     });
-    await prisma.unifiedPublicationBlock.updateMany({
-      where: { profileId, source: "training", sourceKey: { in: ["33", "training-delete-session:33"] } },
-      data: { fromDate: "2026-10-19" },
-    });
+    expect(oldDateChildFence).toMatchObject({ fromDate: "2026-10-15", revision: 2 });
+    expect(await prisma.strengthDiarySession.findUniqueOrThrow({ where: { id: 33 } }))
+      .toMatchObject({ accountingInputRevision: oldDateChildFence.revision });
+    if (movedWorkoutSource.workoutId === undefined) throw new Error("Matched Workout move fixture was not created.");
+    await prisma.workout.update({ where: { id: movedWorkoutSource.workoutId }, data: {
+      startAt: new Date("2026-10-19T20:00:00.000Z"),
+      endAt: new Date("2026-10-19T21:00:00.000Z"),
+    } });
+    await new TrainingRepository(prisma).deleteDiarySession(33, profileId);
     const movedWorkoutFences = await prisma.unifiedPublicationBlock.findMany({
       where: { profileId, source: "training", sourceKey: { in: [
         "33", "training-delete-session:33", `training-delete-set:33:${movedWorkoutSource.setId}`,
@@ -1036,11 +1092,17 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       .toBe("2026-10-15");
     expect(movedWorkoutFences.filter(({ sourceKey }) => sourceKey === "33" || sourceKey === "training-delete-session:33")
       .map(({ fromDate }) => fromDate)).toEqual(["2026-10-19", "2026-10-19"]);
+    await prisma.experimentalGlycogenStateShadow.delete({
+      where: { profileId_date: { profileId, date: "2026-10-15" } },
+    });
     const movedWorkoutRawBeforeRecovery = await inventoryV4RecoveryRawSourcesV1(prisma);
     await expect(recoverWithCurrentEvidence(await captureRecoveryBinding())).resolves.toMatchObject({
       deletedTrainingSessionIdsReconciled: [33],
     });
     expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(movedWorkoutRawBeforeRecovery.fingerprint);
+    expect(await prisma.experimentalGlycogenStateShadow.findUnique({
+      where: { profileId_date: { profileId, date: "2026-10-15" } }, select: { date: true },
+    })).toEqual({ date: "2026-10-15" });
     expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(0);
     const movedWorkoutLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
     expect(movedWorkoutLifecycle.unifiedPublishedGeneration).toBe(movedWorkoutLifecycle.invalidationGeneration);

@@ -508,6 +508,11 @@ esac
     expect(host).not.toContain("docker compose");
   });
 
+  it("uses PostgreSQL's canonical host address for the exact Docker endpoint binding", () => {
+    expect(evidence).toContain('host(inet_server_addr()) AS "serverAddress"');
+    expect(evidence).not.toContain('inet_server_addr()::text AS "serverAddress"');
+  });
+
   it("requires a restore rehearsal, serializes on the shared production lock, and makes attempts terminal", () => {
     expect(workflow).toContain("Restore backup and rehearse exact image against isolated 65-schema PostgreSQL");
     expect(workflow).toContain("PRODUCTION_BACKUP_ENCRYPTION_KEY");

@@ -566,7 +566,7 @@ async function main() {
       const [identity] = await tx.$queryRawUnsafe<Array<{
         database: string; version: string; serverAddress: string; serverPort: number;
       }>>(`SELECT current_database() AS database, current_setting('server_version') AS version,
-        inet_server_addr()::text AS "serverAddress", inet_server_port() AS "serverPort"`);
+        host(inet_server_addr()) AS "serverAddress", inet_server_port() AS "serverPort"`);
       const migrations = await tx.$queryRawUnsafe<Array<{
         name: string; checksum: string; finishedAt: Date | null; rolledBackAt: Date | null;
       }>>(`SELECT migration_name AS name, checksum, finished_at AS "finishedAt", rolled_back_at AS "rolledBackAt"

@@ -128,6 +128,7 @@ const driftDatabase = "bodycast_v4_schema_drift_test";
 const archiveRestoreDatabase = `bodycast_v4_arc_${randomBytes(4).toString("hex")}`;
 let driftCreated = false;
 let archiveRestoreCreated = false;
+let largeDataFixtureCreated = false;
 try {
   const firstDump = pgDumpRaw(recoveryUrl.database);
   const secondDump = pgDumpRaw(recoveryUrl.database);
@@ -147,16 +148,27 @@ try {
   // pg_restore; the archive's own schema DDL remains a stable comparison.
   const archivePath = path.join(temporaryDirectory, "canonical65-full.pgdump");
   const encryptedArchivePath = path.join(temporaryDirectory, "canonical65-full.pgdump.enc");
+  psql(canonicalUrl, `CREATE TABLE public.__bodycast_schema_digest_large_data_test (id integer PRIMARY KEY, payload text NOT NULL);
+    INSERT INTO public.__bodycast_schema_digest_large_data_test (id, payload)
+    SELECT row_id, string_agg(md5(row_id::text || ':' || chunk_id::text), '')
+    FROM generate_series(1, 8000) AS rows(row_id)
+    CROSS JOIN LATERAL generate_series(1, 64) AS chunks(chunk_id)
+    GROUP BY row_id`);
+  largeDataFixtureCreated = true;
+  const archiveSourceDigest = digestPipeline(canonicalUrl.database);
   const archiveResult = spawnSync("docker", ["run", "--rm", "--network", "host", "--env", "PGPASSWORD", "--entrypoint", "pg_dump",
     postgresImage, "--format=custom", "--no-owner", "--no-privileges", "--host=127.0.0.1",
     `--port=${canonicalUrl.port}`, "--username=bodycast", `--dbname=${canonicalUrl.database}`], {
     encoding: "buffer", env: process.env, maxBuffer: 64 * 1024 * 1024,
   });
   assert.equal(archiveResult.status, 0, `pinned pg_dump custom archive failed: ${archiveResult.stderr.toString("utf8")}`);
+  assert.ok(archiveResult.stdout.length > 8 * 1024 * 1024,
+    "custom archive must contain enough real table data to exercise pg_restore's early schema-only close");
   writeFileSync(archivePath, archiveResult.stdout, { flag: "wx", mode: 0o600 });
   const backupKey = randomBytes(32);
   await encryptBackupStream(createReadStream(archivePath), encryptedArchivePath, backupKey);
   const helperBytes = readFileSync(helperPath);
+  const schemaDigestLogs = [];
   const backupSchemaDigest = await runSchemaDigestFromEnvironment({ env: {
     BACKUP_FILE: encryptedArchivePath,
     PRODUCTION_BACKUP_ENCRYPTION_KEY: backupKey.toString("base64"),
@@ -166,8 +178,12 @@ try {
   }, digestBackupSchema: (options) => digestEncryptedPostgresBackupSchema({
     ...options,
     digest: schemaDigestForCapturedDockerBytes,
+    log: (message) => schemaDigestLogs.push(message),
   }) });
-  assert.equal(backupSchemaDigest, canonicalDigest, "offline archive schema digest must match canonical 65 migrations");
+  assert.equal(backupSchemaDigest, archiveSourceDigest,
+    "offline schema extraction from a data-bearing archive must match the live source schema");
+  assert.match(schemaDigestLogs.join("\n"), /closed schema input early; the remaining encrypted archive was fully consumed and authenticated/,
+    "real PostgreSQL 17.11 must exercise the authenticated early-close handling");
 
   psql(recoveryUrl, `CREATE DATABASE ${archiveRestoreDatabase}`);
   archiveRestoreCreated = true;
@@ -216,9 +232,10 @@ try {
   assert.notEqual(failedDump.status, 0, "pg_dump failure must fail the full shell pipeline");
   assert.equal(failedDump.stdout, "", "pg_dump failure must not yield an accepted digest");
 
-  process.stdout.write(`PASS PostgreSQL 17.11 schema digest pipeline; repeated=${firstDigest}; canonical65=${canonicalDigest}; backup-archive=${backupSchemaDigest}; restored-text=${restoredAfterDigest}; SQL-drift=${driftDigest}\n`);
+  process.stdout.write(`PASS PostgreSQL 17.11 schema digest pipeline; repeated=${firstDigest}; canonical65=${canonicalDigest}; backup-archive=${backupSchemaDigest}; archiveBytes=${archiveResult.stdout.length}; earlyClose=authenticated; restored-text=${restoredAfterDigest}; SQL-drift=${driftDigest}\n`);
 } finally {
   if (archiveRestoreCreated) psql(recoveryUrl, `DROP DATABASE IF EXISTS ${archiveRestoreDatabase} WITH (FORCE)`);
   if (driftCreated) psql(recoveryUrl, `DROP DATABASE IF EXISTS ${driftDatabase} WITH (FORCE)`);
+  if (largeDataFixtureCreated) psql(canonicalUrl, "DROP TABLE IF EXISTS public.__bodycast_schema_digest_large_data_test");
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

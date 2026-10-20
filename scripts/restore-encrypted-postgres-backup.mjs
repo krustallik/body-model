@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { Writable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { decodeBackupKey, decryptBackupToWritable } from "./production-backup-envelope.mjs";
@@ -38,6 +39,12 @@ function waitForClose(child) {
     child.once("error", (error) => resolve({ spawnError: error }));
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
+}
+
+function isExpectedEarlyPipeClose(error) {
+  // Node reports a closed child-stdin pipe as EPIPE on Linux and EOF on
+  // Windows. Both mean the consumer intentionally stopped reading here.
+  return error?.code === "EPIPE" || error?.code === "EOF";
 }
 
 export async function restoreEncryptedPostgresBackup({
@@ -138,11 +145,60 @@ export async function digestEncryptedPostgresBackupSchema({
     schemaBytes += buffer.length;
   });
   let stdinError;
-  child.stdin.on("error", (error) => { stdinError = error; });
+  let stdinClosedEarly = false;
+  let forwardToPgRestore = true;
+  // pg_restore --schema-only intentionally ignores archive data blocks. On a
+  // data-bearing custom archive it can therefore close stdin before the
+  // encrypted source reaches EOF. Stop forwarding after that expected EPIPE,
+  // but keep consuming the decrypted stream so AES-GCM authenticates the
+  // entire immutable archive. Full database restore above keeps its stricter
+  // pipeline behavior unchanged.
+  const schemaInput = new Writable({
+    write(chunk, _encoding, callback) {
+      if (!forwardToPgRestore || child.stdin.destroyed || !child.stdin.writable) {
+        stdinClosedEarly = true;
+        forwardToPgRestore = false;
+        callback();
+        return;
+      }
+      child.stdin.write(chunk, (error) => {
+        if (isExpectedEarlyPipeClose(error)) {
+          stdinClosedEarly = true;
+          forwardToPgRestore = false;
+          callback();
+          return;
+        }
+        callback(error);
+      });
+    },
+    final(callback) {
+      if (!forwardToPgRestore || child.stdin.destroyed || !child.stdin.writable) {
+        callback();
+        return;
+      }
+      child.stdin.end();
+      callback();
+    },
+  });
+  child.stdin.on("error", (error) => {
+    stdinError = error;
+    if (isExpectedEarlyPipeClose(error)) {
+      stdinClosedEarly = true;
+      forwardToPgRestore = false;
+    } else {
+      schemaInput.destroy(error);
+    }
+  });
+  child.stdin.on("close", () => {
+    if (!child.stdin.writableFinished) {
+      stdinClosedEarly = true;
+      forwardToPgRestore = false;
+    }
+  });
   const closed = waitForClose(child);
   let decryptError;
   try {
-    await decryptBackupToWritable(inputPath, child.stdin, key);
+    await decryptBackupToWritable(inputPath, schemaInput, key);
   } catch (error) {
     decryptError = error;
   }
@@ -172,9 +228,15 @@ export async function digestEncryptedPostgresBackupSchema({
     throw new Error(`Backup decryption/streaming failed after pg_restore exited successfully: ${decryptError.message}`, { cause: decryptError });
   }
   if (schemaOverflow) throw new Error(`pg_restore schema output exceeded the ${MAX_SCHEMA_DUMP_BYTES}-byte safety limit.`);
+  if (stdinError && !isExpectedEarlyPipeClose(stdinError)) {
+    throw new Error(`pg_restore schema input failed: ${stdinError.message}`, { cause: stdinError });
+  }
 
   const schemaDump = Buffer.concat(schemaChunks, schemaBytes);
   const schemaSha256 = digest(schemaDump);
+  if (stdinClosedEarly) {
+    log("pg_restore closed schema input early; the remaining encrypted archive was fully consumed and authenticated.");
+  }
   log(`Encrypted backup schema digest verified (${schemaBytes} bytes).`);
   return schemaSha256;
 }

@@ -206,6 +206,10 @@ async function recordExperimentalStrengthShadows(input: {
   profileId: number;
   deferUnifiedPublication?: boolean;
   publicationBlockSourceKeys?: readonly string[];
+  /** Recovery consumes an already-current persisted accounting snapshot. */
+  skipAccountingMaterialization?: boolean;
+  /** Recovery batches Active Energy recalculation after all source dependencies. */
+  deferProductionRefresh?: boolean;
 }): Promise<TrainingShadowRefreshResultV1> {
   const lifecycle = new PhysiologyV7PersistenceRepository();
   const publicationBlockSourceKeys = [...new Set([
@@ -235,12 +239,17 @@ async function recordExperimentalStrengthShadows(input: {
     (earliest, { token }) => token.fromDate < earliest ? token.fromDate : earliest,
     sourceDate,
   );
-  await withTrainingPublicationStage("strength-active-energy-shadow", () => recordExperimentalStrengthEnergyShadow(currentInput));
-  // Keep production current before rebuilding dependent shadows, but defer
-  // Unified publication until this full shadow chain has completed.
-  const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
-    recalculateActiveEnergyChangesV1());
-  if (production === null) {
+  await withTrainingPublicationStage("strength-active-energy-shadow", () => recordExperimentalStrengthEnergyShadow({
+    ...currentInput,
+    ...(input.skipAccountingMaterialization === true ? { skipAccountingMaterialization: true } : {}),
+  }));
+  // Normal edits refresh Active Energy here. Recovery batches it after all
+  // Training and Health dependencies while publication remains fenced.
+  const production = input.deferProductionRefresh === true
+    ? null
+    : await withTrainingPublicationStage("production-active-energy-recalculation", () =>
+      recalculateActiveEnergyChangesV1());
+  if (production === null && input.deferProductionRefresh !== true) {
     throw new Error("production model is unavailable after completed training source update");
   }
   const clearBlockTokens = await withTrainingPublicationStage("capture-training-publication-fences", () =>
@@ -425,6 +434,9 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
 export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
   sessionId: number;
   profileId: number;
+  /** Allows a committed child-delete state only when its complete session fence
+   * set proves why the accounting pointer was invalidated. No snapshot is rebuilt. */
+  recoveryTrainingSourceKeys?: readonly string[];
 }): Promise<void> {
   if (!Number.isSafeInteger(input.sessionId) || input.sessionId <= 0) {
     throw new Error("Training recovery session identity must be a positive integer");
@@ -433,7 +445,7 @@ export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
   if (session === null) throw new Error("Training publication fence has no persisted session for this profile");
   const persistedIdentity = await prisma.strengthDiarySession.findUnique({
     where: { id: input.sessionId },
-    select: { profileId: true, entryMode: true },
+    select: { profileId: true, entryMode: true, accountingInputRevision: true, currentSnapshotRevision: true },
   });
   if (persistedIdentity === null || persistedIdentity.profileId !== input.profileId
       || (persistedIdentity.entryMode !== ENTRY_MODE.LIVE
@@ -445,7 +457,88 @@ export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
     throw new Error("Training recovery supports only completed persisted sessions");
   }
   if (session.materializationState !== "current") {
-    throw new Error("Training recovery requires the current persisted accounting snapshot");
+    const sourceKeys = input.recoveryTrainingSourceKeys;
+    const validKeys = sourceKeys !== undefined && sourceKeys.length > 0
+      && new Set(sourceKeys).size === sourceKeys.length
+      && sourceKeys.some((sourceKey) => sourceKey.startsWith(`training-delete-`))
+      && sourceKeys.every((sourceKey) => {
+        if (sourceKey === String(input.sessionId)) return true;
+        const match = /^training-delete-(?:set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(sourceKey);
+        return match !== null && Number(match[1]) === input.sessionId
+          && Number.isSafeInteger(Number(match[1])) && Number.isSafeInteger(Number(match[2]));
+      });
+    if (!validKeys) {
+      throw new Error("Training recovery requires the current persisted accounting snapshot");
+    }
+    if (session.materializationState !== "missing") {
+      throw new Error(`Training child-delete recovery requires a missing snapshot state (found ${session.materializationState})`);
+    }
+    if (persistedIdentity.currentSnapshotRevision !== null
+        || !Number.isSafeInteger(persistedIdentity.accountingInputRevision)
+        || persistedIdentity.accountingInputRevision < 1) {
+      throw new Error("Training recovery requires the current persisted accounting snapshot");
+    }
+
+    const numericSessionFence = await prisma.unifiedPublicationBlock.findUnique({
+      where: { profileId_source_sourceKey: {
+        profileId: input.profileId, source: "training", sourceKey: String(input.sessionId),
+      } },
+      select: { sourceKey: true },
+    });
+    const persistedChildFences = await prisma.unifiedPublicationBlock.findMany({
+      where: {
+        profileId: input.profileId,
+        source: "training",
+        OR: [
+          { sourceKey: { startsWith: `training-delete-set:${input.sessionId}:` } },
+          { sourceKey: { startsWith: `training-delete-exercise:${input.sessionId}:` } },
+        ],
+      },
+      select: { sourceKey: true },
+      orderBy: { sourceKey: "asc" },
+    });
+    const expectedKeys = [...sourceKeys!].sort();
+    const actualKeys = [
+      ...(numericSessionFence === null ? [] : [String(input.sessionId)]),
+      ...persistedChildFences.map((fence) => fence.sourceKey),
+    ].sort();
+    if (actualKeys.length !== expectedKeys.length
+        || actualKeys.some((sourceKey, index) => sourceKey !== expectedKeys[index])) {
+      throw new Error(`Training recovery child-delete evidence does not match the exact persisted fence set (expected ${expectedKeys.length}, found ${persistedChildFences.length})`);
+    }
+
+    const [latestSnapshot, pendingOperation] = await Promise.all([
+      prisma.strengthSessionAccountingSnapshot.findFirst({
+        where: { sessionId: input.sessionId },
+        orderBy: { snapshotRevision: "desc" },
+        select: { accountingInputRevision: true },
+      }),
+      prisma.strengthSessionAccountingOperation.findFirst({
+        where: { sessionId: input.sessionId, status: "PENDING" },
+        select: { id: true },
+      }),
+    ]);
+    if (latestSnapshot === null
+        || latestSnapshot.accountingInputRevision >= persistedIdentity.accountingInputRevision
+        || pendingOperation !== null) {
+      throw new Error("Training child-delete recovery has no preserved prior snapshot or has pending accounting work");
+    }
+
+    for (const sourceKey of expectedKeys) {
+      if (sourceKey === String(input.sessionId)) continue;
+      const match = /^training-delete-(set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(sourceKey)!;
+      const childId = Number(match[3]);
+      const childExists = match[1] === "set"
+        ? await prisma.strengthSet.findFirst({
+          where: { id: childId, sessionExercise: { sessionId: input.sessionId } }, select: { id: true },
+        })
+        : await prisma.strengthSessionExercise.findFirst({
+          where: { id: childId, sessionId: input.sessionId }, select: { id: true },
+        });
+      if (childExists !== null) {
+        throw new Error(`Training child-delete fence still has a persisted child row (${sourceKey})`);
+      }
+    }
   }
   if (session.entryMode !== ENTRY_MODE.LIVE && session.entryMode !== ENTRY_MODE.RETROSPECTIVE) {
     throw new Error("Training recovery found an unsupported persisted entry mode");
@@ -485,22 +578,62 @@ export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
 export async function refreshPersistedTrainingSessionDependenciesV1(input: {
   sessionId: number;
   profileId?: number;
-  expectedTrainingFence: { revision: number; fromDate: string };
+  expectedTrainingFence?: { revision: number; fromDate: string };
+  publicationBlockSourceKeys?: readonly string[];
+  recoveryTrainingSourceKeys?: readonly string[];
 }): Promise<void> {
   if (!Number.isSafeInteger(input.sessionId) || input.sessionId <= 0) {
     throw new Error("sessionId must be a positive integer");
   }
   const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
-  await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId: input.sessionId, profileId });
-  await recordExperimentalStrengthShadowsBySessionId({
+  await assertPersistedTrainingSessionRecoveryReadyV1({
     sessionId: input.sessionId,
     profileId,
-    skipAccountingMaterialization: true,
-    deferUnifiedPublication: true,
-    clearTrainingFenceAfterDependencyRefresh: false,
-    deferProductionRefresh: true,
-    expectedTrainingFence: input.expectedTrainingFence,
+    ...(input.recoveryTrainingSourceKeys === undefined
+      ? {} : { recoveryTrainingSourceKeys: input.recoveryTrainingSourceKeys }),
   });
+  if (input.expectedTrainingFence !== undefined) {
+    const numericFence = await new PhysiologyV7PersistenceRepository().readUnifiedPublicationBlockToken({
+      profileId, source: "training", sourceKey: String(input.sessionId),
+    });
+    if (numericFence === null || numericFence.revision !== input.expectedTrainingFence.revision
+        || numericFence.fromDate !== input.expectedTrainingFence.fromDate) {
+      throw new StaleStrengthEnergySourceError();
+    }
+  }
+  const session = await new TrainingRepository(prisma).getSession(input.sessionId, profileId);
+  if (session === null) throw new Error("training source disappeared before dependent-shadow refresh");
+  await recordExperimentalStrengthShadows({
+    session,
+    profileId,
+    deferUnifiedPublication: true,
+    ...(input.publicationBlockSourceKeys === undefined
+      ? {} : { publicationBlockSourceKeys: input.publicationBlockSourceKeys }),
+    skipAccountingMaterialization: true,
+    deferProductionRefresh: true,
+  });
+}
+
+/** Rebuild the deleted-session dependencies using the same date-scoped stages
+ * as the existing completed-session delete recovery path. The session and its
+ * child rows remain deleted; only derived glycogen and Relative Muscle outputs
+ * are refreshed before the generation-scoped V4 replay. */
+export async function refreshDeletedCompletedSessionDependenciesForRecoveryV1(input: {
+  profileId: number;
+  fromDate: string;
+}): Promise<void> {
+  const date = new Date(`${input.fromDate}T00:00:00.000Z`);
+  if (!Number.isSafeInteger(input.profileId) || input.profileId <= 0
+      || !/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate)
+      || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== input.fromDate) {
+    throw new Error("Deleted Training recovery requires a valid profile and episode-local date");
+  }
+  const fromInstant = await trainingModelDateStartInstant(input.profileId, input.fromDate);
+  const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant });
+  if (dirty === null) throw new Error("deleted completed Training session has no resolvable model-day boundary");
+  const refreshFromDate = input.fromDate < dirty.modelDate ? input.fromDate : dirty.modelDate;
+  await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
+  await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant, profileId: input.profileId });
 }
 
 /** Refreshes each affected strength session through the full dependency/fence lifecycle after a weight-source edit. */

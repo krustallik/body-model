@@ -13,6 +13,7 @@ import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/mo
 import { recalculateActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 import {
   assertPersistedTrainingSessionRecoveryReadyV1,
+  refreshDeletedCompletedSessionDependenciesForRecoveryV1,
   refreshPersistedTrainingSessionDependenciesV1,
   recordExperimentalStrengthShadowsForWeightDate,
 } from "@/modules/training/training.service";
@@ -23,6 +24,11 @@ type PublicationBlock = {
   sourceKey: string;
   fromDate: string;
   revision: number;
+};
+
+type SupportedTrainingBlock = PublicationBlock & {
+  sessionId: number;
+  identity: "session" | "deleted-set" | "deleted-exercise";
 };
 
 type RecoveryLifecycleBinding = {
@@ -186,23 +192,51 @@ function validDate(value: string): boolean {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
+function parseTrainingBlockIdentity(sourceKey: string): Pick<SupportedTrainingBlock, "sessionId" | "identity"> | null {
+  if (/^[1-9]\d*$/.test(sourceKey)) {
+    const sessionId = Number(sourceKey);
+    return Number.isSafeInteger(sessionId) ? { sessionId, identity: "session" } : null;
+  }
+  const childDelete = /^training-delete-(set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(sourceKey);
+  if (!childDelete) return null;
+  const sessionId = Number(childDelete[2]);
+  const childId = Number(childDelete[3]);
+  if (!Number.isSafeInteger(sessionId) || !Number.isSafeInteger(childId)) return null;
+  return { sessionId, identity: childDelete[1] === "set" ? "deleted-set" : "deleted-exercise" };
+}
+
 function assertSupportedBlockSet(blocks: readonly PublicationBlock[]): {
   health: PublicationBlock[];
-  training: PublicationBlock[];
+  training: SupportedTrainingBlock[];
 } {
   const health = blocks.filter((block) => block.source === "health");
-  const training = blocks.filter((block) => block.source === "training")
-    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
+  const training = blocks.filter((block) => block.source === "training").map((block) => {
+    const identity = parseTrainingBlockIdentity(block.sourceKey);
+    return identity === null ? null : { ...block, ...identity };
+  });
   const identities = new Set(blocks.map((block) => `${block.source}\0${block.sourceKey}`));
-  if (health.length + training.length !== blocks.length
+  if (health.length + training.filter((block) => block !== null).length !== blocks.length
       || identities.size !== blocks.length
       || health.some((block) => block.sourceKey !== block.fromDate || !validDate(block.fromDate))
       || blocks.some((block) => !Number.isSafeInteger(block.revision) || block.revision < 1)
-      || training.some((block) => !/^[1-9]\d*$/.test(block.sourceKey)
-        || !Number.isSafeInteger(Number(block.sourceKey)) || !validDate(block.fromDate))) {
+      || training.some((block) => block === null || !validDate(block.fromDate))) {
     throw new Error("V4 derived recovery found an unsupported publication block set");
   }
-  return { health, training };
+  return {
+    health,
+    training: (training as SupportedTrainingBlock[]).sort((left, right) =>
+      left.sessionId - right.sessionId || left.sourceKey.localeCompare(right.sourceKey)),
+  };
+}
+
+function groupTrainingBlocks(blocks: readonly SupportedTrainingBlock[]) {
+  const groups = new Map<number, SupportedTrainingBlock[]>();
+  for (const block of blocks) {
+    const group = groups.get(block.sessionId) ?? [];
+    group.push(block);
+    groups.set(block.sessionId, group);
+  }
+  return [...groups.entries()].map(([sessionId, sessionBlocks]) => ({ sessionId, blocks: sessionBlocks }));
 }
 
 /** Hash exact persisted JSONB rows. Unlike the full-history inventory this does
@@ -496,6 +530,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   dayCount: number;
   healthDatesRefreshed: string[];
   trainingSessionIdsRefreshed: number[];
+  deletedTrainingSessionIdsReconciled: number[];
   rawInputFingerprint: string;
 }> {
   if (input.ownerAuthorized !== true) throw new Error("V4 derived recovery requires explicit owner authorization");
@@ -522,15 +557,42 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   const repository = new PhysiologyV7PersistenceRepository(client);
   const initialBlocks = initialEvidence.blocks;
   const supported = assertSupportedBlockSet(initialBlocks);
-  for (const block of supported.training) {
-    const sessionId = Number(block.sourceKey);
-    await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId, profileId });
-    const currentBlock = await client.unifiedPublicationBlock.findUnique({
-      where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
-      select: { revision: true, fromDate: true },
+  const trainingGroups = groupTrainingBlocks(supported.training);
+  const deletedTrainingSessionIds = new Set<number>();
+  for (const group of trainingGroups) {
+    const persistedIdentity = await client.strengthDiarySession.findUnique({
+      where: { id: group.sessionId }, select: { profileId: true },
     });
-    if (currentBlock === null || currentBlock.revision !== block.revision || currentBlock.fromDate !== block.fromDate) {
-      throw new Error(`Training source fence changed during recovery preflight (${block.sourceKey}); recovery stopped`);
+    if (persistedIdentity === null) {
+      // A numeric session fence is created in the same source transaction as
+      // a completed-session hard delete. Child-only fences are insufficient
+      // evidence that the missing session was intentionally deleted.
+      if (!group.blocks.some((block) => block.identity === "session")) {
+        throw new Error(`Training child deletion fence has no persisted session or session-delete fence (${group.sessionId})`);
+      }
+      deletedTrainingSessionIds.add(group.sessionId);
+    } else {
+      if (persistedIdentity.profileId !== profileId) {
+        throw new Error(`Training source fence belongs to a different profile (${group.sessionId})`);
+      }
+      const childDeleteSourceKeys = group.blocks
+        .filter((block) => block.identity !== "session")
+        .map((block) => block.sourceKey);
+      const hasChildDeleteFence = childDeleteSourceKeys.length > 0;
+      await assertPersistedTrainingSessionRecoveryReadyV1({
+        sessionId: group.sessionId,
+        profileId,
+        ...(hasChildDeleteFence ? { recoveryTrainingSourceKeys: group.blocks.map((block) => block.sourceKey) } : {}),
+      });
+    }
+    for (const block of group.blocks) {
+      const currentBlock = await client.unifiedPublicationBlock.findUnique({
+        where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
+        select: { revision: true, fromDate: true },
+      });
+      if (currentBlock === null || currentBlock.revision !== block.revision || currentBlock.fromDate !== block.fromDate) {
+        throw new Error(`Training source fence changed during recovery preflight (${block.sourceKey}); recovery stopped`);
+      }
     }
   }
   if (supported.health.length > 0) {
@@ -587,21 +649,45 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
       client, profileId, expected: input.expectedEvidenceBinding,
     });
   }
-  for (const block of supported.training) {
-    const sessionId = Number(block.sourceKey);
-    await assertPersistedTrainingSessionRecoveryReadyV1({ sessionId, profileId });
-    const currentBlock = await client.unifiedPublicationBlock.findUnique({
-      where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
-      select: { revision: true, fromDate: true },
-    });
-    if (currentBlock === null || currentBlock.revision !== block.revision || currentBlock.fromDate !== block.fromDate) {
-      throw new Error("Training publication fence changed before dependent refresh; recovery stopped");
+  for (const group of trainingGroups) {
+    if (deletedTrainingSessionIds.has(group.sessionId)) continue;
+    for (const block of group.blocks) {
+      const currentBlock = await client.unifiedPublicationBlock.findUnique({
+        where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
+        select: { revision: true, fromDate: true },
+      });
+      if (currentBlock === null || currentBlock.revision !== block.revision || currentBlock.fromDate !== block.fromDate) {
+        throw new Error("Training publication fence changed before dependent refresh; recovery stopped");
+      }
     }
+    const sessionBlock = group.blocks.find((block) => block.identity === "session");
+    const childBlockKeys = group.blocks.filter((block) => block.identity !== "session").map((block) => block.sourceKey);
+    const hasChildDeleteFence = childBlockKeys.length > 0;
     await refreshPersistedTrainingSessionDependenciesV1({
-      sessionId, profileId,
-      expectedTrainingFence: { revision: block.revision, fromDate: block.fromDate },
+      sessionId: group.sessionId,
+      profileId,
+      ...(sessionBlock === undefined ? {} : {
+        expectedTrainingFence: { revision: sessionBlock.revision, fromDate: sessionBlock.fromDate },
+      }),
+      ...(childBlockKeys.length === 0 ? {} : { publicationBlockSourceKeys: childBlockKeys }),
+      ...(hasChildDeleteFence ? { recoveryTrainingSourceKeys: group.blocks.map((block) => block.sourceKey) } : {}),
     });
-    refreshedSessionIds.push(sessionId);
+    refreshedSessionIds.push(group.sessionId);
+  }
+  if (deletedTrainingSessionIds.size > 0) {
+    const deletedBlocks = supported.training.filter((block) => deletedTrainingSessionIds.has(block.sessionId));
+    for (const block of deletedBlocks) {
+      const currentBlock = await client.unifiedPublicationBlock.findUnique({
+        where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: block.sourceKey } },
+        select: { revision: true, fromDate: true },
+      });
+      if (currentBlock === null || currentBlock.revision !== block.revision || currentBlock.fromDate !== block.fromDate) {
+        throw new Error("Deleted Training source fence changed before dependency refresh; recovery stopped");
+      }
+    }
+    const earliestDeletedDate = deletedBlocks.map((block) => block.fromDate).sort()[0];
+    if (earliestDeletedDate === undefined) throw new Error("Deleted Training recovery lost its durable dirty date");
+    await refreshDeletedCompletedSessionDependenciesForRecoveryV1({ profileId, fromDate: earliestDeletedDate });
   }
 
   await recalculateActiveEnergyChangesV1({ skipTrainingAccountingMaterialization: true });
@@ -641,6 +727,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     dayCount: replay.dayCount,
     healthDatesRefreshed: supported.health.map((block) => block.sourceKey).sort(),
     trainingSessionIdsRefreshed: refreshedSessionIds,
+    deletedTrainingSessionIdsReconciled: [...deletedTrainingSessionIds].sort((left, right) => left - right),
     rawInputFingerprint: afterRaw.fingerprint,
   };
   } catch (error) {

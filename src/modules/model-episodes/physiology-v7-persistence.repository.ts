@@ -321,8 +321,13 @@ export class PhysiologyV7PersistenceRepository {
         && Number.isFinite(new Date(`${block.expectedFromDate}T00:00:00.000Z`).getTime())
         && new Date(`${block.expectedFromDate}T00:00:00.000Z`).toISOString().slice(0, 10) === block.expectedFromDate;
       const validHealth = block.source === "health" && block.sourceKey === block.expectedFromDate && validDate;
-      const validTraining = block.source === "training" && /^[1-9]\d*$/.test(block.sourceKey)
+      const numericTrainingSession = /^[1-9]\d*$/.test(block.sourceKey)
         && Number.isSafeInteger(Number(block.sourceKey));
+      const deletedTrainingChild = /^training-delete-(?:set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(block.sourceKey);
+      const validTrainingChild = deletedTrainingChild !== null
+        && Number.isSafeInteger(Number(deletedTrainingChild[1]))
+        && Number.isSafeInteger(Number(deletedTrainingChild[2]));
+      const validTraining = block.source === "training" && (numericTrainingSession || validTrainingChild);
       if (identities.has(identity) || (!validHealth && !validTraining) || !validDate
           || !Number.isSafeInteger(block.expectedRevision) || block.expectedRevision < 1) {
         throw new Error("Unified publication recovery fence set is malformed.");

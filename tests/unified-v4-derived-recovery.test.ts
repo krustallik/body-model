@@ -12,8 +12,10 @@ const mocks = vi.hoisted(() => {
     inventoryMetadataByteOverrides: Record<string, number>;
     inventoryReturnedBytes: number[];
     inventoryBoundBatchSizes: Array<{ rowCount: number; jsonbBytes: number }>;
+    missingTrainingSessions: number[];
   } = { lifecycle: {}, blocks: [], failAt: null, failClear: null, invalidTrainingSession: null,
-    inventoryRows: {}, inventoryMetadataByteOverrides: {}, inventoryReturnedBytes: [], inventoryBoundBatchSizes: [] };
+    inventoryRows: {}, inventoryMetadataByteOverrides: {}, inventoryReturnedBytes: [], inventoryBoundBatchSizes: [],
+    missingTrainingSessions: [] };
   const queryRaw = vi.fn(async (query: string, ...parameters: unknown[]) => {
     const table = /FROM public\."([^"]+)"/.exec(query)?.[1];
     if (!table) return [];
@@ -84,7 +86,7 @@ const mocks = vi.hoisted(() => {
     unifiedPublicationBlock: { findMany: vi.fn(), findUnique: vi.fn(), count: vi.fn() },
     dailyHealthData: { findMany: vi.fn() },
     healthMetricSample: { findMany: vi.fn() },
-    strengthDiarySession: { findFirst: vi.fn() },
+    strengthDiarySession: { findFirst: vi.fn(), findUnique: vi.fn() },
   };
   const shadow = vi.fn(async () => {
     if (state.failAt === "health") throw Object.assign(new Error("transaction conflict"), { code: "P2034" });
@@ -97,6 +99,7 @@ const mocks = vi.hoisted(() => {
   const assertTrainingReady = vi.fn(async ({ sessionId }: { sessionId: number }) => {
     if (state.invalidTrainingSession === sessionId) throw new Error("Training recovery requires the current persisted accounting snapshot");
   });
+  const refreshDeletedTraining = vi.fn(async () => {});
   const clearAll = vi.fn(async (input: { blocks: Array<{ source: string; sourceKey: string; expectedRevision: number; expectedFromDate: string }> }) => {
     const failed = input.blocks.find((block) => block.sourceKey === state.failClear);
     if (failed) throw new Error(`${failed.source} source fence changed during dependent refresh (${failed.sourceKey})`);
@@ -117,6 +120,7 @@ const mocks = vi.hoisted(() => {
     training,
     clearAll,
     assertTrainingReady,
+    refreshDeletedTraining,
     inventory: vi.fn(async () => ({ fingerprint: "same-raw-source-fingerprint", tables: {} })),
     recalculate: vi.fn(async () => {
       if (state.failAt === "production") return null;
@@ -150,6 +154,7 @@ vi.mock("@/modules/profile/experimental-stepper-glycogen-demand-shadow.service",
 vi.mock("@/modules/activity/active-energy-publication", () => ({ recalculateActiveEnergyChangesV1: mocks.recalculate }));
 vi.mock("@/modules/training/training.service", () => ({
   assertPersistedTrainingSessionRecoveryReadyV1: mocks.assertTrainingReady,
+  refreshDeletedCompletedSessionDependenciesForRecoveryV1: mocks.refreshDeletedTraining,
   refreshPersistedTrainingSessionDependenciesV1: mocks.training,
   recordExperimentalStrengthShadowsForWeightDate: mocks.shadow,
 }));
@@ -194,10 +199,14 @@ function reset(blocks = true) {
   mocks.prisma.dailyHealthData.findMany.mockImplementation(async () => dates.map((date) => ({ date, weightKg: 80 })));
   mocks.prisma.healthMetricSample.findMany.mockResolvedValue([]);
   mocks.prisma.strengthDiarySession.findFirst.mockResolvedValue({ id: 20 });
+  mocks.state.missingTrainingSessions = [];
+  mocks.prisma.strengthDiarySession.findUnique.mockImplementation(async (args: { where: { id: number } }) =>
+    mocks.state.missingTrainingSessions.includes(args.where.id) ? null : { profileId: 1 });
   mocks.clearAll.mockClear();
   mocks.shadow.mockClear();
   mocks.training.mockClear();
   mocks.assertTrainingReady.mockClear();
+  mocks.refreshDeletedTraining.mockClear();
   mocks.inventory.mockClear();
   mocks.recalculate.mockClear();
   mocks.replay.mockClear();
@@ -284,7 +293,7 @@ describe("persisted-source V4 derived recovery", () => {
       expectedTrainingFence: { revision: 3, fromDate: "2071-01-09" },
     });
     expect(mocks.training.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25]);
-    expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25, 20, 24, 25]);
+    expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20, 24, 25]);
     expect(mocks.clearAll).toHaveBeenCalledTimes(1);
     expect(mocks.state.blocks).toHaveLength(0);
     expect(mocks.replay).toHaveBeenCalledWith({ profileId: 1, client: mocks.prisma });
@@ -384,9 +393,58 @@ describe("persisted-source V4 derived recovery", () => {
       .rejects.toThrow("unsupported publication block set");
   });
 
+  it("refreshes a child-deletion fence through its persisted parent session", async () => {
+    mocks.state.blocks = [
+      { source: "training", sourceKey: "training-delete-set:20:551", fromDate: "2071-01-09", revision: 7 },
+      { source: "training", sourceKey: "training-delete-exercise:20:552", fromDate: "2071-01-08", revision: 8 },
+    ];
+    const result = await recover();
+    expect(mocks.assertTrainingReady.mock.calls.map(([input]) => input.sessionId)).toEqual([20]);
+    expect(mocks.assertTrainingReady).toHaveBeenCalledWith({
+      sessionId: 20, profileId: 1,
+      recoveryTrainingSourceKeys: ["training-delete-exercise:20:552", "training-delete-set:20:551"],
+    });
+    expect(mocks.training).toHaveBeenCalledWith({
+      sessionId: 20, profileId: 1,
+      publicationBlockSourceKeys: ["training-delete-exercise:20:552", "training-delete-set:20:551"],
+      recoveryTrainingSourceKeys: ["training-delete-exercise:20:552", "training-delete-set:20:551"],
+    });
+    expect(mocks.refreshDeletedTraining).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ trainingSessionIdsRefreshed: [20], deletedTrainingSessionIdsReconciled: [] });
+    expect(mocks.state.blocks).toHaveLength(0);
+  });
+
+  it("reconciles a hard-deleted session only with its durable numeric deletion fence", async () => {
+    mocks.state.blocks = [
+      { source: "training", sourceKey: "training-delete-set:32:553", fromDate: "2071-01-08", revision: 4 },
+      { source: "training", sourceKey: "32", fromDate: "2071-01-09", revision: 5 },
+    ];
+    mocks.state.missingTrainingSessions = [32];
+    const result = await recover();
+    expect(mocks.assertTrainingReady).not.toHaveBeenCalled();
+    expect(mocks.training).not.toHaveBeenCalled();
+    expect(mocks.refreshDeletedTraining).toHaveBeenCalledWith({ profileId: 1, fromDate: "2071-01-08" });
+    expect(result).toMatchObject({ trainingSessionIdsRefreshed: [], deletedTrainingSessionIdsReconciled: [32] });
+    expect(mocks.state.blocks).toHaveLength(0);
+  });
+
+  it("fails closed when a child fence has no persisted parent or session-delete fence", async () => {
+    mocks.state.blocks = [
+      { source: "training", sourceKey: "training-delete-set:32:553", fromDate: "2071-01-08", revision: 4 },
+    ];
+    mocks.state.missingTrainingSessions = [32];
+    await expect(recover()).rejects.toThrow("has no persisted session or session-delete fence");
+    expect(mocks.training).not.toHaveBeenCalled();
+    expect(mocks.refreshDeletedTraining).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
+    expect(mocks.state.blocks).toHaveLength(1);
+  });
+
   it.each([
     ["non-canonical Training identity", { source: "training", sourceKey: "020", fromDate: "2071-01-20", revision: 1 }],
     ["invalid Training model date", { source: "training", sourceKey: "26", fromDate: "2071-02-30", revision: 1 }],
+    ["malformed Training child-deletion identity", { source: "training", sourceKey: "training-delete-set:020:5", fromDate: "2071-01-20", revision: 1 }],
     ["zero Training revision", { source: "training", sourceKey: "26", fromDate: "2071-01-20", revision: 0 }],
     ["unsupported fence identity", { source: "garmin", sourceKey: "26", fromDate: "2071-01-20", revision: 1 }],
   ])("rejects %s before refreshing or clearing any source", async (_name, invalidBlock) => {

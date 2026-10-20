@@ -90,20 +90,22 @@ NODE
   mapfile -t pg_host_paths <<< "$host_paths"
   [[ "${#pg_host_paths[@]}" -eq 2 && "${pg_host_paths[0]}" == /* && "${pg_host_paths[1]}" == /* \
     && -d "${pg_host_paths[0]}" && -d "${pg_host_paths[1]}" ]] || fail "postgres-mount-identity"
-  node "$BODYCAST_HEADROOM_SCRIPT" --check "$phase" "$BODYCAST_RECOVERY_HEADROOM_METRICS_JSON" \
+  HEADROOM_REPORT="$(node "$BODYCAST_HEADROOM_SCRIPT" --check "$phase" "$BODYCAST_RECOVERY_HEADROOM_METRICS_JSON" \
     "$artifact_dir" "$docker_root" "${pg_host_paths[0]}" "${pg_host_paths[1]}" /var/tmp /var/lib/bodycast/recovery \
     "$(recovery_image_id >/dev/null && printf true || printf false)" \
-    || fail "disk-headroom-${phase}"
+    )" || fail "disk-headroom-${phase}"
 }
 
 if [[ "$mode" == "pretransfer" ]]; then
   headroom_check before-transfer
-  printf 'V4_RECOVERY_HEADROOM_OK phase=before-transfer\n'
+  printf '%s\n' "$HEADROOM_REPORT"
+  printf 'V4_RECOVERY_HEADROOM_OK phase=before-transfer\n' >&2
   exit 0
 fi
 if [[ "$mode" == "preexecute" ]]; then
   headroom_check before-execute
-  printf 'V4_RECOVERY_HEADROOM_OK phase=before-execute\n'
+  printf '%s\n' "$HEADROOM_REPORT"
+  printf 'V4_RECOVERY_HEADROOM_OK phase=before-execute\n' >&2
   exit 0
 fi
 
@@ -114,7 +116,7 @@ if ! recovery_image_id >/dev/null; then
   [[ "$mode" == "preflight" ]] || fail "immutable-recovery-image-not-loaded"
   headroom_check before-load
   load_output="$(docker load --input "$BODYCAST_IMAGE_ARCHIVE" 2>&1)" || { printf '%s\n' "$load_output" >&2; fail "image-load"; }
-  printf 'V4_RECOVERY_IMAGE_LOAD %s\n' "$load_output"
+  printf 'V4_RECOVERY_IMAGE_LOAD %s\n' "$load_output" >&2
 fi
 recovery_image_ref="$(recovery_image_id)" || fail "loaded-image-id"
 
@@ -162,10 +164,12 @@ schema_digest="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-
 if [[ "$mode" == "preflight" ]]; then
   marker="/var/lib/bodycast/recovery/unified-v4-derived-${BODYCAST_RECOVERY_SHA}.json"
   [[ ! -e "$marker" && ! -L "$marker" ]] || fail "recovery-already-started-or-terminal"
-  node --input-type=module - "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$schema_digest_contract" "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" <<'NODE'
+  BODYCAST_HEADROOM_BEFORE_LOAD_JSON="$HEADROOM_REPORT" node --input-type=module - "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$schema_digest_contract" "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" <<'NODE'
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 const evidence = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const headroomBeforeLoad = JSON.parse(process.env.BODYCAST_HEADROOM_BEFORE_LOAD_JSON ?? "");
+if (headroomBeforeLoad.phase !== "before-load") throw new Error("Pre-load disk-headroom evidence is malformed.");
 const ledgerDigest = createHash("sha256").update(evidence.expectedMigrationRows
   .map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
 if (evidence.database?.database !== "bodycast" || !evidence.database.version.startsWith("17.")
@@ -185,7 +189,7 @@ const output = { sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.argv[6], appImageId: process.argv[7], appSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   databaseContainerAddress: process.argv[8], schemaDigestContract: process.argv[9],
-  schemaDigestHelperSha256: process.argv[10], evidence };
+  schemaDigestHelperSha256: process.argv[10], headroomBeforeLoad, evidence };
 process.stdout.write(`${JSON.stringify(output)}\n`);
 NODE
   exit 0

@@ -526,6 +526,7 @@ jobs:
           const sameMigrationRows = (left, right) => JSON.stringify(left.map(({ name, checksum, finishedAt, rolledBackAt }) => ({ name, checksum, finishedAt, rolledBackAt })))
             === JSON.stringify(right.map(({ name, checksum, finishedAt, rolledBackAt }) => ({ name, checksum, finishedAt, rolledBackAt })));
           if (report.appSha !== "f910d2a45dfa676fada5fab42c9e8946c97872b1"
+              || report.headroomBeforeLoad?.phase !== "before-load"
               || report.schemaDigestContract !== measurements.schemaDigestContract
               || report.schemaDigestContract !== process.env.SCHEMA_DIGEST_CONTRACT
               || report.schemaDigestHelperSha256 !== measurements.schemaDigestHelperSha256

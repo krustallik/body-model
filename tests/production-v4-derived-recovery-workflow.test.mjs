@@ -22,7 +22,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     const artifactRoot = join(tempRoot, "artifacts");
     const recoveryStateRoot = join(tempRoot, "recovery-state");
     const runId = "70001";
-    const recoverySha = "35c556772759ea03c2728de921c1825f454d59c2";
+    const recoverySha = "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1";
     const artifactDir = join(artifactRoot, recoverySha, runId);
     const archive = join(artifactDir, "image.tar");
     const hostScript = join(artifactDir, "host.sh");
@@ -69,7 +69,7 @@ esac
     chmodSync(dockerPath, 0o700);
     writeFileSync(archive, "isolated image archive fixture");
     const archiveSha = createHash("sha256").update(readFileSync(archive)).digest("hex");
-    const metrics = JSON.stringify({ archiveBytes: 1, imageBytes: 1, dataPeakGrowthBytes: 100 * 1024 ** 3,
+    const metrics = JSON.stringify({ archiveBytes: 1, imageBytes: 1, dataPeakGrowthBytes: Number.MAX_SAFE_INTEGER,
       walPeakGrowthBytes: 1, temporaryPeakBytes: 1, recoveryStartMarkerBytes: 100_000, recoveryTerminalMarkerBytes: 100_000 });
     const lowMetrics = JSON.stringify({ archiveBytes: 1, imageBytes: 1, dataPeakGrowthBytes: 0,
       walPeakGrowthBytes: 0, temporaryPeakBytes: 0, recoveryStartMarkerBytes: 1, recoveryTerminalMarkerBytes: 1 });
@@ -113,9 +113,8 @@ esac
       else expect(beforeTransfer.stderr).toContain("disk-headroom-before-transfer");
       expect(readFileSync(dockerLog, "utf8")).not.toMatch(/(^|\\n)load /);
 
-      // Re-read disk headroom before image loading. A realistic measured
-      // 100-GiB database requirement is deliberately insufficient here; this
-      // cannot pass by overflowing safe-integer arithmetic.
+      // Re-read disk headroom before image loading. An unrepresentable
+      // aggregate requirement must fail closed on any filesystem capacity.
       for (const [mode, expectedGate] of [["pretransfer", "before-transfer"], ["preflight", "before-load"], ["preexecute", "before-execute"]]) {
         writeFileSync(dockerLog, "");
         const result = spawnSync("bash", [hostScript, mode], { env: commonEnv, encoding: "utf8" });
@@ -190,7 +189,7 @@ esac
     expect(sourceEnd).toBeGreaterThan(sourceStart);
     const nodeSource = host.slice(sourceStart, sourceEnd);
     const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-marker-budget-"));
-    const sourceSha = "35c556772759ea03c2728de921c1825f454d59c2";
+    const sourceSha = "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1";
     const workflowSha = "c".repeat(40);
     const imageId = `sha256:${"d".repeat(64)}`;
     const archiveSha = "e".repeat(64);
@@ -296,12 +295,15 @@ esac
         metricSampleRows: 1,
         linkedMetricSampleRows: 1, invalidMetricSampleRows: 0, unsupportedMetricSourceRows: 0, chronologyValid: true,
       })),
-      training: [{ sourceKey: "20", fromDate: "2025-01-01", fenceRevision: 9, sessionRows: 1,
-        sessionId: 20, profileId: 1, status: "COMPLETED", entryMode: "RETROSPECTIVE", sourceRevision: 1, accountingInputRevision: 1,
+      training: [{ sourceKey: "20", fromDate: "2025-01-01", fenceRevision: 9, identity: "session", sessionRows: 1,
+        childDeletionAccountingInputRevision: null,
+        sessionId: 20, profileId: 1, parentSessionRows: 1, parentSessionId: 20, parentProfileId: 1,
+        parentStatus: "COMPLETED", status: "COMPLETED", entryMode: "RETROSPECTIVE", sourceRevision: 1, accountingInputRevision: 1,
         currentSnapshotRevision: 1, accountingSnapshotRows: 1, snapshotRevision: 1,
         snapshotAccountingInputRevision: 1, snapshotEffectiveLocalDate: "2025-01-01",
         persistedEffectiveAccountingAt: "2025-01-01T12:00:00.000Z",
-        effectiveAccountingAt: "2025-01-01T12:00:00.000Z", accountingEffectiveLocalDate: "2025-01-01",
+        effectiveAccountingAt: "2025-01-01T12:00:00.000Z", trainingEventAt: "2025-01-01T12:00:00.000Z",
+        webStartedAt: null, matchedWorkoutStartAt: "2025-01-01T12:00:00.000Z", accountingEffectiveLocalDate: "2025-01-01",
         accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
         snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
         snapshotTimeZoneProvenance: "legacy-default", matchedWorkoutId: 20, matchStatus: "MATCHED",
@@ -309,8 +311,13 @@ esac
         matchedWorkoutPresent: true, matchedWorkoutIdentityMatches: true,
         matchedWorkoutTypeSupported: true, matchedWorkoutSourceIdentitySha256: "b".repeat(64),
         matchedWorkoutSourceHealthDate: "2025-01-01",
-        matchedWorkoutStartAt: "2025-01-01T12:00:00.000Z", trainingEventAt: "2025-01-01T12:00:00.000Z",
-        createdAt: "2025-01-01T10:00:00.000Z", modelDate: "2025-01-01", chronologyValid: true }],
+        createdAt: "2025-01-01T10:00:00.000Z", modelDate: "2025-01-01",
+        latestSnapshotRows: 1, latestSnapshotRevision: 1, latestSnapshotAccountingInputRevision: 1,
+        latestSnapshotEffectiveLocalDate: "2025-01-01", latestSnapshotTimeZone: "Europe/Bratislava",
+        latestSnapshotTimeZoneValid: true, latestSnapshotTimeZoneProvenance: "legacy-default",
+        latestSnapshotContractValid: true, latestSnapshotEvidenceSha256: "a".repeat(64),
+        historicalSnapshotChronologyValid: true, pendingAccountingOperationRows: 0, accountingRevisionGap: 0,
+        sourceFenceChronologyValid: true, sessionUpdateFenceChronologyValid: true, chronologyValid: true }],
     };
     const lifecycle = {
       profileId: 1,
@@ -328,7 +335,7 @@ esac
     const replayCoverageKeys = [...modelDayKeys, "2|2025-01-03"];
     const after = { ...before, blocks: [], lifecycle, coveredModelDayKeys: replayCoverageKeys,
       sourceModelDayCount: modelDayKeys.length, coveredDayCount: replayCoverageKeys.length };
-    const report = { sourceSha: "35c556772759ea03c2728de921c1825f454d59c2", evidence: {
+    const report = { sourceSha: "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1", evidence: {
       database: { database: "bodycast" }, migrationRows, expectedMigrationRows: migrationRows,
       expectedLedgerDigest: before.expectedLedgerDigest, blocks: before.blocks, sourceFingerprint: fingerprint,
       sourceEvidence, lifecycle: before.lifecycle, sourceModelDayKeys: modelDayKeys,
@@ -347,7 +354,7 @@ esac
       const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
         cwd: repositoryRoot,
         env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
-          BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "35c556772759ea03c2728de921c1825f454d59c2",
+          BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1",
           SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
           IMAGE_ID: `sha256:${"d".repeat(64)}`, ARCHIVE_SHA: "e".repeat(64), RESTORED_SCHEMA_SHA256: "f".repeat(64) },
         input: nodeSource,
@@ -355,7 +362,7 @@ esac
       });
       expect(result.status, result.stderr).toBe(0);
       const measurements = JSON.parse(readFileSync(join(artifactRoot, "rehearsal-measurements.json"), "utf8"));
-      const markerTemplate = { state: "started", sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
+      const markerTemplate = { state: "started", sourceSha: "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1",
         ownerRunId: "9".repeat(20), workflowSha: "0".repeat(40), attempt: "1",
         imageId: `sha256:${"d".repeat(64)}`, archiveSha: "0".repeat(64), preflightDigest: "0".repeat(64),
         schemaSha: "f".repeat(64), schemaDigestContract, schemaDigestHelperSha256,
@@ -387,7 +394,7 @@ esac
 
       writeFileSync(join(artifactRoot, "preflight.json"), JSON.stringify(preflight));
       const artifactManifest = {
-        sourceSha: "35c556772759ea03c2728de921c1825f454d59c2", imageId: `sha256:${"d".repeat(64)}`,
+        sourceSha: "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1", imageId: `sha256:${"d".repeat(64)}`,
         imageDigest: `sha256:${"d".repeat(64)}`, archiveSha256: "e".repeat(64),
         archiveBytes: 5000, imageBytes: 9000, evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
         schemaDigestContract, schemaDigestHelperSha256,
@@ -437,12 +444,12 @@ esac
     expect(workflow).toMatch(/\[\[ "\$DISPATCH_SHA" == "\$GITHUB_SHA"/);
     expect(workflow).toContain("main-ci.ndjson");
     expect(workflow).toContain("Recheck exact owner approval, current main, and legacy CI immediately before execution");
-    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_35c556772759ea03c2728de921c1825f454d59c2");
+    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1");
     expect(workflow).toContain("needs.rehearse.result == 'success'");
   });
 
   it("requires the exact audited legacy SHA, 65-schema manifest, and derived-only entrypoint", () => {
-    expect(workflow).toContain("35c556772759ea03c2728de921c1825f454d59c2");
+    expect(workflow).toContain("cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1");
     expect(workflow).toContain("291b9c95924e196d66f9cdd555535b2e5a2b5990");
     expect(workflow).toContain("4fa84cb62262986d5f0c58d3c76db2ba52b5500e");
     expect(workflow).toContain("a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7");

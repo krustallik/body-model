@@ -154,6 +154,27 @@ function validDate(value: unknown): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
+function parseTrainingFenceIdentityV1(sourceKey: string): {
+  sessionId: number; identity: "session" | "deleted-session" | "deleted-set" | "deleted-exercise"; childId: number | null;
+} | null {
+  const numeric = /^([1-9]\d*)$/.exec(sourceKey);
+  if (numeric) {
+    const sessionId = Number(numeric[1]);
+    return Number.isSafeInteger(sessionId) ? { sessionId, identity: "session", childId: null } : null;
+  }
+  const deletedSession = /^training-delete-session:([1-9]\d*)$/.exec(sourceKey);
+  if (deletedSession) {
+    const sessionId = Number(deletedSession[1]);
+    return Number.isSafeInteger(sessionId) ? { sessionId, identity: "deleted-session", childId: null } : null;
+  }
+  const deletedChild = /^training-delete-(set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(sourceKey);
+  if (!deletedChild) return null;
+  const sessionId = Number(deletedChild[2]);
+  const childId = Number(deletedChild[3]);
+  if (!Number.isSafeInteger(sessionId) || !Number.isSafeInteger(childId)) return null;
+  return { sessionId, identity: deletedChild[1] === "set" ? "deleted-set" : "deleted-exercise", childId };
+}
+
 async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Array<{
   source: string; sourceKey: string; fromDate: string; revision: number; createdAt: Date; updatedAt: Date;
 }>) {
@@ -217,15 +238,16 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
     };
   }));
 
-  const trainingBlocks = blocks.filter((block) => block.source === "training")
-    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
-  if (trainingBlocks.some((block) => !/^[1-9][0-9]*$/.test(block.sourceKey)
-    || !Number.isSafeInteger(Number(block.sourceKey)))) {
-    throw new Error("Training publication evidence contains a non-canonical session identity");
+  const trainingBlocks = blocks.filter((block) => block.source === "training");
+  const parsedTrainingBlocks = trainingBlocks.map((block) => ({ block, identity: parseTrainingFenceIdentityV1(block.sourceKey) }));
+  if (parsedTrainingBlocks.some(({ identity }) => identity === null)) {
+    throw new Error("Training publication evidence contains a non-canonical session or deletion identity");
   }
-  const trainingIds = trainingBlocks.map((block) => Number(block.sourceKey));
+  parsedTrainingBlocks.sort((left, right) => left.identity!.sessionId - right.identity!.sessionId
+    || left.block.sourceKey.localeCompare(right.block.sourceKey));
+  const trainingIds = [...new Set(parsedTrainingBlocks.map(({ identity }) => identity!.sessionId))];
   const sessions = trainingIds.length > 0 ? await client.strengthDiarySession.findMany({
-    where: { id: { in: trainingIds }, profileId: 1 },
+    where: { id: { in: trainingIds } },
     select: {
       id: true, profileId: true, status: true, entryMode: true, revision: true, accountingInputRevision: true,
       currentSnapshotRevision: true, matchedWorkoutId: true, matchStatus: true,
@@ -254,15 +276,36 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
     rows.push(snapshot);
     snapshotsBySession.set(snapshot.sessionId, rows);
   }
+  const pendingOperations = trainingIds.length > 0 ? await client.strengthSessionAccountingOperation.findMany({
+    where: { sessionId: { in: trainingIds }, status: "PENDING" }, select: { sessionId: true, id: true },
+  }) : [];
+  const pendingOperationCountBySession = new Map<number, number>();
+  for (const operation of pendingOperations) pendingOperationCountBySession.set(operation.sessionId,
+    (pendingOperationCountBySession.get(operation.sessionId) ?? 0) + 1);
+  const childSetIds = parsedTrainingBlocks.filter(({ identity }) => identity!.identity === "deleted-set")
+    .map(({ identity }) => identity!.childId!);
+  const childExerciseIds = parsedTrainingBlocks.filter(({ identity }) => identity!.identity === "deleted-exercise")
+    .map(({ identity }) => identity!.childId!);
+  const [childSets, childExercises] = await Promise.all([
+    childSetIds.length > 0 ? client.strengthSet.findMany({
+      where: { id: { in: childSetIds } }, select: { id: true, sessionExercise: { select: { sessionId: true } } },
+    }) : [],
+    childExerciseIds.length > 0 ? client.strengthSessionExercise.findMany({
+      where: { id: { in: childExerciseIds } }, select: { id: true, sessionId: true },
+    }) : [],
+  ]);
+  const childSetById = new Map(childSets.map((row) => [row.id, row]));
+  const childExerciseById = new Map(childExercises.map((row) => [row.id, row]));
   const episodes = trainingIds.length > 0 ? await client.modelEpisode.findMany({
     where: { profileId: 1 }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true },
   }) : [];
-  const training = trainingBlocks.map((trainingBlock) => {
-    const sessionId = Number(trainingBlock.sourceKey);
+  const training = parsedTrainingBlocks.map(({ block: trainingBlock, identity }) => {
+    const sessionId = identity!.sessionId;
     const session = sessionById.get(sessionId) ?? null;
+    const allSessionSnapshots = snapshotsBySession.get(sessionId) ?? [];
     const sessionSnapshots = session && session.currentSnapshotRevision !== null
-      ? (snapshotsBySession.get(session.id) ?? []).filter((snapshot) => snapshot.snapshotRevision === session.currentSnapshotRevision)
+      ? allSessionSnapshots.filter((snapshot) => snapshot.snapshotRevision === session.currentSnapshotRevision)
       : [];
     // The event clock follows the legacy writer; accounting uses its separate persisted fallback.
     const persistedEffectiveAccountingAt = session?.effectiveAccountingAt ?? null;
@@ -315,6 +358,102 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
       && payload.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
       && payload.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
       && payload.massResolutionIdentity === expectedMassResolutionIdentity);
+    const latestSnapshot = allSessionSnapshots.at(-1) ?? null;
+    const latestPayload = latestSnapshot ? persistedPayloadFromUnknown(latestSnapshot.payload) : null;
+    let latestSnapshotTimeZoneValid = false;
+    if (latestSnapshot?.timeZone) {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: latestSnapshot.timeZone }).format(new Date(0));
+        latestSnapshotTimeZoneValid = true;
+      } catch { /* Invalid persisted timezone remains a failed evidence bit. */ }
+    }
+    const latestExpectedMassResolutionIdentity = latestSnapshot && latestPayload && latestSnapshotTimeZoneValid
+      ? buildMassResolutionIdentity({
+        localDate: latestSnapshot.effectiveLocalDate,
+        timeZone: latestSnapshot.timeZone,
+        methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
+        reference: latestPayload.massReference,
+      }) : null;
+    const snapshotPayloadMatchesRow = (candidate: (typeof allSessionSnapshots)[number]): boolean => {
+      const candidatePayload = persistedPayloadFromUnknown(candidate.payload);
+      if (!candidatePayload) return false;
+      let timeZoneValid = false;
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: candidate.timeZone }).format(new Date(0));
+        timeZoneValid = true;
+      } catch { /* Invalid persisted timezone remains a failed evidence bit. */ }
+      if (!timeZoneValid) return false;
+      const expectedIdentity = buildMassResolutionIdentity({
+        localDate: candidate.effectiveLocalDate,
+        timeZone: candidate.timeZone,
+        methodVersion: candidate.massResolutionMethodVersion,
+        reference: candidatePayload.massReference,
+      });
+      return candidatePayload.sessionId === sessionId
+        && candidate.payloadVersion === candidatePayload.schemaVersion
+        && candidatePayload.snapshotRevision === candidate.snapshotRevision
+        && candidatePayload.accountingInputRevision === candidate.accountingInputRevision
+        && candidatePayload.inputFingerprint === candidate.inputFingerprint
+        && candidatePayload.effectiveLocalDate === candidate.effectiveLocalDate
+        && candidatePayload.timeZone === candidate.timeZone
+        && candidatePayload.timeZoneProvenance === candidate.timeZoneProvenance
+        && candidatePayload.accountingMethodVersion === candidate.accountingMethodVersion
+        && candidatePayload.massResolutionMethodVersion === candidate.massResolutionMethodVersion
+        && candidatePayload.massResolutionIdentity === candidate.massResolutionIdentity
+        && candidatePayload.massResolutionIdentity === expectedIdentity
+        && instantToLocalDateTime(new Date(candidatePayload.effectiveAccountingAt), candidate.timeZone).date
+          === candidate.effectiveLocalDate;
+    };
+    const historicalSnapshotChronologyValid = Boolean(session && allSessionSnapshots.length > 0
+      && allSessionSnapshots.every((candidate, index) => validDate(candidate.createdAt)
+        && candidate.createdAt <= session.updatedAt
+        && Number.isSafeInteger(candidate.snapshotRevision) && candidate.snapshotRevision > 0
+        && Number.isSafeInteger(candidate.accountingInputRevision) && candidate.accountingInputRevision > 0
+        && candidate.accountingInputRevision <= session.accountingInputRevision
+        && snapshotPayloadMatchesRow(candidate)
+        && (index === 0 || (allSessionSnapshots[index - 1]!.snapshotRevision < candidate.snapshotRevision
+          && allSessionSnapshots[index - 1]!.accountingInputRevision <= candidate.accountingInputRevision
+          && allSessionSnapshots[index - 1]!.createdAt <= candidate.createdAt))));
+    const latestSnapshotContractValid = Boolean(session && latestSnapshot && latestPayload
+      && effectiveAccountingAt && accountingEffectiveLocalDate && latestSnapshotTimeZoneValid
+      && latestSnapshot.effectiveLocalDate === accountingEffectiveLocalDate
+      && latestSnapshot.timeZone === accountingTimeZone
+      && latestSnapshot.timeZoneProvenance === accountingTimeZoneProvenance
+      && latestSnapshot.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
+      && latestSnapshot.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
+      && latestSnapshot.massResolutionIdentity === latestExpectedMassResolutionIdentity
+      && latestPayload.sessionId === session.id
+      && latestSnapshot.payloadVersion === latestPayload.schemaVersion
+      && latestPayload.snapshotRevision === latestSnapshot.snapshotRevision
+      && latestPayload.accountingInputRevision === latestSnapshot.accountingInputRevision
+      && latestPayload.inputFingerprint === latestSnapshot.inputFingerprint
+      && latestPayload.effectiveAccountingAt === effectiveAccountingAt.toISOString()
+      && latestPayload.effectiveLocalDate === accountingEffectiveLocalDate
+      && latestPayload.timeZone === accountingTimeZone
+      && latestPayload.timeZoneProvenance === accountingTimeZoneProvenance
+      && latestPayload.accountingMethodVersion === LOAD_ACCOUNTING_METHOD_V1
+      && latestPayload.massResolutionMethodVersion === BODYWEIGHT_RESOLUTION_METHOD_V2
+      && latestPayload.massResolutionIdentity === latestExpectedMassResolutionIdentity
+      && latestPayload.massResolutionIdentity === latestSnapshot.massResolutionIdentity);
+    const latestSnapshotEvidenceSha256 = latestSnapshot ? sha256(canonicalJson({
+      snapshotRevision: latestSnapshot.snapshotRevision,
+      accountingInputRevision: latestSnapshot.accountingInputRevision,
+      inputFingerprint: latestSnapshot.inputFingerprint,
+      effectiveLocalDate: latestSnapshot.effectiveLocalDate,
+      timeZone: latestSnapshot.timeZone,
+      timeZoneProvenance: latestSnapshot.timeZoneProvenance,
+      accountingMethodVersion: latestSnapshot.accountingMethodVersion,
+      massResolutionMethodVersion: latestSnapshot.massResolutionMethodVersion,
+      massResolutionIdentity: latestSnapshot.massResolutionIdentity,
+      payloadVersion: latestSnapshot.payloadVersion,
+      payload: latestSnapshot.payload,
+      createdAt: latestSnapshot.createdAt,
+    })) : null;
+    const childRow = identity!.identity === "deleted-set"
+      ? childSetById.get(identity!.childId!) ?? null
+      : identity!.identity === "deleted-exercise" ? childExerciseById.get(identity!.childId!) ?? null : null;
+    const childOwnerSessionId = childRow === null ? null
+      : "sessionExercise" in childRow ? childRow.sessionExercise.sessionId : childRow.sessionId;
     const snapshotEvidenceSha256 = snapshot ? sha256(canonicalJson({
       snapshotRevision: snapshot.snapshotRevision,
       accountingInputRevision: snapshot.accountingInputRevision,
@@ -333,10 +472,19 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
       sourceKey: trainingBlock.sourceKey,
       fromDate: trainingBlock.fromDate,
       fenceRevision: trainingBlock.revision,
+      identity: identity!.identity,
+      childDeletionAccountingInputRevision: identity!.identity === "deleted-set"
+        || identity!.identity === "deleted-exercise" ? trainingBlock.revision : null,
       sessionRows: session ? 1 : 0,
-      sessionId: session?.id ?? null,
+      sessionId,
       profileId: session?.profileId ?? null,
       status: session?.status ?? null,
+      parentSessionRows: session ? 1 : 0,
+      parentSessionId: session?.id ?? null,
+      parentProfileId: session?.profileId ?? null,
+      parentStatus: session?.status ?? null,
+      childRows: identity!.childId === null ? null : childRow === null ? 0 : 1,
+      childOwnerSessionId,
       entryMode: session?.entryMode ?? null,
       sourceRevision: session?.revision ?? null,
       accountingInputRevision: session?.accountingInputRevision ?? null,
@@ -371,6 +519,24 @@ async function readPublicationSourceEvidenceV1(client: typeof prisma, blocks: Ar
       snapshotTimeZoneProvenance: snapshot?.timeZoneProvenance ?? null,
       snapshotContractValid,
       snapshotEvidenceSha256,
+      latestSnapshotRows: latestSnapshot === null ? 0
+        : allSessionSnapshots.filter((candidate) => candidate.snapshotRevision === latestSnapshot.snapshotRevision).length,
+      latestSnapshotRevision: latestSnapshot?.snapshotRevision ?? null,
+      latestSnapshotAccountingInputRevision: latestSnapshot?.accountingInputRevision ?? null,
+      latestSnapshotEffectiveLocalDate: latestSnapshot?.effectiveLocalDate ?? null,
+      latestSnapshotTimeZone: latestSnapshot?.timeZone ?? null,
+      latestSnapshotTimeZoneValid,
+      latestSnapshotTimeZoneProvenance: latestSnapshot?.timeZoneProvenance ?? null,
+      latestSnapshotContractValid,
+      latestSnapshotEvidenceSha256,
+      historicalSnapshotChronologyValid,
+      pendingAccountingOperationRows: pendingOperationCountBySession.get(sessionId) ?? 0,
+      accountingRevisionGap: session && latestSnapshot
+        ? session.accountingInputRevision - latestSnapshot.accountingInputRevision : null,
+      sourceFenceChronologyValid: validDate(trainingBlock.createdAt) && validDate(trainingBlock.updatedAt)
+        && trainingBlock.createdAt <= trainingBlock.updatedAt,
+      sessionUpdateFenceChronologyValid: session !== null && validDate(session.updatedAt)
+        && validDate(trainingBlock.updatedAt) && session.updatedAt <= trainingBlock.updatedAt,
       chronologyValid: Boolean(session && snapshot && validDate(snapshot.createdAt) && validDate(session.updatedAt)
         && validDate(trainingBlock.createdAt) && validDate(trainingBlock.updatedAt)
         && snapshot.createdAt <= session.updatedAt && session.updatedAt <= trainingBlock.updatedAt

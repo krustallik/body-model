@@ -8,7 +8,7 @@ fail() { printf 'V4_RECOVERY_STOP %s\n' "$1" >&2; exit 1; }
 mode="${1:-}"
 [[ "$mode" == "pretransfer" || "$mode" == "preflight" || "$mode" == "preexecute" || "$mode" == "execute" ]] || fail "invalid-mode"
 [[ "${BODYCAST_DEPLOY_PATH:-}" == "/srv/bodycast" ]] || fail "deploy-path"
-[[ "${BODYCAST_RECOVERY_SHA:-}" == "35c556772759ea03c2728de921c1825f454d59c2" ]] || fail "source-sha"
+[[ "${BODYCAST_RECOVERY_SHA:-}" == "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1" ]] || fail "source-sha"
 [[ "${BODYCAST_EXPECTED_APP_SHA:-}" == "f910d2a45dfa676fada5fab42c9e8946c97872b1" ]] || fail "expected-app-sha"
 [[ "${BODYCAST_OWNER_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || fail "owner-run-id"
 [[ "${BODYCAST_WORKFLOW_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || fail "workflow-sha"
@@ -168,7 +168,7 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
   throw new Error("Live database is not the expected stale 65-migration V4 source state.");
 }
-const output = { sourceSha: "35c556772759ea03c2728de921c1825f454d59c2",
+const output = { sourceSha: "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.argv[6], appImageId: process.argv[7], appSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   databaseContainerAddress: process.argv[8], schemaDigestContract: process.argv[9],

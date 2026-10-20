@@ -200,11 +200,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": {
         migrationOriginBlob: null,
-        deployBlob: "1d1587bdf108a9248c5dbb6b6fa2889092c722e0",
+        deployBlob: "ff61cf90db34483e9c362a6d509d97107399db5c",
       },
       "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
         migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
-        deployBlob: "b98cf66fa2d4c435e85be1edc3fad81e4c9b4f93",
+        deployBlob: "c283337edcce23114b3e9838a84abc1f34323263",
       },
       "src/modules/profile/experimental-stepper-active-energy-shadow.service.ts": {
         migrationOriginBlob: "b4ec529a9755c9a3b15ea2b6c9ba19216bd6e888",
@@ -216,7 +216,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/training/training.service.ts": {
         migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",
-        deployBlob: "cf8d8e984b177e9cc41b079a14ec7eb664f427a5",
+        deployBlob: "805e2450b7918c9a5a7e6964215b660f7bb87dfc",
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",

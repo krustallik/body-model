@@ -76,6 +76,51 @@ export function migrationLedgerDigest(rows) {
   return sha256(rows.map(({ name, checksum }) => `${name}\t${checksum}\n`).join(""));
 }
 
+// Return only stable category names so failed production preflights can be
+// diagnosed without logging source payloads or fingerprints.
+export function productionPreflightMismatchCategories({ report, measurements, before, rehearsal,
+  expectedSchemaHelperSha256, schemaDigestContract, schemaDigestHelperSha256 }) {
+  const mismatches = [];
+  const evidence = report?.evidence;
+  const lifecycle = evidence?.lifecycle;
+  const migrationRows = (rows) => Array.isArray(rows)
+    ? rows.map((row) => ({ name: row?.name, checksum: row?.checksum,
+      finishedAt: row?.finishedAt, rolledBackAt: row?.rolledBackAt }))
+    : null;
+  const sameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+  if (report?.appSha !== LEGACY_V4_RECOVERY.productionAppSha) mismatches.push("application-sha");
+  if (report?.headroomBeforeLoad?.phase !== "before-load") mismatches.push("headroom-before-load");
+  if (report?.schemaDigestContract !== measurements?.schemaDigestContract
+    || report?.schemaDigestContract !== schemaDigestContract) mismatches.push("schema-digest-contract");
+  if (report?.schemaDigestHelperSha256 !== measurements?.schemaDigestHelperSha256
+    || report?.schemaDigestHelperSha256 !== expectedSchemaHelperSha256
+    || report?.schemaDigestHelperSha256 !== schemaDigestHelperSha256) mismatches.push("schema-digest-helper");
+  if (evidence?.database?.database !== "bodycast") mismatches.push("database-identity");
+  if (!Array.isArray(evidence?.migrationRows) || evidence.migrationRows.length !== LEGACY_V4_RECOVERY.migrationCount) {
+    mismatches.push("migration-row-count");
+  }
+  if (lifecycle?.unifiedRolloutEpoch !== 1) mismatches.push("unified-rollout-epoch");
+  if (report?.schemaSha256 !== measurements?.schemaSha256) mismatches.push("schema-fingerprint");
+  if (evidence?.sourceFingerprint !== measurements?.restoredSourceFingerprint) mismatches.push("raw-source-fingerprint");
+  if (!sameJson(migrationRows(evidence?.migrationRows), migrationRows(before?.migrationRows))) {
+    mismatches.push("migration-ledger");
+  }
+  try {
+    if (publicationBlockDigest(evidence?.blocks) !== publicationBlockDigest(before?.blocks)) {
+      mismatches.push("publication-fences");
+    }
+  } catch {
+    mismatches.push("publication-fences");
+  }
+  if (!sameJson(evidence?.sourceEvidence, before?.sourceEvidence)) mismatches.push("source-provenance");
+  if (!sameJson(lifecycle, before?.lifecycle)) mismatches.push("lifecycle");
+  if (!sameJson(evidence?.sourceModelDayKeys, before?.sourceModelDayKeys)) mismatches.push("source-model-day-keys");
+  if (evidence?.expectedLedgerDigest !== before?.expectedLedgerDigest) mismatches.push("expected-ledger-digest");
+  if (evidence?.sourceFingerprint !== rehearsal?.sourceFingerprint) mismatches.push("rehearsal-source-fingerprint");
+  return mismatches;
+}
+
 export function assertApprovedRecoveryRuns({
   actorId, confirmation, runAttempt, repository, workflowRef, workflowPath,
   workflowSha, currentMainSha, sourceSha, sourcePr, ciRuns, safetyRuns,

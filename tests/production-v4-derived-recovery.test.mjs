@@ -13,6 +13,7 @@ import {
   assertOneShotRecoveryState,
   assertSchemaSignature,
   migrationLedgerDigest,
+  productionPreflightMismatchCategories,
   modelDayKeysDigest,
   parseTrainingFenceIdentity,
   validatePublicationSourceEvidence,
@@ -140,6 +141,76 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     expect(() => migrationLedgerDigest(ledgerRows.slice(1))).toThrow();
     expect(() => migrationLedgerDigest(ledgerRows.map((row, i) => i === 4 ? { ...row, rolledBackAt: "now" } : row))).toThrow();
     expect(() => migrationLedgerDigest([...ledgerRows].reverse())).toThrow();
+  });
+
+  it("reports only safe categories for exact production preflight evidence mismatches", () => {
+    const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
+      unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
+    const sourceFingerprint = "d".repeat(64);
+    const schemaSha256 = "c".repeat(64);
+    const schemaDigestHelperSha256 = "e".repeat(64);
+    const schemaDigestContract = "bodycast-v4-schema-digest-v1";
+    const before = { migrationRows: ledgerRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle,
+      sourceModelDayKeys: ["2026-10-01", "2026-10-02"], expectedLedgerDigest: migrationLedgerDigest(ledgerRows) };
+    const rehearsal = { sourceFingerprint };
+    const measurements = { schemaDigestContract, schemaDigestHelperSha256, schemaSha256,
+      restoredSourceFingerprint: sourceFingerprint };
+    const report = { appSha: LEGACY_V4_RECOVERY.productionAppSha, headroomBeforeLoad: { phase: "before-load" },
+      schemaDigestContract, schemaDigestHelperSha256, schemaSha256,
+      evidence: { database: { database: "bodycast" }, migrationRows: ledgerRows, lifecycle,
+        sourceFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
+        expectedLedgerDigest: before.expectedLedgerDigest } };
+    const input = { report, measurements, before, rehearsal, expectedSchemaHelperSha256: schemaDigestHelperSha256,
+      schemaDigestContract, schemaDigestHelperSha256 };
+    expect(productionPreflightMismatchCategories(input)).toEqual([]);
+
+    const changed = productionPreflightMismatchCategories({ ...input,
+      report: { ...report, evidence: { ...report.evidence, sourceFingerprint: "f".repeat(64) } } });
+    expect(changed).toEqual(["raw-source-fingerprint", "rehearsal-source-fingerprint"]);
+    expect(JSON.stringify(changed)).not.toMatch(/[a-f0-9]{64}/);
+  });
+
+  it.each([
+    ["application SHA", "application-sha", (input) => ({ ...input, report: { ...input.report, appSha: "1".repeat(40) } })],
+    ["headroom phase", "headroom-before-load", (input) => ({ ...input, report: { ...input.report, headroomBeforeLoad: { phase: "after-load" } } })],
+    ["schema contract", "schema-digest-contract", (input) => ({ ...input, report: { ...input.report, schemaDigestContract: "other" } })],
+    ["schema helper", "schema-digest-helper", (input) => ({ ...input, report: { ...input.report, schemaDigestHelperSha256: "1".repeat(64) } })],
+    ["database identity", "database-identity", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, database: { database: "other" } } } })],
+    ["migration count", "migration-row-count", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, migrationRows: [] } } })],
+    ["rollout epoch", "unified-rollout-epoch", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, lifecycle: { ...input.report.evidence.lifecycle, unifiedRolloutEpoch: 2 } } } })],
+    ["schema fingerprint", "schema-fingerprint", (input) => ({ ...input, report: { ...input.report, schemaSha256: "1".repeat(64) } })],
+    ["migration ledger", "migration-ledger", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, migrationRows: input.report.evidence.migrationRows.map((row, index) => index ? row : { ...row, finishedAt: "2026-02-01T00:00:00Z" }) } } })],
+    ["publication fences", "publication-fences", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, blocks: [] } } })],
+    ["source provenance", "source-provenance", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, sourceEvidence: {} } } })],
+    ["lifecycle", "lifecycle", (input) => ({ ...input, before: { ...input.before, lifecycle: { ...input.before.lifecycle, invalidationGeneration: 11 } } })],
+    ["source model day keys", "source-model-day-keys", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, sourceModelDayKeys: ["2026-10-03"] } } })],
+    ["expected ledger digest", "expected-ledger-digest", (input) => ({ ...input, report: { ...input.report, evidence: { ...input.report.evidence, expectedLedgerDigest: "1".repeat(64) } } })],
+    ["restored source fingerprint", "raw-source-fingerprint", (input) => ({ ...input, measurements: { ...input.measurements, restoredSourceFingerprint: "1".repeat(64) } })],
+    ["rehearsal source fingerprint", "rehearsal-source-fingerprint", (input) => ({ ...input, rehearsal: { sourceFingerprint: "1".repeat(64) } })],
+  ])("identifies %s without returning evidence values", (_label, category, mutate) => {
+    const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
+      unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
+    const sourceFingerprint = "d".repeat(64);
+    const schemaSha256 = "c".repeat(64);
+    const schemaDigestHelperSha256 = "e".repeat(64);
+    const schemaDigestContract = "bodycast-v4-schema-digest-v1";
+    const before = { migrationRows: ledgerRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle,
+      sourceModelDayKeys: ["2026-10-01", "2026-10-02"], expectedLedgerDigest: migrationLedgerDigest(ledgerRows) };
+    const report = { appSha: LEGACY_V4_RECOVERY.productionAppSha, headroomBeforeLoad: { phase: "before-load" },
+      schemaDigestContract, schemaDigestHelperSha256, schemaSha256,
+      evidence: { database: { database: "bodycast" }, migrationRows: ledgerRows, lifecycle,
+        sourceFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
+        expectedLedgerDigest: before.expectedLedgerDigest } };
+    const input = { report, before, rehearsal: { sourceFingerprint },
+      measurements: { schemaDigestContract, schemaDigestHelperSha256, schemaSha256, restoredSourceFingerprint: sourceFingerprint },
+      expectedSchemaHelperSha256: schemaDigestHelperSha256, schemaDigestContract, schemaDigestHelperSha256 };
+    const mismatches = productionPreflightMismatchCategories(mutate(input));
+    expect(mismatches).toContain(category);
+    expect(JSON.stringify(mismatches)).not.toMatch(/[a-f0-9]{64}/);
   });
 
   it("binds the immutable image, archive, exact schema and executable command to its manifest", () => {

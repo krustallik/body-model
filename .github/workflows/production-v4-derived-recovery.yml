@@ -517,32 +517,17 @@ jobs:
           import { readFileSync, writeFileSync } from "node:fs";
           import { createHash } from "node:crypto";
           import { assertProductionIdentity, assertRehearsedCoverageEvidence, migrationLedgerDigest, modelDayKeysDigest,
-            publicationBlockDigest, recoveryEvidenceBinding, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
+            productionPreflightMismatchCategories, publicationBlockDigest, recoveryEvidenceBinding, validatePublicationSourceEvidence } from "./scripts/production-v4-derived-recovery.mjs";
           const measurements = JSON.parse(readFileSync(process.env.RECOVERY_MEASUREMENTS, "utf8"));
           const report = JSON.parse(readFileSync(process.env.PREFLIGHT_FILE, "utf8"));
           const expectedSchemaHelperSha256 = createHash("sha256").update(readFileSync("scripts/production-v4-schema-digest.mjs")).digest("hex");
           const before = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/restored-before.json`, "utf8"));
           const rehearsal = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/restored-after.json`, "utf8"));
-          const sameMigrationRows = (left, right) => JSON.stringify(left.map(({ name, checksum, finishedAt, rolledBackAt }) => ({ name, checksum, finishedAt, rolledBackAt })))
-            === JSON.stringify(right.map(({ name, checksum, finishedAt, rolledBackAt }) => ({ name, checksum, finishedAt, rolledBackAt })));
-          if (report.appSha !== "f910d2a45dfa676fada5fab42c9e8946c97872b1"
-              || report.headroomBeforeLoad?.phase !== "before-load"
-              || report.schemaDigestContract !== measurements.schemaDigestContract
-              || report.schemaDigestContract !== process.env.SCHEMA_DIGEST_CONTRACT
-              || report.schemaDigestHelperSha256 !== measurements.schemaDigestHelperSha256
-              || report.schemaDigestHelperSha256 !== expectedSchemaHelperSha256
-              || report.schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256
-              || report.evidence?.database?.database !== "bodycast" || report.evidence?.migrationRows?.length !== 65
-              || report.evidence.lifecycle?.unifiedRolloutEpoch !== 1 || report.schemaSha256 !== measurements.schemaSha256
-              || report.evidence.sourceFingerprint !== measurements.restoredSourceFingerprint
-              || !sameMigrationRows(report.evidence.migrationRows, before.migrationRows)
-              || publicationBlockDigest(report.evidence.blocks) !== publicationBlockDigest(before.blocks)
-              || JSON.stringify(report.evidence.sourceEvidence) !== JSON.stringify(before.sourceEvidence)
-              || JSON.stringify(report.evidence.lifecycle) !== JSON.stringify(before.lifecycle)
-              || JSON.stringify(report.evidence.sourceModelDayKeys) !== JSON.stringify(before.sourceModelDayKeys)
-              || report.evidence.expectedLedgerDigest !== before.expectedLedgerDigest
-              || report.evidence.sourceFingerprint !== rehearsal.sourceFingerprint) {
-            throw new Error("Current production evidence differs from the exact restored backup/rehearsal.");
+          const mismatchCategories = productionPreflightMismatchCategories({ report, measurements, before, rehearsal,
+            expectedSchemaHelperSha256, schemaDigestContract: process.env.SCHEMA_DIGEST_CONTRACT,
+            schemaDigestHelperSha256: process.env.SCHEMA_DIGEST_HELPER_SHA256 });
+          if (mismatchCategories.length > 0) {
+            throw new Error(`Current production evidence differs from the exact restored backup/rehearsal; categories=${mismatchCategories.join(",")}.`);
           }
           validatePublicationSourceEvidence({ blocks: report.evidence.blocks, sourceEvidence: report.evidence.sourceEvidence });
           if (migrationLedgerDigest(report.evidence.migrationRows) !== report.evidence.expectedLedgerDigest) throw new Error("Live migration ledger digest mismatch.");

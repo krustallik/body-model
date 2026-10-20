@@ -40,6 +40,7 @@ import {
   TrainingRepository,
   StaleAccountingCandidateError,
   trainingChildDeletionPublicationSourceKey,
+  trainingSessionDeletionPublicationSourceKey,
   trainingRepository,
   type OrderedProgramExerciseWrite,
 } from "./training.repository";
@@ -494,7 +495,7 @@ export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
           { sourceKey: { startsWith: `training-delete-exercise:${input.sessionId}:` } },
         ],
       },
-      select: { sourceKey: true },
+      select: { sourceKey: true, revision: true },
       orderBy: { sourceKey: "asc" },
     });
     const expectedKeys = [...sourceKeys!].sort();
@@ -518,10 +519,27 @@ export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
         select: { id: true },
       }),
     ]);
+    const accountingRevisionGap = latestSnapshot === null
+      ? null : persistedIdentity.accountingInputRevision - latestSnapshot.accountingInputRevision;
+    const postSnapshotDeletionRevisions = latestSnapshot === null ? [] : persistedChildFences
+      .map((fence) => fence.revision)
+      .filter((revision) => revision > latestSnapshot.accountingInputRevision)
+      .sort((left, right) => left - right);
+    const deletionRevisionSequenceIsExact = latestSnapshot !== null
+      && accountingRevisionGap !== null
+      && Number.isSafeInteger(accountingRevisionGap)
+      && accountingRevisionGap > 0
+      && postSnapshotDeletionRevisions.length === accountingRevisionGap
+      && postSnapshotDeletionRevisions.every((revision, index) => (
+        Number.isSafeInteger(revision)
+        && revision === latestSnapshot.accountingInputRevision + index + 1
+      ));
     if (latestSnapshot === null
-        || latestSnapshot.accountingInputRevision >= persistedIdentity.accountingInputRevision
+        || !deletionRevisionSequenceIsExact
+        || persistedChildFences.some((fence) => !Number.isSafeInteger(fence.revision)
+          || fence.revision < 1 || fence.revision > persistedIdentity.accountingInputRevision)
         || pendingOperation !== null) {
-      throw new Error("Training child-delete recovery has no preserved prior snapshot or has pending accounting work");
+      throw new Error("Training child-delete recovery has an unexplained accounting revision gap, no preserved prior snapshot, or pending accounting work");
     }
 
     for (const sourceKey of expectedKeys) {
@@ -529,11 +547,11 @@ export async function assertPersistedTrainingSessionRecoveryReadyV1(input: {
       const match = /^training-delete-(set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(sourceKey)!;
       const childId = Number(match[3]);
       const childExists = match[1] === "set"
-        ? await prisma.strengthSet.findFirst({
-          where: { id: childId, sessionExercise: { sessionId: input.sessionId } }, select: { id: true },
+        ? await prisma.strengthSet.findUnique({
+          where: { id: childId }, select: { id: true, sessionExercise: { select: { sessionId: true } } },
         })
-        : await prisma.strengthSessionExercise.findFirst({
-          where: { id: childId, sessionId: input.sessionId }, select: { id: true },
+        : await prisma.strengthSessionExercise.findUnique({
+          where: { id: childId }, select: { id: true, sessionId: true },
         });
       if (childExists !== null) {
         throw new Error(`Training child-delete fence still has a persisted child row (${sourceKey})`);
@@ -632,8 +650,11 @@ export async function refreshDeletedCompletedSessionDependenciesForRecoveryV1(in
   const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant });
   if (dirty === null) throw new Error("deleted completed Training session has no resolvable model-day boundary");
   const refreshFromDate = input.fromDate < dirty.modelDate ? input.fromDate : dirty.modelDate;
+  const refreshFromInstant = refreshFromDate === input.fromDate
+    ? fromInstant
+    : await trainingModelDateStartInstant(input.profileId, refreshFromDate);
   await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
-  await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant, profileId: input.profileId });
+  await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant: refreshFromInstant, profileId: input.profileId });
 }
 
 /** Refreshes each affected strength session through the full dependency/fence lifecycle after a weight-source edit. */
@@ -811,6 +832,26 @@ async function trainingModelDateStartInstant(profileId: number, modelDate: strin
   return localDateTimeToInstant(modelDate, "00:00", episode?.timezone ?? DEFAULT_TIME_ZONE);
 }
 
+async function readTrainingSessionDeletionChildFenceTokens(
+  db: PrismaClient,
+  profileId: number,
+  sessionId: number,
+): Promise<{ sourceKey: string; revision: number; fromDate: string }[]> {
+  const rows = await db.unifiedPublicationBlock.findMany({
+    where: {
+      profileId,
+      source: "training",
+      OR: [
+        { sourceKey: { startsWith: `training-delete-set:${sessionId}:` } },
+        { sourceKey: { startsWith: `training-delete-exercise:${sessionId}:` } },
+      ],
+    },
+    orderBy: { sourceKey: "asc" },
+    select: { sourceKey: true, revision: true, fromDate: true },
+  });
+  return rows;
+}
+
 function persistedJson(config: LoadConfigV1 | null): Prisma.InputJsonValue | null {
   return config === null ? null : JSON.parse(JSON.stringify(config)) as Prisma.InputJsonValue;
 }
@@ -868,37 +909,56 @@ export class TrainingService {
   private async refreshDeletedCompletedSessionPublication(input: {
     sessionId: number;
     profileId: number;
-    fromInstant: Date;
     blockToken: { revision: number; fromDate: string };
+    deletionToken: { revision: number; fromDate: string };
+    childDeletionTokens: readonly { sourceKey: string; revision: number; fromDate: string }[];
   }): Promise<ActiveEnergyPublicationStatusV1> {
+    const persistedDeletionBoundary = [
+      input.blockToken.fromDate,
+      input.deletionToken.fromDate,
+      ...input.childDeletionTokens.map((token) => token.fromDate),
+    ].sort()[0];
+    if (persistedDeletionBoundary === undefined) throw new Error("deleted completed Training session has no persisted replay boundary");
+    const fenceFromInstant = await trainingModelDateStartInstant(input.profileId, persistedDeletionBoundary);
     const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({
       profileId: input.profileId,
-      fromInstant: input.fromInstant,
+      fromInstant: fenceFromInstant,
     });
     if (dirty === null) throw new Error("deleted completed training session has no resolvable model-day boundary");
     const production = await recalculateActiveEnergyChangesV1();
     if (production === null) throw new Error("production shadows are unavailable after completed training deletion");
-    const refreshFromDate = input.blockToken.fromDate < dirty.modelDate
-      ? input.blockToken.fromDate
+    const refreshFromDate = persistedDeletionBoundary < dirty.modelDate
+      ? persistedDeletionBoundary
       : dirty.modelDate;
+    const refreshFromInstant = await trainingModelDateStartInstant(input.profileId, refreshFromDate);
     await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
-    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant: input.fromInstant, profileId: input.profileId });
+    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant: refreshFromInstant, profileId: input.profileId });
     const lifecycle = new PhysiologyV7PersistenceRepository();
-    if (!await lifecycle.clearUnifiedPublicationBlock({
+    if (!await lifecycle.clearUnifiedPublicationBlockGroup({
       profileId: input.profileId,
-      source: "training",
-      sourceKey: String(input.sessionId),
-      expectedRevision: input.blockToken.revision,
-      expectedFromDate: input.blockToken.fromDate,
+      blocks: [
+        { sourceKey: String(input.sessionId), expectedRevision: input.blockToken.revision, expectedFromDate: input.blockToken.fromDate },
+        { sourceKey: trainingSessionDeletionPublicationSourceKey(input.sessionId),
+          expectedRevision: input.deletionToken.revision, expectedFromDate: input.deletionToken.fromDate },
+        ...input.childDeletionTokens.map((token) => ({
+          sourceKey: token.sourceKey, expectedRevision: token.revision, expectedFromDate: token.fromDate,
+        })),
+      ],
     })) throw new Error("training source changed during dependent-shadow refresh; Unified remains blocked");
-    const clearedFence = { sourceKey: String(input.sessionId), token: input.blockToken };
-    if (await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, [clearedFence])) {
+    const clearedFences = [
+      { sourceKey: String(input.sessionId), token: input.blockToken },
+      { sourceKey: trainingSessionDeletionPublicationSourceKey(input.sessionId), token: input.deletionToken },
+      ...input.childDeletionTokens.map(({ sourceKey, revision, fromDate }) => ({
+        sourceKey, token: { revision, fromDate },
+      })),
+    ];
+    if (await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearedFences)) {
       return "stale";
     }
     try {
       await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: refreshFromDate });
     } catch (error) {
-      await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, [clearedFence]);
+      await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, clearedFences);
       throw error;
     }
     return this.unifiedPublicationStatus(input.profileId);
@@ -1911,13 +1971,16 @@ export class TrainingService {
       const blockToken = await lifecycle.readUnifiedPublicationBlockToken({
         profileId, source: "training", sourceKey: String(sessionId),
       });
-      if (blockToken === null) throw new SessionNotFoundError();
+      const deletionToken = await lifecycle.readUnifiedPublicationBlockToken({
+        profileId, source: "training", sourceKey: trainingSessionDeletionPublicationSourceKey(sessionId),
+      });
+      if (blockToken === null || deletionToken === null) throw new SessionNotFoundError();
+      const childDeletionTokens = await readTrainingSessionDeletionChildFenceTokens(this.db, profileId, sessionId);
       try {
-        const fromInstant = await trainingModelDateStartInstant(profileId, blockToken.fromDate);
         return {
           matchedWorkoutId: null,
           modelPublicationStatus: await this.refreshDeletedCompletedSessionPublication({
-            sessionId, profileId, fromInstant, blockToken,
+            sessionId, profileId, blockToken, deletionToken, childDeletionTokens,
           }),
         };
       } catch (error) {
@@ -1929,22 +1992,23 @@ export class TrainingService {
       throw new SessionNotEditableError();
     }
     const matchedWorkoutId = session.matchedWorkoutId;
-    const relativeMuscleEventAt = session.matchedWorkout?.startAt
-      ?? session.effectiveAccountingAt
-      ?? session.webStartedAt
-      ?? session.createdAt;
     await this.repo.deleteDiarySession(sessionId, profileId);
     let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
     if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
       try {
-        const eventAt = new Date(relativeMuscleEventAt);
         const lifecycle = new PhysiologyV7PersistenceRepository();
         const blockToken = await lifecycle.readUnifiedPublicationBlockToken({
           profileId, source: "training", sourceKey: String(sessionId),
         });
-        if (blockToken === null) throw new Error("completed training deletion lost its durable publication fence");
+        const deletionToken = await lifecycle.readUnifiedPublicationBlockToken({
+          profileId, source: "training", sourceKey: trainingSessionDeletionPublicationSourceKey(sessionId),
+        });
+        if (blockToken === null || deletionToken === null) {
+          throw new Error("completed training deletion lost its durable publication fence or deletion tombstone");
+        }
+        const childDeletionTokens = await readTrainingSessionDeletionChildFenceTokens(this.db, profileId, sessionId);
         modelPublicationStatus = await this.refreshDeletedCompletedSessionPublication({
-          sessionId, profileId, fromInstant: eventAt, blockToken,
+          sessionId, profileId, blockToken, deletionToken, childDeletionTokens,
         });
       } catch (error) {
         logPhysiologyPublicationFailure("deleted-completed-session-dependency-refresh", error);

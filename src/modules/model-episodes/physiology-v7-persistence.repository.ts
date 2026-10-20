@@ -177,9 +177,20 @@ export class PhysiologyV7PersistenceRepository {
     fromDate: string;
     source: "health" | "training" | "day" | "stepper";
     sourceKey: string;
+    /** For a child-deletion fence, the exact post-delete accounting revision
+     * written in the same source transaction. This lets recovery distinguish
+     * deletions before and after the latest accounting snapshot. */
+    trainingAccountingInputRevision?: number;
   }): Promise<void> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate) || input.sourceKey.length < 1 || input.sourceKey.length > 100) {
       throw new Error("Unified publication block identity is malformed.");
+    }
+    const trainingChildDelete = input.source === "training"
+      && /^training-delete-(?:set|exercise):[1-9]\d*:[1-9]\d*$/.test(input.sourceKey);
+    if (input.trainingAccountingInputRevision !== undefined
+        && (!trainingChildDelete || !Number.isSafeInteger(input.trainingAccountingInputRevision)
+          || input.trainingAccountingInputRevision < 1)) {
+      throw new Error("Training child-delete accounting revision is malformed.");
     }
     await this.withProfileLock(input.profileId, async (client) => {
       const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId: input.profileId }, select: { profileId: true } });
@@ -191,11 +202,29 @@ export class PhysiologyV7PersistenceRepository {
       const earliestFromDate = existing?.fromDate !== undefined && existing.fromDate < input.fromDate
         ? existing.fromDate
         : input.fromDate;
-      await client.unifiedPublicationBlock.upsert({
-        where: { profileId_source_sourceKey: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey } },
-        create: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey, fromDate: earliestFromDate },
-        update: { fromDate: earliestFromDate, revision: { increment: 1 } },
-      });
+      const where = { profileId_source_sourceKey: {
+        profileId: input.profileId, source: input.source, sourceKey: input.sourceKey,
+      } };
+      if (input.trainingAccountingInputRevision !== undefined) {
+        // A child identity is deleted once. Reuse is a source-history anomaly;
+        // failing here rolls back the deletion instead of losing its revision.
+        if (existing !== null) throw new Error("Training child-delete fence already exists for a live source mutation.");
+        await client.unifiedPublicationBlock.create({
+          data: {
+            profileId: input.profileId,
+            source: input.source,
+            sourceKey: input.sourceKey,
+            fromDate: earliestFromDate,
+            revision: input.trainingAccountingInputRevision,
+          },
+        });
+      } else {
+        await client.unifiedPublicationBlock.upsert({
+          where,
+          create: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey, fromDate: earliestFromDate },
+          update: { fromDate: earliestFromDate, revision: { increment: 1 } },
+        });
+      }
       await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
     });
   }
@@ -304,6 +333,69 @@ export class PhysiologyV7PersistenceRepository {
     });
   }
 
+  /** Clear the complete exact session deletion fence group as one CAS unit. */
+  async clearUnifiedPublicationBlockGroup(input: {
+    profileId: number;
+    blocks: readonly {
+      sourceKey: string;
+      expectedRevision: number;
+      expectedFromDate: string;
+    }[];
+  }): Promise<boolean> {
+    const sessionKeys = input.blocks.filter((block) => /^[1-9]\d*$/.test(block.sourceKey));
+    const tombstones = input.blocks.filter((block) => /^training-delete-session:[1-9]\d*$/.test(block.sourceKey));
+    const sessionKey = sessionKeys[0]?.sourceKey;
+    const tombstone = tombstones[0]?.sourceKey;
+    const tombstoneMatch = tombstone === undefined ? null : /^training-delete-session:([1-9]\d*)$/.exec(tombstone);
+    const childKeys = input.blocks.filter((block) => block.sourceKey !== sessionKey && block.sourceKey !== tombstone);
+    const childMatches = childKeys.map((block) => /^training-delete-(?:set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(block.sourceKey));
+    if (sessionKeys.length !== 1 || tombstones.length !== 1 || sessionKey === undefined || !Number.isSafeInteger(Number(sessionKey))
+        || tombstoneMatch === null || Number(tombstoneMatch[1]) !== Number(sessionKey)
+        || childMatches.some((match) => match === null || Number(match[1]) !== Number(sessionKey)
+          || !Number.isSafeInteger(Number(match[2])))
+        || new Set(input.blocks.map((block) => block.sourceKey)).size !== input.blocks.length
+        || input.blocks.some((block) => !Number.isSafeInteger(block.expectedRevision) || block.expectedRevision < 1
+          || !/^\d{4}-\d{2}-\d{2}$/.test(block.expectedFromDate)
+          || !Number.isFinite(new Date(`${block.expectedFromDate}T00:00:00.000Z`).getTime())
+          || new Date(`${block.expectedFromDate}T00:00:00.000Z`).toISOString().slice(0, 10) !== block.expectedFromDate)
+        || input.blocks.find((block) => block.sourceKey === tombstone)?.expectedFromDate
+          !== input.blocks.find((block) => block.sourceKey === sessionKey)?.expectedFromDate
+        ) {
+      throw new Error("Training deletion publication fence group is malformed.");
+    }
+    return this.withProfileLock(input.profileId, async (client) => {
+      const current = await client.unifiedPublicationBlock.findMany({
+        where: {
+          profileId: input.profileId,
+          source: "training",
+          OR: [
+            { sourceKey: sessionKey },
+            { sourceKey: tombstone },
+            { sourceKey: { startsWith: `training-delete-set:${sessionKey}:` } },
+            { sourceKey: { startsWith: `training-delete-exercise:${sessionKey}:` } },
+          ],
+        },
+        select: { sourceKey: true, revision: true, fromDate: true },
+      });
+      if (current.length !== input.blocks.length || current.some((row) => !input.blocks.some((block) => block.sourceKey === row.sourceKey))
+          || input.blocks.some((block) => {
+        const row = current.find((candidate) => candidate.sourceKey === block.sourceKey);
+        return row === undefined || row.revision !== block.expectedRevision || row.fromDate !== block.expectedFromDate;
+      })) return false;
+      for (const block of input.blocks) {
+        const deleted = await client.unifiedPublicationBlock.deleteMany({
+          where: {
+            profileId: input.profileId, source: "training", sourceKey: block.sourceKey,
+            revision: block.expectedRevision, fromDate: block.expectedFromDate,
+          },
+        });
+        if (deleted.count !== 1) throw new Error("Training deletion publication fence group changed while clearing.");
+      }
+      await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+      return true;
+    });
+  }
+
   /** Clear a complete recovered source set atomically after every dependency refresh succeeds. */
   async clearUnifiedPublicationBlocks(input: {
     profileId: number;
@@ -327,7 +419,11 @@ export class PhysiologyV7PersistenceRepository {
       const validTrainingChild = deletedTrainingChild !== null
         && Number.isSafeInteger(Number(deletedTrainingChild[1]))
         && Number.isSafeInteger(Number(deletedTrainingChild[2]));
-      const validTraining = block.source === "training" && (numericTrainingSession || validTrainingChild);
+      const deletedTrainingSession = /^training-delete-session:([1-9]\d*)$/.exec(block.sourceKey);
+      const validDeletedTrainingSession = deletedTrainingSession !== null
+        && Number.isSafeInteger(Number(deletedTrainingSession[1]));
+      const validTraining = block.source === "training"
+        && (numericTrainingSession || validTrainingChild || validDeletedTrainingSession);
       if (identities.has(identity) || (!validHealth && !validTraining) || !validDate
           || !Number.isSafeInteger(block.expectedRevision) || block.expectedRevision < 1) {
         throw new Error("Unified publication recovery fence set is malformed.");

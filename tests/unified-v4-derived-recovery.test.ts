@@ -87,6 +87,8 @@ const mocks = vi.hoisted(() => {
     dailyHealthData: { findMany: vi.fn() },
     healthMetricSample: { findMany: vi.fn() },
     strengthDiarySession: { findFirst: vi.fn(), findUnique: vi.fn() },
+    strengthSet: { findUnique: vi.fn(async () => null) },
+    strengthSessionExercise: { findUnique: vi.fn(async () => null) },
   };
   const shadow = vi.fn(async () => {
     if (state.failAt === "health") throw Object.assign(new Error("transaction conflict"), { code: "P2034" });
@@ -414,10 +416,11 @@ describe("persisted-source V4 derived recovery", () => {
     expect(mocks.state.blocks).toHaveLength(0);
   });
 
-  it("reconciles a hard-deleted session only with its durable numeric deletion fence", async () => {
+  it("reconciles a hard-deleted session only with its numeric fence and committed tombstone", async () => {
     mocks.state.blocks = [
       { source: "training", sourceKey: "training-delete-set:32:553", fromDate: "2071-01-08", revision: 4 },
       { source: "training", sourceKey: "32", fromDate: "2071-01-09", revision: 5 },
+      { source: "training", sourceKey: "training-delete-session:32", fromDate: "2071-01-09", revision: 1 },
     ];
     mocks.state.missingTrainingSessions = [32];
     const result = await recover();
@@ -428,17 +431,18 @@ describe("persisted-source V4 derived recovery", () => {
     expect(mocks.state.blocks).toHaveLength(0);
   });
 
-  it("fails closed when a child fence has no persisted parent or session-delete fence", async () => {
+  it("fails closed when a missing session has no committed deletion tombstone", async () => {
     mocks.state.blocks = [
       { source: "training", sourceKey: "training-delete-set:32:553", fromDate: "2071-01-08", revision: 4 },
+      { source: "training", sourceKey: "32", fromDate: "2071-01-09", revision: 5 },
     ];
     mocks.state.missingTrainingSessions = [32];
-    await expect(recover()).rejects.toThrow("has no persisted session or session-delete fence");
+    await expect(recover()).rejects.toThrow("numeric fence plus committed deletion tombstone");
     expect(mocks.training).not.toHaveBeenCalled();
     expect(mocks.refreshDeletedTraining).not.toHaveBeenCalled();
     expect(mocks.clearAll).not.toHaveBeenCalled();
     expect(mocks.replay).not.toHaveBeenCalled();
-    expect(mocks.state.blocks).toHaveLength(1);
+    expect(mocks.state.blocks).toHaveLength(2);
   });
 
   it.each([

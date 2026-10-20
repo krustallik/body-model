@@ -28,7 +28,7 @@ type PublicationBlock = {
 
 type SupportedTrainingBlock = PublicationBlock & {
   sessionId: number;
-  identity: "session" | "deleted-set" | "deleted-exercise";
+  identity: "session" | "deleted-session" | "deleted-set" | "deleted-exercise";
 };
 
 type RecoveryLifecycleBinding = {
@@ -196,6 +196,11 @@ function parseTrainingBlockIdentity(sourceKey: string): Pick<SupportedTrainingBl
   if (/^[1-9]\d*$/.test(sourceKey)) {
     const sessionId = Number(sourceKey);
     return Number.isSafeInteger(sessionId) ? { sessionId, identity: "session" } : null;
+  }
+  const deletedSession = /^training-delete-session:([1-9]\d*)$/.exec(sourceKey);
+  if (deletedSession) {
+    const sessionId = Number(deletedSession[1]);
+    return Number.isSafeInteger(sessionId) ? { sessionId, identity: "deleted-session" } : null;
   }
   const childDelete = /^training-delete-(set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(sourceKey);
   if (!childDelete) return null;
@@ -564,16 +569,37 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
       where: { id: group.sessionId }, select: { profileId: true },
     });
     if (persistedIdentity === null) {
-      // A numeric session fence is created in the same source transaction as
-      // a completed-session hard delete. Child-only fences are insufficient
-      // evidence that the missing session was intentionally deleted.
-      if (!group.blocks.some((block) => block.identity === "session")) {
-        throw new Error(`Training child deletion fence has no persisted session or session-delete fence (${group.sessionId})`);
+      // The explicit deletion tombstone is written in the same source
+      // transaction as the hard delete. Numeric-only fences are also used for
+      // ordinary edits and cannot prove that a missing session was intentional.
+      const sessionFence = group.blocks.find((block) => block.identity === "session");
+      const deletionFence = group.blocks.find((block) => block.identity === "deleted-session");
+      const childDeletionFences = group.blocks.filter((block) => block.identity === "deleted-set"
+        || block.identity === "deleted-exercise");
+      if (sessionFence === undefined || deletionFence === undefined
+          || sessionFence.fromDate !== deletionFence.fromDate
+          || group.blocks.some((block) => block.identity !== "session" && block.identity !== "deleted-session"
+            && block.identity !== "deleted-set" && block.identity !== "deleted-exercise")) {
+        throw new Error(`Missing Training session has no exact numeric fence plus committed deletion tombstone (${group.sessionId})`);
+      }
+      for (const block of childDeletionFences) {
+        const match = /^training-delete-(set|exercise):([1-9]\d*):([1-9]\d*)$/.exec(block.sourceKey);
+        if (match === null || Number(match[2]) !== group.sessionId) {
+          throw new Error(`Missing Training session has a malformed child deletion identity (${block.sourceKey})`);
+        }
+        const childId = Number(match[3]);
+        const child = match[1] === "set"
+          ? await client.strengthSet.findUnique({ where: { id: childId }, select: { id: true } })
+          : await client.strengthSessionExercise.findUnique({ where: { id: childId }, select: { id: true } });
+        if (child !== null) throw new Error(`Deleted Training session retains a child named by a deletion fence (${block.sourceKey})`);
       }
       deletedTrainingSessionIds.add(group.sessionId);
     } else {
       if (persistedIdentity.profileId !== profileId) {
         throw new Error(`Training source fence belongs to a different profile (${group.sessionId})`);
+      }
+      if (group.blocks.some((block) => block.identity === "deleted-session")) {
+        throw new Error(`Training session deletion tombstone still has a persisted parent (${group.sessionId})`);
       }
       const childDeleteSourceKeys = group.blocks
         .filter((block) => block.identity !== "session")

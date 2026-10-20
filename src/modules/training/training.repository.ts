@@ -78,7 +78,12 @@ async function bumpAccountingInputRevision(
     },
     select: { accountingInputRevision: true },
   });
-  await invalidateStrengthSessionActiveEnergyInTransaction(tx, sessionId, publicationBlockSourceKey);
+  await invalidateStrengthSessionActiveEnergyInTransaction(
+    tx,
+    sessionId,
+    publicationBlockSourceKey,
+    publicationBlockSourceKey?.startsWith("training-delete-") ? updated.accountingInputRevision : undefined,
+  );
   return updated.accountingInputRevision;
 }
 
@@ -86,7 +91,9 @@ async function blockCompletedStrengthUnifiedInTransaction(
   tx: Prisma.TransactionClient,
   sessionId: number,
   sourceKey?: string,
-): Promise<void> {
+  fromDateOverride?: string,
+  trainingAccountingInputRevision?: number,
+): Promise<string | null> {
   const session = await tx.strengthDiarySession.findUnique({
     where: { id: sessionId },
     select: {
@@ -95,7 +102,7 @@ async function blockCompletedStrengthUnifiedInTransaction(
       matchedWorkout: { select: { startAt: true } },
     },
   });
-  if (!session || session.status !== SESSION_STATUS.COMPLETED) return;
+  if (!session || session.status !== SESSION_STATUS.COMPLETED) return null;
   const eventAt = session.matchedWorkout?.startAt
     ?? session.effectiveAccountingAt
     ?? session.webStartedAt
@@ -109,13 +116,15 @@ async function blockCompletedStrengthUnifiedInTransaction(
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true },
   });
-  const fromDate = episodeTimeContextForInstantV1(episodes, eventAt).date;
+  const fromDate = fromDateOverride ?? episodeTimeContextForInstantV1(episodes, eventAt).date;
   await new PhysiologyV7PersistenceRepository(tx).blockUnifiedPublication({
     profileId: session.profileId,
     fromDate,
     source: "training",
     sourceKey: sourceKey ?? String(session.id),
+    ...(trainingAccountingInputRevision === undefined ? {} : { trainingAccountingInputRevision }),
   });
+  return fromDate;
 }
 
 export function trainingChildDeletionPublicationSourceKey(
@@ -126,10 +135,15 @@ export function trainingChildDeletionPublicationSourceKey(
   return `training-delete-${kind}:${sessionId}:${childId}`;
 }
 
+export function trainingSessionDeletionPublicationSourceKey(sessionId: number): string {
+  return `training-delete-session:${sessionId}`;
+}
+
 async function invalidateStrengthSessionActiveEnergyInTransaction(
   tx: Prisma.TransactionClient,
   sessionId: number,
   publicationBlockSourceKey?: string,
+  trainingAccountingInputRevision?: number,
 ): Promise<void> {
   const session = await tx.strengthDiarySession.findUnique({
     where: { id: sessionId },
@@ -140,7 +154,9 @@ async function invalidateStrengthSessionActiveEnergyInTransaction(
     },
   });
   if (!session || session.status !== SESSION_STATUS.COMPLETED) return;
-  await blockCompletedStrengthUnifiedInTransaction(tx, sessionId, publicationBlockSourceKey);
+  await blockCompletedStrengthUnifiedInTransaction(
+    tx, sessionId, publicationBlockSourceKey, undefined, trainingAccountingInputRevision,
+  );
   const eventInstant = resolveTransientWaterV2CanonicalEventInstant(session);
   await invalidateActiveEnergySourcesInTransactionV1({
     tx,
@@ -2110,12 +2126,13 @@ export class TrainingRepository {
           accountingInputRevision: { increment: 1 },
           currentSnapshotRevision: null,
         },
-        select: { revision: true },
+        select: { revision: true, accountingInputRevision: true },
       });
       await invalidateStrengthSessionActiveEnergyInTransaction(
         tx,
         input.sessionId,
         trainingChildDeletionPublicationSourceKey("exercise", input.sessionId, input.exerciseId),
+        session.accountingInputRevision,
       );
       return session.revision;
     });
@@ -2447,7 +2464,18 @@ export class TrainingRepository {
       });
       if (session) {
         if (session.status === SESSION_STATUS.COMPLETED) {
+          // Keep the ordinary numeric fence and a separate committed tombstone
+          // so a later missing parent proves an intentional completed-session
+          // deletion rather than an orphan. Both writes share this transaction.
           await blockCompletedStrengthUnifiedInTransaction(tx, sessionId);
+          const numericFence = await tx.unifiedPublicationBlock.findUnique({
+            where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(sessionId) } },
+            select: { fromDate: true },
+          });
+          if (numericFence === null) throw new Error("completed Training session lost its durable deletion boundary");
+          await blockCompletedStrengthUnifiedInTransaction(
+            tx, sessionId, trainingSessionDeletionPublicationSourceKey(sessionId), numericFence.fromDate,
+          );
         }
         await invalidateActiveEnergySourcesInTransactionV1({
           tx,

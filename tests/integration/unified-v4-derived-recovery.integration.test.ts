@@ -209,8 +209,8 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       prisma.healthSyncSnapshot.count({ where: { date: { in: healthDates } } }),
       prisma.healthSyncAudit.count({ where: { rawBody: { contains: "durable-health-audit" } } }),
       prisma.healthMetricSample.count({ where: { date: { in: healthDates } } }),
-      prisma.workout.count({ where: { sourceIdentity: "recovery-fixture:garmin-1" } }),
-      prisma.strengthDiarySession.count({ where: { id: { in: [...trainingSessionIds, 26, 27, 28, 29, 30] } } }),
+      prisma.workout.count({ where: { sourceIdentity: { startsWith: "recovery-fixture:" } } }),
+      prisma.strengthDiarySession.count({ where: { id: { in: [...trainingSessionIds, 26, 27, 28, 29, 30, 31, 32, 33] } } }),
       prisma.trainingProgram.count({ where: { profileId, name: "V4 derived recovery fixture" } }),
       prisma.modelEpisode.count({ where: { profileId, startDate: fromDate } }),
       prisma.physiologyV7Lifecycle.count({ where: { profileId } }),
@@ -439,9 +439,10 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
           await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
           await prisma.modelEpisode.delete({ where: { id: episodeId } });
         }
-        if (sessionCreated) await prisma.strengthDiarySession.deleteMany({ where: { id: { in: [...trainingSessionIds, 26, 27, 28, 29, 30] } } });
+        if (sessionCreated) await prisma.strengthDiarySession.deleteMany({ where: { id: { in: [...trainingSessionIds, 26, 27, 28, 29, 30, 31, 32, 33] } } });
         if (matchedTrainingWorkoutId !== undefined) await prisma.workout.delete({ where: { id: matchedTrainingWorkoutId } });
         if (workoutId !== undefined) await prisma.workout.delete({ where: { id: workoutId } });
+        await prisma.workout.deleteMany({ where: { sourceIdentity: { startsWith: "recovery-fixture:" } } });
         if (programId !== undefined) await prisma.trainingProgram.delete({ where: { id: programId } });
         if (dailyHealthDataIds.length > 0) await prisma.dailyHealthData.deleteMany({ where: { id: { in: dailyHealthDataIds } } });
         if (healthSnapshotIds.length > 0) await prisma.healthSyncSnapshot.deleteMany({ where: { id: { in: healthSnapshotIds } } });
@@ -933,7 +934,8 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     await prisma.strengthSessionExercise.create({
       data: { sessionId: 27, snapshotExerciseName: "Stale snapshot fixture", sortOrder: 0, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" },
     });
-    const { TrainingRepository } = await import("@/modules/training/training.repository");
+    const { TrainingRepository, trainingChildDeletionPublicationSourceKey } =
+      await import("@/modules/training/training.repository");
     await new TrainingRepository(prisma).materializeAccounting({ sessionId: 27, profileId, mode: "ordinary", idempotencyKey: "stale-snapshot-fixture" });
     await prisma.strengthDiarySession.update({ where: { id: 27 }, data: { accountingInputRevision: { increment: 1 } } });
     await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-11", source: "training", sourceKey: "27" });
@@ -975,9 +977,24 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
 
     const hardDeleted = await createCompletedTrainingSource(28, 12);
     expect(hardDeleted.setId).toBeGreaterThan(0);
+    await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-10", source: "training", sourceKey: "28" });
+    await new TrainingRepository(prisma).deleteSet(hardDeleted.setId, 28, profileId);
     await new TrainingRepository(prisma).deleteDiarySession(28, profileId);
     expect(await prisma.strengthDiarySession.findUnique({ where: { id: 28 } })).toBeNull();
     expect(await prisma.strengthSessionExercise.count({ where: { sessionId: 28 } })).toBe(0);
+    expect((await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: { in: [
+        "28", "training-delete-session:28", `training-delete-set:28:${hardDeleted.setId}`,
+      ] } },
+      orderBy: { sourceKey: "asc" }, select: { sourceKey: true, fromDate: true },
+    })).map(({ sourceKey }) => sourceKey).sort()).toEqual([
+      "28", "training-delete-session:28", `training-delete-set:28:${hardDeleted.setId}`,
+    ].sort());
+    const hardDeleteFenceDates = await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: { in: ["28", "training-delete-session:28"] } },
+      select: { sourceKey: true, fromDate: true },
+    });
+    expect(new Set(hardDeleteFenceDates.map(({ fromDate }) => fromDate))).toEqual(new Set(["2026-10-10"]));
     const hardDeleteRawBeforeRecovery = await inventoryV4RecoveryRawSourcesV1(prisma);
     const hardDeleteResult = await recoverWithCurrentEvidence(await captureRecoveryBinding());
     expect(hardDeleteResult).toMatchObject({
@@ -991,6 +1008,69 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     const hardDeleteLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
     expect(hardDeleteLifecycle.unifiedPublishedGeneration).toBe(hardDeleteLifecycle.invalidationGeneration);
     expect(hardDeleteLifecycle.unifiedPublishedRolloutEpoch).toBe(1);
+
+    // Persisted legacy evidence can have a child fence at the old event date
+    // and the parent/tombstone pair at a later date after the matched Workout
+    // moved. Recovery must accept the exact identities and replay from the
+    // earliest date in the complete group.
+    const movedWorkoutSource = await createCompletedTrainingSource(33, 19);
+    await new TrainingRepository(prisma).deleteSet(movedWorkoutSource.setId, 33, profileId);
+    await new TrainingRepository(prisma).deleteDiarySession(33, profileId);
+    await prisma.unifiedPublicationBlock.update({
+      where: { profileId_source_sourceKey: {
+        profileId, source: "training", sourceKey: `training-delete-set:33:${movedWorkoutSource.setId}`,
+      } },
+      data: { fromDate: "2026-10-15" },
+    });
+    await prisma.unifiedPublicationBlock.updateMany({
+      where: { profileId, source: "training", sourceKey: { in: ["33", "training-delete-session:33"] } },
+      data: { fromDate: "2026-10-19" },
+    });
+    const movedWorkoutFences = await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: { in: [
+        "33", "training-delete-session:33", `training-delete-set:33:${movedWorkoutSource.setId}`,
+      ] } },
+      select: { sourceKey: true, fromDate: true },
+    });
+    expect(movedWorkoutFences.find(({ sourceKey }) => sourceKey === `training-delete-set:33:${movedWorkoutSource.setId}`)?.fromDate)
+      .toBe("2026-10-15");
+    expect(movedWorkoutFences.filter(({ sourceKey }) => sourceKey === "33" || sourceKey === "training-delete-session:33")
+      .map(({ fromDate }) => fromDate)).toEqual(["2026-10-19", "2026-10-19"]);
+    const movedWorkoutRawBeforeRecovery = await inventoryV4RecoveryRawSourcesV1(prisma);
+    await expect(recoverWithCurrentEvidence(await captureRecoveryBinding())).resolves.toMatchObject({
+      deletedTrainingSessionIdsReconciled: [33],
+    });
+    expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(movedWorkoutRawBeforeRecovery.fingerprint);
+    expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(0);
+    const movedWorkoutLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    expect(movedWorkoutLifecycle.unifiedPublishedGeneration).toBe(movedWorkoutLifecycle.invalidationGeneration);
+    expect(movedWorkoutLifecycle.unifiedPublishedRolloutEpoch).toBe(1);
+
+    await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-12", source: "training", sourceKey: "32" });
+    await expect(recoverWithCurrentEvidence()).rejects.toThrow("numeric fence plus committed deletion tombstone");
+    expect(await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: "32" }, select: { sourceKey: true },
+    })).toEqual([{ sourceKey: "32" }]);
+    await prisma.unifiedPublicationBlock.delete({
+      where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: "32" } },
+    });
+    const hardDeleteChildKey = trainingChildDeletionPublicationSourceKey("set", 32, 999);
+    await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-12", source: "training", sourceKey: "32" });
+    await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-12", source: "training", sourceKey: "training-delete-session:32" });
+    await recoveryFences.blockUnifiedPublication({ profileId, fromDate: "2026-10-13", source: "training", sourceKey: hardDeleteChildKey });
+    const hardDeleteGroupTokens = await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: { in: ["32", "training-delete-session:32", hardDeleteChildKey] } },
+      select: { sourceKey: true, revision: true, fromDate: true },
+    });
+    const hardDeleteGroup = hardDeleteGroupTokens.map(({ sourceKey, revision, fromDate }) => ({
+      sourceKey, expectedRevision: revision, expectedFromDate: fromDate,
+    }));
+    expect(await recoveryFences.clearUnifiedPublicationBlockGroup({
+      profileId, blocks: hardDeleteGroup.filter(({ sourceKey }) => sourceKey !== hardDeleteChildKey),
+    })).toBe(false);
+    expect(await prisma.unifiedPublicationBlock.count({ where: { profileId, source: "training" } })).toBe(3);
+    expect(await recoveryFences.clearUnifiedPublicationBlockGroup({ profileId, blocks: hardDeleteGroup })).toBe(true);
+    expect(await prisma.unifiedPublicationBlock.count({ where: { profileId, source: "training" } })).toBe(0);
 
     const childDeleted = await createCompletedTrainingSource(29, 13);
     await new TrainingRepository(prisma).deleteSet(childDeleted.setId, 29, profileId);
@@ -1031,5 +1111,79 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     const childDeleteLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
     expect(childDeleteLifecycle.unifiedPublishedGeneration).toBe(childDeleteLifecycle.invalidationGeneration);
     expect(childDeleteLifecycle.unifiedPublishedRolloutEpoch).toBe(1);
+
+    await prisma.strengthDiarySession.create({
+      data: {
+        id: 31, profileId, programId, programVersionId, status: "COMPLETED", entryMode: "LIVE",
+        webStartedAt: new Date("2026-10-16T20:00:00.000Z"), webEndedAt: new Date("2026-10-16T21:00:00.000Z"),
+        effectiveAccountingAt: new Date("2026-10-16T20:00:00.000Z"), accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "client-session", matchStatus: "PENDING",
+      },
+    });
+    const gapExercise = await prisma.strengthSessionExercise.create({
+      data: { sessionId: 31, snapshotExerciseName: "Recovery accounting gap fixture", sortOrder: 0,
+        plannedSets: 3, resistanceType: "EXTERNAL_WEIGHT" },
+    });
+    const gapSet = await prisma.strengthSet.create({
+      data: { sessionExerciseId: gapExercise.id, setNumber: 1, reps: 5, weightKg: 40 },
+    });
+    const secondGapSet = await prisma.strengthSet.create({
+      data: { sessionExerciseId: gapExercise.id, setNumber: 2, reps: 4, weightKg: 30 },
+    });
+    const thirdGapSet = await prisma.strengthSet.create({
+      data: { sessionExerciseId: gapExercise.id, setNumber: 3, reps: 3, weightKg: 20 },
+    });
+    const gapRepository = new TrainingRepository(prisma);
+    await gapRepository.materializeAccounting({ sessionId: 31, profileId, mode: "ordinary", idempotencyKey: "recovery-gap-before" });
+    const gapSnapshotsBefore = await prisma.strengthSessionAccountingSnapshot.findMany({
+      where: { sessionId: 31 }, orderBy: { snapshotRevision: "asc" },
+    });
+    const gapFence = trainingChildDeletionPublicationSourceKey("set", 31, gapSet.id);
+    const secondGapFence = trainingChildDeletionPublicationSourceKey("set", 31, secondGapSet.id);
+    await gapRepository.deleteSet(gapSet.id, 31, profileId);
+    await gapRepository.materializeAccounting({
+      sessionId: 31, profileId, mode: "ordinary", idempotencyKey: "recovery-gap-snapshot-after-first-delete",
+    });
+    const snapshotAfterFirstDelete = await prisma.strengthSessionAccountingSnapshot.findFirstOrThrow({
+      where: { sessionId: 31 }, orderBy: { snapshotRevision: "desc" },
+    });
+    expect(snapshotAfterFirstDelete.accountingInputRevision).toBeGreaterThan(gapSnapshotsBefore.at(-1)!.accountingInputRevision);
+    await gapRepository.deleteSet(secondGapSet.id, 31, profileId);
+    await gapRepository.updateSet({
+      setId: thirdGapSet.id, sessionId: 31, profileId, reps: 4, weightKg: 25,
+    });
+    const gapSession = await prisma.strengthDiarySession.findUniqueOrThrow({
+      where: { id: 31 }, select: { accountingInputRevision: true, currentSnapshotRevision: true },
+    });
+    expect(gapSession.currentSnapshotRevision).toBeNull();
+    expect(gapSession.accountingInputRevision - snapshotAfterFirstDelete.accountingInputRevision).toBe(2);
+    const gapFencesBefore = await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: { in: ["31", gapFence, secondGapFence] } },
+      orderBy: { sourceKey: "asc" }, select: { sourceKey: true, fromDate: true, revision: true },
+    });
+    expect(gapFencesBefore.map(({ sourceKey }) => sourceKey).sort()).toEqual(["31", gapFence, secondGapFence].sort());
+    const gapLifecycleBefore = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    const gapRawBefore = await inventoryV4RecoveryRawSourcesV1(prisma);
+    const gapSnapshotsBeforeRecovery = await prisma.strengthSessionAccountingSnapshot.findMany({
+      where: { sessionId: 31 }, orderBy: { snapshotRevision: "asc" },
+    });
+    const gapOperationsBeforeRecovery = await prisma.strengthSessionAccountingOperation.findMany({
+      where: { sessionId: 31 }, orderBy: { id: "asc" },
+    });
+    await expect(recoverWithCurrentEvidence()).rejects.toThrow("unexplained accounting revision gap");
+    expect(await prisma.unifiedPublicationBlock.findMany({
+      where: { profileId, source: "training", sourceKey: { in: ["31", gapFence, secondGapFence] } },
+      orderBy: { sourceKey: "asc" }, select: { sourceKey: true, fromDate: true, revision: true },
+    })).toEqual(gapFencesBefore);
+    expect(await prisma.strengthSessionAccountingSnapshot.findMany({
+      where: { sessionId: 31 }, orderBy: { snapshotRevision: "asc" },
+    })).toEqual(gapSnapshotsBeforeRecovery);
+    expect(await prisma.strengthSessionAccountingOperation.findMany({
+      where: { sessionId: 31 }, orderBy: { id: "asc" },
+    })).toEqual(gapOperationsBeforeRecovery);
+    expect(await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } })).toEqual(gapLifecycleBefore);
+    expect((await inventoryV4RecoveryRawSourcesV1(prisma)).fingerprint).toBe(gapRawBefore.fingerprint);
+    await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId, source: "training", sourceKey: { in: ["31", gapFence, secondGapFence] } } });
+    await prisma.strengthDiarySession.delete({ where: { id: 31 } });
   }, 120_000);
 });

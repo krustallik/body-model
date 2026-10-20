@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -30,9 +31,12 @@ import { assertPostgresClientCompatibility } from "../scripts/postgres-client-ve
 import {
   assertPinnedPostgresImage,
   PINNED_POSTGRES_IMAGE,
+  digestEncryptedPostgresBackupSchema,
   restoreEncryptedPostgresBackup,
+  runSchemaDigestFromEnvironment,
   runRestoreFromEnvironment,
 } from "../scripts/restore-encrypted-postgres-backup.mjs";
+import { schemaDumpSha256, SCHEMA_DIGEST_CONTRACT } from "../scripts/production-v4-schema-digest.mjs";
 
 describe("encrypted PostgreSQL restore diagnostics", () => {
   it("reports pg_restore stderr and exit code when it closes stdin (EPIPE is secondary)", async () => {
@@ -66,6 +70,87 @@ describe("encrypted PostgreSQL restore diagnostics", () => {
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
+  });
+});
+
+describe("encrypted PostgreSQL backup schema digest", () => {
+  const schemaDump = Buffer.from([
+    "-- PostgreSQL database dump", "", `\\restrict ${"A".repeat(63)}`, "",
+    "-- Dumped from database version 17.11", "-- Dumped by pg_dump version 17.11",
+    "SET statement_timeout = 0;", "CREATE TABLE public.sample (id integer PRIMARY KEY);", "",
+    `\\unrestrict ${"A".repeat(63)}`, "",
+  ].join("\n"));
+
+  async function encryptedFixture(directory) {
+    const archive = path.join(directory, "schema-only.pgdump.enc");
+    const key = Buffer.alloc(32, 27);
+    await encryptBackupStream(Readable.from([Buffer.from("synthetic custom archive bytes")]), archive, key);
+    return { archive, key };
+  }
+
+  it("streams the decrypted archive into offline pg_restore and hashes validated schema output", async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-archive-schema-digest-"));
+    try {
+      const { archive, key } = await encryptedFixture(scratch);
+      const script = [
+        "let bytes = 0;",
+        "process.stdin.on('data', (chunk) => { bytes += chunk.length; });",
+        `process.stdin.on('end', () => process.stdout.write(bytes > 0 ? ${JSON.stringify(schemaDump.toString("utf8"))} : ''));`,
+      ].join("\n");
+      const actual = await digestEncryptedPostgresBackupSchema({
+        inputPath: archive,
+        key,
+        command: process.execPath,
+        args: ["-e", script],
+        env: {},
+        log: () => {},
+      });
+      expect(actual).toBe(schemaDumpSha256(schemaDump));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on malformed schema output and nonzero pg_restore status", async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-archive-schema-failure-"));
+    try {
+      const { archive, key } = await encryptedFixture(scratch);
+      const malformed = `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('not a pg_dump schema\\n'));`;
+      await expect(digestEncryptedPostgresBackupSchema({ inputPath: archive, key, command: process.execPath,
+        args: ["-e", malformed], env: {}, log: () => {} })).rejects.toThrow("pg_dump restrict marker");
+      const failed = `process.stdin.resume(); process.stdin.on('end', () => { process.stderr.write('private failure detail\\n'); process.exitCode = 9; });`;
+      await expect(digestEncryptedPostgresBackupSchema({ inputPath: archive, key, command: process.execPath,
+        args: ["-e", failed], env: { API_TOKEN: "private failure detail" }, redactValues: ["private failure detail"],
+        log: () => {} })).rejects.toMatchObject({ exitCode: 9 });
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("pins the schema digest command to the checked-in helper and offline approved image", async () => {
+    const helperBytes = await readFile(new URL("../scripts/production-v4-schema-digest.mjs", import.meta.url));
+    const env = {
+      BACKUP_FILE: "synthetic.pgdump.enc",
+      PRODUCTION_BACKUP_ENCRYPTION_KEY: Buffer.alloc(32, 11).toString("base64"),
+      POSTGRES_IMAGE: PINNED_POSTGRES_IMAGE,
+      SCHEMA_DIGEST_CONTRACT,
+      SCHEMA_DIGEST_HELPER_SHA256: createHash("sha256").update(helperBytes).digest("hex"),
+    };
+    const calls = [];
+    const result = await runSchemaDigestFromEnvironment({ env, digestBackupSchema: async (options) => {
+      calls.push(options);
+      return "a".repeat(64);
+    } });
+    expect(result).toBe("a".repeat(64));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual([
+      "run", "--rm", "--interactive", "--network", "none", "--entrypoint", "pg_restore", PINNED_POSTGRES_IMAGE,
+      "--schema-only", "--no-owner", "--no-privileges", "--file=-",
+    ]);
+    await expect(runSchemaDigestFromEnvironment({ env: { ...env, SCHEMA_DIGEST_HELPER_SHA256: "0".repeat(64) },
+      digestBackupSchema: async () => { throw new Error("must not invoke"); } })).rejects.toThrow("exact checked-in helper");
+    await expect(runSchemaDigestFromEnvironment({ env: { ...env, SCHEMA_DIGEST_CONTRACT: "wrong-contract" },
+      digestBackupSchema: async () => { throw new Error("must not invoke"); } })).rejects.toThrow("approved schema digest contract");
   });
 });
 

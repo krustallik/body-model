@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { encryptBackupStream } from "../production-backup-envelope.mjs";
+import { digestEncryptedPostgresBackupSchema, restoreEncryptedPostgresBackup, runSchemaDigestFromEnvironment } from "../restore-encrypted-postgres-backup.mjs";
+import { schemaDumpSha256, SCHEMA_DIGEST_CONTRACT } from "../production-v4-schema-digest.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const helperPath = path.join(repositoryRoot, "scripts/production-v4-schema-digest.mjs");
@@ -53,7 +57,30 @@ function pgDumpCommand(databaseName) {
     `--port=${shellQuote(recoveryUrl.port)}`, `--username=${shellQuote("bodycast")}`, `--dbname=${shellQuote(databaseName)}`].join(" ");
 }
 
+function normalizeWindowsDockerBytes(bytes) {
+  if (process.platform !== "win32") return bytes;
+  // Windows Docker CLI capture adds CR before LF in its binary stdout stream.
+  // Normalize only this local transport artifact; production workflow runs on
+  // Linux and hashes the original pg_dump bytes without this adapter.
+  const text = bytes.toString("utf8");
+  assert.equal(text.replaceAll("\r\n", "").includes("\r"), false, "Windows Docker stdout contains a bare CR");
+  return Buffer.from(text.replaceAll("\r\n", "\n"), "utf8");
+}
+
+function schemaDigestForCapturedDockerBytes(bytes) {
+  return schemaDumpSha256(normalizeWindowsDockerBytes(bytes));
+}
+
 function digestPipeline(databaseName) {
+  // Git Bash pipes Windows Docker CLI stdout through text-mode handling. Keep
+  // the Linux CI path as the literal shell pipeline; on Windows hash the raw
+  // pg_dump Buffer so platform newline translation cannot alter schema bytes.
+  if (process.platform === "win32") {
+    const dump = execFileSync("docker", ["run", "--rm", "--network", "host", "--env", "PGPASSWORD", "--entrypoint", "pg_dump",
+      postgresImage, "--schema-only", "--no-owner", "--no-privileges", "--host=127.0.0.1", `--port=${recoveryUrl.port}`,
+      "--username=bodycast", `--dbname=${databaseName}`], { encoding: "buffer", env: process.env });
+    return schemaDigestForCapturedDockerBytes(dump);
+  }
   const command = `${pgDumpCommand(databaseName)} | node ${shellQuote(helperPath)}`;
   const result = spawnSync("bash", ["-Eeuo", "pipefail", "-c", command], { encoding: "utf8", env: process.env });
   assert.equal(result.status, 0, `schema digest pipeline failed: ${result.stderr}`);
@@ -62,11 +89,12 @@ function digestPipeline(databaseName) {
 }
 
 function pgDumpRaw(databaseName) {
-  return execFileSync("docker", ["run", "--rm", "--network", "host", "--env", "PGPASSWORD", "--entrypoint", "pg_dump",
+  const dump = execFileSync("docker", ["run", "--rm", "--network", "host", "--env", "PGPASSWORD", "--entrypoint", "pg_dump",
     postgresImage, "--schema-only", "--no-owner", "--no-privileges", "--host=127.0.0.1", `--port=${recoveryUrl.port}`, "--username=bodycast", `--dbname=${databaseName}`], {
     encoding: "buffer",
     env: process.env,
   });
+  return normalizeWindowsDockerBytes(dump);
 }
 
 function markerPair(dump) {
@@ -97,7 +125,9 @@ assert.equal(psql(canonicalUrl, appliedCount), "65", "independently migrated can
 
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), "bodycast-v4-schema-digest-"));
 const driftDatabase = "bodycast_v4_schema_drift_test";
+const archiveRestoreDatabase = `bodycast_v4_arc_${randomBytes(4).toString("hex")}`;
 let driftCreated = false;
+let archiveRestoreCreated = false;
 try {
   const firstDump = pgDumpRaw(recoveryUrl.database);
   const secondDump = pgDumpRaw(recoveryUrl.database);
@@ -111,6 +141,50 @@ try {
   assert.equal(firstDigest, secondDigest, "repeated pg_dump shell pipelines must produce the same normalized digest");
   const canonicalDigest = digestPipeline(canonicalUrl.database);
   assert.equal(firstDigest, canonicalDigest, "restored/production-equivalent and canonical 65-migration schemas must match");
+
+  // Reproduce the recovery workflow's full custom backup -> isolated restore
+  // path. PostgreSQL 17.11 may deparse CHECK casts differently after
+  // pg_restore; the archive's own schema DDL remains a stable comparison.
+  const archivePath = path.join(temporaryDirectory, "canonical65-full.pgdump");
+  const encryptedArchivePath = path.join(temporaryDirectory, "canonical65-full.pgdump.enc");
+  const archiveResult = spawnSync("docker", ["run", "--rm", "--network", "host", "--env", "PGPASSWORD", "--entrypoint", "pg_dump",
+    postgresImage, "--format=custom", "--no-owner", "--no-privileges", "--host=127.0.0.1",
+    `--port=${canonicalUrl.port}`, "--username=bodycast", `--dbname=${canonicalUrl.database}`], {
+    encoding: "buffer", env: process.env, maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(archiveResult.status, 0, `pinned pg_dump custom archive failed: ${archiveResult.stderr.toString("utf8")}`);
+  writeFileSync(archivePath, archiveResult.stdout, { flag: "wx", mode: 0o600 });
+  const backupKey = randomBytes(32);
+  await encryptBackupStream(createReadStream(archivePath), encryptedArchivePath, backupKey);
+  const helperBytes = readFileSync(helperPath);
+  const backupSchemaDigest = await runSchemaDigestFromEnvironment({ env: {
+    BACKUP_FILE: encryptedArchivePath,
+    PRODUCTION_BACKUP_ENCRYPTION_KEY: backupKey.toString("base64"),
+    POSTGRES_IMAGE: postgresImage,
+    SCHEMA_DIGEST_CONTRACT,
+    SCHEMA_DIGEST_HELPER_SHA256: createHash("sha256").update(helperBytes).digest("hex"),
+  }, digestBackupSchema: (options) => digestEncryptedPostgresBackupSchema({
+    ...options,
+    digest: schemaDigestForCapturedDockerBytes,
+  }) });
+  assert.equal(backupSchemaDigest, canonicalDigest, "offline archive schema digest must match canonical 65 migrations");
+
+  psql(recoveryUrl, `CREATE DATABASE ${archiveRestoreDatabase}`);
+  archiveRestoreCreated = true;
+  const archiveRestoreUrl = `postgresql://bodycast:bodycast_ci_only@127.0.0.1:${recoveryUrl.port}/${archiveRestoreDatabase}`;
+  await restoreEncryptedPostgresBackup({
+    inputPath: encryptedArchivePath,
+    key: backupKey,
+    args: ["run", "--rm", "--interactive", "--network", "host", "--env", "PGPASSWORD=bodycast_ci_only",
+      "--entrypoint", "pg_restore", postgresImage, "--exit-on-error", "--no-owner", "--no-privileges",
+      "--single-transaction", `--dbname=${archiveRestoreUrl}`],
+    env: { ...process.env, PGPASSWORD: "bodycast_ci_only" },
+    redactValues: ["bodycast_ci_only", archiveRestoreUrl],
+    log: () => {},
+  });
+  const restoredAfterDigest = digestPipeline(archiveRestoreDatabase);
+  assert.notEqual(restoredAfterDigest, canonicalDigest,
+    "pinned PostgreSQL 17.11 must reproduce equivalent CHECK-constraint cast deparser changes after restore");
 
   const replacementToken = firstToken === "A".repeat(63) ? "B".repeat(63) : "A".repeat(63);
   const changedTokenDump = Buffer.from(firstDump.toString("utf8").replaceAll(firstToken, replacementToken));
@@ -142,8 +216,9 @@ try {
   assert.notEqual(failedDump.status, 0, "pg_dump failure must fail the full shell pipeline");
   assert.equal(failedDump.stdout, "", "pg_dump failure must not yield an accepted digest");
 
-  process.stdout.write(`PASS PostgreSQL 17.11 schema digest pipeline; repeated=${firstDigest}; canonical65=${canonicalDigest}; SQL-drift=${driftDigest}\n`);
+  process.stdout.write(`PASS PostgreSQL 17.11 schema digest pipeline; repeated=${firstDigest}; canonical65=${canonicalDigest}; backup-archive=${backupSchemaDigest}; restored-text=${restoredAfterDigest}; SQL-drift=${driftDigest}\n`);
 } finally {
+  if (archiveRestoreCreated) psql(recoveryUrl, `DROP DATABASE IF EXISTS ${archiveRestoreDatabase} WITH (FORCE)`);
   if (driftCreated) psql(recoveryUrl, `DROP DATABASE IF EXISTS ${driftDatabase} WITH (FORCE)`);
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

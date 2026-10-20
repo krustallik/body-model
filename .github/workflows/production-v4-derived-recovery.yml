@@ -338,16 +338,17 @@ jobs:
             docker run --rm --network host --env DATABASE_URL=postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_canonical65 \
             "$IMAGE_ID" node /app/node_modules/prisma/build/index.js migrate deploy --schema /app/prisma/schema.prisma
           pg_image=docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-          restored_schema="$(docker run --rm --network host --env PGPASSWORD=isolated_restore_test_password --entrypoint pg_dump "$pg_image" \
-            --schema-only --no-owner --no-privileges --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_restore \
-            | node scripts/production-v4-schema-digest.mjs)"
+          backup_schema="$(node scripts/restore-encrypted-postgres-backup.mjs --schema-digest)"
           canonical_schema="$(docker run --rm --network host --env PGPASSWORD=isolated_restore_test_password --entrypoint pg_dump "$pg_image" \
             --schema-only --no-owner --no-privileges --host=127.0.0.1 --username=bodycast_restore --dbname=bodycast_canonical65 \
             | node scripts/production-v4-schema-digest.mjs)"
-          [[ "$restored_schema" == "$canonical_schema" ]] || { echo "::error::Restore schema differs from canonical 65 migrations."; exit 1; }
+          [[ "$backup_schema" == "$canonical_schema" ]] || {
+            echo "::error::Encrypted backup archive schema differs from canonical 65 migrations (backup=$backup_schema canonical=$canonical_schema)."
+            exit 1
+          }
           docker run --rm --network host --env "DATABASE_URL=$DATABASE_URL" "$IMAGE_ID" node /app/dist/production-v4-recovery-evidence.mjs \
             > "$RUNNER_TEMP/bodycast-v4-artifact/restored-after.json"
-          RESTORED_SCHEMA_SHA256="$restored_schema" node --input-type=module - <<'NODE'
+          BACKUP_SCHEMA_SHA256="$backup_schema" node --input-type=module - <<'NODE'
           import { statSync, readFileSync, writeFileSync } from "node:fs";
           import { createHash } from "node:crypto";
           import { assertRehearsedCoverageEvidence, migrationLedgerDigest, modelDayKeysDigest, publicationBlockDigest, recoveryEvidenceBinding } from "./scripts/production-v4-derived-recovery.mjs";
@@ -395,7 +396,7 @@ jobs:
           const recoveryStartMarkerTemplate = { state: "started", sourceSha: process.env.RECOVERY_SHA,
             ownerRunId: "9".repeat(20), workflowSha: "0".repeat(40), attempt: "1",
             imageId: process.env.IMAGE_ID, archiveSha: "0".repeat(64), preflightDigest: "0".repeat(64),
-            schemaSha: process.env.RESTORED_SCHEMA_SHA256, schemaDigestContract: process.env.SCHEMA_DIGEST_CONTRACT,
+            schemaSha: process.env.BACKUP_SCHEMA_SHA256, schemaDigestContract: process.env.SCHEMA_DIGEST_CONTRACT,
             schemaDigestHelperSha256: process.env.SCHEMA_DIGEST_HELPER_SHA256,
             ledgerDigest: ledger, fenceDigest: "0".repeat(64),
             sourceFingerprint: before.sourceFingerprint, databaseContainerId: "0".repeat(64),
@@ -404,7 +405,7 @@ jobs:
             appImageId: `sha256:${"0".repeat(64)}`, startedAt: "2000-01-01T00:00:00.000Z" };
           const terminalMarkerTemplate = recoveryTerminalMarkerBudgetTemplate(recoveryStartMarkerTemplate, {
             sourceModelDayKeys: after.sourceModelDayKeys, coveredModelDayKeys: after.coveredModelDayKeys,
-            sourceFingerprint: after.sourceFingerprint, schemaSha256: process.env.RESTORED_SCHEMA_SHA256,
+            sourceFingerprint: after.sourceFingerprint, schemaSha256: process.env.BACKUP_SCHEMA_SHA256,
             rehearsalCoverageSha256,
             unifiedTargetRevision: after.lifecycle.unifiedTargetRevision,
           });
@@ -429,7 +430,7 @@ jobs:
               || schemaDigestHelperSha256 !== process.env.SCHEMA_DIGEST_HELPER_SHA256) {
             throw new Error("Schema digest helper differs from the exact artifact binding.");
           }
-          writeFileSync(`${root}rehearsal-measurements.json`, `${JSON.stringify({ schemaSha256: process.env.RESTORED_SCHEMA_SHA256,
+          writeFileSync(`${root}rehearsal-measurements.json`, `${JSON.stringify({ schemaSha256: process.env.BACKUP_SCHEMA_SHA256,
             schemaDigestContract: SCHEMA_DIGEST_CONTRACT, schemaDigestHelperSha256,
             rehearsalCoverage: { coveredModelDayKeys: after.coveredModelDayKeys, sha256: rehearsalCoverageSha256 },
             restoredSourceFingerprint: before.sourceFingerprint, expectedEntryBinding, headroomMeasurements })}\n`,

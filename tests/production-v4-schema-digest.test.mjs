@@ -79,7 +79,10 @@ describe("production V4 PostgreSQL schema digest", () => {
     const workflow = readFileSync(".github/workflows/production-v4-derived-recovery.yml", "utf8");
     const host = readFileSync("scripts/production-v4-derived-recovery-host.sh", "utf8");
     const smoke = readFileSync("scripts/ci/production-v4-schema-digest-postgres-smoke.mjs", "utf8");
-    expect(workflow.match(/\| node scripts\/production-v4-schema-digest\.mjs/g)).toHaveLength(2);
+    expect(workflow.match(/\| node scripts\/production-v4-schema-digest\.mjs/g)).toHaveLength(1);
+    expect(workflow).toContain('backup_schema="$(node scripts/restore-encrypted-postgres-backup.mjs --schema-digest)"');
+    expect(workflow).toContain("Encrypted backup archive schema differs from canonical 65 migrations");
+    expect(workflow).not.toContain("Restore schema differs from canonical 65 migrations");
     expect(workflow).toContain("production-v4-schema-digest.mjs \"$SSH_USER@$SSH_HOST:$artifact_dir/schema-digest.mjs\"");
     expect(workflow).toContain("schemaDigestHelperSha256");
     expect(workflow).toContain("SCHEMA_DIGEST_HELPER_SHA256");
@@ -91,6 +94,10 @@ describe("production V4 PostgreSQL schema digest", () => {
     expect(host).toContain("schemaDigestContract: process.argv[9]");
     expect(host).toContain("schemaDigestContract: preflight.schemaDigestContract");
     expect(smoke).toContain("docker run --rm --network host --env PGPASSWORD --entrypoint pg_dump");
+    const restoreHelper = readFileSync("scripts/restore-encrypted-postgres-backup.mjs", "utf8");
+    expect(restoreHelper).toContain('"--network", "none", "--entrypoint", "pg_restore"');
+    expect(restoreHelper).toContain('"--schema-only", "--no-owner", "--no-privileges", "--file=-"');
+    expect(restoreHelper).toContain("SCHEMA_DIGEST_HELPER_SHA256 does not match the exact checked-in helper.");
     expect(smoke).toContain("-Eeuo");
   });
 });

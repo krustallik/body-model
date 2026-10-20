@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   LEGACY_V4_RECOVERY,
@@ -24,7 +25,8 @@ const migrationRoot = new URL("../prisma/migrations/", import.meta.url);
 const ledgerRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
   .map((entry) => entry.name).sort().slice(0, LEGACY_V4_RECOVERY.migrationCount).map((name) => ({
     name,
-    checksum: createHash("sha256").update(readFileSync(join(migrationRoot.pathname, name, "migration.sql"))).digest("hex"),
+    checksum: createHash("sha256").update(readFileSync(join(fileURLToPath(migrationRoot), name, "migration.sql"))
+      .toString("utf8").replaceAll("\r\n", "\n")).digest("hex"),
     finishedAt: "2026-01-01T00:00:00Z",
     rolledBackAt: null,
   }));

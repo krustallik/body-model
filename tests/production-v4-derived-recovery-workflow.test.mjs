@@ -4,14 +4,15 @@ import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { recoveryTerminalMarkerBudgetTemplate, serializedRecoveryMarkerBytes } from "../scripts/production-v4-recovery-headroom.mjs";
 import { describe, expect, it } from "vitest";
 
-const workflow = readFileSync(new URL("../.github/workflows/production-v4-derived-recovery.yml", import.meta.url), "utf8");
-const host = readFileSync(new URL("../scripts/production-v4-derived-recovery-host.sh", import.meta.url), "utf8");
-const image = readFileSync(new URL("../Dockerfile.v4-derived-recovery", import.meta.url), "utf8");
-const evidence = readFileSync(new URL("../scripts/production-v4-recovery-evidence.ts", import.meta.url), "utf8");
-const repositoryRoot = new URL("..", import.meta.url).pathname;
+const workflow = readFileSync(new URL("../.github/workflows/production-v4-derived-recovery.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const host = readFileSync(new URL("../scripts/production-v4-derived-recovery-host.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const image = readFileSync(new URL("../Dockerfile.v4-derived-recovery", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const evidence = readFileSync(new URL("../scripts/production-v4-recovery-evidence.ts", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("legacy derived V4 recovery release workflow", () => {
   it("runs the real host pretransfer, pre-load, and pre-execute gates before risky operations", () => {
@@ -78,7 +79,7 @@ esac
     const schemaDigestHelperSha = createHash("sha256").update(readFileSync(schemaDigestScript)).digest("hex");
     const commonEnv = {
       ...process.env,
-      PATH: `${binDir}:${process.env.PATH}`,
+      PATH: process.platform === "win32" ? `${binDir};${process.env.PATH}` : `${binDir}:${process.env.PATH}`,
       BODYCAST_DOCKER_TEST_LOG: dockerLog,
       BODYCAST_DEPLOY_PATH: deployPath,
       BODYCAST_RECOVERY_SHA: recoverySha,
@@ -206,7 +207,7 @@ esac
     }, rehearsalCoverage: { coveredModelDayKeys, sha256: coverageSha } }));
     const args = ["--input-type=module", "-", join(tempRoot, "started.json"), sourceSha, "1234567890", imageId,
       archiveSha, workflowSha, "1", preflightPath, "7".repeat(64), databaseId, databaseImageId, appId, appImageId];
-    const headroomScript = new URL("../scripts/production-v4-recovery-headroom.mjs", import.meta.url).pathname;
+    const headroomScript = fileURLToPath(new URL("../scripts/production-v4-recovery-headroom.mjs", import.meta.url));
     const metrics = { recoveryStartMarkerBytes: 100_000, recoveryTerminalMarkerBytes: 100_000 };
     try {
       const allowed = spawnSync(process.execPath, args, { input: nodeSource, encoding: "utf8",
@@ -274,7 +275,8 @@ esac
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().slice(0, 65);
     const migrationRows = await Promise.all(migrationNames.map(async (name) => ({
       name,
-      checksum: createHash("sha256").update(await readFile(new URL(`../prisma/migrations/${name}/migration.sql`, import.meta.url))).digest("hex"),
+      checksum: createHash("sha256").update((await readFile(new URL(`../prisma/migrations/${name}/migration.sql`, import.meta.url)))
+        .toString("utf8").replaceAll("\r\n", "\n")).digest("hex"),
       finishedAt: "2025-01-01T00:00:00.000Z", rolledBackAt: null,
     })));
     const ledgerDigest = createHash("sha256").update(migrationRows.map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
@@ -356,7 +358,7 @@ esac
         env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
           BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "ad902e2172d6343061624b35d2350284e0a1c219",
           SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
-          IMAGE_ID: `sha256:${"d".repeat(64)}`, ARCHIVE_SHA: "e".repeat(64), RESTORED_SCHEMA_SHA256: "f".repeat(64) },
+          IMAGE_ID: `sha256:${"d".repeat(64)}`, ARCHIVE_SHA: "e".repeat(64), BACKUP_SCHEMA_SHA256: "f".repeat(64) },
         input: nodeSource,
         encoding: "utf8",
       });

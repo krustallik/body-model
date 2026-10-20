@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { logEvent } from "@/lib/logger";
 import { recordExperimentalFfmRetentionShadow } from "./experimental-ffm-retention-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "./experimental-local-hypertrophy-response-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "./experimental-cessation-detraining-shadow.service";
@@ -716,7 +717,78 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     await refreshDeletedCompletedSessionDependenciesForRecoveryV1({ profileId, fromDate: earliestDeletedDate });
   }
 
-  await recalculateActiveEnergyChangesV1({ skipTrainingAccountingMaterialization: true });
+  const maxDetailedConvergencePassLogs = 63;
+  let detailedConvergencePassLogs = 0;
+  let omittedConvergencePassCount = 0;
+  let omittedConvergencePassDigest = "0".repeat(64);
+  let omittedPassSummary: {
+    firstPass: number;
+    lastPass: number;
+    maxPasses: number;
+    effectiveReplayFromDate: string;
+    lastStateBefore: string;
+    lastStateAfter: string;
+    repeatedStateFromPass: number | null;
+    oscillationDetected: boolean;
+    lifecycleAfterInvalidationJson: string;
+  } | null = null;
+  const logOmittedConvergenceSummary = () => {
+    if (omittedConvergencePassCount === 0 || omittedPassSummary === null) return;
+    logEvent(omittedPassSummary.oscillationDetected ? "warn" : "info", "v4_recovery_stepper_convergence_summary", {
+      omittedPassCount: omittedConvergencePassCount,
+      omittedPassDiagnosticsDigest: omittedConvergencePassDigest,
+      ...omittedPassSummary,
+    });
+  };
+  try {
+    await recalculateActiveEnergyChangesV1({
+      skipTrainingAccountingMaterialization: true,
+      onConvergenceDiagnostic: (diagnostic) => {
+        if (detailedConvergencePassLogs < maxDetailedConvergencePassLogs) {
+          detailedConvergencePassLogs += 1;
+          logEvent(diagnostic.oscillationDetected ? "warn" : "info", "v4_recovery_stepper_convergence_pass", {
+            pass: diagnostic.pass,
+            maxPasses: diagnostic.maxPasses,
+            effectiveReplayFromDate: diagnostic.effectiveReplayFromDate,
+            changedEventCount: diagnostic.changedEventCount,
+            omittedEventCount: diagnostic.omittedEventCount,
+            changedEventsDigest: diagnostic.changedEventsDigest,
+            changedEventsJson: JSON.stringify(diagnostic.changedEvents),
+            canonicalChangedDateCount: diagnostic.canonicalChangedDateCount,
+            omittedCanonicalDates: Math.max(0, diagnostic.canonicalChangedDateCount - diagnostic.canonicalChangedDates.length),
+            canonicalChangedDatesDigest: diagnostic.canonicalChangedDatesDigest,
+            canonicalChangedDatesJson: JSON.stringify(diagnostic.canonicalChangedDates),
+            resolutionStateFingerprintBefore: diagnostic.resolutionStateFingerprintBefore,
+            resolutionStateFingerprintAfter: diagnostic.resolutionStateFingerprintAfter,
+            repeatedStateFromPass: diagnostic.repeatedStateFromPass,
+            oscillationDetected: diagnostic.oscillationDetected,
+            lifecycleBeforeReplayJson: JSON.stringify(diagnostic.lifecycleBeforeReplay),
+            lifecycleAfterReplayJson: JSON.stringify(diagnostic.lifecycleAfterReplay),
+            lifecycleAfterRefreshJson: JSON.stringify(diagnostic.lifecycleAfterRefresh),
+            lifecycleAfterInvalidationJson: JSON.stringify(diagnostic.lifecycleAfterInvalidation),
+          });
+          return;
+        }
+        omittedConvergencePassCount += 1;
+        omittedConvergencePassDigest = sha256(`${omittedConvergencePassDigest}\n${JSON.stringify(diagnostic)}`);
+        omittedPassSummary = {
+          firstPass: omittedPassSummary?.firstPass ?? diagnostic.pass,
+          lastPass: diagnostic.pass,
+          maxPasses: diagnostic.maxPasses,
+          effectiveReplayFromDate: diagnostic.effectiveReplayFromDate,
+          lastStateBefore: diagnostic.resolutionStateFingerprintBefore,
+          lastStateAfter: diagnostic.resolutionStateFingerprintAfter,
+          repeatedStateFromPass: diagnostic.repeatedStateFromPass,
+          oscillationDetected: diagnostic.oscillationDetected,
+          lifecycleAfterInvalidationJson: JSON.stringify(diagnostic.lifecycleAfterInvalidation),
+        };
+      },
+    });
+  } catch (error) {
+    logOmittedConvergenceSummary();
+    throw error;
+  }
+  logOmittedConvergenceSummary();
   const currentLifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId } });
   if (!currentLifecycle || currentLifecycle.productionStaleFromDate !== null
       || currentLifecycle.productionPublishedGeneration !== currentLifecycle.invalidationGeneration) {

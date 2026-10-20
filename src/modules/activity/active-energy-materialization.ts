@@ -11,20 +11,82 @@ import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/phys
 import { recordExperimentalStrengthEnergyShadowBySessionId } from "@/modules/training/experimental-strength-energy-shadow.service";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 
-type ResolutionSnapshot = {
+export type ActiveEnergyResolutionSnapshotV1 = {
   id: number;
+  eventKind?: string;
   modelDate: string;
   isStale: boolean;
   currentResolutionFingerprint: string | null;
   resolutionRevision: number;
+  currentSource?: string | null;
+  currentProvenance?: unknown;
+  stepperShadows?: unknown;
 };
 
-async function readResolutionSnapshot(profileId: number): Promise<ResolutionSnapshot[]> {
-  return prisma.activeEnergyCanonicalEvent.findMany({
-    where: { profileId, eventKind: { in: ["strength", "stepper"] }, supersededByEventId: null },
-    select: { id: true, modelDate: true, isStale: true, currentResolutionFingerprint: true, resolutionRevision: true },
-    orderBy: { id: "asc" },
-  });
+export type ActiveEnergyResolutionChangeDiagnosticV1 = {
+  eventId: number;
+  eventKind: "strength" | "stepper" | "other";
+  modelDateBefore: string | null;
+  modelDateAfter: string | null;
+  changeCategories: string[];
+  sourceCategoryBefore: string;
+  sourceCategoryAfter: string;
+  massStatusBefore: string;
+  massStatusAfter: string;
+  massSourceCategoryBefore: string;
+  massSourceCategoryAfter: string;
+  candidateFingerprintBefore: string | null;
+  candidateFingerprintAfter: string | null;
+  stepperCandidateCountBefore: number;
+  stepperCandidateCountAfter: number;
+  stepperCandidatesOmittedBefore: number;
+  stepperCandidatesOmittedAfter: number;
+  stepperCandidatesBefore: StepperCandidateDiagnosticV1[];
+  stepperCandidatesAfter: StepperCandidateDiagnosticV1[];
+  resolutionFingerprintBefore: string | null;
+  resolutionFingerprintAfter: string | null;
+  revisionBefore: number | null;
+  revisionAfter: number | null;
+};
+
+type StepperCandidateDiagnosticV1 = {
+  aliasDigest: string;
+  candidateFingerprint: string | null;
+  massStatus: string;
+  massSourceCategory: string;
+};
+
+export type ActiveEnergyRefreshDiagnosticV1 = {
+  changedEventCount: number;
+  omittedEventCount: number;
+  changedEventsDigest: string;
+  resolutionStateFingerprintBefore: string;
+  resolutionStateFingerprintAfter: string;
+  changedEvents: ActiveEnergyResolutionChangeDiagnosticV1[];
+  canonicalChangedDateCount: number;
+  canonicalChangedDatesDigest: string;
+  canonicalChangedDates: string[];
+};
+
+export function isActiveEnergyOscillationV1(input: {
+  currentPass: number;
+  repeatedStateFromPass: number | null;
+  changedDateCount: number;
+  stateFingerprintBefore: string;
+  stateFingerprintAfter: string;
+}): boolean {
+  return input.changedDateCount > 0
+    && input.repeatedStateFromPass !== null
+    && input.repeatedStateFromPass < input.currentPass - 1
+    && input.stateFingerprintBefore !== input.stateFingerprintAfter;
+}
+
+const MAX_DIAGNOSTIC_EVENTS = 50;
+const MAX_DIAGNOSTIC_DATES = 100;
+const MAX_DIAGNOSTIC_STEPPER_CANDIDATES = 20;
+
+function safeCategory(value: unknown, allowed: readonly string[]): string {
+  return typeof value === "string" && allowed.includes(value) ? value : "other";
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -33,7 +95,184 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function changedResolutionDates(before: readonly ResolutionSnapshot[], after: readonly ResolutionSnapshot[]): string[] {
+function stepperCandidateSummaries(snapshot: ActiveEnergyResolutionSnapshotV1 | undefined): StepperCandidateDiagnosticV1[] {
+  const aliases = Array.isArray(snapshot?.stepperShadows) ? snapshot.stepperShadows : [];
+  return aliases.flatMap((alias) => {
+    const aliasRow = objectValue(alias);
+    const workout = objectValue(aliasRow?.workout);
+    const shadow = objectValue(workout?.experimentalStepperActiveEnergyShadow);
+    if (aliasRow === null || shadow === null) return [];
+    const result = objectValue(shadow.result);
+    const massReference = objectValue(result?.massReference);
+    const candidateFingerprint = shadow.sourceFingerprint;
+    return [{
+      aliasDigest: stableSha256(JSON.stringify([aliasRow.id, aliasRow.sourceType, aliasRow.sourceId, aliasRow.workoutId])),
+      candidateFingerprint: typeof candidateFingerprint === "string" && /^[a-f0-9]{64}$/i.test(candidateFingerprint)
+        ? candidateFingerprint.toLowerCase()
+        : null,
+      massStatus: safeCategory(massReference?.status, ["observed", "model-estimated", "unavailable"]),
+      massSourceCategory: safeCategory(
+        massReference?.sourceType ?? massReference?.modelSourceKind,
+        ["health-metric-sample", "daily-health-data", "predecessor-model", "episode-initial"],
+      ),
+    }];
+  }).sort((left, right) => left.aliasDigest.localeCompare(right.aliasDigest));
+}
+
+function provenanceSummary(snapshot: ActiveEnergyResolutionSnapshotV1 | undefined) {
+  const provenance = objectValue(snapshot?.currentProvenance);
+  const evidence = objectValue(provenance?.evidence);
+  const stepperCandidates = stepperCandidateSummaries(snapshot);
+  const massReference = objectValue(evidence?.massReference);
+  const selectedMassReference = massReference ?? objectValue(provenance?.massReference);
+  const candidateFingerprint = stepperCandidates.length > 0
+    ? stableSha256(JSON.stringify(stepperCandidates))
+    : provenance?.sourceFingerprint;
+  const candidateMassStatuses = [...new Set(stepperCandidates.map(({ massStatus }) => massStatus))];
+  const candidateMassSources = [...new Set(stepperCandidates.map(({ massSourceCategory }) => massSourceCategory))];
+  const selectedMassStatus = selectedMassReference === null
+    ? candidateMassStatuses.length === 1 ? candidateMassStatuses[0] ?? "unavailable"
+      : candidateMassStatuses.length > 1 ? "multiple" : "unavailable"
+    : safeCategory(selectedMassReference.status, ["observed", "model-estimated", "unavailable"]);
+  const selectedMassSourceCategory = selectedMassReference === null
+    ? candidateMassSources.length === 1 ? candidateMassSources[0] ?? "other"
+      : candidateMassSources.length > 1 ? "multiple" : "other"
+    : safeCategory(selectedMassReference.sourceType ?? selectedMassReference.modelSourceKind,
+      ["health-metric-sample", "daily-health-data", "predecessor-model", "episode-initial"]);
+  return {
+    sourceCategory: safeCategory(snapshot?.currentSource, [
+      "bodycast-stepper-mechanical", "bodycast-strength-estimate", "bodycast-strength-met-fallback",
+      "manual-kcal", "device-kcal", "unavailable",
+    ]),
+    massStatus: selectedMassStatus,
+    massSourceCategory: selectedMassSourceCategory,
+    candidateFingerprint: typeof candidateFingerprint === "string" && /^[a-f0-9]{64}$/i.test(candidateFingerprint)
+      ? candidateFingerprint.toLowerCase()
+      : null,
+    stepperCandidates,
+  };
+}
+
+function resolutionStateFingerprint(snapshots: readonly ActiveEnergyResolutionSnapshotV1[]): string {
+  return stableSha256(JSON.stringify(snapshots.map((snapshot) => {
+    const summary = provenanceSummary(snapshot);
+    return [snapshot.id, snapshot.eventKind ?? null, snapshot.modelDate, snapshot.isStale,
+      // This is a semantic state fingerprint: the append-only revision is
+      // reported per event, but must not hide a repeated A→B→A state.
+      snapshot.currentResolutionFingerprint, summary.sourceCategory,
+      summary.massStatus, summary.massSourceCategory, summary.candidateFingerprint];
+  })));
+}
+
+function resolutionChangeDiagnostics(
+  before: readonly ActiveEnergyResolutionSnapshotV1[],
+  after: readonly ActiveEnergyResolutionSnapshotV1[],
+): ActiveEnergyResolutionChangeDiagnosticV1[] {
+  const oldById = new Map(before.map((row) => [row.id, row]));
+  const newById = new Map(after.map((row) => [row.id, row]));
+  const changes: ActiveEnergyResolutionChangeDiagnosticV1[] = [];
+  for (const id of new Set([...oldById.keys(), ...newById.keys()])) {
+    const oldRow = oldById.get(id);
+    const newRow = newById.get(id);
+    const oldSummary = provenanceSummary(oldRow);
+    const newSummary = provenanceSummary(newRow);
+    const canonicalChanged = !oldRow || !newRow || oldRow.modelDate !== newRow.modelDate
+      || oldRow.isStale !== newRow.isStale
+      || oldRow.currentResolutionFingerprint !== newRow.currentResolutionFingerprint
+      || oldRow.resolutionRevision !== newRow.resolutionRevision;
+    const provenanceChanged = oldSummary.candidateFingerprint !== newSummary.candidateFingerprint
+      || oldSummary.sourceCategory !== newSummary.sourceCategory
+      || oldSummary.massStatus !== newSummary.massStatus
+      || oldSummary.massSourceCategory !== newSummary.massSourceCategory;
+    if (!canonicalChanged && !provenanceChanged) continue;
+    const categories = new Set<string>();
+    if (!oldRow) categories.add("event-added");
+    if (!newRow) categories.add("event-removed");
+    if (oldRow && newRow && oldRow.modelDate !== newRow.modelDate) categories.add("model-date");
+    if (oldRow && newRow && oldRow.isStale !== newRow.isStale) categories.add("stale-state");
+    if (oldRow?.currentResolutionFingerprint !== newRow?.currentResolutionFingerprint) categories.add("resolution-fingerprint");
+    if (oldRow?.resolutionRevision !== newRow?.resolutionRevision) categories.add("resolution-revision");
+    if (oldSummary.candidateFingerprint !== newSummary.candidateFingerprint) categories.add("candidate-fingerprint");
+    if (oldSummary.sourceCategory !== newSummary.sourceCategory) categories.add("selected-source");
+    if (oldSummary.massStatus !== newSummary.massStatus) categories.add("mass-provenance-status");
+    if (oldSummary.massSourceCategory !== newSummary.massSourceCategory) categories.add("mass-provenance-source");
+    changes.push({
+      eventId: id,
+      eventKind: safeCategory(newRow?.eventKind ?? oldRow?.eventKind, ["strength", "stepper"]) as "strength" | "stepper" | "other",
+      modelDateBefore: oldRow?.modelDate ?? null,
+      modelDateAfter: newRow?.modelDate ?? null,
+      changeCategories: [...categories].sort(),
+      sourceCategoryBefore: oldSummary.sourceCategory,
+      sourceCategoryAfter: newSummary.sourceCategory,
+      massStatusBefore: oldSummary.massStatus,
+      massStatusAfter: newSummary.massStatus,
+      massSourceCategoryBefore: oldSummary.massSourceCategory,
+      massSourceCategoryAfter: newSummary.massSourceCategory,
+      candidateFingerprintBefore: oldSummary.candidateFingerprint,
+      candidateFingerprintAfter: newSummary.candidateFingerprint,
+      stepperCandidateCountBefore: oldSummary.stepperCandidates.length,
+      stepperCandidateCountAfter: newSummary.stepperCandidates.length,
+      stepperCandidatesOmittedBefore: Math.max(0, oldSummary.stepperCandidates.length - MAX_DIAGNOSTIC_STEPPER_CANDIDATES),
+      stepperCandidatesOmittedAfter: Math.max(0, newSummary.stepperCandidates.length - MAX_DIAGNOSTIC_STEPPER_CANDIDATES),
+      stepperCandidatesBefore: oldSummary.stepperCandidates.slice(0, MAX_DIAGNOSTIC_STEPPER_CANDIDATES),
+      stepperCandidatesAfter: newSummary.stepperCandidates.slice(0, MAX_DIAGNOSTIC_STEPPER_CANDIDATES),
+      resolutionFingerprintBefore: oldRow?.currentResolutionFingerprint ?? null,
+      resolutionFingerprintAfter: newRow?.currentResolutionFingerprint ?? null,
+      revisionBefore: oldRow?.resolutionRevision ?? null,
+      revisionAfter: newRow?.resolutionRevision ?? null,
+    });
+  }
+  return changes.sort((left, right) => left.eventId - right.eventId);
+}
+
+export function buildActiveEnergyRefreshDiagnosticV1(
+  before: readonly ActiveEnergyResolutionSnapshotV1[],
+  after: readonly ActiveEnergyResolutionSnapshotV1[],
+  canonicalChangedDates: readonly string[],
+): ActiveEnergyRefreshDiagnosticV1 {
+  const changes = resolutionChangeDiagnostics(before, after);
+  const dates = [...new Set(canonicalChangedDates)].sort();
+  return {
+    changedEventCount: changes.length,
+    omittedEventCount: Math.max(0, changes.length - MAX_DIAGNOSTIC_EVENTS),
+    changedEventsDigest: stableSha256(JSON.stringify(changes)),
+    resolutionStateFingerprintBefore: resolutionStateFingerprint(before),
+    resolutionStateFingerprintAfter: resolutionStateFingerprint(after),
+    changedEvents: changes.slice(0, MAX_DIAGNOSTIC_EVENTS),
+    canonicalChangedDateCount: dates.length,
+    canonicalChangedDatesDigest: stableSha256(JSON.stringify(dates)),
+    canonicalChangedDates: dates.slice(0, MAX_DIAGNOSTIC_DATES),
+  };
+}
+
+async function readResolutionSnapshot(profileId: number, includeDiagnostics = false): Promise<ActiveEnergyResolutionSnapshotV1[]> {
+  const select = includeDiagnostics
+    ? {
+      id: true, eventKind: true, modelDate: true, isStale: true,
+      currentResolutionFingerprint: true, resolutionRevision: true, currentSource: true,
+      currentProvenance: true,
+      aliases: {
+        select: {
+          id: true,
+          sourceType: true,
+          sourceId: true,
+          workoutId: true,
+          workout: { select: { experimentalStepperActiveEnergyShadow: { select: { sourceFingerprint: true, result: true } } } },
+        },
+      },
+    }
+    : { id: true, modelDate: true, isStale: true, currentResolutionFingerprint: true, resolutionRevision: true };
+  return prisma.activeEnergyCanonicalEvent.findMany({
+    where: { profileId, eventKind: { in: ["strength", "stepper"] }, supersededByEventId: null },
+    select,
+    orderBy: { id: "asc" },
+  });
+}
+
+function changedResolutionDates(
+  before: readonly ActiveEnergyResolutionSnapshotV1[],
+  after: readonly ActiveEnergyResolutionSnapshotV1[],
+): string[] {
   const oldById = new Map(before.map((row) => [row.id, row]));
   const newById = new Map(after.map((row) => [row.id, row]));
   const dates: string[] = [];
@@ -243,9 +482,11 @@ export async function refreshCandidatesAfterProductionV1(
   options: {
     onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
     skipTrainingAccountingMaterialization?: boolean;
+    onResolutionDiagnostic?: (diagnostic: ActiveEnergyRefreshDiagnosticV1) => void;
   } = {},
 ): Promise<string[]> {
-  const before = await readResolutionSnapshot(profileId);
+  const includeDiagnostics = options.onResolutionDiagnostic !== undefined;
+  const before = await readResolutionSnapshot(profileId, includeDiagnostics);
   const [episodes, sessions, workouts] = await Promise.all([
     prisma.modelEpisode.findMany({
       where: { profileId },
@@ -321,5 +562,10 @@ export async function refreshCandidatesAfterProductionV1(
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
     });
   }
-  return changedResolutionDates(before, await readResolutionSnapshot(profileId));
+  const after = await readResolutionSnapshot(profileId, includeDiagnostics);
+  const changedDates = changedResolutionDates(before, after);
+  if (options.onResolutionDiagnostic) {
+    options.onResolutionDiagnostic(buildActiveEnergyRefreshDiagnosticV1(before, after, changedDates));
+  }
+  return changedDates;
 }

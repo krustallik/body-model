@@ -1,5 +1,5 @@
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
-import { getModelStatus, recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
+import { getModelStatus, recalculateModelEpisode, type ActiveEnergyConvergencePassDiagnosticV1 } from "@/modules/model-episodes/model-episode.service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { logEvent } from "@/lib/logger";
 
@@ -22,6 +22,8 @@ export async function recalculateActiveEnergyChangesV1(input: {
   /** Recovery-only: keep legacy accounting fields byte-for-byte unchanged. */
   skipTrainingAccountingMaterialization?: boolean;
   onLifecycleFenceChanged?: (fence: ProductionPublicationFenceV1) => void;
+  /** Recovery-only sanitized candidate-convergence trace. */
+  onConvergenceDiagnostic?: (diagnostic: ActiveEnergyConvergencePassDiagnosticV1) => void;
 } = {}): Promise<CurrentActiveEnergyPublicationWindowV1 | null> {
   let status;
   try {
@@ -36,6 +38,7 @@ export async function recalculateActiveEnergyChangesV1(input: {
     ...(input.skipTrainingAccountingMaterialization === undefined
       ? {} : { skipTrainingAccountingMaterialization: input.skipTrainingAccountingMaterialization }),
     ...(input.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: input.onLifecycleFenceChanged }),
+    ...(input.onConvergenceDiagnostic === undefined ? {} : { onConvergenceDiagnostic: input.onConvergenceDiagnostic }),
   });
   const current = await getModelStatus(status.episodeId);
   if (!current.productionCurrent || current.latestModeledDate === null) return null;

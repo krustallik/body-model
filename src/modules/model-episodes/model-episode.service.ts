@@ -31,12 +31,52 @@ import { rebuildExperimentalFatWeightUncertaintyV1 } from "./experimental-fat-we
 import { rebuildRelativeMuscleEpisodeTrajectories } from "./relative-muscle-shadow-core.service";
 import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
 import {
+  type ActiveEnergyRefreshDiagnosticV1,
   invalidateActiveEnergyResolutionDatesV1,
+  isActiveEnergyOscillationV1,
   materializeActiveEnergyCandidatesV1,
   refreshCandidatesAfterProductionV1,
 } from "@/modules/activity/active-energy-materialization";
+import { isProductionGenerationCurrentV1 } from "./publication-generation-v1";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
+
+type ConvergenceLifecycleDiagnosticV1 = {
+  invalidationGeneration: number;
+  productionPublishedGeneration: number | null;
+  productionStaleFromDate: string | null;
+  productionCurrent: boolean;
+} | null;
+
+export type ActiveEnergyConvergencePassDiagnosticV1 = ActiveEnergyRefreshDiagnosticV1 & {
+  pass: number;
+  maxPasses: number;
+  effectiveReplayFromDate: string;
+  repeatedStateFromPass: number | null;
+  oscillationDetected: boolean;
+  lifecycleBeforeReplay: ConvergenceLifecycleDiagnosticV1;
+  lifecycleAfterReplay: ConvergenceLifecycleDiagnosticV1;
+  lifecycleAfterRefresh: ConvergenceLifecycleDiagnosticV1;
+  lifecycleAfterInvalidation: ConvergenceLifecycleDiagnosticV1;
+};
+
+async function convergenceLifecycleDiagnostic(
+  client: PrismaClient,
+  profileId: number,
+): Promise<ConvergenceLifecycleDiagnosticV1> {
+  const lifecycle = await client.physiologyV7Lifecycle.findUnique({
+    where: { profileId },
+    select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
+  });
+  if (lifecycle === null) return null;
+  return {
+    invalidationGeneration: lifecycle.invalidationGeneration,
+    productionPublishedGeneration: lifecycle.productionPublishedGeneration,
+    productionStaleFromDate: lifecycle.productionStaleFromDate,
+    productionCurrent: isProductionGenerationCurrentV1(lifecycle),
+  };
+}
 
 type ModelableRun = { startDate: string; endDate: string };
 
@@ -561,6 +601,8 @@ export async function recalculateModelEpisode(
     now?: Date;
     skipTrainingAccountingMaterialization?: boolean;
     onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+    /** Recovery-only sanitized trace; normal recalculation remains silent. */
+    onConvergenceDiagnostic?: (diagnostic: ActiveEnergyConvergencePassDiagnosticV1) => void;
   } = {},
   client: PrismaClient = prisma,
 ) {
@@ -588,24 +630,84 @@ export async function recalculateModelEpisode(
   const eligibleRefreshes = materialized.stepperWorkoutIds.length
     + materialized.strengthSessionIds.length + materialized.strengthWorkoutIds.length;
   const maxRefreshPasses = Math.max(2, eligibleRefreshes + 2);
+  const seenResolutionStates = new Map<string, number>();
   for (let pass = 0; pass < maxRefreshPasses; pass += 1) {
-    const production = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
+    const lifecycleBeforeReplay = input.onConvergenceDiagnostic === undefined
+      ? null
+      : await convergenceLifecycleDiagnostic(client, profileId);
+    const { onConvergenceDiagnostic: _onConvergenceDiagnostic, ...productionInput } = input;
+    void _onConvergenceDiagnostic;
+    const production = await recalculateModelEpisodeProduction({ ...productionInput, episodeId: status.episodeId }, client);
     // The production transaction may commit a new lifecycle timestamp before
     // candidate refresh completes. Keep the recovery CAS tied to this exact
     // committed fence if a later refresh step fails.
     await publishLifecycleFence();
+    const lifecycleAfterReplay = input.onConvergenceDiagnostic === undefined
+      ? null
+      : await convergenceLifecycleDiagnostic(client, profileId);
+    const refreshDiagnosticHolder: { value: ActiveEnergyRefreshDiagnosticV1 | null } = { value: null };
     const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate, {
       onLifecycleFenceChanged: input.onLifecycleFenceChanged,
       skipTrainingAccountingMaterialization: input.skipTrainingAccountingMaterialization,
+      ...(input.onConvergenceDiagnostic === undefined ? {} : {
+        onResolutionDiagnostic: (diagnostic: ActiveEnergyRefreshDiagnosticV1) => { refreshDiagnosticHolder.value = diagnostic; },
+      }),
     });
+    const lifecycleAfterRefresh = input.onConvergenceDiagnostic === undefined
+      ? null
+      : await convergenceLifecycleDiagnostic(client, profileId);
+    if (changedDates.length > 0) {
+      await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates);
+      await publishLifecycleFence();
+    }
+    const lifecycleAfterInvalidation = input.onConvergenceDiagnostic === undefined
+      ? null
+      : await convergenceLifecycleDiagnostic(client, profileId);
+    if (input.onConvergenceDiagnostic !== undefined && refreshDiagnosticHolder.value !== null) {
+      const refreshDiagnostic = refreshDiagnosticHolder.value;
+      // Lifecycle currentness is part of the observed convergence state, but
+      // its monotonic counters must not hide an A→B→A candidate oscillation.
+      // Exact generations remain available in the pass diagnostics below.
+      const convergenceStateFingerprint = stableSha256({
+        resolution: refreshDiagnostic.resolutionStateFingerprintAfter,
+        lifecycle: lifecycleAfterInvalidation === null ? null : {
+          productionCurrent: lifecycleAfterInvalidation.productionCurrent,
+          productionStaleFromDate: lifecycleAfterInvalidation.productionStaleFromDate,
+        },
+      });
+      const previousPass = seenResolutionStates.get(convergenceStateFingerprint) ?? null;
+      if (previousPass === null) {
+        seenResolutionStates.set(convergenceStateFingerprint, pass + 1);
+        if (seenResolutionStates.size > 64) {
+          const oldest = seenResolutionStates.keys().next().value as string | undefined;
+          if (oldest !== undefined) seenResolutionStates.delete(oldest);
+        }
+      }
+      input.onConvergenceDiagnostic({
+        ...refreshDiagnostic,
+        pass: pass + 1,
+        maxPasses: maxRefreshPasses,
+        effectiveReplayFromDate: production.effectiveReplayFromDate,
+        repeatedStateFromPass: previousPass,
+        oscillationDetected: isActiveEnergyOscillationV1({
+          currentPass: pass + 1,
+          repeatedStateFromPass: previousPass,
+          changedDateCount: changedDates.length,
+          stateFingerprintBefore: refreshDiagnostic.resolutionStateFingerprintBefore,
+          stateFingerprintAfter: refreshDiagnostic.resolutionStateFingerprintAfter,
+        }),
+        lifecycleBeforeReplay,
+        lifecycleAfterReplay,
+        lifecycleAfterRefresh,
+        lifecycleAfterInvalidation,
+      });
+    }
     if (changedDates.length === 0) {
       await publishLifecycleFence();
       const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
       void _effectiveReplayFromDate;
       return result;
     }
-    await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates);
-    await publishLifecycleFence();
   }
   throw new Error("Stepper historical mass candidates did not converge after production replay");
 }

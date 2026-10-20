@@ -1038,7 +1038,12 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     expect(beforeResolution.currentSource).toBe("device-kcal");
 
-    const result = await recalculateModelEpisode({ episodeId, now });
+    const convergencePasses: import("@/modules/model-episodes/model-episode.service").ActiveEnergyConvergencePassDiagnosticV1[] = [];
+    const result = await recalculateModelEpisode({
+      episodeId,
+      now,
+      onConvergenceDiagnostic: (diagnostic) => convergencePasses.push(diagnostic),
+    });
     expect(result.episodeId).toBe(episodeId);
     expect(result.latestModeledDate).toBe(finalDate);
     const predecessor = await prisma.dailyModelState.findUniqueOrThrow({
@@ -1069,6 +1074,33 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(finalEvent.resolutions.at(-1)?.provenance).toMatchObject({
       evidence: { massReference: { status: "model-estimated", sourceDate: predecessorDate } },
     });
+    expect(convergencePasses.length).toBeGreaterThanOrEqual(2);
+    expect(convergencePasses.flatMap((pass) => pass.changedEvents)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventId: beforeResolution.id,
+        eventKind: "stepper",
+        massStatusAfter: "model-estimated",
+        massSourceCategoryAfter: "predecessor-model",
+        changeCategories: expect.arrayContaining(["candidate-fingerprint", "resolution-fingerprint"]),
+      }),
+    ]));
+    expect(convergencePasses.at(-1)).toMatchObject({
+      canonicalChangedDateCount: 0,
+      changedEventCount: 0,
+      lifecycleAfterReplay: { productionCurrent: true },
+      lifecycleAfterInvalidation: { productionCurrent: true },
+    });
+    const stableResolution = {
+      currentResolutionFingerprint: finalEvent.currentResolutionFingerprint,
+      resolutionRevision: finalEvent.resolutionRevision,
+    };
+    const repeatPasses: import("@/modules/model-episodes/model-episode.service").ActiveEnergyConvergencePassDiagnosticV1[] = [];
+    await recalculateModelEpisode({ episodeId, now, onConvergenceDiagnostic: (diagnostic) => repeatPasses.push(diagnostic) });
+    const repeatedEvent = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({ where: { id: finalEvent.id } });
+    expect(repeatedEvent).toMatchObject(stableResolution);
+    expect(repeatPasses).toHaveLength(1);
+    expect(repeatPasses[0]?.resolutionStateFingerprintAfter)
+      .toBe(convergencePasses.at(-1)?.resolutionStateFingerprintAfter);
     const finalLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(finalLifecycle.productionPublishedGeneration).toBe(finalLifecycle.invalidationGeneration);
     expect(finalLifecycle.productionStaleFromDate).toBeNull();

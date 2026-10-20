@@ -112,9 +112,11 @@ fi
 if [[ ! -f "$BODYCAST_IMAGE_ARCHIVE" || -L "$BODYCAST_IMAGE_ARCHIVE" ]]; then fail "image-archive-missing"; fi
 [[ "$(realpath -e "$BODYCAST_IMAGE_ARCHIVE" 2>/dev/null || true)" == "$BODYCAST_IMAGE_ARCHIVE" ]] || fail "image-path-identity"
 [[ "$(sha256sum "$BODYCAST_IMAGE_ARCHIVE" | awk '{print $1}')" == "$BODYCAST_IMAGE_ARCHIVE_SHA256" ]] || fail "image-archive-digest"
+if [[ "$mode" == "preflight" ]]; then
+  headroom_check before-load
+fi
 if ! recovery_image_id >/dev/null; then
   [[ "$mode" == "preflight" ]] || fail "immutable-recovery-image-not-loaded"
-  headroom_check before-load
   load_output="$(docker load --input "$BODYCAST_IMAGE_ARCHIVE" 2>&1)" || { printf '%s\n' "$load_output" >&2; fail "image-load"; }
   printf 'V4_RECOVERY_IMAGE_LOAD %s\n' "$load_output" >&2
 fi

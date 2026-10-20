@@ -15,6 +15,15 @@ const evidence = readFileSync(new URL("../scripts/production-v4-recovery-evidenc
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("legacy derived V4 recovery release workflow", () => {
+  it("keeps the bounded production recovery SSH session alive during silent derived rebuilds", () => {
+    const executeStep = workflow.split("      - name: Transfer immutable artifact/evidence and execute the pinned derived-only entrypoint\n")[1]
+      ?.split("      - name: Remove only temporary SSH key material\n")[0];
+
+    expect(executeStep).toBeDefined();
+    expect(executeStep).toContain("-o ServerAliveInterval=30 -o ServerAliveCountMax=60");
+    expect(executeStep).toContain('timeout 35m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE"');
+  });
+
   it("runs the real host pretransfer, pre-load, and pre-execute gates before risky operations", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-host-headroom-"));
     const deployPath = join(tempRoot, "deploy");
@@ -125,7 +134,7 @@ esac
       const beforeTransfer = spawnSync("bash", [hostScript, "pretransfer"], {
         env: { ...commonEnv, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics }, encoding: "utf8",
       });
-      expect(beforeTransfer.status).toBe(beforeTransferExpected.status);
+      expect(beforeTransfer.status, beforeTransfer.stderr).toBe(beforeTransferExpected.status);
       if (beforeTransferExpected.status === 0) expect(JSON.parse(beforeTransfer.stdout).phase).toBe("before-transfer");
       else expect(beforeTransfer.stderr).toContain("disk-headroom-before-transfer");
       expect(readFileSync(dockerLog, "utf8")).not.toMatch(/(^|\\n)load /);

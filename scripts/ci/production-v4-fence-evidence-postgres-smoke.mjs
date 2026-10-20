@@ -142,6 +142,16 @@ async function insertHealthDay(date, revision = 1, fenceAfterSource = false) {
   }
 }
 
+async function insertTrainingFence(block) {
+  const createdAt = block.createdAt ?? new Date();
+  const updatedAt = block.updatedAt ?? createdAt;
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO public."UnifiedPublicationBlock" ("profileId", source, "sourceKey", "fromDate", revision, "createdAt", "updatedAt")
+     VALUES (1, 'training', $1, $2, $3, $4, $5)`,
+    block.sourceKey, block.fromDate, block.revision, createdAt, updatedAt,
+  );
+}
+
 async function insertEpisode(startDate, timezone, active, deactivatedAt) {
   await prisma.$executeRawUnsafe(
     `INSERT INTO public."ModelEpisode" (
@@ -293,12 +303,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
     ];
     childKeys.push(group[1].sourceKey, group[4].sourceKey);
     for (const block of group) {
-      await prisma.unifiedPublicationBlock.create({ data: {
-        profileId: 1, source: "training", sourceKey: block.sourceKey,
-        fromDate: block.fromDate, revision: block.revision,
-        ...(block.createdAt === undefined ? {} : { createdAt: block.createdAt }),
-        ...(block.updatedAt === undefined ? {} : { updatedAt: block.updatedAt }),
-      } });
+      await insertTrainingFence(block);
     }
 
     const evidence = await readEvidence();
@@ -386,18 +391,16 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
       accountingInputRevision: 43, currentSnapshotRevision: null,
       updatedAt: new Date("2025-01-11T16:00:00.000Z"),
     } });
-    await prisma.unifiedPublicationBlock.create({ data: {
-      profileId: 1, source: "training", sourceKey: secondChildKey,
-      fromDate: "2025-01-11", revision: 43,
-      createdAt: new Date("2025-01-11T16:00:00.000Z"), updatedAt: new Date("2025-01-11T16:00:00.000Z"),
-    } });
+    await insertTrainingFence({ sourceKey: secondChildKey, fromDate: "2025-01-11", revision: 43,
+      createdAt: new Date("2025-01-11T16:00:00.000Z"), updatedAt: new Date("2025-01-11T16:00:00.000Z") });
     await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
       accountingInputRevision: 44, updatedAt: new Date("2025-01-11T16:15:00.000Z"),
     } });
-    await prisma.unifiedPublicationBlock.update({
-      where: { profileId_source_sourceKey: { profileId: 1, source: "training", sourceKey: String(sessionId) } },
-      data: { revision: { increment: 1 }, updatedAt: new Date("2025-01-11T16:30:00.000Z") },
-    });
+    await prisma.$executeRawUnsafe(
+      `UPDATE public."UnifiedPublicationBlock" SET revision = revision + 1, "updatedAt" = $1
+       WHERE "profileId" = 1 AND source = 'training' AND "sourceKey" = $2`,
+      new Date("2025-01-11T16:30:00.000Z"), String(sessionId),
+    );
     const compensatedEvidence = await readEvidence();
     let rejectedCompensatedGap = false;
     try {
@@ -409,11 +412,13 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
     }
     validateWithExactImage(compensatedEvidence, true);
   } finally {
-    await prisma.unifiedPublicationBlock.deleteMany({
-      where: { profileId: 1, source: "training", sourceKey: { in: [
-        String(sessionId), String(deletedSessionId), `training-delete-session:${deletedSessionId}`, ...childKeys,
-      ] } },
-    });
+    const fenceKeys = [String(sessionId), String(deletedSessionId), `training-delete-session:${deletedSessionId}`, ...childKeys];
+    const fenceKeyParameters = fenceKeys.map((_, index) => `$${index + 1}`).join(", ");
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM public."UnifiedPublicationBlock" WHERE "profileId" = 1 AND source = 'training'
+       AND "sourceKey" IN (${fenceKeyParameters})`,
+      ...fenceKeys,
+    );
     await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
   }
   if (await legacyUnpagedRawFingerprint() !== baselineFingerprint) {

@@ -300,7 +300,8 @@ esac
   it("emits the successful preflight as one JSON report with bound before-load headroom", async () => {
     expect(host).toContain('HEADROOM_REPORT="$(node "$BODYCAST_HEADROOM_SCRIPT" --check "$phase"');
     expect(host).toContain("printf 'V4_RECOVERY_IMAGE_LOAD %s\\n' \"$load_output\" >&2");
-    expect(workflow).toContain('report.headroomBeforeLoad?.phase !== "before-load"');
+    expect(workflow).toContain("productionPreflightMismatchCategories({ report, measurements, before, rehearsal,");
+    expect(workflow).toContain('categories=${mismatchCategories.join(",")}');
 
     const commandStart = host.indexOf('BODYCAST_HEADROOM_BEFORE_LOAD_JSON="$HEADROOM_REPORT" node --input-type=module - "$evidence_file"');
     expect(commandStart).toBeGreaterThanOrEqual(0);

@@ -255,10 +255,10 @@ jobs:
         run: npm ci && npx prisma generate --schema prisma/schema.prisma
 
       - name: Assemble only the exact audited legacy source plus pinned release wrapper
-        env:
-          LEGACY_SHA: 35c556772759ea03c2728de921c1825f454d59c2
         run: |
           set -Eeuo pipefail
+          LEGACY_SHA="$(node --input-type=module -e 'import { LEGACY_V4_RECOVERY } from "./scripts/production-v4-derived-recovery.mjs"; process.stdout.write(LEGACY_V4_RECOVERY.sourceSha)')"
+          [[ "$LEGACY_SHA" =~ ^[a-f0-9]{40}$ ]]
           mkdir -p "$RUNNER_TEMP/bodycast-v4-tool/source/scripts"
           git fetch --no-tags https://github.com/krustallik/body-model.git "$LEGACY_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$LEGACY_SHA"

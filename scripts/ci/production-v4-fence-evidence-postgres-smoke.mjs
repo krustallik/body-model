@@ -174,6 +174,21 @@ async function readEvidence() {
   return JSON.parse(output.trim());
 }
 
+function validateWithExactImage(report, expectedRejection) {
+  const validator = `import { validatePublicationSourceEvidence } from '/app/dist/production-v4-derived-recovery.mjs';
+let source = '';
+for await (const chunk of process.stdin) source += chunk;
+const input = JSON.parse(source);
+let rejected = false;
+try { validatePublicationSourceEvidence({ blocks: input.blocks, sourceEvidence: input.sourceEvidence }); }
+catch { rejected = true; }
+if (rejected !== input.expectedRejection) process.exitCode = 17;`;
+  execFileSync("docker", ["run", "--rm", "--interactive", image, "node", "--input-type=module", "-e", validator], {
+    input: JSON.stringify({ blocks: report.blocks, sourceEvidence: report.sourceEvidence,
+      expectedRejection }), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
 async function legacyUnpagedRawFingerprint() {
   const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
   for (const table of rawFingerprintTables) {
@@ -218,6 +233,192 @@ async function validateCurrentEvidence(expectedHealthCount) {
     throw new Error("Exact legacy evidence returned an invalid complete fence-set digest.");
   }
   return report;
+}
+
+async function validateTrainingDeletionEvidenceOnExactImage() {
+  const baselineFingerprint = await legacyUnpagedRawFingerprint();
+  const sessionId = 27;
+  const deletedSessionId = 28;
+  const childKeys = [];
+  try {
+    const session = {
+      id: sessionId,
+      snapshotRevision: 90,
+      accountingInputRevision: 41,
+      localDate: "2025-01-11",
+      effectiveAt: "2025-01-11T12:00:00.000Z",
+      inputFingerprint: "d".repeat(64),
+    };
+    const payload = trainingAccountingPayload(session);
+    await prisma.strengthDiarySession.create({
+      data: {
+        id: sessionId, profileId: 1, programId: 1, programVersionId: 1,
+        status: "COMPLETED", entryMode: "LIVE", revision: 2, accountingInputRevision: 42,
+        effectiveAccountingAt: new Date(session.effectiveAt), currentSnapshotRevision: null,
+        matchedWorkoutId: null, matchStatus: "PENDING", webStartedAt: new Date(session.effectiveAt),
+        accountingTimeZone: trainingTimeZone, accountingTimeZoneProvenance: trainingTimeZoneProvenance,
+        createdAt: new Date("2025-01-11T12:00:00.000Z"), updatedAt: new Date("2025-01-11T14:30:00.000Z"),
+      },
+    });
+    await prisma.strengthSessionAccountingSnapshot.create({
+      data: {
+        sessionId, snapshotRevision: session.snapshotRevision,
+        accountingInputRevision: session.accountingInputRevision,
+        inputFingerprint: session.inputFingerprint, effectiveLocalDate: session.localDate,
+        timeZone: trainingTimeZone, timeZoneProvenance: trainingTimeZoneProvenance,
+        accountingMethodVersion: "bodycast-load-accounting-v1",
+        massResolutionMethodVersion: "bodycast-bodyweight-resolution-v2",
+        massResolutionIdentity: payload.massResolutionIdentity,
+        payloadVersion: payload.schemaVersion, payload,
+        createdAt: new Date("2025-01-11T13:00:00.000Z"),
+      },
+    });
+    const exercise = await prisma.strengthSessionExercise.create({
+      data: { sessionId, snapshotExerciseName: "isolated deleted-set evidence", sortOrder: 0,
+        plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" },
+    });
+    const set = await prisma.strengthSet.create({
+      data: { sessionExerciseId: exercise.id, setNumber: 1, reps: 5, weightKg: 30 },
+    });
+    await prisma.strengthSet.delete({ where: { id: set.id } });
+
+    const group = [
+      { sourceKey: String(sessionId), fromDate: "2025-01-11", revision: 2,
+        createdAt: new Date("2025-01-11T14:30:00.000Z"), updatedAt: new Date("2025-01-11T15:00:00.000Z") },
+      { sourceKey: `training-delete-set:${sessionId}:${set.id}`, fromDate: "2025-01-10", revision: 42,
+        createdAt: new Date("2025-01-11T14:00:00.000Z"), updatedAt: new Date("2025-01-11T14:00:00.000Z") },
+      { sourceKey: String(deletedSessionId), fromDate: "2025-01-11", revision: 1 },
+      { sourceKey: `training-delete-session:${deletedSessionId}`, fromDate: "2025-01-11", revision: 1 },
+      { sourceKey: `training-delete-set:${deletedSessionId}:999999`, fromDate: "2025-01-10", revision: 1 },
+    ];
+    childKeys.push(group[1].sourceKey, group[4].sourceKey);
+    for (const block of group) {
+      await prisma.unifiedPublicationBlock.create({ data: {
+        profileId: 1, source: "training", sourceKey: block.sourceKey,
+        fromDate: block.fromDate, revision: block.revision,
+        ...(block.createdAt === undefined ? {} : { createdAt: block.createdAt }),
+        ...(block.updatedAt === undefined ? {} : { updatedAt: block.updatedAt }),
+      } });
+    }
+
+    const evidence = await readEvidence();
+    validatePublicationSourceEvidence({ blocks: evidence.blocks, sourceEvidence: evidence.sourceEvidence });
+    validateWithExactImage(evidence, false);
+    const deletedSetEvidence = evidence.sourceEvidence.training.find((row) => row.sourceKey === childKeys[0]);
+    const deletedSessionRows = evidence.sourceEvidence.training.filter((row) => row.sessionId === deletedSessionId);
+    if (deletedSetEvidence?.childRows !== 0 || deletedSetEvidence.accountingRevisionGap !== 1
+        || deletedSetEvidence.childDeletionAccountingInputRevision !== 42
+        || deletedSetEvidence.fromDate !== "2025-01-10"
+        || deletedSetEvidence.sessionUpdateFenceChronologyValid !== false
+        || deletedSetEvidence.sourceFenceChronologyValid !== true
+        || evidence.sourceEvidence.training.find((row) => row.sourceKey === String(sessionId))
+          ?.sessionUpdateFenceChronologyValid !== true
+        || deletedSessionRows.length !== 3
+        || !deletedSessionRows.some((row) => row.identity === "deleted-session" && row.parentSessionRows === 0)) {
+      throw new Error("Exact-image evidence omitted the persisted child-delete or hard-delete Training identity.");
+    }
+
+    const malformedGapEvidence = {
+      ...evidence.sourceEvidence,
+      training: evidence.sourceEvidence.training.map((row) => row.sessionId === sessionId
+        ? { ...row, accountingRevisionGap: row.accountingRevisionGap + 1 } : row),
+    };
+    let rejectedMalformedGap = false;
+    try {
+      validatePublicationSourceEvidence({ blocks: evidence.blocks, sourceEvidence: malformedGapEvidence });
+    } catch { rejectedMalformedGap = true; }
+    if (!rejectedMalformedGap) throw new Error("Exact-image validator accepted a forged Training accounting revision gap.");
+    validateWithExactImage({ ...evidence, sourceEvidence: malformedGapEvidence }, true);
+
+    await prisma.strengthSessionAccountingSnapshot.update({
+      where: { sessionId_snapshotRevision: { sessionId, snapshotRevision: session.snapshotRevision } },
+      data: { payloadVersion: "bodycast-persisted-load-accounting-v0" },
+    });
+    const tamperedPayloadVersionEvidence = await readEvidence();
+    let rejectedPayloadVersionMismatch = false;
+    try {
+      validatePublicationSourceEvidence({ blocks: tamperedPayloadVersionEvidence.blocks,
+        sourceEvidence: tamperedPayloadVersionEvidence.sourceEvidence });
+    } catch { rejectedPayloadVersionMismatch = true; }
+    if (!rejectedPayloadVersionMismatch) {
+      throw new Error("Exact-image evidence accepted a historical snapshot whose persisted payloadVersion mismatched its payload.");
+    }
+    await prisma.strengthSessionAccountingSnapshot.update({
+      where: { sessionId_snapshotRevision: { sessionId, snapshotRevision: session.snapshotRevision } },
+      data: { payloadVersion: payload.schemaVersion },
+    });
+
+    const orphanBlocks = evidence.blocks.filter((block) => block.sourceKey !== `training-delete-session:${deletedSessionId}`);
+    const orphanEvidence = { ...evidence.sourceEvidence,
+      training: evidence.sourceEvidence.training.filter((row) => row.sourceKey !== `training-delete-session:${deletedSessionId}`) };
+    let rejectedOrphan = false;
+    try { validatePublicationSourceEvidence({ blocks: orphanBlocks, sourceEvidence: orphanEvidence }); }
+    catch { rejectedOrphan = true; }
+    if (!rejectedOrphan) throw new Error("Exact-image validator accepted a hard-deleted Training parent without its tombstone.");
+
+    // The first child fence survives a later valid snapshot. A second deletion
+    // plus an unrelated accounting revision must not be explained by the total
+    // number of child fences; only fence revisions newer than snapshot 91 count.
+    const refreshedSnapshot = { ...session, snapshotRevision: 91, accountingInputRevision: 42,
+      inputFingerprint: "e".repeat(64) };
+    const refreshedPayload = trainingAccountingPayload(refreshedSnapshot);
+    await prisma.strengthSessionAccountingSnapshot.create({ data: {
+      sessionId, snapshotRevision: 91, accountingInputRevision: 42,
+      inputFingerprint: refreshedSnapshot.inputFingerprint, effectiveLocalDate: session.localDate,
+      timeZone: trainingTimeZone, timeZoneProvenance: trainingTimeZoneProvenance,
+      accountingMethodVersion: "bodycast-load-accounting-v1",
+      massResolutionMethodVersion: "bodycast-bodyweight-resolution-v2",
+      massResolutionIdentity: refreshedPayload.massResolutionIdentity,
+      payloadVersion: refreshedPayload.schemaVersion, payload: refreshedPayload,
+      createdAt: new Date("2025-01-11T15:00:00.000Z"),
+    } });
+    await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
+      accountingInputRevision: 42, currentSnapshotRevision: 91,
+      updatedAt: new Date("2025-01-11T15:00:00.000Z"),
+    } });
+    const secondSet = await prisma.strengthSet.create({ data: {
+      sessionExerciseId: exercise.id, setNumber: 2, reps: 4, weightKg: 20,
+    } });
+    await prisma.strengthSet.delete({ where: { id: secondSet.id } });
+    const secondChildKey = `training-delete-set:${sessionId}:${secondSet.id}`;
+    childKeys.push(secondChildKey);
+    await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
+      accountingInputRevision: 43, currentSnapshotRevision: null,
+      updatedAt: new Date("2025-01-11T16:00:00.000Z"),
+    } });
+    await prisma.unifiedPublicationBlock.create({ data: {
+      profileId: 1, source: "training", sourceKey: secondChildKey,
+      fromDate: "2025-01-11", revision: 43,
+      createdAt: new Date("2025-01-11T16:00:00.000Z"), updatedAt: new Date("2025-01-11T16:00:00.000Z"),
+    } });
+    await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
+      accountingInputRevision: 44, updatedAt: new Date("2025-01-11T16:15:00.000Z"),
+    } });
+    await prisma.unifiedPublicationBlock.update({
+      where: { profileId_source_sourceKey: { profileId: 1, source: "training", sourceKey: String(sessionId) } },
+      data: { revision: { increment: 1 }, updatedAt: new Date("2025-01-11T16:30:00.000Z") },
+    });
+    const compensatedEvidence = await readEvidence();
+    let rejectedCompensatedGap = false;
+    try {
+      validatePublicationSourceEvidence({ blocks: compensatedEvidence.blocks,
+        sourceEvidence: compensatedEvidence.sourceEvidence });
+    } catch { rejectedCompensatedGap = true; }
+    if (!rejectedCompensatedGap) {
+      throw new Error("Exact-image validator accepted an old child fence compensating for a post-snapshot accounting mutation.");
+    }
+    validateWithExactImage(compensatedEvidence, true);
+  } finally {
+    await prisma.unifiedPublicationBlock.deleteMany({
+      where: { profileId: 1, source: "training", sourceKey: { in: [
+        String(sessionId), String(deletedSessionId), `training-delete-session:${deletedSessionId}`, ...childKeys,
+      ] } },
+    });
+    await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+  }
+  if (await legacyUnpagedRawFingerprint() !== baselineFingerprint) {
+    throw new Error("Training deletion evidence smoke did not restore its isolated raw-source fixture state.");
+  }
 }
 
 try {
@@ -567,8 +768,11 @@ try {
     throw new Error("Exact legacy recovery image changed persisted raw Health, Training, provenance, timestamp, Workout or set data.");
   }
 
+  await validateTrainingDeletionEvidenceOnExactImage();
+
   process.stdout.write("PASS: exact 65-migration legacy evidence accepted dynamic Health fences and nullable legacy Training accounting fields; validated the Training event date across a timezone/episode boundary independently from its accounting snapshot; retained an earlier repeated-invalidation fence date; rejected future fence dates, accounting-date mismatch, missing Health sources and unsupported snapshot timezones.\n");
   process.stdout.write("PASS: exact legacy image refreshed all 9 persisted Health fences and 3 Training fences (MATCHED, LIVE/PENDING without Workout, RETROSPECTIVE/UNMATCHED), removed the stale session-26 transient shadow, replayed its episode-2 model-day tail through Jan 15, preserved raw fingerprint/workouts/sessions/sets and ledger 65, cleared fences only after success, and published V4 epoch 1/current generations.\n");
+  process.stdout.write("PASS: exact-image PostgreSQL evidence producer and validator accepted child-set deletion plus hard-deleted-session numeric/tombstone evidence, rejected forged accounting gaps, payloadVersion mismatches and missing tombstones, and restored the isolated raw-source fingerprint.\n");
 } finally {
   await prisma.$disconnect();
 }

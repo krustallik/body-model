@@ -5,14 +5,14 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
   pullRequest: 101,
   branch: "codex/v4-recovery-audit",
   baseSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  sourceSha: "75e36d96230269ac08ef61d82d933e6a45c235a5",
+  sourceSha: "cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1",
   productionAppSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   migrationCount: 65,
   migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
   ledgerDigest: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
   prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
   ownerId: "126446430",
-  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_75e36d96230269ac08ef61d82d933e6a45c235a5",
+  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_cdc656e9ff7e8fe628ee943985e99cb5fa93e0f1",
   command: Object.freeze([
     "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
     "--owner-authorized", "--profile-id", "1",
@@ -143,6 +143,26 @@ export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archive
   return ledgerDigest;
 }
 
+export function parseTrainingFenceIdentity(sourceKey) {
+  if (typeof sourceKey !== "string") return null;
+  const numericSession = /^([1-9][0-9]*)$/.exec(sourceKey);
+  if (numericSession) {
+    const sessionId = Number(numericSession[1]);
+    return Number.isSafeInteger(sessionId) ? { sessionId, identity: "session", childId: null } : null;
+  }
+  const deletedSession = /^training-delete-session:([1-9][0-9]*)$/.exec(sourceKey);
+  if (deletedSession) {
+    const sessionId = Number(deletedSession[1]);
+    return Number.isSafeInteger(sessionId) ? { sessionId, identity: "deleted-session", childId: null } : null;
+  }
+  const deletedChild = /^training-delete-(set|exercise):([1-9][0-9]*):([1-9][0-9]*)$/.exec(sourceKey);
+  if (!deletedChild) return null;
+  const sessionId = Number(deletedChild[2]);
+  const childId = Number(deletedChild[3]);
+  if (!Number.isSafeInteger(sessionId) || !Number.isSafeInteger(childId)) return null;
+  return { sessionId, identity: deletedChild[1] === "set" ? "deleted-set" : "deleted-exercise", childId };
+}
+
 export function publicationBlockDigest(blocks) {
   if (!Array.isArray(blocks) || blocks.length < 1) fail("No persisted publication fences were captured.");
   const sorted = [...blocks].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`));
@@ -153,7 +173,7 @@ export function publicationBlockDigest(blocks) {
     identities.add(identity);
     const validDate = isCalendarDate(block.fromDate);
     const health = block.source === "health" && block.sourceKey === block.fromDate && validDate;
-    const training = block.source === "training" && /^[1-9][0-9]*$/.test(String(block.sourceKey)) && validDate;
+    const training = block.source === "training" && parseTrainingFenceIdentity(block.sourceKey) !== null && validDate;
     if ((!health && !training) || !Number.isSafeInteger(block.revision) || block.revision < 1) {
       fail("Publication fence set contains an unsupported or malformed source.");
     }
@@ -163,11 +183,6 @@ export function publicationBlockDigest(blocks) {
         fail("Publication fence timestamps are absent, malformed, or out of order.");
       }
     }
-  }
-  const training = sorted.filter((block) => block.source === "training");
-  if (training.some((block) => !/^[1-9][0-9]*$/.test(String(block.sourceKey))
-    || !Number.isSafeInteger(Number(block.sourceKey)))) {
-    fail("Current persisted fence set contains a non-canonical positive Training session identity.");
   }
   return sha256(sorted.map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join(""));
 }
@@ -242,58 +257,229 @@ export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
     }
   }
 
-  const trainingBlocks = blocks.filter((block) => block.source === "training")
-    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey));
+  const trainingBlocks = blocks.filter((block) => block.source === "training").sort((left, right) => {
+    const leftIdentity = parseTrainingFenceIdentity(left.sourceKey);
+    const rightIdentity = parseTrainingFenceIdentity(right.sourceKey);
+    return (leftIdentity?.sessionId ?? 0) - (rightIdentity?.sessionId ?? 0)
+      || left.sourceKey.localeCompare(right.sourceKey);
+  });
   const trainingEvidence = sourceEvidence?.training;
   if (!Array.isArray(trainingEvidence) || trainingEvidence.length !== trainingBlocks.length) {
-    fail("Every Training publication fence must have exactly one matching persisted source and accounting snapshot.");
+    fail("Every Training publication fence must have exactly one matching persisted source or deletion evidence row.");
   }
-  for (const [index, trainingBlock] of trainingBlocks.entries()) {
-    const training = trainingEvidence[index];
-    const matched = training?.matchStatus === "MATCHED";
-    const noMatch = ["PENDING", "UNMATCHED", "AMBIGUOUS"].includes(training?.matchStatus);
-    const expectedEventAt = training?.matchedWorkoutStartAt ?? training?.persistedEffectiveAccountingAt
-      ?? training?.webStartedAt ?? training?.createdAt;
-    const expectedAccountingAt = training?.persistedEffectiveAccountingAt ?? training?.matchedWorkoutStartAt
-      ?? training?.webStartedAt ?? training?.createdAt;
+  if (trainingEvidence.some((row, index) => row?.sourceKey !== trainingBlocks[index]?.sourceKey)) {
+    fail("Training fence evidence is not in canonical session/source-key order.");
+  }
+  const evidenceBySourceKey = new Map();
+  for (const row of trainingEvidence) {
+    if (!row || typeof row.sourceKey !== "string" || evidenceBySourceKey.has(row.sourceKey)) {
+      fail("Training source evidence contains a duplicate or malformed fence identity.");
+    }
+    evidenceBySourceKey.set(row.sourceKey, row);
+  }
+  const groups = new Map();
+  const sharedFields = ["sessionRows", "sessionId", "profileId", "status", "entryMode", "sourceRevision",
+    "accountingInputRevision", "currentSnapshotRevision", "createdAt", "persistedEffectiveAccountingAt",
+    "webStartedAt", "trainingEventAt", "matchedWorkoutStartAt", "effectiveAccountingAt", "accountingTimeZone",
+    "accountingTimeZoneProvenance", "matchedWorkoutId", "matchStatus", "matchedWorkoutPresent",
+    "matchedWorkoutIdentityMatches", "matchedWorkoutTypeSupported", "matchedWorkoutSourceIdentitySha256",
+    "matchedWorkoutSourceHealthDate", "modelDate", "accountingEffectiveLocalDate", "accountingSnapshotRows",
+    "snapshotRevision", "snapshotAccountingInputRevision", "snapshotEffectiveLocalDate", "snapshotTimeZone",
+    "snapshotTimeZoneValid", "snapshotTimeZoneProvenance", "snapshotContractValid", "snapshotEvidenceSha256",
+    "latestSnapshotRows", "latestSnapshotRevision", "latestSnapshotAccountingInputRevision",
+    "latestSnapshotEffectiveLocalDate", "latestSnapshotTimeZone", "latestSnapshotTimeZoneValid",
+    "latestSnapshotTimeZoneProvenance", "latestSnapshotContractValid", "latestSnapshotEvidenceSha256",
+    "historicalSnapshotChronologyValid", "pendingAccountingOperationRows", "accountingRevisionGap",
+    "parentSessionRows", "parentSessionId", "parentProfileId", "parentStatus",
+    "trainingEventAt"];
+  for (const block of trainingBlocks) {
+    const identity = parseTrainingFenceIdentity(block.sourceKey);
+    const row = evidenceBySourceKey.get(block.sourceKey);
+    if (!identity || !row || row.sourceKey !== block.sourceKey || row.fromDate !== block.fromDate
+        || row.fenceRevision !== block.revision || row.identity !== identity.identity
+        || row.sessionId !== identity.sessionId
+        || !isTimestamp(block.createdAt) || !isTimestamp(block.updatedAt)
+        || Date.parse(block.createdAt) > Date.parse(block.updatedAt)
+        || ((identity.identity === "deleted-set" || identity.identity === "deleted-exercise")
+          && (!Number.isSafeInteger(row.childDeletionAccountingInputRevision)
+            || row.childDeletionAccountingInputRevision < 1
+            || row.childDeletionAccountingInputRevision !== block.revision))
+        || ((identity.identity === "session" || identity.identity === "deleted-session")
+          && row.childDeletionAccountingInputRevision !== null)) {
+      fail("Training fence evidence does not preserve the exact canonical source identity, date, and revision.");
+    }
+    const group = groups.get(identity.sessionId) ?? [];
+    group.push({ block, identity, row });
+    groups.set(identity.sessionId, group);
+  }
+  for (const [sessionId, entries] of groups) {
+    const shared = JSON.stringify(sharedFields.map((field) => entries[0].row[field]));
+    if (entries.some(({ row }) => JSON.stringify(sharedFields.map((field) => row[field])) !== shared)) {
+      fail(`Training session ${sessionId} has inconsistent source or snapshot evidence across its fences.`);
+    }
+    const row = entries[0].row;
+    const identities = entries.map(({ identity }) => identity.identity).sort();
+    if (entries.some(({ row: fenceEvidence }) => fenceEvidence.sourceFenceChronologyValid !== true)) {
+      fail(`Training session ${sessionId} has a malformed publication-fence timestamp range.`);
+    }
+    if (row.sessionRows === 0) {
+      const numericFence = entries.find(({ identity }) => identity.identity === "session");
+      const deletionFence = entries.find(({ identity }) => identity.identity === "deleted-session");
+      const childFences = entries.filter(({ identity }) => identity.identity === "deleted-set"
+        || identity.identity === "deleted-exercise");
+      if (!numericFence || !deletionFence
+          || numericFence.block.fromDate !== deletionFence.block.fromDate
+          || entries.some(({ identity }) => !["session", "deleted-session", "deleted-set", "deleted-exercise"].includes(identity.identity))
+          || row.sessionId !== sessionId || row.profileId !== null || row.status !== null || row.entryMode !== null
+          || row.sourceRevision !== null || row.accountingInputRevision !== null || row.currentSnapshotRevision !== null
+          || row.createdAt !== null || row.persistedEffectiveAccountingAt !== null || row.webStartedAt !== null
+          || row.trainingEventAt !== null || row.matchedWorkoutStartAt !== null || row.effectiveAccountingAt !== null
+          || row.matchedWorkoutId !== null || row.matchStatus !== null || row.matchedWorkoutPresent !== false
+          || row.matchedWorkoutIdentityMatches !== false || row.matchedWorkoutTypeSupported !== false
+          || row.matchedWorkoutSourceIdentitySha256 !== null || row.matchedWorkoutSourceHealthDate !== null
+          || row.modelDate !== null || row.accountingEffectiveLocalDate !== null
+          || row.accountingSnapshotRows !== 0 || row.latestSnapshotRows !== 0
+          || row.snapshotRevision !== null || row.snapshotAccountingInputRevision !== null
+          || row.snapshotEffectiveLocalDate !== null || row.snapshotTimeZone !== null
+          || row.snapshotTimeZoneValid !== false || row.snapshotTimeZoneProvenance !== null
+          || row.snapshotContractValid !== false || row.snapshotEvidenceSha256 !== null
+          || row.latestSnapshotRevision !== null || row.latestSnapshotAccountingInputRevision !== null
+          || row.latestSnapshotEffectiveLocalDate !== null || row.latestSnapshotTimeZone !== null
+          || row.latestSnapshotTimeZoneValid !== false || row.latestSnapshotTimeZoneProvenance !== null
+          || row.latestSnapshotContractValid !== false || row.latestSnapshotEvidenceSha256 !== null
+          || row.historicalSnapshotChronologyValid !== false || row.accountingRevisionGap !== null
+          || row.chronologyValid !== false || row.sessionUpdateFenceChronologyValid !== false
+          || row.pendingAccountingOperationRows !== 0 || row.parentSessionRows !== 0
+          || row.parentSessionId !== null || row.parentProfileId !== null || row.parentStatus !== null
+          || childFences.some(({ row: childEvidence }) => childEvidence.childRows !== 0
+            || childEvidence.childOwnerSessionId !== null)) {
+        fail(`Missing Training session ${sessionId} lacks the exact committed numeric-fence and deletion-tombstone pair.`);
+      }
+      continue;
+    }
+    const numericFenceEntry = entries.find(({ identity }) => identity.identity === "session");
+    if (row.sessionRows !== 1 || row.sessionId !== sessionId || row.profileId !== 1
+        || row.parentSessionRows !== 1 || row.parentSessionId !== sessionId
+        || row.parentProfileId !== 1 || row.parentStatus !== "COMPLETED"
+        || !numericFenceEntry || numericFenceEntry.row.sessionUpdateFenceChronologyValid !== true
+        || row.status !== "COMPLETED" || !["LIVE", "RETROSPECTIVE"].includes(row.entryMode)
+        || !Number.isSafeInteger(row.sourceRevision) || row.sourceRevision < 1
+        || !Number.isSafeInteger(row.accountingInputRevision) || row.accountingInputRevision < 1
+        || !isTimestamp(row.createdAt)
+        || (row.persistedEffectiveAccountingAt !== null && !isTimestamp(row.persistedEffectiveAccountingAt))
+        || !isTimestamp(row.effectiveAccountingAt) || !isTimestamp(row.trainingEventAt)
+        || !isCalendarDate(row.accountingEffectiveLocalDate) || !isValidTimeZone(row.accountingTimeZone)
+        || !["client-session", "legacy-default"].includes(row.accountingTimeZoneProvenance)
+        || !isCalendarDate(row.modelDate) || entries.some(({ block }) => block.fromDate > row.modelDate)) {
+      fail(`Training session ${sessionId} has a malformed persisted parent, event date, or episode-local fence boundary.`);
+    }
+    const matched = row.matchStatus === "MATCHED";
+    const noMatch = ["PENDING", "UNMATCHED", "AMBIGUOUS"].includes(row.matchStatus);
+    const expectedEventAt = row.matchedWorkoutStartAt ?? row.persistedEffectiveAccountingAt ?? row.webStartedAt ?? row.createdAt;
+    const expectedAccountingAt = row.persistedEffectiveAccountingAt ?? row.matchedWorkoutStartAt ?? row.webStartedAt ?? row.createdAt;
     const matchEvidenceValid = matched
-      ? Number.isSafeInteger(training?.matchedWorkoutId) && training.matchedWorkoutId > 0
-        && training.matchedWorkoutPresent === true && training.matchedWorkoutIdentityMatches === true
-        && isTimestamp(training.matchedWorkoutStartAt) && training.matchedWorkoutTypeSupported === true
-        && isDigest(training.matchedWorkoutSourceIdentitySha256)
-        && isCalendarDate(training.matchedWorkoutSourceHealthDate)
-      : noMatch && training?.matchedWorkoutId === null && training.matchedWorkoutPresent === false
-        && training.matchedWorkoutIdentityMatches === true && training.matchedWorkoutStartAt === null
-        && training.matchedWorkoutTypeSupported === false
-        && training.matchedWorkoutSourceIdentitySha256 === null
-        && training.matchedWorkoutSourceHealthDate === null
-        && (training.entryMode === "LIVE"
-          || (training.entryMode === "RETROSPECTIVE" && training.matchStatus === "UNMATCHED"));
-    if (!training || training.sourceKey !== trainingBlock.sourceKey
-      || training.fromDate !== trainingBlock.fromDate || training.fenceRevision !== trainingBlock.revision
-      || training.sessionRows !== 1 || training.sessionId !== Number(trainingBlock.sourceKey) || training.profileId !== 1
-      || training.status !== "COMPLETED" || !["LIVE", "RETROSPECTIVE"].includes(training.entryMode)
-      || !Number.isSafeInteger(training.sourceRevision) || training.sourceRevision < 1
-      || !Number.isSafeInteger(training.accountingInputRevision) || training.accountingInputRevision < 1
-      || !Number.isSafeInteger(training.currentSnapshotRevision) || training.currentSnapshotRevision < 1
-      || training.accountingSnapshotRows !== 1 || training.snapshotRevision !== training.currentSnapshotRevision
-      || training.snapshotAccountingInputRevision !== training.accountingInputRevision
-      || !isTimestamp(training.createdAt)
-      || (training.persistedEffectiveAccountingAt !== null && !isTimestamp(training.persistedEffectiveAccountingAt))
-      || !isTimestamp(training.effectiveAccountingAt) || !isTimestamp(training.trainingEventAt)
-      || training.trainingEventAt !== expectedEventAt
-      || training.effectiveAccountingAt !== expectedAccountingAt
-      || !isCalendarDate(training.accountingEffectiveLocalDate) || !isValidTimeZone(training.accountingTimeZone)
-      || !["client-session", "legacy-default"].includes(training.accountingTimeZoneProvenance)
-      || !isCalendarDate(training.snapshotEffectiveLocalDate)
-      || training.snapshotEffectiveLocalDate !== training.accountingEffectiveLocalDate
-      || training.snapshotTimeZone !== training.accountingTimeZone || !training.snapshotTimeZoneValid
-      || training.snapshotTimeZoneProvenance !== training.accountingTimeZoneProvenance
-      || training.snapshotContractValid !== true || !isDigest(training.snapshotEvidenceSha256)
-      || !matchEvidenceValid
-      || !isCalendarDate(training.modelDate) || trainingBlock.fromDate > training.modelDate
-      || training.chronologyValid !== true) {
-      fail(`Training session ${trainingBlock.sourceKey} is missing its current persisted source, accounting snapshot, event model date, or revision chronology.`);
+      ? Number.isSafeInteger(row.matchedWorkoutId) && row.matchedWorkoutId > 0
+        && row.matchedWorkoutPresent === true && row.matchedWorkoutIdentityMatches === true
+        && isTimestamp(row.matchedWorkoutStartAt) && row.matchedWorkoutTypeSupported === true
+        && isDigest(row.matchedWorkoutSourceIdentitySha256) && isCalendarDate(row.matchedWorkoutSourceHealthDate)
+      : noMatch && row.matchedWorkoutId === null && row.matchedWorkoutPresent === false
+        && row.matchedWorkoutIdentityMatches === true && row.matchedWorkoutStartAt === null
+        && row.matchedWorkoutTypeSupported === false && row.matchedWorkoutSourceIdentitySha256 === null
+        && row.matchedWorkoutSourceHealthDate === null
+        && (row.entryMode === "LIVE" || (row.entryMode === "RETROSPECTIVE" && row.matchStatus === "UNMATCHED"));
+    if (!matchEvidenceValid || row.trainingEventAt !== expectedEventAt || row.effectiveAccountingAt !== expectedAccountingAt) {
+      fail(`Training session ${sessionId} has unsupported workout attribution or event-clock provenance.`);
+    }
+    const deletedChildren = entries.filter(({ identity }) => identity.identity === "deleted-set"
+      || identity.identity === "deleted-exercise");
+    if (entries.some(({ identity }) => identity.identity === "deleted-session")) {
+      fail(`Training session ${sessionId} has a deletion tombstone while its parent still exists.`);
+    }
+    if (deletedChildren.length > 0) {
+      const childCount = deletedChildren.length;
+      const numericFence = entries.find(({ identity }) => identity.identity === "session");
+      const numericFenceRow = numericFence?.row;
+      const latestSnapshotValid = !Number.isSafeInteger(row.latestSnapshotRows) || row.latestSnapshotRows !== 1
+        || !Number.isSafeInteger(row.latestSnapshotRevision) || row.latestSnapshotRevision < 1
+        || !Number.isSafeInteger(row.latestSnapshotAccountingInputRevision) || row.latestSnapshotAccountingInputRevision < 1
+        || row.latestSnapshotEffectiveLocalDate !== row.accountingEffectiveLocalDate
+        || row.latestSnapshotTimeZone !== row.accountingTimeZone
+        || row.latestSnapshotTimeZoneProvenance !== row.accountingTimeZoneProvenance
+        || row.latestSnapshotTimeZoneValid !== true || row.latestSnapshotContractValid !== true
+        || !isDigest(row.latestSnapshotEvidenceSha256) || row.historicalSnapshotChronologyValid !== true
+        || !Number.isSafeInteger(row.accountingRevisionGap)
+        || row.accountingRevisionGap !== row.accountingInputRevision - row.latestSnapshotAccountingInputRevision;
+      if (!numericFence || entries.filter(({ identity }) => identity.identity === "session").length !== 1
+          || entries.length !== childCount + 1
+          || row.pendingAccountingOperationRows !== 0
+          || !Number.isSafeInteger(row.accountingInputRevision) || row.accountingInputRevision < 1
+          || latestSnapshotValid
+          || !isCalendarDate(row.modelDate)) {
+        fail(`Training session ${sessionId} has no exact persisted child-delete proof for its current or missing snapshot.`);
+      }
+      const missingCurrentSnapshot = row.currentSnapshotRevision === null;
+      if (missingCurrentSnapshot && (row.accountingSnapshotRows !== 0
+          || row.snapshotRevision !== null || row.snapshotAccountingInputRevision !== null
+          || row.snapshotEffectiveLocalDate !== null || row.snapshotTimeZone !== null
+          || row.snapshotTimeZoneProvenance !== null || row.snapshotContractValid !== false
+          || row.snapshotEvidenceSha256 !== null
+          || !Number.isSafeInteger(row.latestSnapshotAccountingInputRevision)
+          || row.latestSnapshotAccountingInputRevision < 1
+          || row.latestSnapshotAccountingInputRevision >= row.accountingInputRevision
+          || deletedChildren.some(({ row: childEvidence }) => (
+            childEvidence.childDeletionAccountingInputRevision > row.accountingInputRevision
+          ))
+          || (() => {
+            const postSnapshotDeletionRevisions = deletedChildren
+              .map(({ row: childEvidence }) => childEvidence.childDeletionAccountingInputRevision)
+              .filter((revision) => revision > row.latestSnapshotAccountingInputRevision)
+              .sort((left, right) => left - right);
+            return row.accountingRevisionGap !== postSnapshotDeletionRevisions.length
+              || postSnapshotDeletionRevisions.some((revision, index) => (
+                revision !== row.latestSnapshotAccountingInputRevision + index + 1
+              ));
+          })()
+          || !Number.isSafeInteger(row.latestSnapshotRevision) || row.latestSnapshotRevision < 1
+          || row.latestSnapshotAccountingInputRevision >= row.accountingInputRevision
+        )) {
+        fail(`Training session ${sessionId} has no exact persisted child-delete proof for its missing current snapshot.`);
+      }
+      if (!missingCurrentSnapshot && (row.currentSnapshotRevision !== row.latestSnapshotRevision
+          || row.accountingSnapshotRows !== 1 || row.snapshotRevision !== row.currentSnapshotRevision
+          || row.snapshotAccountingInputRevision !== row.accountingInputRevision
+          || row.snapshotEffectiveLocalDate !== row.accountingEffectiveLocalDate
+          || row.snapshotTimeZone !== row.accountingTimeZone || row.snapshotTimeZoneValid !== true
+          || row.snapshotTimeZoneProvenance !== row.accountingTimeZoneProvenance
+          || row.snapshotContractValid !== true || !isDigest(row.snapshotEvidenceSha256)
+          || row.latestSnapshotAccountingInputRevision !== row.accountingInputRevision
+          || row.accountingRevisionGap !== 0 || numericFenceRow.chronologyValid !== true)) {
+        fail(`Training session ${sessionId} has child-delete fences with an invalid current accounting snapshot.`);
+      }
+      for (const { block, identity, row: childEvidence } of deletedChildren) {
+        if (!Number.isSafeInteger(identity.childId) || identity.childId < 1
+            || childEvidence.childRows !== 0 || childEvidence.childOwnerSessionId !== null
+            || childEvidence.parentSessionRows !== 1 || childEvidence.parentSessionId !== sessionId
+            || childEvidence.parentProfileId !== 1 || childEvidence.parentStatus !== "COMPLETED"
+            || !isCalendarDate(block.fromDate)) {
+          fail(`Training child-delete fence ${block.sourceKey} has a live, orphaned, or mismatched child/parent identity.`);
+        }
+      }
+      continue;
+    }
+    if (entries.length !== 1 || identities[0] !== "session" || row.pendingAccountingOperationRows !== 0
+        || !Number.isSafeInteger(row.currentSnapshotRevision) || row.currentSnapshotRevision < 1
+        || row.accountingSnapshotRows !== 1 || row.snapshotRevision !== row.currentSnapshotRevision
+        || row.snapshotAccountingInputRevision !== row.accountingInputRevision
+        || !isCalendarDate(row.snapshotEffectiveLocalDate)
+        || row.snapshotEffectiveLocalDate !== row.accountingEffectiveLocalDate
+        || row.snapshotTimeZone !== row.accountingTimeZone || !row.snapshotTimeZoneValid
+        || row.snapshotTimeZoneProvenance !== row.accountingTimeZoneProvenance
+        || row.snapshotContractValid !== true || !isDigest(row.snapshotEvidenceSha256)
+        || row.latestSnapshotRevision !== row.currentSnapshotRevision
+        || row.latestSnapshotAccountingInputRevision !== row.accountingInputRevision
+        || row.latestSnapshotContractValid !== true || !isDigest(row.latestSnapshotEvidenceSha256)
+        || row.chronologyValid !== true) {
+      fail(`Training session ${sessionId} is missing its current persisted accounting snapshot or revision chronology.`);
     }
   }
   return true;

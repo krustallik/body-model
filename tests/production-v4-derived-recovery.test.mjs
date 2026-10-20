@@ -13,6 +13,7 @@ import {
   assertSchemaSignature,
   migrationLedgerDigest,
   modelDayKeysDigest,
+  parseTrainingFenceIdentity,
   validatePublicationSourceEvidence,
   publicationBlockDigest,
   recoveryEvidenceBinding,
@@ -46,13 +47,14 @@ const makeHealthSource = (block, overrides = {}) => ({
 });
 const makeTrainingSource = (block, overrides = {}) => ({
   ...(() => {
-    const sessionId = Number(block.sourceKey);
+    const identity = parseTrainingFenceIdentity(block.sourceKey);
+    const sessionId = identity.sessionId;
     const matched = sessionId === 20;
     const eventAt = matched ? "2026-10-09T12:00:00.000Z" : "2026-10-10T22:30:00.000Z";
     const accountingAt = matched ? "2026-10-09T12:00:00.000Z" : "2026-10-10T22:30:00.000Z";
     const status = matched ? "MATCHED" : "PENDING";
     return {
-      sessionId, entryMode: matched ? "RETROSPECTIVE" : "LIVE", matchStatus: status,
+      identity: identity.identity, sessionId, entryMode: matched ? "RETROSPECTIVE" : "LIVE", matchStatus: status,
       matchedWorkoutId: matched ? 79 : null,
       matchedWorkoutPresent: matched, matchedWorkoutIdentityMatches: true,
       matchedWorkoutTypeSupported: matched,
@@ -66,21 +68,32 @@ const makeTrainingSource = (block, overrides = {}) => ({
     };
   })(),
   sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
-  sessionRows: 1, profileId: 1, status: "COMPLETED", sourceRevision: 24,
+  childDeletionAccountingInputRevision: parseTrainingFenceIdentity(block.sourceKey).childId === null ? null : block.revision,
+  sessionRows: 1, profileId: 1, status: "COMPLETED", parentSessionRows: 1, parentSessionId: parseTrainingFenceIdentity(block.sourceKey).sessionId,
+  parentProfileId: 1, parentStatus: "COMPLETED", childRows: parseTrainingFenceIdentity(block.sourceKey).childId === null ? null : 0,
+  childOwnerSessionId: null, sourceRevision: 24,
   accountingInputRevision: 22, currentSnapshotRevision: 79, accountingSnapshotRows: 1,
-  snapshotRevision: 79, snapshotAccountingInputRevision: 22, snapshotEffectiveLocalDate: Number(block.sourceKey) === 20 ? "2026-10-09" : "2026-10-11",
-  accountingEffectiveLocalDate: Number(block.sourceKey) === 20 ? "2026-10-09" : "2026-10-11",
+  snapshotRevision: 79, snapshotAccountingInputRevision: 22, snapshotEffectiveLocalDate: parseTrainingFenceIdentity(block.sourceKey).sessionId === 20 ? "2026-10-09" : "2026-10-11",
+  accountingEffectiveLocalDate: parseTrainingFenceIdentity(block.sourceKey).sessionId === 20 ? "2026-10-09" : "2026-10-11",
   createdAt: "2026-10-08T00:00:00.000Z",
   accountingTimeZone: "Europe/Bratislava", accountingTimeZoneProvenance: "legacy-default",
   snapshotTimeZone: "Europe/Bratislava", snapshotTimeZoneValid: true,
   snapshotTimeZoneProvenance: "legacy-default", snapshotContractValid: true, snapshotEvidenceSha256: "a".repeat(64),
+  latestSnapshotRows: 1, latestSnapshotRevision: 79, latestSnapshotAccountingInputRevision: 22,
+  latestSnapshotEffectiveLocalDate: parseTrainingFenceIdentity(block.sourceKey).sessionId === 20 ? "2026-10-09" : "2026-10-11",
+  latestSnapshotTimeZone: "Europe/Bratislava", latestSnapshotTimeZoneValid: true,
+  latestSnapshotTimeZoneProvenance: "legacy-default", latestSnapshotContractValid: true,
+  latestSnapshotEvidenceSha256: "a".repeat(64), historicalSnapshotChronologyValid: true,
+  pendingAccountingOperationRows: 0, accountingRevisionGap: 0, sourceFenceChronologyValid: true,
+  sessionUpdateFenceChronologyValid: true,
   modelDate: block.fromDate,
   chronologyValid: true, ...overrides,
 });
 const makeSourceEvidence = (value = blocks) => ({
   health: value.filter((block) => block.source === "health").map((block) => makeHealthSource(block)),
   training: value.filter((block) => block.source === "training")
-    .sort((left, right) => Number(left.sourceKey) - Number(right.sourceKey)).map((block) => makeTrainingSource(block)),
+    .sort((left, right) => parseTrainingFenceIdentity(left.sourceKey).sessionId - parseTrainingFenceIdentity(right.sourceKey).sessionId
+      || left.sourceKey.localeCompare(right.sourceKey)).map((block) => makeTrainingSource(block)),
 });
 const recoveryRun = (path) => [{ head_sha: LEGACY_V4_RECOVERY.sourceSha, head_branch: LEGACY_V4_RECOVERY.branch,
   event: "pull_request", path, status: "completed", conclusion: "success", run_attempt: 1 }];
@@ -371,11 +384,231 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     expect(sourceEvidence.training.map((row) => row.sessionId)).toEqual([20, 24, 25]);
     expect(validatePublicationSourceEvidence({ blocks: dynamicBlocks, sourceEvidence })).toBe(true);
     expect(() => validatePublicationSourceEvidence({ blocks: dynamicBlocks,
-      sourceEvidence: { ...sourceEvidence, training: [...sourceEvidence.training].reverse() } })).toThrow(/Training session/);
+      sourceEvidence: { ...sourceEvidence, training: [...sourceEvidence.training].reverse() } })).toThrow(/canonical session\/source-key order/);
     expect(() => validatePublicationSourceEvidence({ blocks: dynamicBlocks,
       sourceEvidence: { ...sourceEvidence, training: sourceEvidence.training.slice(0, 2) } })).toThrow(/exactly one/);
     expect(() => validatePublicationSourceEvidence({ blocks: dynamicBlocks,
       sourceEvidence: { ...sourceEvidence, training: [...sourceEvidence.training, sourceEvidence.training[0]] } })).toThrow(/exactly one/);
+  });
+
+  it("parses only canonical persisted Training session and deletion identities", () => {
+    expect(parseTrainingFenceIdentity("20")).toEqual({ sessionId: 20, identity: "session", childId: null });
+    expect(parseTrainingFenceIdentity("training-delete-session:20")).toEqual({ sessionId: 20, identity: "deleted-session", childId: null });
+    expect(parseTrainingFenceIdentity("training-delete-set:20:45")).toEqual({ sessionId: 20, identity: "deleted-set", childId: 45 });
+    expect(parseTrainingFenceIdentity("training-delete-exercise:20:46")).toEqual({ sessionId: 20, identity: "deleted-exercise", childId: 46 });
+    for (const malformed of ["0", "020", "training-delete-session:0", "training-delete-set:020:45",
+      "training-delete-exercise:20:0", "training-delete-set:9007199254740992:1", "training-delete-unknown:20:1"]) {
+      expect(parseTrainingFenceIdentity(malformed)).toBeNull();
+    }
+  });
+
+  it.each([
+    ["one set deletion", ["training-delete-set:20:45"], 1],
+    ["one exercise deletion", ["training-delete-exercise:20:46"], 1],
+    ["multiple set and exercise deletions", ["training-delete-set:20:45", "training-delete-exercise:20:46"], 2],
+  ])("accepts %s only when every deletion explains the exact accounting revision gap", (_label, childKeys, gap) => {
+    const fromDate = "2026-10-09";
+    const trainingBlocks = [
+      { ...blocks.at(-1), sourceKey: "20", fromDate, revision: 4 },
+      ...childKeys.map((sourceKey, index) => ({ ...blocks.at(-1), sourceKey, fromDate, revision: 23 + index })),
+    ].sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+    const base = makeTrainingSource(trainingBlocks[0]);
+    const historical = {
+      ...base, currentSnapshotRevision: null, accountingInputRevision: base.latestSnapshotAccountingInputRevision + gap,
+      accountingSnapshotRows: 0, snapshotRevision: null, snapshotAccountingInputRevision: null,
+      snapshotEffectiveLocalDate: null, snapshotTimeZone: null, snapshotTimeZoneValid: false,
+      snapshotTimeZoneProvenance: null, snapshotContractValid: false, snapshotEvidenceSha256: null,
+      accountingRevisionGap: gap, chronologyValid: false,
+    };
+    const sourceEvidence = {
+      health: [],
+      training: trainingBlocks.map((block) => ({
+        ...historical,
+        sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
+        identity: parseTrainingFenceIdentity(block.sourceKey).identity,
+        childDeletionAccountingInputRevision: parseTrainingFenceIdentity(block.sourceKey).childId === null
+          ? null : block.revision,
+        childRows: parseTrainingFenceIdentity(block.sourceKey).childId === null ? null : 0,
+        childOwnerSessionId: null,
+      })),
+    };
+    expect(validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence })).toBe(true);
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: {
+      ...sourceEvidence, training: sourceEvidence.training.map((row) => row.identity === "deleted-set"
+        || row.identity === "deleted-exercise" ? { ...row, childRows: 1 } : row),
+    } })).toThrow(/live, orphaned, or mismatched child/);
+  });
+
+  it("rejects unexplained accounting revisions, stale history, pending work, and mismatched child owners", () => {
+    const trainingBlocks = [
+      { ...blocks.at(-1), sourceKey: "20", fromDate: "2026-10-09", revision: 4 },
+      { ...blocks.at(-1), sourceKey: "training-delete-set:20:45", fromDate: "2026-10-09", revision: 23 },
+    ];
+    const base = makeTrainingSource(trainingBlocks[0]);
+    const stale = { ...base, currentSnapshotRevision: null, accountingInputRevision: 23,
+      accountingSnapshotRows: 0, snapshotRevision: null, snapshotAccountingInputRevision: null,
+      snapshotEffectiveLocalDate: null, snapshotTimeZone: null, snapshotTimeZoneValid: false,
+      snapshotTimeZoneProvenance: null, snapshotContractValid: false, snapshotEvidenceSha256: null,
+      accountingRevisionGap: 1, chronologyValid: false };
+    const evidence = {
+      health: [], training: trainingBlocks.map((block) => ({ ...stale, sourceKey: block.sourceKey,
+        fromDate: block.fromDate, fenceRevision: block.revision,
+        identity: parseTrainingFenceIdentity(block.sourceKey).identity,
+        childDeletionAccountingInputRevision: parseTrainingFenceIdentity(block.sourceKey).childId === null
+          ? null : block.revision,
+        childRows: block.sourceKey === "20" ? null : 0, childOwnerSessionId: null })),
+    };
+    expect(validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: evidence })).toBe(true);
+    for (const invalid of [
+      { accountingRevisionGap: 2 },
+      { accountingInputRevision: 24 },
+      { pendingAccountingOperationRows: 1 },
+      { latestSnapshotContractValid: false },
+      { historicalSnapshotChronologyValid: false },
+    ]) {
+      const candidate = { ...evidence, training: evidence.training.map((row) => ({ ...row, ...invalid })) };
+      expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: candidate }))
+        .toThrow(/exact persisted child-delete proof/);
+    }
+    const invalidFenceChronology = { ...evidence, training: evidence.training.map((row) => ({
+      ...row, sourceFenceChronologyValid: false,
+    })) };
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: invalidFenceChronology }))
+      .toThrow(/malformed publication-fence timestamp range/);
+    const wrongOwner = { ...evidence, training: evidence.training.map((row) => row.childRows === 0
+      ? { ...row, childOwnerSessionId: 999 } : row) };
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: wrongOwner }))
+      .toThrow(/live, orphaned, or mismatched child/);
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks.slice(1),
+      sourceEvidence: { health: [], training: [evidence.training[1]] } })).toThrow(/malformed persisted parent/);
+  });
+
+  it("accepts a verified current accounting snapshot while exact deleted-child fences remain", () => {
+    const trainingBlocks = [
+      { ...blocks.at(-1), sourceKey: "20", fromDate: "2026-10-09", revision: 5 },
+      { ...blocks.at(-1), sourceKey: "training-delete-set:20:45", fromDate: "2026-10-08", revision: 1 },
+    ];
+    const sourceEvidence = makeSourceEvidence(trainingBlocks);
+    sourceEvidence.training[1] = {
+      ...sourceEvidence.training[1],
+      childRows: 0,
+      childOwnerSessionId: null,
+    };
+    // The child fence is historical: the parent and numeric fence can be
+    // updated afterward while its own timestamp range remains valid.
+    sourceEvidence.training[1] = {
+      ...sourceEvidence.training[1], sourceFenceChronologyValid: true,
+      modelDate: sourceEvidence.training[0].modelDate,
+      sessionUpdateFenceChronologyValid: false, chronologyValid: false,
+    };
+    // A child deletion may preserve an earlier event boundary while a later
+    // parent/session invalidation writes the numeric retry fence. The complete
+    // group must retain both dates so replay starts at the minimum boundary.
+    expect(validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence })).toBe(true);
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: {
+      ...sourceEvidence,
+      training: sourceEvidence.training.map((row) => row.sourceKey === "20"
+        ? { ...row, accountingRevisionGap: 1 } : row),
+    } })).toThrow(/inconsistent source or snapshot evidence/);
+  });
+
+  it("counts only child deletions newer than the latest snapshot and rejects a compensated unexplained mutation", () => {
+    const fromDate = "2026-10-09";
+    const trainingBlocks = [
+      { ...blocks.at(-1), sourceKey: "20", fromDate, revision: 6 },
+      { ...blocks.at(-1), sourceKey: "training-delete-set:20:45", fromDate, revision: 23 },
+      { ...blocks.at(-1), sourceKey: "training-delete-set:20:46", fromDate, revision: 24 },
+    ];
+    const base = makeTrainingSource(trainingBlocks[0]);
+    const latestSnapshotAccountingInputRevision = base.latestSnapshotAccountingInputRevision;
+    const missing = {
+      ...base, currentSnapshotRevision: null, accountingInputRevision: latestSnapshotAccountingInputRevision + 2,
+      accountingSnapshotRows: 0, snapshotRevision: null, snapshotAccountingInputRevision: null,
+      snapshotEffectiveLocalDate: null, snapshotTimeZone: null, snapshotTimeZoneValid: false,
+      snapshotTimeZoneProvenance: null, snapshotContractValid: false, snapshotEvidenceSha256: null,
+      accountingRevisionGap: 2, chronologyValid: false,
+    };
+    const evidenceFor = (testBlocks, revisionForFirstFence) => ({ health: [], training: testBlocks.map((block) => {
+      const identity = parseTrainingFenceIdentity(block.sourceKey);
+      return {
+        ...missing,
+        sourceKey: block.sourceKey, fromDate: block.fromDate, fenceRevision: block.revision,
+        identity: identity.identity, childDeletionAccountingInputRevision: identity.childId === null
+          ? null : block.sourceKey.endsWith(":45") ? revisionForFirstFence : block.revision,
+        childRows: identity.childId === null ? null : 0, childOwnerSessionId: null,
+      };
+    }) });
+    const accepted = evidenceFor(trainingBlocks, latestSnapshotAccountingInputRevision + 1);
+    expect(validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence: accepted })).toBe(true);
+
+    // The first fence is from a delete included by a later valid snapshot;
+    // the second is after it. An unrelated accounting mutation consumes the
+    // second gap slot without a corresponding deletion revision.
+    const compensatedBlocks = trainingBlocks.map((block) => block.sourceKey.endsWith(":45")
+      ? { ...block, revision: latestSnapshotAccountingInputRevision - 1 } : block);
+    const compensated = evidenceFor(compensatedBlocks, latestSnapshotAccountingInputRevision - 1);
+    expect(() => validatePublicationSourceEvidence({ blocks: compensatedBlocks, sourceEvidence: compensated }))
+      .toThrow(/exact persisted child-delete proof/);
+
+    const duplicateRevisionBlocks = trainingBlocks.map((block) => block.sourceKey.endsWith(":46")
+      ? { ...block, revision: latestSnapshotAccountingInputRevision + 1 } : block);
+    const duplicateRevision = evidenceFor(duplicateRevisionBlocks, latestSnapshotAccountingInputRevision + 1);
+    expect(() => validatePublicationSourceEvidence({ blocks: duplicateRevisionBlocks, sourceEvidence: duplicateRevision }))
+      .toThrow(/exact persisted child-delete proof/);
+  });
+
+  it("accepts a hard-deleted completed session only with numeric fence and durable tombstone", () => {
+    const fromDate = "2026-10-09";
+    const trainingBlocks = [
+      { ...blocks.at(-1), sourceKey: "20", fromDate, revision: 5 },
+      { ...blocks.at(-1), sourceKey: "training-delete-session:20", fromDate, revision: 1 },
+      { ...blocks.at(-1), sourceKey: "training-delete-set:20:45", fromDate: "2026-10-10", revision: 2 },
+    ];
+    const emptyParent = (block) => ({
+      ...makeTrainingSource(block),
+      sessionRows: 0, profileId: null, status: null, entryMode: null, sourceRevision: null,
+      accountingInputRevision: null, currentSnapshotRevision: null, createdAt: null,
+      persistedEffectiveAccountingAt: null, webStartedAt: null, trainingEventAt: null,
+      matchedWorkoutStartAt: null, effectiveAccountingAt: null, matchedWorkoutId: null,
+      matchStatus: null, matchedWorkoutPresent: false, matchedWorkoutIdentityMatches: false,
+      matchedWorkoutTypeSupported: false, matchedWorkoutSourceIdentitySha256: null,
+      matchedWorkoutSourceHealthDate: null, modelDate: null, accountingEffectiveLocalDate: null,
+      accountingSnapshotRows: 0, snapshotRevision: null, snapshotAccountingInputRevision: null,
+      snapshotEffectiveLocalDate: null, snapshotTimeZone: null, snapshotTimeZoneValid: false,
+      snapshotTimeZoneProvenance: null, snapshotContractValid: false, snapshotEvidenceSha256: null,
+      latestSnapshotRows: 0, latestSnapshotRevision: null, latestSnapshotAccountingInputRevision: null,
+      latestSnapshotEffectiveLocalDate: null, latestSnapshotTimeZone: null, latestSnapshotTimeZoneValid: false,
+      latestSnapshotTimeZoneProvenance: null, latestSnapshotContractValid: false,
+      latestSnapshotEvidenceSha256: null, historicalSnapshotChronologyValid: false,
+      pendingAccountingOperationRows: 0, accountingRevisionGap: null, chronologyValid: false,
+      childDeletionAccountingInputRevision: parseTrainingFenceIdentity(block.sourceKey).childId === null ? null : block.revision,
+      sessionUpdateFenceChronologyValid: false,
+      parentSessionRows: 0, parentSessionId: null, parentProfileId: null, parentStatus: null,
+      childRows: parseTrainingFenceIdentity(block.sourceKey).childId === null ? null : 0,
+      childOwnerSessionId: null,
+    });
+    const sourceEvidence = { health: [], training: trainingBlocks.map(emptyParent) };
+    expect(validatePublicationSourceEvidence({ blocks: trainingBlocks, sourceEvidence })).toBe(true);
+    expect(() => validatePublicationSourceEvidence({ blocks: [trainingBlocks[0]],
+      sourceEvidence: { health: [], training: [emptyParent(trainingBlocks[0])] } }))
+      .toThrow(/numeric-fence and deletion-tombstone pair/);
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks,
+      sourceEvidence: { ...sourceEvidence, training: sourceEvidence.training.map((row) => row.sourceKey === "training-delete-set:20:45"
+        ? { ...row, childRows: 1 } : row) } })).toThrow(/numeric-fence and deletion-tombstone pair/);
+    expect(() => validatePublicationSourceEvidence({ blocks: trainingBlocks,
+      sourceEvidence: { ...sourceEvidence, training: sourceEvidence.training.map((row) => row.sourceKey === "training-delete-set:20:45"
+        ? { ...row, parentSessionRows: 1, parentSessionId: 20, parentProfileId: 1, parentStatus: "COMPLETED" } : row) } }))
+      .toThrow(/inconsistent source or snapshot evidence/);
+    const earlierChildBoundary = trainingBlocks.map((block) => block.sourceKey === "training-delete-set:20:45"
+      ? { ...block, fromDate: "2026-10-08" } : block);
+    expect(validatePublicationSourceEvidence({ blocks: earlierChildBoundary, sourceEvidence: {
+      health: [], training: earlierChildBoundary.map((block) => emptyParent(block)),
+    } })).toBe(true);
+    const mismatchedDeletionBoundary = earlierChildBoundary.map((block) => block.sourceKey === "training-delete-session:20"
+      ? { ...block, fromDate: "2026-10-10" } : block);
+    expect(() => validatePublicationSourceEvidence({ blocks: mismatchedDeletionBoundary, sourceEvidence: {
+      health: [], training: mismatchedDeletionBoundary.map((block) => emptyParent(block)),
+    } })).toThrow(/numeric-fence and deletion-tombstone pair/);
   });
 
   it("uses the matched workout event date for its fence while validating accounting by its own timestamp", () => {

@@ -458,6 +458,9 @@ describe("workflow mutation boundary", () => {
     expect(sql).toContain("l.pid IS NULL OR l.pid <> pg_backend_pid()");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
     expect(safetyWorkflow).toContain("name: Exact legacy 65-schema V4 recovery tool image");
+    expect(safetyWorkflow).toContain('LEGACY_SHA="$(node --input-type=module -e \'import { LEGACY_V4_RECOVERY } from "./scripts/production-v4-derived-recovery.mjs"; process.stdout.write(LEGACY_V4_RECOVERY.sourceSha)\')"');
+    expect(safetyWorkflow).not.toContain("LEGACY_SHA: 35c556772759ea03c2728de921c1825f454d59c2");
+    expect(safetyWorkflow).toContain("BASELINE_SHA: 35c556772759ea03c2728de921c1825f454d59c2");
     expect(safetyWorkflow.match(/image:\s+docker\.io\/library\/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(6);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres@sha256:/);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);

@@ -369,7 +369,10 @@ describe("persisted-source V4 derived recovery", () => {
     await expect(recover())
       .rejects.toThrow("Production generation remains stale");
     expect(mocks.clearAll).not.toHaveBeenCalled();
-    expect(mocks.recalculate).toHaveBeenCalledWith({ skipTrainingAccountingMaterialization: true });
+    expect(mocks.recalculate).toHaveBeenCalledWith({
+      skipTrainingAccountingMaterialization: true,
+      onConvergenceDiagnostic: expect.any(Function),
+    });
     expect(mocks.replay).not.toHaveBeenCalled();
     expect(mocks.state.blocks).toHaveLength(8);
   });

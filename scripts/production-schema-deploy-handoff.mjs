@@ -70,11 +70,11 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
   "src/modules/activity/active-energy-materialization.ts": Object.freeze({
     migrationOriginBlob: "ec066afe744ec0de47f8c5503266764eff311608",
-    deployBlob: "6090fbbeaf1074eb26b1c67373479a5ef869dd59",
+    deployBlob: "dd43f11d6e0a797a503bcaf70abf1aaa9eb58854",
   }),
   "src/modules/activity/active-energy-publication.ts": Object.freeze({
     migrationOriginBlob: "3c1fcfec0ca73ac6b599ae6a7527c067b77adb2f",
-    deployBlob: "f753ce998e57b1e8777fa17ac68616484d8ab2f5",
+    deployBlob: "e2b499afb6b7bbfc43d3d440aec8bd7b574269fd",
   }),
   "scripts/production-full-history-recalculate.ts": Object.freeze({
     migrationOriginBlob: "4bce126c880af008295b4648701575c4b967da5e",
@@ -142,7 +142,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/model-episodes/model-episode.service.ts": Object.freeze({
     migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
-    deployBlob: "1aec3eca7cf973f5774eac6606dd555adbae06f4",
+    deployBlob: "7ef145cc9b60362e0e96a4165cd23e1ccd4b567e",
   }),
   "src/modules/model-episodes/unified-experimental-physiology-state.service.ts": Object.freeze({
     migrationOriginBlob: "0c7850cbb866f62d20a4a35ab384f18906a67ef8",
@@ -154,7 +154,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": Object.freeze({
     migrationOriginBlob: null,
-    deployBlob: "2b2d28824accb0bea99ed75ec53f0cb16fd14489",
+    deployBlob: "48e748910e3ef93ca4a745a966073c36bcd1a387",
   }),
   "src/modules/model-episodes/physiology-v7-persistence.repository.ts": Object.freeze({
     migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",

@@ -200,7 +200,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": {
         migrationOriginBlob: null,
-        deployBlob: "48e748910e3ef93ca4a745a966073c36bcd1a387",
+        deployBlob: "badc2862271f11c38a6d629eb7f53f7289b3c61a",
       },
       "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
         migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",

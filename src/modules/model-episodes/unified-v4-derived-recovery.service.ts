@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { logEvent } from "@/lib/logger";
 import { recordExperimentalFfmRetentionShadow } from "./experimental-ffm-retention-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "./experimental-local-hypertrophy-response-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "./experimental-cessation-detraining-shadow.service";
@@ -55,6 +54,17 @@ export type V4RecoveryEvidenceBindingV1 = {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+type RecoveryConvergenceLogFields = Record<string, boolean | number | string | null | undefined>;
+
+function logRecoveryConvergenceEvent(
+  level: "info" | "warn",
+  event: string,
+  fields: RecoveryConvergenceLogFields,
+): void {
+  // Keep the recovery CLI's stdout reserved for its single machine-readable result.
+  console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
 }
 
 function sortedFenceDigest(blocks: readonly PublicationBlock[]): string {
@@ -734,7 +744,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   } | null = null;
   const logOmittedConvergenceSummary = () => {
     if (omittedConvergencePassCount === 0 || omittedPassSummary === null) return;
-    logEvent(omittedPassSummary.oscillationDetected ? "warn" : "info", "v4_recovery_stepper_convergence_summary", {
+    logRecoveryConvergenceEvent(omittedPassSummary.oscillationDetected ? "warn" : "info", "v4_recovery_stepper_convergence_summary", {
       omittedPassCount: omittedConvergencePassCount,
       omittedPassDiagnosticsDigest: omittedConvergencePassDigest,
       ...omittedPassSummary,
@@ -746,7 +756,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
       onConvergenceDiagnostic: (diagnostic) => {
         if (detailedConvergencePassLogs < maxDetailedConvergencePassLogs) {
           detailedConvergencePassLogs += 1;
-          logEvent(diagnostic.oscillationDetected ? "warn" : "info", "v4_recovery_stepper_convergence_pass", {
+          logRecoveryConvergenceEvent(diagnostic.oscillationDetected ? "warn" : "info", "v4_recovery_stepper_convergence_pass", {
             pass: diagnostic.pass,
             maxPasses: diagnostic.maxPasses,
             effectiveReplayFromDate: diagnostic.effectiveReplayFromDate,

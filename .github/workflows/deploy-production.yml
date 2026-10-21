@@ -357,6 +357,23 @@ jobs:
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" ]] || { echo "Unexpected production checkout." >&2; exit 1; }
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "Production checkout is dirty; refusing to overwrite files." >&2; exit 1; }
+          ORIGIN_URL="$(git remote get-url origin)"
+          case "$ORIGIN_URL" in
+            git@github.com:krustallik/body-model.git|https://github.com/krustallik/body-model.git) ;;
+            *) echo "Production checkout origin is not the canonical BodyCast repository." >&2; exit 1 ;;
+          esac
+          if [[ "$ORIGIN_URL" == "git@github.com:krustallik/body-model.git" ]]; then
+            GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"
+            [[ -f "$GITHUB_DEPLOY_KEY" && ! -L "$GITHUB_DEPLOY_KEY" \
+              && "$(stat -c '%u' "$GITHUB_DEPLOY_KEY")" == "0" \
+              && ( "$(stat -c '%a' "$GITHUB_DEPLOY_KEY")" == "600" || "$(stat -c '%a' "$GITHUB_DEPLOY_KEY")" == "400" ) ]] || {
+              echo "The root-only read-only GitHub deploy key is unavailable or has unsafe permissions." >&2; exit 1;
+            }
+            export GIT_SSH_COMMAND="ssh -i $GITHUB_DEPLOY_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"
+            git ls-remote origin refs/heads/main >/dev/null || {
+              echo "The configured read-only GitHub deploy key cannot read the canonical BodyCast repository." >&2; exit 1;
+            }
+          fi
           git fetch --no-tags origin "$DEPLOY_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$DEPLOY_SHA" ]] || { echo "Production candidate is no longer current origin/main." >&2; exit 1; }

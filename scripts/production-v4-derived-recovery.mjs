@@ -5,19 +5,19 @@ export const LEGACY_V4_RECOVERY = Object.freeze({
   pullRequest: 101,
   branch: "codex/v4-recovery-audit",
   baseSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
-  sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219",
+  sourceSha: "b9ed485a1210e7e8fc66e478375636698deff0ad",
   productionAppSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
   migrationCount: 65,
   migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
   ledgerDigest: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
   prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
   ownerId: "126446430",
-  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_ad902e2172d6343061624b35d2350284e0a1c219",
+  confirmation: "RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_b9ed485a1210e7e8fc66e478375636698deff0ad",
   command: Object.freeze([
     "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
     "--owner-authorized", "--profile-id", "1",
   ]),
-  evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
+  evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v2",
 });
 
 const fail = (message) => { throw new Error(message); };
@@ -181,6 +181,13 @@ export function productionPreflightMismatchCategories({ report, measurements, be
   if (lifecycle?.unifiedRolloutEpoch !== 1) mismatches.push("unified-rollout-epoch");
   if (report?.schemaSha256 !== measurements?.schemaSha256) mismatches.push("schema-fingerprint");
   if (evidence?.sourceFingerprint !== measurements?.restoredSourceFingerprint) mismatches.push("raw-source-fingerprint");
+  if (!isDigest(evidence?.healthSyncAuditFingerprint)
+    || evidence.healthSyncAuditFingerprint !== measurements?.restoredHealthSyncAuditFingerprint) {
+    mismatches.push("health-sync-audit-preservation-fingerprint");
+  }
+  if (evidence?.healthSyncAuditFingerprint !== before?.healthSyncAuditFingerprint) {
+    mismatches.push("restored-audit-preservation");
+  }
   if (!sameJson(migrationRows(evidence?.migrationRows), migrationRows(before?.migrationRows))) {
     mismatches.push("migration-ledger");
   }
@@ -196,6 +203,9 @@ export function productionPreflightMismatchCategories({ report, measurements, be
   if (!sameJson(evidence?.sourceModelDayKeys, before?.sourceModelDayKeys)) mismatches.push("source-model-day-keys");
   if (evidence?.expectedLedgerDigest !== before?.expectedLedgerDigest) mismatches.push("expected-ledger-digest");
   if (evidence?.sourceFingerprint !== rehearsal?.sourceFingerprint) mismatches.push("rehearsal-source-fingerprint");
+  if (evidence?.healthSyncAuditFingerprint !== rehearsal?.healthSyncAuditFingerprint) {
+    mismatches.push("rehearsal-audit-preservation-fingerprint");
+  }
   return mismatches;
 }
 
@@ -306,7 +316,8 @@ export function parseTrainingFenceIdentity(sourceKey) {
 }
 
 export function publicationBlockDigest(blocks) {
-  if (!Array.isArray(blocks) || blocks.length < 1) fail("No persisted publication fences were captured.");
+  if (!Array.isArray(blocks)) fail("Persisted publication fences are missing.");
+  if (blocks.length === 0) return sha256("");
   const sorted = [...blocks].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`));
   const identities = new Set();
   for (const block of sorted) {
@@ -349,16 +360,18 @@ function recoveryLifecycleBindingValues(lifecycle) {
 }
 
 /** Canonical versioned binding shared with the 65-schema recovery entrypoint. */
-export function recoveryEvidenceBinding({ sourceFingerprint, blocks, lifecycle }) {
+export function recoveryEvidenceBinding({ sourceFingerprint, healthSyncAuditFingerprint, blocks, lifecycle }) {
   if (!isDigest(sourceFingerprint)) fail("V4 recovery source fingerprint is malformed.");
+  if (!isDigest(healthSyncAuditFingerprint)) fail("V4 recovery audit preservation fingerprint is malformed.");
   const fenceDigest = publicationBlockDigest(blocks);
   const lifecycleDigest = sha256(JSON.stringify(recoveryLifecycleBindingValues(lifecycle)));
   return {
-    contract: "bodycast-v4-recovery-evidence-binding-v1",
+    contract: "bodycast-v4-recovery-evidence-binding-v2",
     rawFingerprint: sourceFingerprint,
+    healthSyncAuditFingerprint,
     fenceDigest,
     lifecycleDigest,
-    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v1\n${sourceFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
+    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v2\n${sourceFingerprint}\n${healthSyncAuditFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
   };
 }
 
@@ -627,7 +640,7 @@ export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
   return true;
 }
 
-export function assertProductionIdentity({ database, app, migrationRows, schemaSha256, sourceFingerprint,
+export function assertProductionIdentity({ database, app, migrationRows, schemaSha256, sourceFingerprint, healthSyncAuditFingerprint,
   lifecycle, blocks, sourceEvidence, expected }) {
   const approved = LEGACY_V4_RECOVERY;
   const expectedMigrationCount = expected?.migrationCount ?? approved.migrationCount;
@@ -653,23 +666,39 @@ export function assertProductionIdentity({ database, app, migrationRows, schemaS
     || (Number.isSafeInteger(lifecycle?.unifiedPublishedRolloutEpoch) && lifecycle.unifiedPublishedRolloutEpoch >= 0);
   const earliestBlock = Array.isArray(blocks) ? [...blocks].sort((a, b) =>
     `${a.fromDate}\0${a.source}`.localeCompare(`${b.fromDate}\0${b.source}`))[0] : null;
-  if (!isDigest(schemaSha256) || !isDigest(sourceFingerprint) || !lifecycle
+  const allowAlreadyCurrentV4 = expected?.allowAlreadyCurrentV4 === true;
+  const alreadyCurrentV4 = lifecycle?.productionStaleFromDate === null
+    && lifecycle?.productionPublishedGeneration === lifecycle?.invalidationGeneration
+    && lifecycle?.unifiedPublishedGeneration === lifecycle?.invalidationGeneration
+    && lifecycle?.unifiedPublishedRolloutEpoch === lifecycle?.unifiedRolloutEpoch
+    && lifecycle?.unifiedPublicationBlockedFromDate === null
+    && lifecycle?.unifiedPublicationBlockedSource === null
+    && Array.isArray(blocks) && blocks.length === 0;
+  const staleWithPublicationFences = lifecycle?.productionPublishedGeneration !== lifecycle?.invalidationGeneration
+    && isCalendarDate(lifecycle?.productionStaleFromDate)
+    && Boolean(earliestBlock)
+    && !(lifecycle?.unifiedPublishedGeneration === lifecycle?.invalidationGeneration
+      && lifecycle?.unifiedPublishedRolloutEpoch === lifecycle?.unifiedRolloutEpoch)
+    && lifecycle?.unifiedPublicationBlockedFromDate === earliestBlock?.fromDate
+    && lifecycle?.unifiedPublicationBlockedSource === earliestBlock?.source;
+  const publicationStateValid = allowAlreadyCurrentV4
+    ? expected?.appMode === "maintenance-no-app" && expected?.migrationCount === 74
+      && (alreadyCurrentV4 || staleWithPublicationFences)
+    : staleWithPublicationFences;
+  if (!isDigest(schemaSha256) || !isDigest(sourceFingerprint) || !isDigest(healthSyncAuditFingerprint) || !lifecycle
     || lifecycle.profileId !== 1 || lifecycle.unifiedRolloutEpoch !== 1
     || !Number.isSafeInteger(lifecycle.invalidationGeneration)
     || !Number.isSafeInteger(lifecycle.productionPublishedGeneration)
-    || lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration
     || lifecycle.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once"
     || !publishedGenerationValid || lifecycle.unifiedPublishedGeneration === undefined
     || !publishedEpochValid || lifecycle.unifiedPublishedRolloutEpoch === undefined
-    || (lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration
-      && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch)
-    || !earliestBlock || lifecycle.unifiedPublicationBlockedFromDate !== earliestBlock.fromDate
-    || lifecycle.unifiedPublicationBlockedSource !== earliestBlock.source) {
-    fail("Production V4 must be epoch 1 and stale with valid read-only source/schema evidence.");
+    || !publicationStateValid) {
+    fail("Production V4 must be an exact current no-op or a fenced stale state with valid read-only source/schema evidence.");
   }
   validatePublicationSourceEvidence({ blocks, sourceEvidence });
   if (!expected || ledgerDigest !== expected.ledgerDigest
     || schemaSha256 !== expected.schemaSha256 || sourceFingerprint !== expected.sourceFingerprint
+    || healthSyncAuditFingerprint !== expected.healthSyncAuditFingerprint
     || publicationBlockDigest(blocks) !== expected.blockDigest
     || database.containerId !== expected.database.containerId || database.imageId !== expected.database.imageId
     || (expected.appMode === "maintenance-no-app"
@@ -737,6 +766,7 @@ export function assertCompletedV4RecoveryForServe({ marker, releaseSha, migratio
     || !Number.isSafeInteger(marker.unifiedPublishedGeneration)
     || marker.unifiedPublishedGeneration !== marker.productionPublishedGeneration
     || !isDigest(marker.sourceFingerprint) || marker.sourceFingerprint !== sourceFingerprint
+    || !isDigest(marker.healthSyncAuditFingerprint)
     || !isDigest(marker.rehearsalCoverageSha256)
     || !isDigest(markerSchemaSha256) || !markerSchemaShaConsistent
     || marker.postflightSchemaSha256 !== markerSchemaSha256
@@ -790,7 +820,8 @@ export function assertSchemaSignature({ observed, expected, objectCount }) {
   return true;
 }
 
-export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, lifecycle, blocks,
+export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, beforeHealthSyncAuditFingerprint,
+  afterHealthSyncAuditFingerprint, lifecycle, blocks,
   coveredModelDayCount, expectedModelDayCount, coveredModelDayKeys, expectedModelDayKeys,
   rehearsalCoveredModelDayKeys, rehearsalCoverageSha256, existingEpoch }) {
   assertRehearsedCoverageEvidence({ sourceModelDayKeys: expectedModelDayKeys,
@@ -798,6 +829,9 @@ export function assertRecoveryPostflight({ beforeFingerprint, afterFingerprint, 
   const normalizedActualCoverage = normalizedModelDayKeys(coveredModelDayKeys, "Published V4 coverage");
   const normalizedRehearsalCoverage = normalizedModelDayKeys(rehearsalCoveredModelDayKeys, "Rehearsed V4 coverage");
   if (!isDigest(beforeFingerprint) || beforeFingerprint !== afterFingerprint) fail("Strict persisted raw-source fingerprint changed during recovery.");
+  if (!isDigest(beforeHealthSyncAuditFingerprint) || beforeHealthSyncAuditFingerprint !== afterHealthSyncAuditFingerprint) {
+    fail("HealthSyncAudit payload preservation fingerprint changed during recovery.");
+  }
   if (existingEpoch !== 1 || lifecycle?.unifiedRolloutEpoch !== 1
     || lifecycle.productionStaleFromDate !== null
     || lifecycle.invalidationGeneration !== lifecycle.productionPublishedGeneration

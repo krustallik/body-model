@@ -64,7 +64,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
             && "$DISPATCH_ACTOR_ID" == 126446430 ]] || { echo "::error::Pinned owner and canonical main are required."; exit 1; }
-          [[ "$RECOVERY_SHA" == ad902e2172d6343061624b35d2350284e0a1c219 ]] \
+          [[ "$RECOVERY_SHA" == b9ed485a1210e7e8fc66e478375636698deff0ad ]] \
             || { echo "::error::Exact approved legacy recovery SHA is required."; exit 1; }
           [[ "$TARGET_MODE" == legacy-serving-65 || "$TARGET_MODE" == maintenance-no-app-74 ]] \
             || { echo "::error::Unknown exact V4 recovery target mode."; exit 1; }
@@ -171,7 +171,7 @@ jobs:
           const mode = process.env.TARGET_MODE;
           const readJsonAt = (rev, path) => JSON.parse(execFileSync("git", ["show", `${rev}:${path}`], { encoding: "utf8" }));
           const prismaVersion = readJsonAt(releaseSha, "package-lock.json").packages?.["node_modules/prisma"]?.version;
-          const recoveryPrismaVersion = readJsonAt(process.env.RECOVERY_SHA ?? "ad902e2172d6343061624b35d2350284e0a1c219", "package-lock.json").packages?.["node_modules/prisma"]?.version;
+          const recoveryPrismaVersion = readJsonAt(process.env.RECOVERY_SHA ?? "b9ed485a1210e7e8fc66e478375636698deff0ad", "package-lock.json").packages?.["node_modules/prisma"]?.version;
           if (!prismaVersion || prismaVersion !== recoveryPrismaVersion) throw new Error("Recovery Prisma CLI differs from the exact release lockfile.");
           let target;
           if (mode === "maintenance-no-app-74") {
@@ -439,7 +439,8 @@ jobs:
           import { readFileSync, writeFileSync } from "node:fs";
           import { recoveryEvidenceBinding } from "./scripts/production-v4-derived-recovery.mjs";
           const before = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          const binding = recoveryEvidenceBinding({ sourceFingerprint: before.sourceFingerprint, blocks: before.blocks, lifecycle: before.lifecycle });
+          const binding = recoveryEvidenceBinding({ sourceFingerprint: before.sourceFingerprint,
+            healthSyncAuditFingerprint: before.healthSyncAuditFingerprint, blocks: before.blocks, lifecycle: before.lifecycle });
           writeFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/expected-entry-binding.json`, `${JSON.stringify(binding)}\n`, { mode: 0o600, flag: "wx" });
           NODE
           entry_binding="$(cat "$RUNNER_TEMP/bodycast-v4-artifact/expected-entry-binding.json")"
@@ -515,7 +516,8 @@ jobs:
             && before.expectedLedgerDigest === legacyLedger
             && /^[a-f0-9]{40}$/.test(targetMigrationTree) && /^[a-f0-9]{40}$/.test(targetSchemaBlob);
           if (before.database?.database !== "bodycast_restore" || !migrationValid
-            || before.sourceFingerprint !== after.sourceFingerprint || after.blocks.length !== 0
+            || before.sourceFingerprint !== after.sourceFingerprint
+            || before.healthSyncAuditFingerprint !== after.healthSyncAuditFingerprint || after.blocks.length !== 0
             || after.lifecycle?.unifiedRolloutEpoch !== 1 || after.lifecycle?.unifiedPublishedRolloutEpoch !== 1
             || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
             || after.lifecycle?.productionPublishedGeneration !== after.lifecycle?.invalidationGeneration
@@ -524,13 +526,16 @@ jobs:
             || after.sourceModelDayCount !== after.sourceModelDayKeys.length || after.coveredDayCount !== after.coveredModelDayKeys.length
             || JSON.stringify(before.sourceModelDayKeys) !== JSON.stringify(after.sourceModelDayKeys)
             || result.command !== "unified-v4-derived-recovery" || result.rolloutEpoch !== 1
-            || result.rawInputFingerprint !== before.sourceFingerprint) throw new Error("Isolated exact-image V4 recovery rehearsal did not pass raw parity/CURRENT.");
+            || result.rawInputFingerprint !== before.sourceFingerprint
+            || result.healthSyncAuditFingerprint !== before.healthSyncAuditFingerprint) throw new Error("Isolated exact-image V4 recovery rehearsal did not pass raw parity/CURRENT.");
           const rehearsalCoverageSha256 = modelDayKeysDigest(after.coveredModelDayKeys);
           assertRehearsedCoverageEvidence({ sourceModelDayKeys: after.sourceModelDayKeys,
             coveredModelDayKeys: after.coveredModelDayKeys, coverageSha256: rehearsalCoverageSha256 });
           const { assertRecoveryPostflight, validatePublicationSourceEvidence } = await import("./scripts/production-v4-derived-recovery.mjs");
           validatePublicationSourceEvidence({ blocks: before.blocks, sourceEvidence: before.sourceEvidence });
           assertRecoveryPostflight({ beforeFingerprint: before.sourceFingerprint, afterFingerprint: after.sourceFingerprint,
+            beforeHealthSyncAuditFingerprint: before.healthSyncAuditFingerprint,
+            afterHealthSyncAuditFingerprint: after.healthSyncAuditFingerprint,
             lifecycle: after.lifecycle, blocks: after.blocks.length,
             coveredModelDayCount: after.coveredDayCount, expectedModelDayCount: after.sourceModelDayCount,
             coveredModelDayKeys: after.coveredModelDayKeys, expectedModelDayKeys: after.sourceModelDayKeys,
@@ -554,7 +559,8 @@ jobs:
             ledgerDigest: targetLedger, legacyLedgerDigest: legacyLedger,
             targetSchema: { mode: process.env.TARGET_MODE, migrationCount: targetCount, ledgerDigest: targetLedger,
               migrationTree: targetMigrationTree, prismaSchemaBlob: targetSchemaBlob }, fenceDigest: "0".repeat(64),
-            sourceFingerprint: before.sourceFingerprint, databaseContainerId: "0".repeat(64),
+            sourceFingerprint: before.sourceFingerprint, healthSyncAuditFingerprint: before.healthSyncAuditFingerprint,
+            databaseContainerId: "0".repeat(64),
             rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: [...after.coveredModelDayKeys].sort(),
             databaseImageId: `sha256:${"0".repeat(64)}`, appMode: process.env.TARGET_MODE === "maintenance-no-app-74" ? "maintenance-no-app" : "serving",
             appContainerId: process.env.TARGET_MODE === "maintenance-no-app-74" ? null : "0".repeat(64),
@@ -579,6 +585,7 @@ jobs:
             if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid isolated recovery headroom measurement: ${name}`);
           }
           const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: before.sourceFingerprint,
+            healthSyncAuditFingerprint: before.healthSyncAuditFingerprint,
             blocks: before.blocks, lifecycle: before.lifecycle });
           if (JSON.stringify(expectedEntryBinding) !== readFileSync(`${root}expected-entry-binding.json`, "utf8").trim()) {
             throw new Error("Exact-image rehearsal did not use the canonical persisted-source evidence binding.");
@@ -593,7 +600,8 @@ jobs:
             targetSchema: { mode: process.env.TARGET_MODE, migrationCount: targetCount, ledgerDigest: targetLedger,
               migrationTree: targetMigrationTree, prismaSchemaBlob: targetSchemaBlob },
             rehearsalCoverage: { coveredModelDayKeys: after.coveredModelDayKeys, sha256: rehearsalCoverageSha256 },
-            restoredSourceFingerprint: before.sourceFingerprint, expectedEntryBinding, headroomMeasurements })}\n`,
+            restoredSourceFingerprint: before.sourceFingerprint,
+            restoredHealthSyncAuditFingerprint: before.healthSyncAuditFingerprint, expectedEntryBinding, headroomMeasurements })}\n`,
             { mode: 0o600, flag: "wx" });
           NODE
       - name: Gate disk capacity before transfer and capture live production evidence
@@ -682,8 +690,11 @@ jobs:
             throw new Error("Live target migration ledger digest mismatch.");
           }
           const expected = { ledgerDigest: report.evidence.expectedLedgerDigest, schemaSha256: report.schemaSha256,
-            sourceFingerprint: report.evidence.sourceFingerprint, blockDigest: publicationBlockDigest(report.evidence.blocks),
+            sourceFingerprint: report.evidence.sourceFingerprint,
+            healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint,
+            blockDigest: publicationBlockDigest(report.evidence.blocks),
             migrationCount: targetSchema.migrationCount, appMode: targetSchema.mode === "maintenance-no-app-74" ? "maintenance-no-app" : "serving",
+            allowAlreadyCurrentV4: targetSchema.mode === "maintenance-no-app-74",
             database: { containerId: report.databaseContainerId, imageId: report.databaseImageId },
             app: targetSchema.mode === "maintenance-no-app-74" ? { state: "absent" }
               : { containerId: report.appContainerId, imageId: report.appImageId } };
@@ -694,9 +705,11 @@ jobs:
               ? { name: "bodycast-app-prod", state: "absent", health: "absent", releaseSha: null, containerId: null, imageId: null }
               : { name: "bodycast-app-prod", health: "healthy", releaseSha: report.appSha, ...expected.app },
             migrationRows: report.evidence.migrationRows, schemaSha256: report.schemaSha256,
-            sourceFingerprint: report.evidence.sourceFingerprint, lifecycle: report.evidence.lifecycle,
+            sourceFingerprint: report.evidence.sourceFingerprint,
+            healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint, lifecycle: report.evidence.lifecycle,
             blocks: report.evidence.blocks, sourceEvidence: report.evidence.sourceEvidence, expected });
           const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint,
+            healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint,
             blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle });
           if (JSON.stringify(expectedEntryBinding) !== JSON.stringify(measurements.expectedEntryBinding)) {
             throw new Error("Host preflight binding differs from exact-image rehearsal.");
@@ -706,6 +719,7 @@ jobs:
             coverageSha256: measurements.rehearsalCoverage.sha256 });
           report.rehearsalCoverage = measurements.rehearsalCoverage;
           report.restoredSourceFingerprint = measurements.restoredSourceFingerprint;
+          report.restoredHealthSyncAuditFingerprint = measurements.restoredHealthSyncAuditFingerprint;
           report.expectedEntryBinding = expectedEntryBinding;
           report.headroomMeasurements = measurements.headroomMeasurements;
           report.headroomBeforeTransfer = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/headroom-before-transfer.json`, "utf8"));

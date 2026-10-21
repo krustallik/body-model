@@ -14,11 +14,12 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-type";
 const APPLE_HEALTH_SHORTCUT_SOURCE = "apple-health-shortcut";
 
 // Keep this exact allowlist aligned with the audited legacy recovery source.
-// It is repeated here because this evidence wrapper must also typecheck on
-// current main, which intentionally does not carry the legacy recovery service.
+// HealthSyncAudit is fingerprinted separately for recovery preservation; it
+// is not part of the long-lived V4 calculation currentness fingerprint.
 const RECOVERY_RAW_INPUT_TABLES = [
   "Profile",
   "ModelEpisode",
+  "HealthSyncAudit",
   "StepperEquipmentAssignment",
   "DailyHealthData",
   "HealthMetricSample",
@@ -26,7 +27,6 @@ const RECOVERY_RAW_INPUT_TABLES = [
   "RestingHeartRateSample",
   "SleepSegment",
   "HealthSyncSnapshot",
-  "HealthSyncAudit",
   "HealthActivityInterval",
   "Workout",
   "ExerciseCatalog",
@@ -89,8 +89,12 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 
-async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<string> {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
+async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<{
+  sourceFingerprint: string;
+  healthSyncAuditFingerprint: string;
+}> {
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
+  let healthSyncAuditFingerprint: string | null = null;
   for (const table of RECOVERY_RAW_INPUT_TABLES) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
@@ -141,9 +145,12 @@ async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<s
     if (seen !== rowCount) {
       throw new Error(`V4 strict source fingerprint row count changed for ${table}`);
     }
-    digest.update(`${table}\0${tableDigest.digest("hex")}\0`);
+    const tableFingerprint = tableDigest.digest("hex");
+    if (table === "HealthSyncAudit") healthSyncAuditFingerprint = tableFingerprint;
+    else digest.update(`${table}\0${tableFingerprint}\0`);
   }
-  return digest.digest("hex");
+  if (healthSyncAuditFingerprint === null) throw new Error("V4 recovery evidence omitted the audit preservation fingerprint");
+  return { sourceFingerprint: digest.digest("hex"), healthSyncAuditFingerprint };
 }
 
 function dateKey(value: Date | string): string {
@@ -585,7 +592,7 @@ async function main() {
       // The audited inventory helper only needs $queryRawUnsafe; Prisma's
       // transaction client shares that API while intentionally omitting
       // $transaction itself from its static type.
-      const sourceFingerprint = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
+      const rawFingerprints = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
       const sourceEvidence = await readPublicationSourceEvidenceV1(tx as unknown as typeof prisma,
         blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })));
       const [sourceModelDayRows, coveredDayRows] = lifecycle ? await Promise.all([
@@ -601,7 +608,8 @@ async function main() {
         lifecycle,
         blocks: blocks.map((block) => ({ ...block, fromDate: dateKey(block.fromDate) })),
         sourceEvidence,
-        sourceFingerprint,
+        sourceFingerprint: rawFingerprints.sourceFingerprint,
+        healthSyncAuditFingerprint: rawFingerprints.healthSyncAuditFingerprint,
         sourceModelDayKeys: sourceModelDayRows.map((row) => `${row.episodeId}|${row.modelDate}`),
         sourceModelDayDates: sourceModelDayRows.map((row) => row.modelDate),
         coveredModelDayKeys: coveredDayRows.map((row) => `${row.modelEpisodeId}|${dateKey(row.date)}`),

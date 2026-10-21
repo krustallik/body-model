@@ -9,9 +9,11 @@ import { recoveryTerminalMarkerBudgetTemplate, serializedRecoveryMarkerBytes } f
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(new URL("../.github/workflows/production-v4-derived-recovery.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const safetyWorkflow = readFileSync(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const host = readFileSync(new URL("../scripts/production-v4-derived-recovery-host.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const image = readFileSync(new URL("../Dockerfile.v4-derived-recovery", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const evidence = readFileSync(new URL("../scripts/production-v4-recovery-evidence.ts", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const fullHistory = readFileSync(new URL("../src/modules/model-episodes/full-history-recalculation.service.ts", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const bashPath = (value) => {
   if (process.platform !== "win32") return value;
@@ -37,7 +39,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     const artifactRoot = join(tempRoot, "artifacts");
     const recoveryStateRoot = join(tempRoot, "recovery-state");
     const runId = "70001";
-    const recoverySha = "ad902e2172d6343061624b35d2350284e0a1c219";
+    const recoverySha = "b9ed485a1210e7e8fc66e478375636698deff0ad";
     const artifactDir = join(artifactRoot, recoverySha, runId);
     const archive = join(artifactDir, "image.tar");
     const hostScript = join(artifactDir, "host.sh");
@@ -264,7 +266,7 @@ esac
     expect(sourceEnd).toBeGreaterThan(sourceStart);
     const nodeSource = host.slice(sourceStart, sourceEnd);
     const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-marker-budget-"));
-    const sourceSha = "ad902e2172d6343061624b35d2350284e0a1c219";
+    const sourceSha = "b9ed485a1210e7e8fc66e478375636698deff0ad";
     const workflowSha = "c".repeat(40);
     const imageId = `sha256:${"d".repeat(64)}`;
     const archiveSha = "e".repeat(64);
@@ -351,17 +353,21 @@ esac
     const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-preflight-report-"));
     const evidencePath = join(tempRoot, "evidence.json");
     const sourceFingerprint = "a".repeat(64);
+    const healthSyncAuditFingerprint = "b".repeat(64);
     writeFileSync(evidencePath, JSON.stringify({
       database: { database: "bodycast", version: "17.11", serverAddress: "172.30.0.2", serverPort: 5432 },
       expectedMigrationRows: migrationRows,
       migrationRows,
       lifecycle: {
         invalidationGeneration: 12,
+        productionPublishedGeneration: 11,
+        productionStaleFromDate: "2025-01-01",
         unifiedPublishedGeneration: 11,
         unifiedRolloutEpoch: 1,
         unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       },
       sourceFingerprint,
+      healthSyncAuditFingerprint,
       blocks: [{ source: "health", sourceKey: "2025-01-01", fromDate: "2025-01-01", revision: 1 }],
     }));
     try {
@@ -380,6 +386,7 @@ esac
       const report = JSON.parse(result.stdout);
       expect(report.headroomBeforeLoad).toEqual({ phase: "before-load", filesystems: [] });
       expect(report.evidence.sourceFingerprint).toBe(sourceFingerprint);
+      expect(report.evidence.healthSyncAuditFingerprint).toBe(healthSyncAuditFingerprint);
       expect(report.schemaSha256).toBe("f".repeat(64));
       expect(result.stderr).toBe("");
     } finally {
@@ -468,25 +475,28 @@ esac
       unifiedPublicationBlockedFromDate: null, unifiedPublicationBlockedSource: null,
     };
     const modelDayKeys = ["1|2025-01-01", "2|2025-01-02"];
+    const healthSyncAuditFingerprint = "b".repeat(64);
     const before = { database: { database: "bodycast_restore" }, migrationRows, expectedMigrationRows: migrationRows,
       expectedLedgerDigest: ledgerDigest,
-      blocks, sourceEvidence, sourceFingerprint: fingerprint,
+      blocks, sourceEvidence, sourceFingerprint: fingerprint, healthSyncAuditFingerprint,
       sourceModelDayKeys: modelDayKeys,
       lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11,
         unifiedPublicationBlockedFromDate: "2025-01-01", unifiedPublicationBlockedSource: "health" } };
     const replayCoverageKeys = [...modelDayKeys, "2|2025-01-03"];
     const after = { ...before, blocks: [], lifecycle, coveredModelDayKeys: replayCoverageKeys,
       sourceModelDayCount: modelDayKeys.length, coveredDayCount: replayCoverageKeys.length };
-    const report = { sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219", evidence: {
+    const report = { sourceSha: "b9ed485a1210e7e8fc66e478375636698deff0ad", evidence: {
       database: { database: "bodycast" }, migrationRows, expectedMigrationRows: migrationRows,
       expectedLedgerDigest: before.expectedLedgerDigest, blocks: before.blocks, sourceFingerprint: fingerprint,
+      healthSyncAuditFingerprint,
       sourceEvidence, lifecycle: before.lifecycle, sourceModelDayKeys: modelDayKeys,
     } };
     writeFileSync(join(artifactRoot, "restored-before.json"), JSON.stringify(before));
     writeFileSync(join(artifactRoot, "restored-after.json"), JSON.stringify(after));
-    writeFileSync(join(artifactRoot, "rehearsal-result.json"), JSON.stringify({ command: "unified-v4-derived-recovery", rolloutEpoch: 1, rawInputFingerprint: fingerprint }));
+    writeFileSync(join(artifactRoot, "rehearsal-result.json"), JSON.stringify({ command: "unified-v4-derived-recovery", rolloutEpoch: 1,
+      rawInputFingerprint: fingerprint, healthSyncAuditFingerprint }));
     const { recoveryEvidenceBinding } = await import("../scripts/production-v4-derived-recovery.mjs");
-    const binding = recoveryEvidenceBinding({ sourceFingerprint: fingerprint, blocks, lifecycle: before.lifecycle });
+    const binding = recoveryEvidenceBinding({ sourceFingerprint: fingerprint, healthSyncAuditFingerprint, blocks, lifecycle: before.lifecycle });
     writeFileSync(join(artifactRoot, "expected-entry-binding.json"), JSON.stringify(binding));
     writeFileSync(join(artifactRoot, "postgres-storage-peak.json"), JSON.stringify({
       containerId: "1".repeat(64), samples: 6, baselineDataBytes: 10_000, peakDataBytes: 10_100,
@@ -496,7 +506,7 @@ esac
       const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
         cwd: repositoryRoot,
         env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
-          BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "ad902e2172d6343061624b35d2350284e0a1c219",
+          BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "b9ed485a1210e7e8fc66e478375636698deff0ad",
           SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
           TARGET_MODE: targetSchema.mode, TARGET_MIGRATION_COUNT: "65", TARGET_LEDGER_DIGEST: ledgerDigest,
           TARGET_MIGRATION_TREE: targetSchema.migrationTree, TARGET_PRISMA_SCHEMA_BLOB: targetSchema.prismaSchemaBlob,
@@ -506,18 +516,18 @@ esac
       });
       expect(result.status, result.stderr).toBe(0);
       const measurements = JSON.parse(readFileSync(join(artifactRoot, "rehearsal-measurements.json"), "utf8"));
-      const markerTemplate = { state: "started", sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219",
+      const markerTemplate = { state: "started", sourceSha: "b9ed485a1210e7e8fc66e478375636698deff0ad",
         ownerRunId: "9".repeat(20), workflowSha: "0".repeat(40), attempt: "1",
         imageId: `sha256:${"d".repeat(64)}`, archiveSha: "0".repeat(64), preflightDigest: "0".repeat(64),
         schemaSha: "f".repeat(64), schemaDigestContract, schemaDigestHelperSha256,
         ledgerDigest, legacyLedgerDigest: ledgerDigest,
-        targetSchema, appMode: "serving", fenceDigest: "0".repeat(64), sourceFingerprint: fingerprint,
+        targetSchema, appMode: "serving", fenceDigest: "0".repeat(64), sourceFingerprint: fingerprint, healthSyncAuditFingerprint,
         databaseContainerId: "0".repeat(64), rehearsalCoverageSha256: measurements.rehearsalCoverage.sha256,
         rehearsalCoveredModelDayKeys: [...replayCoverageKeys].sort(), databaseImageId: `sha256:${"0".repeat(64)}`,
         appContainerId: "0".repeat(64), appImageId: `sha256:${"0".repeat(64)}`, startedAt: "2000-01-01T00:00:00.000Z" };
       const terminalMarkerTemplate = recoveryTerminalMarkerBudgetTemplate(markerTemplate, {
         sourceModelDayKeys: after.sourceModelDayKeys, coveredModelDayKeys: after.coveredModelDayKeys,
-        sourceFingerprint: fingerprint, schemaSha256: "f".repeat(64),
+        sourceFingerprint: fingerprint, healthSyncAuditFingerprint, schemaSha256: "f".repeat(64),
         rehearsalCoverageSha256: measurements.rehearsalCoverage.sha256,
         unifiedTargetRevision: lifecycle.unifiedTargetRevision,
       });
@@ -526,6 +536,7 @@ esac
       expect(measurements.headroomMeasurements.recoveryTerminalMarkerBytes)
         .toBe(serializedRecoveryMarkerBytes(terminalMarkerTemplate));
       expect(measurements).toMatchObject({ schemaSha256: "f".repeat(64), restoredSourceFingerprint: fingerprint,
+        restoredHealthSyncAuditFingerprint: healthSyncAuditFingerprint,
         expectedEntryBinding: binding,
         rehearsalCoverage: { coveredModelDayKeys: replayCoverageKeys,
           sha256: createHash("sha256").update(`${[...replayCoverageKeys].sort().join("\n")}\n`).digest("hex") },
@@ -539,9 +550,9 @@ esac
 
       writeFileSync(join(artifactRoot, "preflight.json"), JSON.stringify(preflight));
       const artifactManifest = {
-        sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219", imageId: `sha256:${"d".repeat(64)}`,
+        sourceSha: "b9ed485a1210e7e8fc66e478375636698deff0ad", imageId: `sha256:${"d".repeat(64)}`,
         imageDigest: `sha256:${"c".repeat(64)}`, archiveSha256: "e".repeat(64),
-        archiveBytes: 5000, imageBytes: 9000, evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v1",
+        archiveBytes: 5000, imageBytes: 9000, evidenceBindingContract: "bodycast-v4-recovery-evidence-binding-v2",
         schemaDigestContract, schemaDigestHelperSha256,
         migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
         effectiveCommand: ["node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery", "--owner-authorized", "--profile-id", "1"],
@@ -602,7 +613,7 @@ esac
   });
 
   it("requires the exact audited legacy SHA, 65-schema manifest, and derived-only entrypoint", () => {
-    expect(workflow).toContain("ad902e2172d6343061624b35d2350284e0a1c219");
+    expect(workflow).toContain("b9ed485a1210e7e8fc66e478375636698deff0ad");
     expect(workflow).toContain("291b9c95924e196d66f9cdd555535b2e5a2b5990");
     expect(workflow).toContain("4fa84cb62262986d5f0c58d3c76db2ba52b5500e");
     expect(workflow).toContain("a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7");
@@ -619,11 +630,31 @@ esac
     expect(host).toContain('for expected in "$BODYCAST_IMAGE_ID" "$BODYCAST_IMAGE_DIGEST"');
     expect(host).toContain('recovery_image_ref="$(recovery_image_id)" || fail "loaded-image-id"');
     expect(host).not.toContain("healthBlocks.length === 8");
+    expect(host).toContain('const alreadyCurrentV4 = process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74"');
+    expect(host).toContain("result.alreadyCurrent !== expectedAlreadyCurrent");
+    expect(workflow).toContain('allowAlreadyCurrentV4: targetSchema.mode === "maintenance-no-app-74"');
     expect(image).toContain("/app/dist/production-full-history-recalculate.mjs");
     expect(image).toContain("production-v4-derived-recovery.mjs");
     expect(image).toContain("--derived-v4-recovery");
     expect(host).not.toContain("migrate deploy");
     expect(host).not.toContain("docker compose");
+  });
+
+  it("runs production migration safety CI when recovery service or tests change", () => {
+    expect(safetyWorkflow).toContain('      - "src/modules/model-episodes/unified-v4-derived-recovery.service.ts"');
+    expect(safetyWorkflow).toContain('      - "tests/unified-v4-derived-recovery.test.ts"');
+    expect(safetyWorkflow).toContain('      - "tests/integration/unified-v4-derived-recovery.integration.test.ts"');
+  });
+
+  it("fingerprints retention-managed audit rows for preservation without binding V4 currentness", () => {
+    const v4Tables = evidence.split("const RECOVERY_RAW_INPUT_TABLES = [")[1]?.split("] as const")[0] ?? "";
+    expect(v4Tables).toContain("DailyHealthData");
+    expect(v4Tables).toContain("HealthSyncAudit");
+    expect(evidence).toContain('if (table === "HealthSyncAudit") healthSyncAuditFingerprint = tableFingerprint;');
+    expect(evidence).toContain('else digest.update(`${table}\\0${tableFingerprint}\\0`);');
+    expect(evidence).toContain("bodycast-v4-recovery-raw-sources-v3");
+    const fullHistoryTables = fullHistory.split("export const FULL_HISTORY_RAW_INPUT_TABLES = [")[1]?.split("] as const")[0] ?? "";
+    expect(fullHistoryTables).toContain("HealthSyncAudit");
   });
 
   it("uses PostgreSQL's canonical host address for the exact Docker endpoint binding", () => {
@@ -704,7 +735,8 @@ esac
     }));
     const ledgerDigest = createHash("sha256").update(migrationRows.map((row) =>
       row.name + "\t" + row.checksum + "\n").join("")).digest("hex");
-    const before = { sourceFingerprint: fingerprint, expectedLedgerDigest: ledgerDigest, migrationRows,
+    const before = { sourceFingerprint: fingerprint, healthSyncAuditFingerprint: "b".repeat(64),
+      expectedLedgerDigest: ledgerDigest, migrationRows, blocks: [],
       database: { database: "bodycast", version: "17.11" }, sourceModelDayKeys: sourceKeys };
     const after = { ...before, blocks: [], lifecycle, sourceModelDayKeys: sourceKeys,
       coveredModelDayKeys: rehearsalKeys, sourceModelDayCount: sourceKeys.length, coveredDayCount: rehearsalKeys.length };
@@ -716,7 +748,7 @@ esac
       writeFileSync(paths.after, JSON.stringify({ ...after, coveredModelDayKeys: coverageKeys,
         coveredDayCount: coverageKeys.length }));
       writeFileSync(paths.result, JSON.stringify({ command: "unified-v4-derived-recovery", rolloutEpoch: 1,
-        rawInputFingerprint: fingerprint }));
+        rawInputFingerprint: fingerprint, healthSyncAuditFingerprint: before.healthSyncAuditFingerprint, alreadyCurrent: false }));
       writeFileSync(paths.preflight, JSON.stringify(report));
       return spawnSync(process.execPath, ["--input-type=module", "-", paths.marker, paths.before, paths.after,
         paths.result, "c".repeat(64)], { env: { ...process.env, BODYCAST_PREFLIGHT_JSON_FILE: paths.preflight,
@@ -750,7 +782,7 @@ esac
     const artifactRoot = join(tempRoot, "artifacts").replaceAll("\\", "/");
     const markerSource = host.slice(sourceStart, sourceEnd)
       .replaceAll("/var/lib/bodycast/recovery/artifacts", artifactRoot);
-    const sourceSha = "ad902e2172d6343061624b35d2350284e0a1c219";
+    const sourceSha = "b9ed485a1210e7e8fc66e478375636698deff0ad";
     const runId = "70001";
     const artifactDir = join(tempRoot, "artifacts", sourceSha, runId);
     const markerPath = join(artifactDir, "recovery-marker.json");

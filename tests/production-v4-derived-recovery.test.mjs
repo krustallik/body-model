@@ -170,21 +170,23 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("reports only safe categories for exact production preflight evidence mismatches", () => {
     const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      productionStaleFromDate: "2026-10-01",
       unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
       unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
     const sourceFingerprint = "d".repeat(64);
+    const healthSyncAuditFingerprint = "a".repeat(64);
     const schemaSha256 = "c".repeat(64);
     const schemaDigestHelperSha256 = "e".repeat(64);
     const schemaDigestContract = "bodycast-v4-schema-digest-v1";
-    const before = { migrationRows: ledgerRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle,
+    const before = { migrationRows: ledgerRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle, healthSyncAuditFingerprint,
       sourceModelDayKeys: ["2026-10-01", "2026-10-02"], expectedLedgerDigest: migrationLedgerDigest(ledgerRows) };
-    const rehearsal = { sourceFingerprint };
+    const rehearsal = { sourceFingerprint, healthSyncAuditFingerprint };
     const measurements = { schemaDigestContract, schemaDigestHelperSha256, schemaSha256,
-      restoredSourceFingerprint: sourceFingerprint };
+      restoredSourceFingerprint: sourceFingerprint, restoredHealthSyncAuditFingerprint: healthSyncAuditFingerprint };
     const report = { appSha: LEGACY_V4_RECOVERY.productionAppSha, headroomBeforeLoad: { phase: "before-load" },
       schemaDigestContract, schemaDigestHelperSha256, schemaSha256,
       evidence: { database: { database: "bodycast" }, migrationRows: ledgerRows, lifecycle,
-        sourceFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
+        sourceFingerprint, healthSyncAuditFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
         expectedLedgerDigest: before.expectedLedgerDigest } };
     const input = { report, measurements, before, rehearsal, expectedSchemaHelperSha256: schemaDigestHelperSha256,
       schemaDigestContract, schemaDigestHelperSha256 };
@@ -199,23 +201,26 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("accepts only the exact 74-migration target while the app is absent behind verified maintenance", () => {
     const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      productionStaleFromDate: "2026-10-01",
       unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
       unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
     const sourceFingerprint = "d".repeat(64);
+    const healthSyncAuditFingerprint = "a".repeat(64);
     const targetSchema = { mode: "maintenance-no-app-74", migrationCount: 74,
       ledgerDigest: migrationLedgerDigest(currentMigrationRows, 74), migrationTree: "a".repeat(40),
       prismaSchemaBlob: "b".repeat(40) };
-    const before = { migrationRows: currentMigrationRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle,
+    const before = { migrationRows: currentMigrationRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle, healthSyncAuditFingerprint,
       sourceModelDayKeys: ["2026-10-01", "2026-10-02"], expectedLedgerDigest: migrationLedgerDigest(ledgerRows) };
     const report = { appMode: "maintenance-no-app", appSha: null, appContainerId: null, appImageId: null,
       targetSchema, headroomBeforeLoad: { phase: "before-load" }, schemaDigestContract: "bodycast-v4-schema-digest-v1",
       schemaDigestHelperSha256: "e".repeat(64), schemaSha256: "c".repeat(64),
       evidence: { database: { database: "bodycast" }, migrationRows: currentMigrationRows, lifecycle,
-        sourceFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
+        sourceFingerprint, healthSyncAuditFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
         expectedLedgerDigest: before.expectedLedgerDigest } };
     const input = { report, measurements: { schemaDigestContract: report.schemaDigestContract,
       schemaDigestHelperSha256: report.schemaDigestHelperSha256, schemaSha256: report.schemaSha256,
-      restoredSourceFingerprint: sourceFingerprint }, before, rehearsal: { sourceFingerprint },
+      restoredSourceFingerprint: sourceFingerprint, restoredHealthSyncAuditFingerprint: healthSyncAuditFingerprint },
+      before, rehearsal: { sourceFingerprint, healthSyncAuditFingerprint },
       expectedSchemaHelperSha256: report.schemaDigestHelperSha256, schemaDigestContract: report.schemaDigestContract,
       schemaDigestHelperSha256: report.schemaDigestHelperSha256, targetSchema };
     expect(productionPreflightMismatchCategories(input)).toEqual([]);
@@ -227,17 +232,41 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       .toContain("application-state");
 
     const expected = { migrationCount: 74, ledgerDigest: targetSchema.ledgerDigest,
-      appMode: "maintenance-no-app", schemaSha256: report.schemaSha256, sourceFingerprint,
+      appMode: "maintenance-no-app", schemaSha256: report.schemaSha256, sourceFingerprint, healthSyncAuditFingerprint,
+      allowAlreadyCurrentV4: true,
       blockDigest: publicationBlockDigest(blocks),
       database: { containerId: "e".repeat(64), imageId: "sha256:" + "f".repeat(64) },
       app: { state: "absent" } };
     const identity = { database: { name: "bodycast", version: "17.11", ...expected.database },
       app: { name: "bodycast-app-prod", state: "absent", health: "absent", releaseSha: null, containerId: null, imageId: null },
-      migrationRows: currentMigrationRows, schemaSha256: expected.schemaSha256, sourceFingerprint,
+      migrationRows: currentMigrationRows, schemaSha256: expected.schemaSha256, sourceFingerprint, healthSyncAuditFingerprint,
       lifecycle, blocks, sourceEvidence: makeSourceEvidence(), expected };
     expect(assertProductionIdentity(identity)).toBe(true);
     expect(() => assertProductionIdentity({ ...identity,
       app: { ...identity.app, state: "running" } })).toThrow();
+    expect(() => assertProductionIdentity({ ...identity,
+      lifecycle: { ...lifecycle, productionStaleFromDate: null } })).toThrow();
+    expect(() => assertProductionIdentity({ ...identity,
+      lifecycle: { ...lifecycle, productionStaleFromDate: "2026-02-30" } })).toThrow();
+
+    const currentLifecycle = { ...lifecycle, productionStaleFromDate: null, productionPublishedGeneration: 10,
+      unifiedPublishedGeneration: 10, unifiedPublishedRolloutEpoch: 1,
+      unifiedPublicationBlockedFromDate: null, unifiedPublicationBlockedSource: null };
+    const currentExpected = { ...expected, sourceFingerprint, healthSyncAuditFingerprint, blockDigest: publicationBlockDigest([]),
+      allowAlreadyCurrentV4: true };
+    const currentIdentity = { ...identity, lifecycle: currentLifecycle, blocks: [], sourceEvidence: makeSourceEvidence([]),
+      expected: currentExpected };
+    expect(assertProductionIdentity(currentIdentity)).toBe(true);
+    expect(() => assertProductionIdentity({ ...currentIdentity,
+      expected: { ...currentExpected, allowAlreadyCurrentV4: false } })).toThrow();
+    expect(() => assertProductionIdentity({ ...currentIdentity,
+      expected: { ...currentExpected, migrationCount: 65 } })).toThrow();
+    expect(() => assertProductionIdentity({ ...currentIdentity,
+      lifecycle: { ...currentLifecycle, productionStaleFromDate: "2026-10-18", productionPublishedGeneration: 9 } })).toThrow();
+    expect(() => assertProductionIdentity({ ...currentIdentity,
+      lifecycle: { ...currentLifecycle, unifiedPublishedRolloutEpoch: null } })).toThrow();
+    expect(() => assertProductionIdentity({ ...currentIdentity, blocks,
+      sourceEvidence: makeSourceEvidence(blocks) })).toThrow();
   });
 
   it.each([
@@ -260,6 +289,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   ])("identifies %s without returning evidence values", (_label, category, mutate) => {
     const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      productionStaleFromDate: "2026-10-01",
       unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
       unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
     const sourceFingerprint = "d".repeat(64);
@@ -319,24 +349,28 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("binds live production DB/app IDs, schema, history, raw source and dynamic persisted fences", () => {
     const expected = {
       ledgerDigest: migrationLedgerDigest(ledgerRows), schemaSha256: "c".repeat(64), sourceFingerprint: "d".repeat(64),
+      healthSyncAuditFingerprint: "a".repeat(64),
       blockDigest: publicationBlockDigest(blocks),
       database: { containerId: "e".repeat(64), imageId: `sha256:${"f".repeat(64)}` },
       app: { containerId: "1".repeat(64), imageId: `sha256:${"2".repeat(64)}` },
     };
     const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      productionStaleFromDate: "2026-10-01",
       unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
       unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
     expect(assertProductionIdentity({
       database: { name: "bodycast", version: "17.11", ...expected.database },
       app: { name: "bodycast-app-prod", health: "healthy", releaseSha: LEGACY_V4_RECOVERY.productionAppSha, ...expected.app },
       migrationRows: ledgerRows, schemaSha256: expected.schemaSha256, sourceFingerprint: expected.sourceFingerprint,
+      healthSyncAuditFingerprint: expected.healthSyncAuditFingerprint,
       lifecycle, blocks, sourceEvidence: makeSourceEvidence(), expected,
     })).toBe(true);
     expect(() => assertProductionIdentity({
       database: { name: "bodycast", version: "17.11", ...expected.database },
       app: { name: "bodycast-app-prod", health: "healthy", releaseSha: LEGACY_V4_RECOVERY.productionAppSha, ...expected.app },
       migrationRows: ledgerRows, schemaSha256: expected.schemaSha256, sourceFingerprint: expected.sourceFingerprint,
+      healthSyncAuditFingerprint: expected.healthSyncAuditFingerprint,
       lifecycle, blocks: blocks.slice(1), sourceEvidence: makeSourceEvidence(blocks.slice(1)), expected,
     })).toThrow();
   });
@@ -408,15 +442,19 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       productionStaleFromDate: null, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedRolloutEpoch: 1, unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
       unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
-    const binding = recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), blocks, lifecycle });
-    expect(binding).toMatchObject({ contract: "bodycast-v4-recovery-evidence-binding-v1",
-      rawFingerprint: "d".repeat(64), fenceDigest: publicationBlockDigest(blocks) });
+    const healthSyncAuditFingerprint = "a".repeat(64);
+    const binding = recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), healthSyncAuditFingerprint, blocks, lifecycle });
+    expect(LEGACY_V4_RECOVERY.evidenceBindingContract).toBe(binding.contract);
+    expect(binding).toMatchObject({ contract: "bodycast-v4-recovery-evidence-binding-v2",
+      rawFingerprint: "d".repeat(64), healthSyncAuditFingerprint, fenceDigest: publicationBlockDigest(blocks) });
     expect(binding.lifecycleDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(binding.bindingDigest).toBe(sha256(`bodycast-v4-recovery-evidence-binding-v1\n${binding.rawFingerprint}\n${binding.fenceDigest}\n${binding.lifecycleDigest}\n`));
-    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), blocks: blocks.map((block, index) => index === 0
+    expect(binding.bindingDigest).toBe(sha256(`bodycast-v4-recovery-evidence-binding-v2\n${binding.rawFingerprint}\n${binding.healthSyncAuditFingerprint}\n${binding.fenceDigest}\n${binding.lifecycleDigest}\n`));
+    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), healthSyncAuditFingerprint, blocks: blocks.map((block, index) => index === 0
       ? { ...block, revision: block.revision + 1 } : block), lifecycle }).bindingDigest).not.toBe(binding.bindingDigest);
-    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), blocks,
+    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), healthSyncAuditFingerprint, blocks,
       lifecycle: { ...lifecycle, invalidationGeneration: 11 } }).bindingDigest).not.toBe(binding.bindingDigest);
+    expect(recoveryEvidenceBinding({ sourceFingerprint: "d".repeat(64), healthSyncAuditFingerprint: "b".repeat(64), blocks, lifecycle }).bindingDigest)
+      .not.toBe(binding.bindingDigest);
   });
 
   it("requires Training accounting snapshot timezone and provenance to match session fallback inputs", () => {
@@ -794,7 +832,8 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
 
   it("binds final V4 coverage exactly to the successful rehearsal output", () => {
     const modelDayKeys = ["1|2026-10-01", "2|2026-10-01", "2|2026-10-02"];
-    const result = { beforeFingerprint: "a".repeat(64), afterFingerprint: "a".repeat(64), existingEpoch: 1,
+    const result = { beforeFingerprint: "a".repeat(64), afterFingerprint: "a".repeat(64),
+      beforeHealthSyncAuditFingerprint: "b".repeat(64), afterHealthSyncAuditFingerprint: "b".repeat(64), existingEpoch: 1,
       lifecycle: { unifiedRolloutEpoch: 1, unifiedPublishedRolloutEpoch: 1,
         unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
         unifiedPublishedGeneration: 8, unifiedPublicationBlockedFromDate: null,
@@ -814,7 +853,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     expect(() => assertRehearsedCoverageEvidence({ sourceModelDayKeys: modelDayKeys,
       coveredModelDayKeys: [...replayTail, "2|2026-10-05"], coverageSha256: modelDayKeysDigest(replayTail) })).toThrow();
     for (const changed of [
-      { afterFingerprint: "b".repeat(64) }, { existingEpoch: 2 },
+      { afterFingerprint: "b".repeat(64) }, { afterHealthSyncAuditFingerprint: "c".repeat(64) }, { existingEpoch: 2 },
       { lifecycle: { ...result.lifecycle, unifiedRolloutEpoch: 2 } },
       { lifecycle: { ...result.lifecycle, productionStaleFromDate: "2026-10-18" } },
       { blocks: 1 }, { coveredModelDayCount: 364 },
@@ -851,6 +890,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
   it("accepts actual NULL V4 publication generation but rejects a missing lifecycle field", () => {
     const expected = {
       ledgerDigest: migrationLedgerDigest(ledgerRows), schemaSha256: "c".repeat(64), sourceFingerprint: "d".repeat(64),
+      healthSyncAuditFingerprint: "a".repeat(64),
       blockDigest: publicationBlockDigest(blocks),
       database: { containerId: "e".repeat(64), imageId: `sha256:${"f".repeat(64)}` },
       app: { containerId: "1".repeat(64), imageId: `sha256:${"2".repeat(64)}` },
@@ -858,9 +898,11 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     const args = { database: { name: "bodycast", version: "17.11", ...expected.database },
       app: { name: "bodycast-app-prod", health: "healthy", releaseSha: LEGACY_V4_RECOVERY.productionAppSha, ...expected.app },
       migrationRows: ledgerRows, schemaSha256: expected.schemaSha256, sourceFingerprint: expected.sourceFingerprint,
+      healthSyncAuditFingerprint: expected.healthSyncAuditFingerprint,
       blocks, sourceEvidence: makeSourceEvidence(), expected };
     const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      productionStaleFromDate: "2026-10-01",
       unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
       unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
     expect(assertProductionIdentity({ ...args, lifecycle })).toBe(true);
@@ -883,7 +925,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       workflowSha: releaseSha, attempt: "1", ownerRunId: "12345", appMode: "maintenance-no-app",
       rolloutEpoch: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedPublicationBlockedFromDate: null, blocksRemaining: 0, unifiedPublishedGeneration: 12,
-      productionPublishedGeneration: 12, sourceFingerprint: "2".repeat(64),
+      productionPublishedGeneration: 12, sourceFingerprint: "2".repeat(64), healthSyncAuditFingerprint: "3".repeat(64),
       rehearsalCoverageSha256: modelDayKeysDigest(modelDayKeys), schemaSha: schemaSha256, postflightSchemaSha256: schemaSha256,
       schemaDigestContract: "bodycast-v4-schema-digest-v1", schemaDigestHelperSha256: "3".repeat(64),
       databaseContainerId, databaseImageId, sourceModelDayCount: modelDayKeys.length,
@@ -901,6 +943,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       { marker: { ...marker, appMode: "serving" } },
       { marker: { ...marker, result: "failed" } },
       { sourceFingerprint: "9".repeat(64) },
+      { marker: { ...marker, healthSyncAuditFingerprint: "malformed" } },
       { marker: { ...marker, unifiedPublishedGeneration: 11 } },
       { marker: { ...marker, blocksRemaining: 1 } },
       { migrationTree: "9".repeat(40) },

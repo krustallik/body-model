@@ -8,7 +8,7 @@ fail() { printf 'V4_RECOVERY_STOP %s\n' "$1" >&2; exit 1; }
 mode="${1:-}"
 [[ "$mode" == "pretransfer" || "$mode" == "preflight" || "$mode" == "preexecute" || "$mode" == "execute" ]] || fail "invalid-mode"
 [[ "${BODYCAST_DEPLOY_PATH:-}" == "/srv/bodycast" ]] || fail "deploy-path"
-[[ "${BODYCAST_RECOVERY_SHA:-}" == "ad902e2172d6343061624b35d2350284e0a1c219" ]] || fail "source-sha"
+[[ "${BODYCAST_RECOVERY_SHA:-}" == "b9ed485a1210e7e8fc66e478375636698deff0ad" ]] || fail "source-sha"
 [[ "${BODYCAST_EXPECTED_APP_SHA:-}" == "f910d2a45dfa676fada5fab42c9e8946c97872b1" ]] || fail "expected-app-sha"
 [[ "${BODYCAST_TARGET_MODE:-}" == "legacy-serving-65" || "${BODYCAST_TARGET_MODE:-}" == "maintenance-no-app-74" ]] || fail "target-mode"
 [[ "${BODYCAST_TARGET_MIGRATION_COUNT:-}" =~ ^(65|74)$ && "${BODYCAST_TARGET_LEDGER_DIGEST:-}" =~ ^[a-f0-9]{64}$ ]] || fail "target-migration-contract"
@@ -271,6 +271,24 @@ const legacyLedgerDigest = createHash("sha256").update(evidence.expectedMigratio
   .map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
 const targetCount = Number(process.env.BODYCAST_TARGET_MIGRATION_COUNT);
 const targetLedgerDigest = process.env.BODYCAST_TARGET_LEDGER_DIGEST;
+const lifecycle = evidence.lifecycle;
+const isCalendarDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+const alreadyCurrentV4 = process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74"
+  && lifecycle?.productionStaleFromDate === null
+  && lifecycle?.productionPublishedGeneration === lifecycle?.invalidationGeneration
+  && lifecycle?.unifiedPublishedGeneration === lifecycle?.invalidationGeneration
+  && lifecycle?.unifiedPublishedRolloutEpoch === lifecycle?.unifiedRolloutEpoch
+  && lifecycle?.unifiedPublicationBlockedFromDate === null
+  && lifecycle?.unifiedPublicationBlockedSource === null
+  && Array.isArray(evidence.blocks) && evidence.blocks.length === 0;
+const staleRecoverableV4 = lifecycle?.unifiedPublishedGeneration !== lifecycle?.invalidationGeneration
+  && lifecycle?.productionPublishedGeneration !== lifecycle?.invalidationGeneration
+  && isCalendarDate(lifecycle?.productionStaleFromDate)
+  && Array.isArray(evidence.blocks) && evidence.blocks.length > 0;
 if (evidence.database?.database !== "bodycast" || !evidence.database.version.startsWith("17.")
     || evidence.migrationRows?.length !== targetCount || evidence.expectedMigrationRows?.length !== 65
     || ledgerDigest !== targetLedgerDigest
@@ -279,13 +297,13 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
       || row.checksum !== evidence.expectedMigrationRows[index].checksum || !row.finishedAt || row.rolledBackAt !== null)
     || evidence.lifecycle?.unifiedRolloutEpoch !== 1 || evidence.database?.serverAddress !== process.argv[8]
     || evidence.database?.serverPort !== 5432
-    || evidence.lifecycle?.unifiedPublishedGeneration === evidence.lifecycle?.invalidationGeneration
     || !/^[a-f0-9]{64}$/.test(evidence.sourceFingerprint)
-    || !Array.isArray(evidence.blocks) || evidence.blocks.length < 1
+    || !/^[a-f0-9]{64}$/.test(evidence.healthSyncAuditFingerprint)
+    || !(staleRecoverableV4 || alreadyCurrentV4)
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
   throw new Error("Live database is not the exact stale V4 source schema/state for the approved target.");
 }
-const output = { sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219",
+const output = { sourceSha: "b9ed485a1210e7e8fc66e478375636698deff0ad",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : process.argv[6],
   appImageId: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : process.argv[7],
@@ -348,6 +366,7 @@ const appImageId = process.argv[8] === "null" ? null : process.argv[8];
 if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !== process.argv[5]
     || expected.databaseImageId !== process.argv[6] || expected.appContainerId !== appContainerId
     || expected.appImageId !== appImageId || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
+    || expected.evidence?.healthSyncAuditFingerprint !== live.healthSyncAuditFingerprint
     || JSON.stringify(expected.evidence?.sourceModelDayKeys) !== JSON.stringify(live.sourceModelDayKeys)
     || JSON.stringify(expected.evidence?.migrationRows) !== JSON.stringify(live.migrationRows)
     || JSON.stringify(expected.evidence?.blocks) !== JSON.stringify(live.blocks)
@@ -362,18 +381,20 @@ if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !=
   throw new Error("Production identity, schema, raw data, lifecycle, or fences changed after isolated restore rehearsal.");
 }
 process.stdout.write(JSON.stringify({ preflightDigest: createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"),
-  ledgerDigest: expected.evidence.expectedLedgerDigest, fenceDigest, sourceFingerprint: live.sourceFingerprint }) + "\n");
+  ledgerDigest: expected.evidence.expectedLedgerDigest, fenceDigest, sourceFingerprint: live.sourceFingerprint,
+  healthSyncAuditFingerprint: live.healthSyncAuditFingerprint }) + "\n");
 NODE
 binding_json="$(docker run --rm --interactive --network "$network" "$recovery_image_ref" \
-  node --input-type=module -e 'import { readFileSync } from "node:fs"; import { recoveryEvidenceBinding } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); const binding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint, blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle }); process.stdout.write(JSON.stringify(binding));' \
+  node --input-type=module -e 'import { readFileSync } from "node:fs"; import { recoveryEvidenceBinding } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); const binding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint, healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint, blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle }); process.stdout.write(JSON.stringify(binding));' \
   < "$expected_file")" || fail "canonical-recovery-binding"
 BODYCAST_BINDING_JSON="$binding_json" BODYCAST_EXPECTED_FILE="$expected_file" node --input-type=module <<'NODE'
 import { readFileSync } from "node:fs";
 const preflight = JSON.parse(readFileSync(process.env.BODYCAST_EXPECTED_FILE, "utf8"));
 const binding = JSON.parse(process.env.BODYCAST_BINDING_JSON);
 if (!preflight.expectedEntryBinding || JSON.stringify(preflight.expectedEntryBinding) !== JSON.stringify(binding)
-    || binding.contract !== "bodycast-v4-recovery-evidence-binding-v1"
+    || binding.contract !== "bodycast-v4-recovery-evidence-binding-v2"
     || !/^[a-f0-9]{64}$/.test(binding.rawFingerprint) || !/^[a-f0-9]{64}$/.test(binding.fenceDigest)
+    || !/^[a-f0-9]{64}$/.test(binding.healthSyncAuditFingerprint)
     || !/^[a-f0-9]{64}$/.test(binding.lifecycleDigest) || !/^[a-f0-9]{64}$/.test(binding.bindingDigest)) {
   throw new Error("Preflight-to-entrypoint evidence binding is absent or changed.");
 }
@@ -411,7 +432,8 @@ const marker = { state: "started", sourceSha, ownerRunId: runId, workflowSha, at
   schemaDigestContract: preflight.schemaDigestContract, schemaDigestHelperSha256: preflight.schemaDigestHelperSha256,
   ledgerDigest: process.env.BODYCAST_TARGET_LEDGER_DIGEST,
   legacyLedgerDigest: preflight.evidence.expectedLedgerDigest,
-  fenceDigest, sourceFingerprint: preflight.evidence.sourceFingerprint, databaseContainerId: dbId,
+  fenceDigest, sourceFingerprint: preflight.evidence.sourceFingerprint,
+  healthSyncAuditFingerprint: preflight.evidence.healthSyncAuditFingerprint, databaseContainerId: dbId,
   rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: normalizedRehearsalCoverage,
   databaseImageId: dbImage, appMode: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? "maintenance-no-app" : "serving",
   appContainerId: appId === "null" ? null : appId, appImageId: appImage === "null" ? null : appImage,
@@ -526,11 +548,21 @@ const before = JSON.parse(readFileSync(beforePath, "utf8")); const after = JSON.
 const result = JSON.parse(readFileSync(resultPath, "utf8").trim().split(/\r?\n/).at(-1));
 const preflight = JSON.parse(readFileSync(process.env.BODYCAST_PREFLIGHT_JSON_FILE, "utf8"));
 const modelDayKeyPattern = /^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/;
+const beforeLifecycle = before.lifecycle;
+const expectedAlreadyCurrent = before.blocks.length === 0
+  && beforeLifecycle?.productionStaleFromDate === null
+  && beforeLifecycle?.productionPublishedGeneration === beforeLifecycle?.invalidationGeneration
+  && beforeLifecycle?.unifiedPublishedGeneration === beforeLifecycle?.invalidationGeneration
+  && beforeLifecycle?.unifiedPublishedRolloutEpoch === beforeLifecycle?.unifiedRolloutEpoch
+  && beforeLifecycle?.unifiedPublicationBlockedFromDate === null
+  && beforeLifecycle?.unifiedPublicationBlockedSource === null;
 const rehearsedKeys = preflight.rehearsalCoverage?.coveredModelDayKeys;
 const rehearsalCoverage = Array.isArray(rehearsedKeys) ? [...rehearsedKeys].sort() : [];
 const actualCoverage = Array.isArray(after.coveredModelDayKeys) ? [...after.coveredModelDayKeys].sort() : [];
 const rehearsalCoverageSha256 = createHash("sha256").update(`${rehearsalCoverage.join("\n")}\n`).digest("hex");
-if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedgerDigest !== after.expectedLedgerDigest
+if (before.sourceFingerprint !== after.sourceFingerprint
+    || before.healthSyncAuditFingerprint !== after.healthSyncAuditFingerprint
+    || before.expectedLedgerDigest !== after.expectedLedgerDigest
     || after.blocks.length !== 0
     || JSON.stringify(before.migrationRows) !== JSON.stringify(after.migrationRows)
     || before.database?.database !== after.database?.database || before.database?.version !== after.database?.version
@@ -554,12 +586,15 @@ if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedge
     || createHash("sha256").update(after.migrationRows.map((row) => row.name + "\t" + row.checksum + "\n").join("")).digest("hex")
       !== process.env.BODYCAST_TARGET_LEDGER_DIGEST
     || result.command !== "unified-v4-derived-recovery"
-    || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.sourceFingerprint) {
+    || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.sourceFingerprint
+    || result.healthSyncAuditFingerprint !== before.healthSyncAuditFingerprint
+    || result.alreadyCurrent !== expectedAlreadyCurrent) {
   throw new Error("Read-only postflight did not prove strict raw parity and V4 CURRENT coverage at epoch 1.");
 }
 const prior = JSON.parse(readFileSync(path, "utf8")); const tmp = `${path}.terminal-${process.pid}`;
 const terminalContents = `${JSON.stringify({ ...prior, state: "completed", result: "current", finishedAt: new Date().toISOString(),
-  sourceFingerprint: after.sourceFingerprint, postflightSchemaSha256: schemaSha256,
+  sourceFingerprint: after.sourceFingerprint, healthSyncAuditFingerprint: after.healthSyncAuditFingerprint,
+  postflightSchemaSha256: schemaSha256,
   schemaDigestContract: preflight.schemaDigestContract, schemaDigestHelperSha256: preflight.schemaDigestHelperSha256,
   sourceModelDayKeys: after.sourceModelDayKeys, coveredModelDayKeys: after.coveredModelDayKeys,
   rehearsalCoverageSha256: preflight.rehearsalCoverage.sha256,

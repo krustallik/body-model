@@ -43,10 +43,12 @@ const trainingSessions = [
   snapshotRevision: 79 + index,
   inputFingerprint: String.fromCharCode(97 + index).repeat(64),
 }));
+// HealthSyncAudit has independent 30-day retention. It is preserved during a
+// recovery run but excluded from long-lived V4 model currentness.
 const rawFingerprintTables = [
   "Profile", "ModelEpisode", "StepperEquipmentAssignment", "DailyHealthData",
   "HealthMetricSample", "HeartRateSample", "RestingHeartRateSample", "SleepSegment",
-  "HealthSyncSnapshot", "HealthSyncAudit", "HealthActivityInterval", "Workout",
+  "HealthSyncSnapshot", "HealthActivityInterval", "Workout",
   "ExerciseCatalog", "ExerciseLoadConfiguration", "TrainingProgram",
   "TrainingProgramVersion", "ProgramExercise", "StrengthDiarySession",
   "StrengthDiaryProgramChange", "StrengthSessionExercise", "StrengthSet",
@@ -208,7 +210,7 @@ if (rejected !== input.expectedRejection) process.exitCode = 17;`;
 }
 
 async function legacyUnpagedRawFingerprint() {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
   for (const table of rawFingerprintTables) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
@@ -224,6 +226,40 @@ async function legacyUnpagedRawFingerprint() {
     digest.update(`${table}\0${tableDigest.digest("hex")}\0`);
   }
   return digest.digest("hex");
+}
+
+async function legacyHealthSyncAuditFingerprint() {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT source_row.id, to_jsonb(source_row)::text AS raw_row
+     FROM public."HealthSyncAudit" AS source_row ORDER BY source_row.id`,
+  );
+  const digest = createHash("sha256").update(`HealthSyncAudit\0${rows.length}\0`);
+  for (const row of rows) digest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+  return digest.digest("hex");
+}
+
+async function assertHealthSyncAuditRetentionExcludedFromV4Fingerprint() {
+  const before = await legacyUnpagedRawFingerprint();
+  const auditBefore = await legacyHealthSyncAuditFingerprint();
+  const audit = await prisma.healthSyncAudit.create({
+    data: { receivedAt: new Date("2025-01-01T00:00:00.000Z"), outcome: "success", httpStatus: 200,
+      rawBody: "{\"fixture\":\"expired-audit\"}", contentType: "application/json" },
+  });
+  try {
+    const retained = await readEvidence();
+    if (retained.sourceFingerprint !== before
+        || retained.healthSyncAuditFingerprint === auditBefore) {
+      throw new Error("A retention-managed HealthSyncAudit row changed the V4 model-input fingerprint.");
+    }
+  } finally {
+    await prisma.healthSyncAudit.delete({ where: { id: audit.id } });
+  }
+  const pruned = await readEvidence();
+  if (pruned.sourceFingerprint !== before || await legacyUnpagedRawFingerprint() !== before
+      || pruned.healthSyncAuditFingerprint !== auditBefore
+      || await legacyHealthSyncAuditFingerprint() !== auditBefore) {
+    throw new Error("Pruning an operational HealthSyncAudit row changed the V4 model-input fingerprint.");
+  }
 }
 
 async function insertFingerprintPageBoundarySnapshots(date, count) {
@@ -662,10 +698,13 @@ try {
   await prisma.$executeRawUnsafe(`DELETE FROM public."HealthMetricSample" WHERE date = '2025-01-10'`);
   await prisma.$executeRawUnsafe(`DELETE FROM public."HealthSyncSnapshot" WHERE date = '2025-01-10'`);
   await insertHealthDay("2025-01-10", 2, true);
+  await assertHealthSyncAuditRetentionExcludedFromV4Fingerprint();
   const recoveryPreflight = await validateCurrentEvidence(9);
   const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: recoveryPreflight.sourceFingerprint,
+    healthSyncAuditFingerprint: recoveryPreflight.healthSyncAuditFingerprint,
     blocks: recoveryPreflight.blocks, lifecycle: recoveryPreflight.lifecycle });
   const recoveryRawBefore = await legacyUnpagedRawFingerprint();
+  const recoveryAuditBefore = await legacyHealthSyncAuditFingerprint();
   if (recoveryPreflight.sourceFingerprint !== recoveryRawBefore) {
     throw new Error("Exact-image recovery fixture source fingerprint is not bound before execution.");
   }
@@ -688,7 +727,9 @@ try {
   assertExactLedger(evidenceBefore, ledgerBefore);
   const expectedTrainingIds = recoveryPreflight.blocks.filter((block) => block.source === "training")
     .map((block) => Number(block.sourceKey)).sort((a, b) => a - b);
-  if (evidenceBefore.sourceFingerprint !== recoveryRawBefore || evidenceBefore.lifecycle?.unifiedRolloutEpoch !== 1
+  if (evidenceBefore.sourceFingerprint !== recoveryRawBefore
+    || evidenceBefore.healthSyncAuditFingerprint !== recoveryAuditBefore
+    || evidenceBefore.lifecycle?.unifiedRolloutEpoch !== 1
     || JSON.stringify(expectedTrainingIds) !== JSON.stringify([20, 24, 25])
     || evidenceBefore.blocks.length !== recoveryPreflight.blocks.length) {
     throw new Error("Exact legacy image pre-recovery evidence differs from the validated isolated source set.");
@@ -705,6 +746,7 @@ try {
   const recoveryResult = JSON.parse(recoveryOutput.trim());
   if (recoveryResult.command !== "unified-v4-derived-recovery" || recoveryResult.current !== true
     || recoveryResult.rolloutEpoch !== 1 || recoveryResult.rawInputFingerprint !== recoveryRawBefore
+    || recoveryResult.healthSyncAuditFingerprint !== recoveryAuditBefore
     || recoveryResult.healthDatesRefreshed.join(",") !== recoveryPreflight.blocks.filter((block) => block.source === "health")
       .map((block) => block.sourceKey).sort().join(",")
     || recoveryResult.trainingSessionIdsRefreshed.join(",") !== expectedTrainingIds.join(",")
@@ -738,6 +780,8 @@ try {
     assertRecoveryPostflight({
       beforeFingerprint: recoveryRawBefore,
       afterFingerprint: evidenceAfter.sourceFingerprint,
+      beforeHealthSyncAuditFingerprint: recoveryAuditBefore,
+      afterHealthSyncAuditFingerprint: evidenceAfter.healthSyncAuditFingerprint,
       lifecycle: evidenceAfter.lifecycle,
       blocks: evidenceAfter.blocks.length,
       coveredModelDayCount: evidenceAfter.coveredDayCount,
@@ -752,6 +796,8 @@ try {
     throw new Error(`Exact-image V4 postflight failed: ${JSON.stringify({
       beforeFingerprint: recoveryRawBefore,
       afterFingerprint: evidenceAfter.sourceFingerprint,
+      beforeHealthSyncAuditFingerprint: recoveryAuditBefore,
+      afterHealthSyncAuditFingerprint: evidenceAfter.healthSyncAuditFingerprint,
       lifecycle: evidenceAfter.lifecycle,
       blocks: evidenceAfter.blocks.length,
       coveredDayCount: evidenceAfter.coveredDayCount,

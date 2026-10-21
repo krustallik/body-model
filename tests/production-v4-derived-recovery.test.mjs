@@ -7,6 +7,8 @@ import {
   LEGACY_V4_RECOVERY,
   assertApprovedRecoveryRuns,
   assertArtifactBinding,
+  assertRecoveryOciImageArchiveBinding,
+  selectRecoveryOciImageReference,
   assertProductionIdentity,
   assertCompletedV4RecoveryForServe,
   assertRecoveredV4ToolingOnlyDescendant,
@@ -914,7 +916,8 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     const runtimeCompatibilityProof = {
       recoveryWorkflowSha: releaseSha,
       releaseSha: releaseShaAfterToolingFix,
-      directChildVerified: true,
+      lineageVerified: true,
+      commitDistance: 2,
       changedPaths: [
         "scripts/production-v4-derived-recovery.mjs",
         "scripts/production-v4-recovered-release.sh",
@@ -928,7 +931,8 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     for (const changed of [
       { changedPaths: ["src/app/page.tsx"] },
       { changedPaths: ["scripts/production-v4-recovered-release.sh", "src/app/page.tsx"] },
-      { directChildVerified: false },
+      { lineageVerified: false },
+      { commitDistance: 3 },
       { changedPaths: ["scripts/production-v4-recovered-release.sh", "scripts/production-v4-recovered-release.sh"] },
     ]) {
       expect(() => assertRecoveredV4ToolingOnlyDescendant({ ...runtimeCompatibilityProof, ...changed })).toThrow();
@@ -943,6 +947,44 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       expect(() => assertCompletedV4RecoveryForServe({ ...expected, releaseSha: releaseShaAfterToolingFix,
         runtimeCompatibilityProof: { ...runtimeCompatibilityProof, ...changed } })).toThrow(/completed.*V4 recovery/i);
     }
+  });
+
+  it("binds Docker's loaded OCI manifest digest to the marker's image config digest", () => {
+    const configBytes = Buffer.from(JSON.stringify({ architecture: "amd64", os: "linux" }));
+    const imageId = `sha256:${sha256(configBytes)}`;
+    const manifest = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      config: { mediaType: "application/vnd.oci.image.config.v1+json", digest: imageId, size: configBytes.length },
+      layers: [{ mediaType: "application/vnd.oci.image.layer.v1.tar", digest: `sha256:${"1".repeat(64)}`, size: 1 }],
+    };
+    const manifestBytes = Buffer.from(JSON.stringify(manifest));
+    const manifestDigest = `sha256:${sha256(manifestBytes)}`;
+    const index = { schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json",
+      manifests: [{ mediaType: "application/vnd.oci.image.manifest.v1+json", digest: manifestDigest, size: manifestBytes.length }] };
+    const expected = { index, manifestBytes, configBytes, expectedImageId: imageId };
+    expect(assertRecoveryOciImageArchiveBinding(expected)).toEqual({ imageId, manifestDigest });
+    for (const changed of [
+      { index: { ...index, manifests: [...index.manifests, ...index.manifests] } },
+      { index: { ...index, manifests: [{ ...index.manifests[0], digest: `sha256:${"2".repeat(64)}` }] } },
+      { configBytes: Buffer.from("different config") },
+      { expectedImageId: `sha256:${"3".repeat(64)}` },
+    ]) expect(() => assertRecoveryOciImageArchiveBinding({ ...expected, ...changed })).toThrow();
+  });
+
+  it("selects the exact Docker reference that resolves to the marker-bound recovery image", () => {
+    const expectedImageId = `sha256:${"a".repeat(64)}`;
+    const manifestDigest = `sha256:${"b".repeat(64)}`;
+    expect(selectRecoveryOciImageReference({ expectedImageId, manifestDigest,
+      configReferenceImageId: expectedImageId, manifestReferenceImageId: manifestDigest })).toBe(expectedImageId);
+    expect(selectRecoveryOciImageReference({ expectedImageId, manifestDigest,
+      configReferenceImageId: "", manifestReferenceImageId: manifestDigest })).toBe(manifestDigest);
+    expect(selectRecoveryOciImageReference({ expectedImageId, manifestDigest,
+      configReferenceImageId: "", manifestReferenceImageId: expectedImageId })).toBe(manifestDigest);
+    expect(() => selectRecoveryOciImageReference({ expectedImageId, manifestDigest,
+      configReferenceImageId: "", manifestReferenceImageId: `sha256:${"c".repeat(64)}` })).toThrow();
+    expect(() => selectRecoveryOciImageReference({ expectedImageId: "malformed", manifestDigest,
+      configReferenceImageId: expectedImageId, manifestReferenceImageId: expectedImageId })).toThrow();
   });
 
 });

@@ -41,9 +41,12 @@ describe("recovered V4 serving release contract", () => {
     expect(recoveredRelease).toContain('--production-schema-postflight');
     expect(recoveredRelease).toContain('migration_count" == "74"');
     expect(recoveredRelease).toContain("bodycast_recovery_raw_fingerprint_from_marker_image");
+    expect(recoveredRelease).toContain("assertRecoveryOciImageArchiveBinding");
+    expect(recoveredRelease).toContain("selectRecoveryOciImageReference");
+    expect(recoveredRelease).toContain('docker image inspect --format');
+    expect(recoveredRelease).toContain('"$image_run_ref"');
     expect(recoveredRelease).toContain("sha256sum \"$archive\"");
     expect(recoveredRelease).toContain("/app/dist/production-v4-recovery-evidence.mjs");
-    expect(recoveredRelease).toContain('git -C "$ROOT_DIR" rev-parse "$release_sha^"');
     expect(recoveredRelease).toContain('git -C "$ROOT_DIR" rev-list --count "$marker_workflow_sha..$release_sha"');
     expect(recovery).toContain("assertRecoveredV4ToolingOnlyDescendant");
     expect(recoveredRelease).toContain("production-v4-schema-digest.mjs");

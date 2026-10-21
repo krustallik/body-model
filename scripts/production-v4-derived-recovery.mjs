@@ -39,6 +39,47 @@ export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function assertRecoveryOciImageArchiveBinding({ index, manifestBytes, configBytes, expectedImageId }) {
+  const manifestDigest = index?.manifests?.[0]?.digest;
+  const manifestHex = /^sha256:([a-f0-9]{64})$/.exec(String(manifestDigest ?? ""))?.[1];
+  if (index?.schemaVersion !== 2 || index.mediaType !== "application/vnd.oci.image.index.v1+json"
+    || !Array.isArray(index.manifests) || index.manifests.length !== 1
+    || index.manifests[0]?.mediaType !== "application/vnd.oci.image.manifest.v1+json"
+    || !manifestHex || !Buffer.isBuffer(manifestBytes) || !Buffer.isBuffer(configBytes)
+    || index.manifests[0]?.size !== manifestBytes.length
+    || sha256(manifestBytes) !== manifestHex) {
+    fail("The recovery archive OCI manifest is missing, ambiguous, or has a mismatched digest.");
+  }
+  let manifest;
+  try { manifest = JSON.parse(manifestBytes.toString("utf8")); }
+  catch { fail("The recovery archive OCI manifest is malformed."); }
+  const configHex = /^sha256:([a-f0-9]{64})$/.exec(String(manifest?.config?.digest ?? ""))?.[1];
+  if (!/^sha256:[a-f0-9]{64}$/.test(String(expectedImageId ?? ""))
+    || manifest?.schemaVersion !== 2 || manifest?.mediaType !== "application/vnd.oci.image.manifest.v1+json"
+    || manifest?.config?.mediaType !== "application/vnd.oci.image.config.v1+json"
+    || manifest.config.digest !== expectedImageId || manifest.config.size !== configBytes.length
+    || !configHex || sha256(configBytes) !== configHex
+    || !Array.isArray(manifest.layers) || manifest.layers.length < 1
+    || manifest.layers.some((layer) => !/^sha256:[a-f0-9]{64}$/.test(String(layer?.digest ?? ""))
+      || typeof layer?.mediaType !== "string" || !layer.mediaType.startsWith("application/vnd.oci.image.layer.v1.")
+      || !Number.isSafeInteger(layer?.size) || layer.size < 1)) {
+    fail("The recovery archive OCI image config or layers do not match the marker-bound image ID.");
+  }
+  return Object.freeze({ imageId: expectedImageId, manifestDigest });
+}
+
+export function selectRecoveryOciImageReference({ expectedImageId, manifestDigest,
+  configReferenceImageId, manifestReferenceImageId }) {
+  if (!/^sha256:[a-f0-9]{64}$/.test(String(expectedImageId ?? ""))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(manifestDigest ?? ""))) {
+    fail("The recovery image reference binding is malformed.");
+  }
+  const boundImageIdentities = new Set([expectedImageId, manifestDigest]);
+  if (boundImageIdentities.has(configReferenceImageId)) return expectedImageId;
+  if (boundImageIdentities.has(manifestReferenceImageId)) return manifestDigest;
+  fail("Docker cannot resolve the marker-bound recovery image through its config or OCI manifest digest.");
+}
+
 function normalizedModelDayKeys(keys, label) {
   if (!Array.isArray(keys) || keys.length < 1 || keys.some((key) => !isModelDayKey(key))
     || new Set(keys).size !== keys.length) {
@@ -647,12 +688,13 @@ const RECOVERED_V4_SERVE_TOOLING_PATHS = new Set([
 ]);
 
 export function assertRecoveredV4ToolingOnlyDescendant({ recoveryWorkflowSha, releaseSha,
-  directChildVerified, changedPaths }) {
-  if (!isSha(recoveryWorkflowSha) || !isSha(releaseSha) || directChildVerified !== true
+  lineageVerified, commitDistance, changedPaths }) {
+  if (!isSha(recoveryWorkflowSha) || !isSha(releaseSha) || lineageVerified !== true
+    || !Number.isSafeInteger(commitDistance) || commitDistance < 1 || commitDistance > 2
     || !Array.isArray(changedPaths) || changedPaths.some((file) => typeof file !== "string"
       || !RECOVERED_V4_SERVE_TOOLING_PATHS.has(file))
     || new Set(changedPaths).size !== changedPaths.length) {
-    fail("A later serving SHA is compatible with recovery only when it is the direct child of the recovery SHA and changes release-tooling files only.");
+    fail("A later serving SHA is compatible with recovery only within two verified tooling-only commits after the recovery SHA.");
   }
   return true;
 }
@@ -668,7 +710,8 @@ export function assertCompletedV4RecoveryForServe({ marker, releaseSha, migratio
       assertRecoveredV4ToolingOnlyDescendant({
         recoveryWorkflowSha: marker?.workflowSha,
         releaseSha,
-        directChildVerified: runtimeCompatibilityProof?.directChildVerified,
+        lineageVerified: runtimeCompatibilityProof?.lineageVerified,
+        commitDistance: runtimeCompatibilityProof?.commitDistance,
         changedPaths: runtimeCompatibilityProof?.changedPaths,
       });
       return runtimeCompatibilityProof.recoveryWorkflowSha === marker.workflowSha

@@ -5,7 +5,7 @@ bodycast_recovery_raw_fingerprint_from_marker_image() (
   set -Eeuo pipefail
   umask 077
   local marker_path="$1" recovery_sha="$2" metadata owner_run_id image_id archive_sha archive_dir archive
-  local loaded_id db_config database_url networks network tmp_dir fingerprint
+  local image_id_ref image_run_ref archive_manifest_digest archive_identity config_reference_id manifest_reference_id db_config database_url networks network tmp_dir fingerprint
   metadata="$(node --input-type=module - "$marker_path" <<'NODE'
 import { readFileSync } from "node:fs";
 const marker = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -30,8 +30,46 @@ NODE
     && "$(realpath -e "$archive" 2>/dev/null || true)" == "$archive" && "$(stat -c '%u' "$archive")" == "0" ]] || return 1
   [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$archive_sha" ]] || return 1
 
-  loaded_id="$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null || true)"
-  if [[ "$loaded_id" != "$image_id" ]]; then
+  archive_identity="$(node --input-type=module - "$archive" "$image_id" <<'NODE'
+import { execFileSync } from "node:child_process";
+import { assertRecoveryOciImageArchiveBinding } from "./scripts/production-v4-derived-recovery.mjs";
+const [archive, expectedImageId] = process.argv.slice(2);
+const readEntry = (name) => execFileSync("tar", ["-xOf", archive, name], { maxBuffer: 4 * 1024 * 1024 });
+const index = JSON.parse(readEntry("index.json").toString("utf8"));
+const descriptor = index?.manifests?.[0];
+const digest = /^sha256:([a-f0-9]{64})$/.exec(String(descriptor?.digest ?? ""))?.[1];
+if (!digest) throw new Error("The recovery archive OCI descriptor is malformed.");
+const manifestBytes = readEntry(`blobs/sha256/${digest}`);
+const manifest = JSON.parse(manifestBytes.toString("utf8"));
+const configDigest = /^sha256:([a-f0-9]{64})$/.exec(String(manifest?.config?.digest ?? ""))?.[1];
+if (!configDigest) throw new Error("The recovery archive OCI config descriptor is malformed.");
+const binding = assertRecoveryOciImageArchiveBinding({ index, manifestBytes,
+  configBytes: readEntry(`blobs/sha256/${configDigest}`), expectedImageId });
+process.stdout.write(`${binding.imageId}\n${binding.manifestDigest}`);
+NODE
+  )" || return 1
+  mapfile -t archive_identity_fields <<< "$archive_identity"
+  [[ "${#archive_identity_fields[@]}" -eq 2 ]] || return 1
+  image_id_ref="${archive_identity_fields[0]}"
+  archive_manifest_digest="${archive_identity_fields[1]}"
+
+  resolve_image_run_ref() {
+    config_reference_id="$(docker image inspect --format '{{.Id}}' "$image_id_ref" 2>/dev/null || true)"
+    manifest_reference_id="$(docker image inspect --format '{{.Id}}' "$archive_manifest_digest" 2>/dev/null || true)"
+    BODYCAST_RECOVERY_IMAGE_ID="$image_id_ref" BODYCAST_RECOVERY_MANIFEST_DIGEST="$archive_manifest_digest" \
+      BODYCAST_CONFIG_REFERENCE_ID="$config_reference_id" BODYCAST_MANIFEST_REFERENCE_ID="$manifest_reference_id" \
+      node --input-type=module <<'NODE'
+import { selectRecoveryOciImageReference } from "./scripts/production-v4-derived-recovery.mjs";
+process.stdout.write(selectRecoveryOciImageReference({
+  expectedImageId: process.env.BODYCAST_RECOVERY_IMAGE_ID,
+  manifestDigest: process.env.BODYCAST_RECOVERY_MANIFEST_DIGEST,
+  configReferenceImageId: process.env.BODYCAST_CONFIG_REFERENCE_ID,
+  manifestReferenceImageId: process.env.BODYCAST_MANIFEST_REFERENCE_ID,
+}));
+NODE
+  }
+  image_run_ref="$(resolve_image_run_ref 2>/dev/null || true)"
+  if [[ -z "$image_run_ref" ]]; then
     tmp_dir="$(mktemp -d /var/tmp/bodycast-v4-serve-evidence.XXXXXX)" || return 1
     chmod 0700 "$tmp_dir"
     if ! docker load --input "$archive" > "$tmp_dir/image-load.log" 2>&1; then
@@ -39,11 +77,11 @@ NODE
       rmdir "$tmp_dir" 2>/dev/null || true
       return 1
     fi
-    loaded_id="$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null || true)"
+    image_run_ref="$(resolve_image_run_ref 2>/dev/null || true)"
     rm -f -- "$tmp_dir/image-load.log"
     rmdir "$tmp_dir" || return 1
   fi
-  [[ "$loaded_id" == "$image_id" ]] || return 1
+  [[ -n "$image_run_ref" ]] || return 1
 
   db_config="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$DB_CONTAINER")" || return 1
   database_url="$(BODYCAST_DB_CONFIG="$db_config" node --input-type=module <<'NODE'
@@ -82,7 +120,7 @@ NODE
   chmod 0600 "$tmp_dir/database.env"
   unset database_url
   if ! docker run --rm --network "$network" --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
-    --cap-drop=ALL --security-opt=no-new-privileges --env-file "$tmp_dir/database.env" "$image_id" \
+    --cap-drop=ALL --security-opt=no-new-privileges --env-file "$tmp_dir/database.env" "$image_run_ref" \
     node /app/dist/production-v4-recovery-evidence.mjs > "$tmp_dir/report.json" 2> "$tmp_dir/container.stderr"; then
     return 1
   fi
@@ -102,7 +140,7 @@ NODE
 bodycast_assert_completed_v4_recovery_for_release() {
   local release_sha="${1:-${DEPLOY_SHA:-}}" recovery_sha marker marker_digest migration_tree schema_blob
   local schema_digest schema_contract schema_helper_sha source_fingerprint database_id database_image ledger_json
-  local migration_count ledger_digest marker_workflow_sha runtime_compatibility_proof="" changed_paths_json
+  local migration_count ledger_digest marker_workflow_sha runtime_compatibility_proof="" changed_paths_json commit_distance
   [[ "$release_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Recovered-V4 release requires an exact SHA." >&2; return 1; }
   recovery_sha="$(node --input-type=module -e 'import { LEGACY_V4_RECOVERY } from "./scripts/production-v4-derived-recovery.mjs"; process.stdout.write(LEGACY_V4_RECOVERY.sourceSha)')" || return 1
   [[ "$recovery_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pinned V4 recovery source is malformed." >&2; return 1; }
@@ -119,18 +157,19 @@ process.stdout.write(marker.workflowSha);
 NODE
   )" || return 1
   if [[ "$marker_workflow_sha" != "$release_sha" ]]; then
-    [[ "$(git -C "$ROOT_DIR" rev-parse "$release_sha^" 2>/dev/null || true)" == "$marker_workflow_sha" \
-      && "$(git -C "$ROOT_DIR" rev-list --count "$marker_workflow_sha..$release_sha" 2>/dev/null || true)" == "1" ]] || {
-      echo "Recovered-V4 serving compatibility permits only one direct tooling-only commit after the exact recovery workflow SHA." >&2; return 1;
+    commit_distance="$(git -C "$ROOT_DIR" rev-list --count "$marker_workflow_sha..$release_sha" 2>/dev/null || true)"
+    [[ "$commit_distance" =~ ^[12]$ && "$(git -C "$ROOT_DIR" rev-parse "$release_sha~$commit_distance" 2>/dev/null || true)" == "$marker_workflow_sha" ]] || {
+      echo "Recovered-V4 serving compatibility permits at most two verified tooling-only commits after the exact recovery workflow SHA." >&2; return 1;
     }
     changed_paths_json="$(git -C "$ROOT_DIR" diff --no-renames --name-only "$marker_workflow_sha" "$release_sha" \
       | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; process.stdout.write(JSON.stringify(s.split(/\r?\n/).filter(Boolean)))')" || return 1
     runtime_compatibility_proof="$(BODYCAST_RECOVERY_WORKFLOW_SHA="$marker_workflow_sha" BODYCAST_RELEASE_SHA="$release_sha" \
-      BODYCAST_CHANGED_PATHS_JSON="$changed_paths_json" node --input-type=module <<'NODE'
+      BODYCAST_COMMIT_DISTANCE="$commit_distance" BODYCAST_CHANGED_PATHS_JSON="$changed_paths_json" node --input-type=module <<'NODE'
 const changedPaths = JSON.parse(process.env.BODYCAST_CHANGED_PATHS_JSON);
-if (!Array.isArray(changedPaths)) throw new Error("Release compatibility paths are malformed.");
+const commitDistance = Number(process.env.BODYCAST_COMMIT_DISTANCE);
+if (!Array.isArray(changedPaths) || !Number.isSafeInteger(commitDistance)) throw new Error("Release compatibility lineage is malformed.");
 process.stdout.write(JSON.stringify({ recoveryWorkflowSha: process.env.BODYCAST_RECOVERY_WORKFLOW_SHA,
-  releaseSha: process.env.BODYCAST_RELEASE_SHA, directChildVerified: true, changedPaths }));
+  releaseSha: process.env.BODYCAST_RELEASE_SHA, lineageVerified: true, commitDistance, changedPaths }));
 NODE
     )" || return 1
   fi

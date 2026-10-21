@@ -569,6 +569,8 @@ describe("workflow mutation boundary", () => {
     const workflow = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     const safetyWorkflow = await readFile(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8");
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
+    expect(safetyWorkflow).toMatch(/^on:\r?\n  push:\r?\n    branches:\r?\n      - main/m);
+    expect(safetyWorkflow).toContain("production-migration-safety-${{ github.event.pull_request.number || github.sha }}");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("pg_dump --format=custom");
     expect(workflow).toContain("production-backup-envelope.mjs encrypt");

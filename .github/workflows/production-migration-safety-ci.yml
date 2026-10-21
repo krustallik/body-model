@@ -1,6 +1,9 @@
 name: Production migration safety tooling CI
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     paths:
       - ".github/workflows/production-migration-safety-ci.yml"
@@ -137,7 +140,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-migration-safety-${{ github.event.pull_request.number }}
+  group: production-migration-safety-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

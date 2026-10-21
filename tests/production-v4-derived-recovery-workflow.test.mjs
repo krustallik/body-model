@@ -638,6 +638,9 @@ esac
     expect(workflow).toContain("migrationLedgerDigest(before.migrationRows, targetCount) === targetLedger");
     expect(workflow).toContain("migrationFilesDigest(actual.slice(0, 65), 65) !== LEGACY_V4_RECOVERY.ledgerDigest");
     expect(workflow).toContain("ledgerDigest: migrationFilesDigest(actual, 74)");
+    expect(workflow).toContain("migrationFilesDigest(before.expectedMigrationRows, 65) === legacyLedger");
+    expect(workflow).toContain("ledgerRows: report.evidence.migrationRows.slice(0, 65)");
+    expect(workflow).not.toContain("verified-in-restored-ledger");
     expect(host).toContain("bodycast-production-release.lock");
     expect(host).toContain("flock -n 9");
     expect(host).toContain('state: "started"');

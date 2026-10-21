@@ -496,7 +496,7 @@ jobs:
           BACKUP_SCHEMA_SHA256="$backup_schema" node --input-type=module - <<'NODE'
           import { statSync, readFileSync, writeFileSync } from "node:fs";
           import { createHash } from "node:crypto";
-          import { assertRehearsedCoverageEvidence, migrationLedgerDigest, modelDayKeysDigest, publicationBlockDigest, recoveryEvidenceBinding } from "./scripts/production-v4-derived-recovery.mjs";
+          import { assertRehearsedCoverageEvidence, migrationFilesDigest, migrationLedgerDigest, modelDayKeysDigest, publicationBlockDigest, recoveryEvidenceBinding } from "./scripts/production-v4-derived-recovery.mjs";
           import { recoveryTerminalMarkerBudgetTemplate, serializedRecoveryMarkerBytes } from "./scripts/production-v4-recovery-headroom.mjs";
           import { SCHEMA_DIGEST_CONTRACT } from "./scripts/production-v4-schema-digest.mjs";
           const root = `${process.env.RUNNER_TEMP}/bodycast-v4-artifact/`;
@@ -511,7 +511,7 @@ jobs:
           const migrationValid = before.migrationRows.length === targetCount
             && migrationLedgerDigest(before.migrationRows, targetCount) === targetLedger
             && before.expectedMigrationRows.length === 65
-            && migrationLedgerDigest(before.expectedMigrationRows, 65) === legacyLedger
+            && migrationFilesDigest(before.expectedMigrationRows, 65) === legacyLedger
             && before.expectedLedgerDigest === legacyLedger
             && /^[a-f0-9]{40}$/.test(targetMigrationTree) && /^[a-f0-9]{40}$/.test(targetSchemaBlob);
           if (before.database?.database !== "bodycast_restore" || !migrationValid
@@ -846,7 +846,7 @@ jobs:
             coveredModelDayKeys: report.rehearsalCoverage?.coveredModelDayKeys,
             coverageSha256: report.rehearsalCoverage?.sha256 });
           assertArtifactBinding({ ...JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/artifact.json`, "utf8")),
-            ledgerRows: report.evidence.expectedMigrationRows.map((row) => ({ ...row, finishedAt: "verified-in-restored-ledger", rolledBackAt: null })) });
+            ledgerRows: report.evidence.migrationRows.slice(0, 65) });
           if (migrationLedgerDigest(report.evidence.migrationRows, targetSchema.migrationCount) !== targetSchema.ledgerDigest
             || report.evidence.sourceFingerprint !== report.restoredSourceFingerprint) throw new Error("Backup source and live target ledger/fingerprint differ.");
           assertOneShotRecoveryState({ marker: { state: "ready", sourceSha: process.env.RECOVERY_SHA,

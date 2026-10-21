@@ -712,6 +712,7 @@ export function assertProductionIdentity({ database, app, migrationRows, schemaS
 const RECOVERED_V4_SERVE_TOOLING_PATHS = new Set([
   ".github/workflows/deploy-production.yml",
   "scripts/github-owner-identity.mjs",
+  "scripts/production-traffic-cutover.sh",
   "scripts/production-v4-derived-recovery.mjs",
   "scripts/production-v4-recovered-release.sh",
   "tests/github-owner-identity.test.mjs",

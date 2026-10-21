@@ -964,6 +964,7 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       lineageVerified: true,
       commitDistance: 2,
       changedPaths: [
+        "scripts/production-traffic-cutover.sh",
         "scripts/production-v4-derived-recovery.mjs",
         "scripts/production-v4-recovered-release.sh",
         "scripts/github-owner-identity.mjs",

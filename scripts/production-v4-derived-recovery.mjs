@@ -703,6 +703,9 @@ export function assertCompletedV4RecoveryForServe({ marker, releaseSha, migratio
   ledgerDigest, schemaSha256, sourceFingerprint, databaseContainerId, databaseImageId,
   schemaDigestContract, schemaDigestHelperSha256, runtimeCompatibilityProof }) {
   const target = marker?.targetSchema;
+  const markerSchemaSha256 = marker?.schemaSha256 ?? marker?.schemaSha;
+  const markerSchemaShaConsistent = marker?.schemaSha256 === undefined || marker?.schemaSha === undefined
+    || marker.schemaSha256 === marker.schemaSha;
   const sourceModelDayKeys = marker?.sourceModelDayKeys;
   const coveredModelDayKeys = marker?.coveredModelDayKeys;
   const recoveryReleaseShaCompatible = marker?.workflowSha === releaseSha || (() => {
@@ -730,7 +733,8 @@ export function assertCompletedV4RecoveryForServe({ marker, releaseSha, migratio
     || marker.unifiedPublishedGeneration !== marker.productionPublishedGeneration
     || !isDigest(marker.sourceFingerprint) || marker.sourceFingerprint !== sourceFingerprint
     || !isDigest(marker.rehearsalCoverageSha256)
-    || !isDigest(marker.schemaSha256) || marker.postflightSchemaSha256 !== marker.schemaSha256
+    || !isDigest(markerSchemaSha256) || !markerSchemaShaConsistent
+    || marker.postflightSchemaSha256 !== markerSchemaSha256
     || marker.postflightSchemaSha256 !== schemaSha256
     || marker.schemaDigestContract !== schemaDigestContract
     || marker.schemaDigestHelperSha256 !== schemaDigestHelperSha256

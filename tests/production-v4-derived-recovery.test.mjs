@@ -9,6 +9,7 @@ import {
   assertArtifactBinding,
   assertProductionIdentity,
   assertCompletedV4RecoveryForServe,
+  assertRecoveredV4ToolingOnlyDescendant,
   assertRehearsedCoverageEvidence,
   assertRecoveryPostflight,
   assertOneShotRecoveryState,
@@ -908,6 +909,40 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       { databaseContainerId: "9".repeat(64) },
       { marker: { ...marker, coveredModelDayKeys: [modelDayKeys[0]], coveredDayCount: 1 } },
     ]) expect(() => assertCompletedV4RecoveryForServe({ ...expected, ...changed })).toThrow(/completed.*V4 recovery/i);
+
+    const releaseShaAfterToolingFix = "8".repeat(40);
+    const runtimeCompatibilityProof = {
+      recoveryWorkflowSha: releaseSha,
+      releaseSha: releaseShaAfterToolingFix,
+      directChildVerified: true,
+      changedPaths: [
+        "scripts/production-v4-derived-recovery.mjs",
+        "scripts/production-v4-recovered-release.sh",
+        "tests/production-v4-derived-recovery.test.mjs",
+        "tests/production-recovered-v4-serving-contract.test.ts",
+      ],
+    };
+    expect(assertRecoveredV4ToolingOnlyDescendant(runtimeCompatibilityProof)).toBe(true);
+    expect(assertCompletedV4RecoveryForServe({ ...expected, releaseSha: releaseShaAfterToolingFix,
+      runtimeCompatibilityProof })).toBe(true);
+    for (const changed of [
+      { changedPaths: ["src/app/page.tsx"] },
+      { changedPaths: ["scripts/production-v4-recovered-release.sh", "src/app/page.tsx"] },
+      { directChildVerified: false },
+      { changedPaths: ["scripts/production-v4-recovered-release.sh", "scripts/production-v4-recovered-release.sh"] },
+    ]) {
+      expect(() => assertRecoveredV4ToolingOnlyDescendant({ ...runtimeCompatibilityProof, ...changed })).toThrow();
+      expect(() => assertCompletedV4RecoveryForServe({ ...expected, releaseSha: releaseShaAfterToolingFix,
+        runtimeCompatibilityProof: { ...runtimeCompatibilityProof, ...changed } })).toThrow(/completed.*V4 recovery/i);
+    }
+    for (const changed of [
+      { releaseSha: "9".repeat(40) },
+      { recoveryWorkflowSha: "7".repeat(40) },
+    ]) {
+      expect(assertRecoveredV4ToolingOnlyDescendant({ ...runtimeCompatibilityProof, ...changed })).toBe(true);
+      expect(() => assertCompletedV4RecoveryForServe({ ...expected, releaseSha: releaseShaAfterToolingFix,
+        runtimeCompatibilityProof: { ...runtimeCompatibilityProof, ...changed } })).toThrow(/completed.*V4 recovery/i);
+    }
   });
 
 });

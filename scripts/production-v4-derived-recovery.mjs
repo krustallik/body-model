@@ -639,14 +639,46 @@ export function assertProductionIdentity({ database, app, migrationRows, schemaS
   return true;
 }
 
+const RECOVERED_V4_SERVE_TOOLING_PATHS = new Set([
+  "scripts/production-v4-derived-recovery.mjs",
+  "scripts/production-v4-recovered-release.sh",
+  "tests/production-v4-derived-recovery.test.mjs",
+  "tests/production-recovered-v4-serving-contract.test.ts",
+]);
+
+export function assertRecoveredV4ToolingOnlyDescendant({ recoveryWorkflowSha, releaseSha,
+  directChildVerified, changedPaths }) {
+  if (!isSha(recoveryWorkflowSha) || !isSha(releaseSha) || directChildVerified !== true
+    || !Array.isArray(changedPaths) || changedPaths.some((file) => typeof file !== "string"
+      || !RECOVERED_V4_SERVE_TOOLING_PATHS.has(file))
+    || new Set(changedPaths).size !== changedPaths.length) {
+    fail("A later serving SHA is compatible with recovery only when it is the direct child of the recovery SHA and changes release-tooling files only.");
+  }
+  return true;
+}
+
 export function assertCompletedV4RecoveryForServe({ marker, releaseSha, migrationTree, prismaSchemaBlob,
   ledgerDigest, schemaSha256, sourceFingerprint, databaseContainerId, databaseImageId,
-  schemaDigestContract, schemaDigestHelperSha256 }) {
+  schemaDigestContract, schemaDigestHelperSha256, runtimeCompatibilityProof }) {
   const target = marker?.targetSchema;
   const sourceModelDayKeys = marker?.sourceModelDayKeys;
   const coveredModelDayKeys = marker?.coveredModelDayKeys;
+  const recoveryReleaseShaCompatible = marker?.workflowSha === releaseSha || (() => {
+    try {
+      assertRecoveredV4ToolingOnlyDescendant({
+        recoveryWorkflowSha: marker?.workflowSha,
+        releaseSha,
+        directChildVerified: runtimeCompatibilityProof?.directChildVerified,
+        changedPaths: runtimeCompatibilityProof?.changedPaths,
+      });
+      return runtimeCompatibilityProof.recoveryWorkflowSha === marker.workflowSha
+        && runtimeCompatibilityProof.releaseSha === releaseSha;
+    } catch {
+      return false;
+    }
+  })();
   if (!marker || marker.state !== "completed" || marker.result !== "current"
-    || marker.sourceSha !== LEGACY_V4_RECOVERY.sourceSha || marker.workflowSha !== releaseSha
+    || marker.sourceSha !== LEGACY_V4_RECOVERY.sourceSha || !recoveryReleaseShaCompatible
     || !isSha(releaseSha) || marker.attempt !== "1" || !/^[1-9][0-9]*$/.test(String(marker.ownerRunId ?? ""))
     || marker.appMode !== "maintenance-no-app" || marker.rolloutEpoch !== 1
     || marker.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once"

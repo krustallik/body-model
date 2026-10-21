@@ -40,7 +40,12 @@ describe("recovered V4 serving release contract", () => {
     expect(recovery).toContain('marker.state !== "completed" || marker.result !== "current"');
     expect(recoveredRelease).toContain('--production-schema-postflight');
     expect(recoveredRelease).toContain('migration_count" == "74"');
-    expect(recoveredRelease).toContain("production-db-data-fingerprint.sh");
+    expect(recoveredRelease).toContain("bodycast_recovery_raw_fingerprint_from_marker_image");
+    expect(recoveredRelease).toContain("sha256sum \"$archive\"");
+    expect(recoveredRelease).toContain("/app/dist/production-v4-recovery-evidence.mjs");
+    expect(recoveredRelease).toContain('git -C "$ROOT_DIR" rev-parse "$release_sha^"');
+    expect(recoveredRelease).toContain('git -C "$ROOT_DIR" rev-list --count "$marker_workflow_sha..$release_sha"');
+    expect(recovery).toContain("assertRecoveredV4ToolingOnlyDescendant");
     expect(recoveredRelease).toContain("production-v4-schema-digest.mjs");
     expect(recoveredRelease).toContain("unified-v4-traffic-check.mjs --profile-id 1");
     expect(recoveredRelease).not.toContain("prisma migrate deploy");

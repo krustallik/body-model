@@ -136,7 +136,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/lib/db/prisma", () => ({ prisma: mocks.prisma }));
 vi.mock("@/modules/model-episodes/full-history-recalculation.service", () => ({
-  FULL_HISTORY_RAW_INPUT_TABLES: ["ModelEpisode", "StrengthDiarySession"],
+  FULL_HISTORY_RAW_INPUT_TABLES: ["ModelEpisode", "HealthSyncAudit", "DailyHealthData", "StrengthDiarySession"],
 }));
 vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
   PhysiologyV7PersistenceRepository: class {
@@ -188,6 +188,7 @@ function reset(blocks = true) {
   mocks.state.failClear = null;
   mocks.state.invalidTrainingSession = null;
   mocks.state.inventoryRows = {};
+  mocks.queryRaw.mockClear();
   mocks.state.inventoryMetadataByteOverrides = {};
   mocks.state.inventoryReturnedBytes = [];
   mocks.state.inventoryBoundBatchSizes = [];
@@ -227,7 +228,7 @@ async function recover(expectedEvidenceBinding?: ReturnType<typeof createV4Recov
 describe("persisted-source V4 derived recovery", () => {
   beforeEach(() => reset());
 
-  it("preserves the exact V2 fingerprint while reading bounded pages and oversized rows", async () => {
+  it("preserves the exact V3 fingerprint while reading bounded pages and oversized rows", async () => {
     const rows = Array.from({ length: 257 }, (_, index) => ({
       id: (index + 1) * 2,
       raw_row: JSON.stringify({ fixture: "paged-recovery", index }),
@@ -245,11 +246,12 @@ describe("persisted-source V4 derived recovery", () => {
     }
     const expectedTables: Record<string, string> = {
       ModelEpisode: modelEpisodeDigest.digest("hex"),
+      DailyHealthData: createHash("sha256").update(`DailyHealthData\0${0}\0`).digest("hex"),
     };
     for (const table of ["StrengthDiarySession", "StrengthSessionAccountingSnapshot", "StrengthSessionAccountingOperation"]) {
       expectedTables[table] = createHash("sha256").update(`${table}\0${0}\0`).digest("hex");
     }
-    const expectedFingerprint = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
+    const expectedFingerprint = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
     for (const [table, tableDigest] of Object.entries(expectedTables)) expectedFingerprint.update(`${table}\0${tableDigest}\0`);
 
     expect(result.tables).toEqual(expectedTables);
@@ -275,6 +277,20 @@ describe("persisted-source V4 derived recovery", () => {
     expect(mocks.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000,
     });
+  });
+
+  it("excludes retention-managed HealthSyncAudit while keeping V4 source rows fingerprinted", async () => {
+    mocks.state.inventoryRows.HealthSyncAudit = [{ id: 1, raw_row: "{\"body\":\"retained\"}" }];
+    const baseline = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
+
+    mocks.state.inventoryRows.HealthSyncAudit = [{ id: 1, raw_row: "{\"body\":\"expired\"}" }];
+    const auditChanged = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
+    expect(auditChanged.fingerprint).toBe(baseline.fingerprint);
+    expect(mocks.queryRaw.mock.calls.some(([query]) => String(query).includes('public.\"HealthSyncAudit\"'))).toBe(false);
+
+    mocks.state.inventoryRows.DailyHealthData = [{ id: 1, raw_row: "{\"rawPayload\":\"changed\"}" }];
+    const sourceChanged = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
+    expect(sourceChanged.fingerprint).not.toBe(auditChanged.fingerprint);
   });
 
   it("fails closed before rendering an oversized single source row", async () => {

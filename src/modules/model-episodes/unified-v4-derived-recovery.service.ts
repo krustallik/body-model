@@ -271,10 +271,11 @@ async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): 
   fingerprint: string;
   tables: Record<string, string>;
 }> {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v2\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
   const tables: Record<string, string> = {};
   const immutableTables = [
-    ...FULL_HISTORY_RAW_INPUT_TABLES,
+    // HealthSyncAudit is a 30-day operational log, not a V4 calculation input.
+    ...FULL_HISTORY_RAW_INPUT_TABLES.filter((table) => table !== "HealthSyncAudit"),
     // Recovery must consume, never rematerialize, persisted Training accounting.
     "StrengthSessionAccountingSnapshot",
     "StrengthSessionAccountingOperation",

@@ -166,7 +166,7 @@ jobs:
           import { appendFileSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
           import { execFileSync } from "node:child_process";
           import { TRAINING_MUTATION_LEDGER_MANIFEST } from "./scripts/production-migration-manifests.mjs";
-          import { LEGACY_V4_RECOVERY, migrationLedgerDigest } from "./scripts/production-v4-derived-recovery.mjs";
+          import { LEGACY_V4_RECOVERY, migrationFilesDigest } from "./scripts/production-v4-derived-recovery.mjs";
           const releaseSha = process.env.RELEASE_SHA;
           const mode = process.env.TARGET_MODE;
           const readJsonAt = (rev, path) => JSON.parse(execFileSync("git", ["show", `${rev}:${path}`], { encoding: "utf8" }));
@@ -185,11 +185,11 @@ jobs:
             if (TRAINING_MUTATION_LEDGER_MANIFEST.id !== "training-mutation-ledger-refresh-queue-v1"
                 || expected.length !== 74 || actual.length !== 74
                 || actual.some((row, index) => row.name !== expected[index]?.name || row.checksum !== expected[index]?.checksum)
-                || migrationLedgerDigest(actual.slice(0, 65), 65) !== LEGACY_V4_RECOVERY.ledgerDigest) {
+                || migrationFilesDigest(actual.slice(0, 65), 65) !== LEGACY_V4_RECOVERY.ledgerDigest) {
               throw new Error("Exact release tree is not the pinned 65+9 Training migration contract.");
             }
             target = { mode, manifestId: TRAINING_MUTATION_LEDGER_MANIFEST.id, releaseSha,
-              migrationCount: 74, ledgerDigest: migrationLedgerDigest(actual, 74),
+              migrationCount: 74, ledgerDigest: migrationFilesDigest(actual, 74),
               migrationTree: execFileSync("git", ["rev-parse", `${releaseSha}:prisma/migrations`], { encoding: "utf8" }).trim(),
               prismaSchemaBlob: execFileSync("git", ["rev-parse", `${releaseSha}:prisma/schema.prisma`], { encoding: "utf8" }).trim(),
               canonicalFixBlob: process.env.CANONICAL_FIX_BLOB, prismaVersion };

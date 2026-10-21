@@ -76,6 +76,21 @@ export function migrationLedgerDigest(rows, expectedCount = LEGACY_V4_RECOVERY.m
   return sha256(rows.map(({ name, checksum }) => `${name}\t${checksum}\n`).join(""));
 }
 
+export function migrationFilesDigest(files, expectedCount) {
+  if (!Number.isSafeInteger(expectedCount) || expectedCount < 1 || !Array.isArray(files) || files.length !== expectedCount) {
+    fail(`Migration file set does not contain exactly ${expectedCount} entries.`);
+  }
+  let previous = "";
+  for (const file of files) {
+    if (typeof file.name !== "string" || !/^[0-9]{14}_[a-z0-9_]+$/.test(file.name) || file.name <= previous
+      || !isDigest(file.checksum)) {
+      fail("Migration file set is malformed, duplicated, out of order, or has an invalid checksum.");
+    }
+    previous = file.name;
+  }
+  return sha256(files.map(({ name, checksum }) => `${name}\t${checksum}\n`).join(""));
+}
+
 // Return only stable category names so failed production preflights can be
 // diagnosed without logging source payloads or fingerprints.
 export function productionPreflightMismatchCategories({ report, measurements, before, rehearsal,

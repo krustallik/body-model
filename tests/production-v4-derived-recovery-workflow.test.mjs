@@ -636,6 +636,8 @@ esac
     expect(workflow).toContain("PRODUCTION_BACKUP_ENCRYPTION_KEY");
     expect(workflow).toContain("BACKUP_FILE: ${{ runner.temp }}/bodycast-v4-artifact/production-backup.pgdump.enc");
     expect(workflow).toContain("migrationLedgerDigest(before.migrationRows, targetCount) === targetLedger");
+    expect(workflow).toContain("migrationFilesDigest(actual.slice(0, 65), 65) !== LEGACY_V4_RECOVERY.ledgerDigest");
+    expect(workflow).toContain("ledgerDigest: migrationFilesDigest(actual, 74)");
     expect(host).toContain("bodycast-production-release.lock");
     expect(host).toContain("flock -n 9");
     expect(host).toContain('state: "started"');

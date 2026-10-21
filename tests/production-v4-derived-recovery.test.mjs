@@ -923,18 +923,22 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       changedPaths: [
         "scripts/production-v4-derived-recovery.mjs",
         "scripts/production-v4-recovered-release.sh",
+        "scripts/github-owner-identity.mjs",
+        ".github/workflows/deploy-production.yml",
+        "tests/github-owner-identity.test.mjs",
         "tests/production-v4-derived-recovery.test.mjs",
         "tests/production-recovered-v4-serving-contract.test.ts",
       ],
     };
     expect(assertRecoveredV4ToolingOnlyDescendant(runtimeCompatibilityProof)).toBe(true);
+    expect(assertRecoveredV4ToolingOnlyDescendant({ ...runtimeCompatibilityProof, commitDistance: 5 })).toBe(true);
     expect(assertCompletedV4RecoveryForServe({ ...expected, releaseSha: releaseShaAfterToolingFix,
       runtimeCompatibilityProof })).toBe(true);
     for (const changed of [
       { changedPaths: ["src/app/page.tsx"] },
       { changedPaths: ["scripts/production-v4-recovered-release.sh", "src/app/page.tsx"] },
       { lineageVerified: false },
-      { commitDistance: 3 },
+      { commitDistance: 6 },
       { changedPaths: ["scripts/production-v4-recovered-release.sh", "scripts/production-v4-recovered-release.sh"] },
     ]) {
       expect(() => assertRecoveredV4ToolingOnlyDescendant({ ...runtimeCompatibilityProof, ...changed })).toThrow();

@@ -49,6 +49,8 @@ describe("recovered V4 serving release contract", () => {
     expect(recoveredRelease).toContain("/app/dist/production-v4-recovery-evidence.mjs");
     expect(recoveredRelease).toContain('git -C "$ROOT_DIR" rev-list --count "$marker_workflow_sha..$release_sha"');
     expect(recovery).toContain("assertRecoveredV4ToolingOnlyDescendant");
+    expect(recovery).toContain("RECOVERED_V4_SERVE_MAX_TOOLING_COMMITS = 5");
+    expect(recoveredRelease).toContain('commit_distance" =~ ^[1-5]$');
     expect(recoveredRelease).toContain("production-v4-schema-digest.mjs");
     expect(recoveredRelease).toContain("unified-v4-traffic-check.mjs --profile-id 1");
     expect(recoveredRelease).not.toContain("prisma migrate deploy");

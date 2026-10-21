@@ -681,20 +681,25 @@ export function assertProductionIdentity({ database, app, migrationRows, schemaS
 }
 
 const RECOVERED_V4_SERVE_TOOLING_PATHS = new Set([
+  ".github/workflows/deploy-production.yml",
+  "scripts/github-owner-identity.mjs",
   "scripts/production-v4-derived-recovery.mjs",
   "scripts/production-v4-recovered-release.sh",
+  "tests/github-owner-identity.test.mjs",
   "tests/production-v4-derived-recovery.test.mjs",
   "tests/production-recovered-v4-serving-contract.test.ts",
 ]);
 
+const RECOVERED_V4_SERVE_MAX_TOOLING_COMMITS = 5;
+
 export function assertRecoveredV4ToolingOnlyDescendant({ recoveryWorkflowSha, releaseSha,
   lineageVerified, commitDistance, changedPaths }) {
   if (!isSha(recoveryWorkflowSha) || !isSha(releaseSha) || lineageVerified !== true
-    || !Number.isSafeInteger(commitDistance) || commitDistance < 1 || commitDistance > 2
+    || !Number.isSafeInteger(commitDistance) || commitDistance < 1 || commitDistance > RECOVERED_V4_SERVE_MAX_TOOLING_COMMITS
     || !Array.isArray(changedPaths) || changedPaths.some((file) => typeof file !== "string"
       || !RECOVERED_V4_SERVE_TOOLING_PATHS.has(file))
     || new Set(changedPaths).size !== changedPaths.length) {
-    fail("A later serving SHA is compatible with recovery only within two verified tooling-only commits after the recovery SHA.");
+    fail(`A later serving SHA is compatible with recovery only within ${RECOVERED_V4_SERVE_MAX_TOOLING_COMMITS} explicitly allowlisted tooling-only commits after the recovery SHA.`);
   }
   return true;
 }

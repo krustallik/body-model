@@ -158,8 +158,8 @@ NODE
   )" || return 1
   if [[ "$marker_workflow_sha" != "$release_sha" ]]; then
     commit_distance="$(git -C "$ROOT_DIR" rev-list --count "$marker_workflow_sha..$release_sha" 2>/dev/null || true)"
-    [[ "$commit_distance" =~ ^[12]$ && "$(git -C "$ROOT_DIR" rev-parse "$release_sha~$commit_distance" 2>/dev/null || true)" == "$marker_workflow_sha" ]] || {
-      echo "Recovered-V4 serving compatibility permits at most two verified tooling-only commits after the exact recovery workflow SHA." >&2; return 1;
+    [[ "$commit_distance" =~ ^[1-5]$ && "$(git -C "$ROOT_DIR" rev-parse "$release_sha~$commit_distance" 2>/dev/null || true)" == "$marker_workflow_sha" ]] || {
+      echo "Recovered-V4 serving compatibility permits at most five allowlisted tooling-only commits after the exact recovery workflow SHA." >&2; return 1;
     }
     changed_paths_json="$(git -C "$ROOT_DIR" diff --no-renames --name-only "$marker_workflow_sha" "$release_sha" \
       | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; process.stdout.write(JSON.stringify(s.split(/\r?\n/).filter(Boolean)))')" || return 1

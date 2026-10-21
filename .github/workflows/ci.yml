@@ -207,6 +207,9 @@ jobs:
       - name: Apply test database migrations
         run: npm run prisma:migrate:deploy
 
+      - name: Verify a fresh empty database matches the exact migration tree
+        run: node scripts/production-empty-install-ledger.mjs --test
+
       - name: PostgreSQL integration tests
         run: npm run test:integration -- ${{ matrix.testArgs }}
 

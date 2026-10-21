@@ -19,6 +19,7 @@ export type DeployGateInput = {
   candidateSha: string;
   dispatchConfirm?: string | null;
   nonServingDeploy?: boolean;
+  freshEmptyInstall?: boolean;
   currentWorkflowRun?: WorkflowRunEvidence;
   currentWorkflowRunId?: number | string | null;
   currentWorkflowRunAttempt?: number | string | null;
@@ -33,7 +34,7 @@ export type DeployGateResult = {
   decision: "deploy" | "block" | "skip";
   reason: string;
   candidateSha: string | null;
-  mode?: "serving" | "non-serving";
+  mode?: "serving" | "non-serving" | "fresh-empty-install";
 };
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -105,8 +106,8 @@ function trustedSuccessfulMainCiRun(input: DeployGateInput): boolean {
 }
 
 /**
- * Ordinary app deploy follows successful current-main CI. Manual deployment is
- * retained only for the owner-authorized non-serving schema-cutover path.
+ * Ordinary app deploy follows successful current-main CI. Manual deployment
+ * supports the existing non-serving schema cutover and one-time empty-host install.
  */
 export function evaluateProductionDeployGate(input: DeployGateInput): DeployGateResult {
   if (input.repositoryFullName !== REPOSITORY) {
@@ -114,10 +115,18 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
   }
 
   if (input.eventName === "workflow_dispatch") {
-    if (input.dispatchConfirm !== "deploy") {
+    const freshEmptyInstall = input.freshEmptyInstall === true;
+    if (freshEmptyInstall) {
+      if (input.dispatchConfirm !== "initialize-empty-bodycast-db") {
+        return { decision: "block", reason: "Fresh install requires the exact empty-database confirmation.", candidateSha: null };
+      }
+      if (input.nonServingDeploy !== false) {
+        return { decision: "block", reason: "Fresh empty-host install is an explicit serving operation and must select serving mode.", candidateSha: null };
+      }
+    } else if (input.dispatchConfirm !== "deploy") {
       return { decision: "block", reason: "Manual deploy requires confirm_production_deploy=deploy.", candidateSha: null };
     }
-    if (input.nonServingDeploy !== true) {
+    if (!freshEmptyInstall && input.nonServingDeploy !== true) {
       return { decision: "block", reason: "Manual deploy is reserved for the owner-authorized non-serving schema-cutover path.", candidateSha: null };
     }
     if (!FULL_SHA.test(input.candidateSha)) {
@@ -128,9 +137,11 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
     }
     return {
       decision: "deploy",
-      reason: "Owner-authorized non-serving deploy is bound to the exact current main SHA.",
+      reason: freshEmptyInstall
+        ? "Owner-authorized fresh empty-host install is bound to the exact current main SHA."
+        : "Owner-authorized non-serving deploy is bound to the exact current main SHA.",
       candidateSha: input.candidateSha,
-      mode: "non-serving",
+      mode: freshEmptyInstall ? "fresh-empty-install" : "non-serving",
     };
   }
 

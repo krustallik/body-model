@@ -84,6 +84,20 @@ describe("evaluateProductionDeployGate", () => {
     expect(manualGate({ candidateSha: stale })).toMatchObject({ decision: "skip" });
   });
 
+  it("allows a fresh empty-host install only with its distinct confirmation and exact current-main SHA", () => {
+    expect(manualGate({ dispatchConfirm: "initialize-empty-bodycast-db", nonServingDeploy: false, freshEmptyInstall: true }))
+      .toEqual({
+        decision: "deploy",
+        reason: "Owner-authorized fresh empty-host install is bound to the exact current main SHA.",
+        candidateSha: tip,
+        mode: "fresh-empty-install",
+      });
+    expect(manualGate({ dispatchConfirm: "deploy", nonServingDeploy: false, freshEmptyInstall: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "initialize-empty-bodycast-db", nonServingDeploy: true, freshEmptyInstall: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "initialize-empty-bodycast-db", nonServingDeploy: false, freshEmptyInstall: true, candidateSha: stale })).toMatchObject({ decision: "skip" });
+    expect(manualGate({ dispatchConfirm: "initialize-empty-bodycast-db", nonServingDeploy: false })).toMatchObject({ decision: "block" });
+  });
+
   it("allows automatic serving only from successful CI for the exact current main SHA", () => {
     expect(automaticGate()).toEqual({
       decision: "deploy",

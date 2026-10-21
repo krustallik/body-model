@@ -40,6 +40,29 @@ approved schema cutover, the separate migration flow runs first; its exact-SHA m
 app non-serving until V3/V4 readiness. Keep traffic on maintenance from before backup/preflight
 through V3 and V4 readiness.
 
+## First install on the verified empty VPS
+
+The owner-only `fresh_empty_install` mode in `.github/workflows/deploy-production.yml` is a separate,
+one-time path for the new VPS at `169.58.239.149`. It requires the exact current-main SHA and its
+successful CI, confirmation `initialize-empty-bodycast-db`, the configured app hostname resolving
+to that VPS, a clean checkout, no prior `.env`, no BodyCast app/database container or Compose
+container, no PostgreSQL volume, no install marker, and a healthy existing Caddy on
+`gymbeam-internal`. It does not change Gymbeam services or the old server.
+
+The fixed host script creates a root-only runtime `.env`, starts only PostgreSQL, confirms the
+public schema has no tables, applies the exact checked-out Prisma migration tree once, and verifies
+every migration name/checksum/state plus empty Profile, Health, Workout, Training, Work, and model
+source tables. Only then does it call the existing exact-SHA deploy script to start the app and
+publish its route. The ordinary deploy path remains migration-free. A durable one-shot marker blocks
+reruns after any attempt; failures preserve the database and marker for read-only diagnosis. Do not
+reset the database or retry blindly.
+
+This first launch has no profile or model history, so Unified V4 is **not initialized** and is not
+reported as current. The app shell and profile setup are served; V4-dependent outputs remain
+unavailable until real profile/source inputs are entered and the normal model initialization and
+currentness checks pass. This path is not a replacement for migration/recovery of an existing
+database.
+
 If the exact candidate SHA is already healthy and serving with the fixed route and current V4, the
 workflow still runs the schema/V4 checks (including building the local migrator tooling image), then
 skips app replacement and route changes. This keeps repeated successful CI events idempotent without

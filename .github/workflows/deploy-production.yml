@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_production_deploy:
-        description: Type deploy to authorize an exact-current-main app deploy
+        description: Type deploy for schema cutover, or initialize-empty-bodycast-db for a clean new VPS
         required: true
         type: string
       commit_sha:
@@ -13,9 +13,14 @@ on:
         required: true
         type: string
       non_serving_deploy:
-        description: Manual deploy is only for the owner-authorized schema cutover; keep traffic in maintenance
+        description: Keep traffic in maintenance for a schema cutover; select false only with fresh_empty_install
         required: true
         default: true
+        type: boolean
+      fresh_empty_install:
+        description: One-time bootstrap of a new VPS with no BodyCast containers, volume, marker, or runtime environment
+        required: true
+        default: false
         type: boolean
 
 permissions:
@@ -57,6 +62,7 @@ jobs:
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           CONFIRMATION: ${{ inputs.confirm_production_deploy }}
           NON_SERVING: ${{ inputs.non_serving_deploy }}
+          FRESH_EMPTY_INSTALL: ${{ inputs.fresh_empty_install }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_EVENT_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
@@ -71,9 +77,17 @@ jobs:
           CI_RUN_URL=""
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may use manual deploy."; exit 1; }
-            [[ "$CONFIRMATION" == "deploy" && "$NON_SERVING" == "true" ]] || {
-              echo "::error::Manual deploy requires confirmation and non-serving mode."; exit 1;
-            }
+            if [[ "$FRESH_EMPTY_INSTALL" == "true" ]]; then
+              [[ "$CONFIRMATION" == "initialize-empty-bodycast-db" && "$NON_SERVING" == "false" ]] || {
+                echo "::error::Fresh empty-host install requires its distinct confirmation and serving mode."; exit 1;
+              }
+              MODE="fresh-empty-install"
+            else
+              [[ "$CONFIRMATION" == "deploy" && "$NON_SERVING" == "true" ]] || {
+                echo "::error::Manual schema-cutover deploy requires confirmation and non-serving mode."; exit 1;
+              }
+              MODE="non-serving"
+            fi
             node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
@@ -88,7 +102,6 @@ jobs:
           });
           NODE
             CANDIDATE="$DISPATCH_SHA"
-            MODE="non-serving"
             [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ && "$CANDIDATE" == "$MAIN_TIP" && "$RUN_SHA" == "$MAIN_TIP" ]] || {
               echo "::error::Manual deploy candidate, workflow checkout, and canonical main must be the same exact SHA."; exit 1;
             }
@@ -152,13 +165,15 @@ jobs:
           [[ "$RUN_SHA" == "$MAIN_TIP" ]] || { echo "::error::Deploy workflow source is not current main."; exit 1; }
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             REPO="$REPOSITORY" EVENT_NAME="$EVENT_NAME" MAIN_TIP="$MAIN_TIP" CANDIDATE="$CANDIDATE" \
-              CONFIRMATION="$CONFIRMATION" NON_SERVING="$NON_SERVING" node --experimental-strip-types --input-type=module <<'NODE'
+              CONFIRMATION="$CONFIRMATION" NON_SERVING="$NON_SERVING" FRESH_EMPTY_INSTALL="$FRESH_EMPTY_INSTALL" node --experimental-strip-types --input-type=module <<'NODE'
           import { appendFileSync } from "node:fs";
           import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
           const result = evaluateProductionDeployGate({ eventName: process.env.EVENT_NAME, repositoryFullName: process.env.REPO,
             mainTipSha: process.env.MAIN_TIP, candidateSha: process.env.CANDIDATE,
-            dispatchConfirm: process.env.CONFIRMATION, nonServingDeploy: process.env.NON_SERVING === "true" });
-          if (result.decision !== "deploy" || result.mode !== "non-serving") throw new Error(result.reason);
+            dispatchConfirm: process.env.CONFIRMATION, nonServingDeploy: process.env.NON_SERVING === "true",
+            freshEmptyInstall: process.env.FRESH_EMPTY_INSTALL === "true" });
+          const expectedMode = process.env.FRESH_EMPTY_INSTALL === "true" ? "fresh-empty-install" : "non-serving";
+          if (result.decision !== "deploy" || result.mode !== expectedMode) throw new Error(result.reason);
           appendFileSync(process.env.GITHUB_OUTPUT, `decision=deploy\ncandidate_sha=${result.candidateSha}\nreason=${result.reason}\n`);
           console.log(JSON.stringify(result, null, 2));
           NODE
@@ -175,6 +190,9 @@ jobs:
           echo "- current-main CI: $CI_RUN_URL" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$MODE" == "serving" ]]; then
             echo "- mode: automatic ordinary migration-free deploy after successful current-main CI" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$MODE" == "fresh-empty-install" ]]; then
+            echo "- mode: owner-authorized one-time empty-host bootstrap; applies the exact release migration tree only after proving the new VPS has no BodyCast DB container, volume, marker, or runtime environment" >> "$GITHUB_STEP_SUMMARY"
+            echo "- V4: remains not initialized until real profile/source inputs exist; no currentness claim is made" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- mode: owner-authorized non-serving schema-cutover deploy; traffic remains in maintenance" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -279,6 +297,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          DEPLOY_MODE: ${{ needs.authorize.outputs.deploy_mode }}
         run: |
           set -Eeuo pipefail
           : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
@@ -287,6 +306,12 @@ jobs:
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned production SSH fingerprint."; exit 1; }
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Production traffic topology inputs are invalid."; exit 1; }
+          if [[ "$DEPLOY_MODE" == "fresh-empty-install" ]]; then
+            [[ "$SSH_HOST" == "169.58.239.149" ]] || { echo "::error::Fresh BodyCast initialization is restricted to the newly authorized VPS address."; exit 1; }
+            getent ahostsv4 "$APP_HOST" | awk '$1 == "169.58.239.149" { found = 1 } END { exit !found }' || {
+              echo "::error::APP_HOST does not resolve to the new VPS address."; exit 1;
+            }
+          fi
           install -d -m 700 "$RUNNER_TEMP/bodycast-deploy-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-deploy-ssh/id"
           chmod 600 "$RUNNER_TEMP/bodycast-deploy-ssh/id"
@@ -307,6 +332,8 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           DEPLOY_SHA: ${{ needs.authorize.outputs.candidate_sha }}
           DEPLOY_MODE: ${{ needs.authorize.outputs.deploy_mode }}
+          RELEASE_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          RELEASE_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -Eeuo pipefail
           TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
@@ -314,7 +341,7 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
-          [[ "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" ]] || { echo "::error::Invalid authorized deploy mode."; exit 1; }
+          [[ "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" || "$DEPLOY_MODE" == "fresh-empty-install" ]] || { echo "::error::Invalid authorized deploy mode."; exit 1; }
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           DEPLOY_SHA="$1"
@@ -322,8 +349,10 @@ jobs:
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
           DEPLOY_MODE="${5:-}"
+          RELEASE_WORKFLOW_RUN_ID="${6:-}"
+          RELEASE_WORKFLOW_RUN_ATTEMPT="${7:-}"
           [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* \
-            && ( "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" ) ]] || exit 2
+            && ( "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" || "$DEPLOY_MODE" == "fresh-empty-install" ) ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" ]] || { echo "Unexpected production checkout." >&2; exit 1; }
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "Production checkout is dirty; refusing to overwrite files." >&2; exit 1; }
@@ -335,6 +364,14 @@ jobs:
           case "$DEPLOY_MODE" in
             serving) NON_SERVING="0" ;;
             non-serving) NON_SERVING="1" ;;
+            fresh-empty-install)
+              [[ "$RELEASE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ && "$RELEASE_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 2
+              BODYCAST_EMPTY_INSTALL_CONFIRMATION="initialize-empty-bodycast-db" \
+              BODYCAST_EMPTY_INSTALL_TARGET_IP="169.58.239.149" \
+              APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+                bash scripts/production-empty-install-host.sh "$DEPLOY_SHA" "$RELEASE_WORKFLOW_RUN_ID" "$RELEASE_WORKFLOW_RUN_ATTEMPT"
+              exit 0
+              ;;
             *) echo "Invalid deploy mode." >&2; exit 1 ;;
           esac
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_NON_SERVING_DEPLOY="$NON_SERVING" \
@@ -342,9 +379,14 @@ jobs:
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$DEPLOY_MODE'"
+          [[ "$RELEASE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ && "$RELEASE_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Workflow run binding is malformed."; exit 1; }
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$DEPLOY_MODE' '$RELEASE_WORKFLOW_RUN_ID' '$RELEASE_WORKFLOW_RUN_ATTEMPT'"
           timeout 35m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
+          if [[ "$DEPLOY_MODE" == "fresh-empty-install" ]]; then
+            curl --fail --silent --show-error --max-time 20 "https://$APP_HOST/api/health" | grep -Fq '"status":"ok"'
+            curl --fail --silent --show-error --output /dev/null --max-time 20 "https://$APP_HOST/settings/profile"
+          fi
 
       - name: Remove temporary SSH credentials
         if: always()

@@ -8,7 +8,7 @@ fail() { printf 'V4_RECOVERY_STOP %s\n' "$1" >&2; exit 1; }
 mode="${1:-}"
 [[ "$mode" == "pretransfer" || "$mode" == "preflight" || "$mode" == "preexecute" || "$mode" == "execute" ]] || fail "invalid-mode"
 [[ "${BODYCAST_DEPLOY_PATH:-}" == "/srv/bodycast" ]] || fail "deploy-path"
-[[ "${BODYCAST_RECOVERY_SHA:-}" == "b9ed485a1210e7e8fc66e478375636698deff0ad" ]] || fail "source-sha"
+[[ "${BODYCAST_RECOVERY_SHA:-}" == "35608243d5d11fd97e57b650b2cc8b2cd8f24744" ]] || fail "source-sha"
 [[ "${BODYCAST_EXPECTED_APP_SHA:-}" == "f910d2a45dfa676fada5fab42c9e8946c97872b1" ]] || fail "expected-app-sha"
 [[ "${BODYCAST_TARGET_MODE:-}" == "legacy-serving-65" || "${BODYCAST_TARGET_MODE:-}" == "maintenance-no-app-74" ]] || fail "target-mode"
 [[ "${BODYCAST_TARGET_MIGRATION_COUNT:-}" =~ ^(65|74)$ && "${BODYCAST_TARGET_LEDGER_DIGEST:-}" =~ ^[a-f0-9]{64}$ ]] || fail "target-migration-contract"
@@ -303,7 +303,7 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
   throw new Error("Live database is not the exact stale V4 source schema/state for the approved target.");
 }
-const output = { sourceSha: "b9ed485a1210e7e8fc66e478375636698deff0ad",
+const output = { sourceSha: "35608243d5d11fd97e57b650b2cc8b2cd8f24744",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
   appContainerId: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : process.argv[6],
   appImageId: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : process.argv[7],

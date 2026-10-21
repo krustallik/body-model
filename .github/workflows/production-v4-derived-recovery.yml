@@ -64,7 +64,7 @@ jobs:
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == refs/heads/main \
             && "$DISPATCH_ACTOR_ID" == 126446430 ]] || { echo "::error::Pinned owner and canonical main are required."; exit 1; }
-          [[ "$RECOVERY_SHA" == b9ed485a1210e7e8fc66e478375636698deff0ad ]] \
+          [[ "$RECOVERY_SHA" == 35608243d5d11fd97e57b650b2cc8b2cd8f24744 ]] \
             || { echo "::error::Exact approved legacy recovery SHA is required."; exit 1; }
           [[ "$TARGET_MODE" == legacy-serving-65 || "$TARGET_MODE" == maintenance-no-app-74 ]] \
             || { echo "::error::Unknown exact V4 recovery target mode."; exit 1; }
@@ -171,7 +171,7 @@ jobs:
           const mode = process.env.TARGET_MODE;
           const readJsonAt = (rev, path) => JSON.parse(execFileSync("git", ["show", `${rev}:${path}`], { encoding: "utf8" }));
           const prismaVersion = readJsonAt(releaseSha, "package-lock.json").packages?.["node_modules/prisma"]?.version;
-          const recoveryPrismaVersion = readJsonAt(process.env.RECOVERY_SHA ?? "b9ed485a1210e7e8fc66e478375636698deff0ad", "package-lock.json").packages?.["node_modules/prisma"]?.version;
+          const recoveryPrismaVersion = readJsonAt(process.env.RECOVERY_SHA ?? "35608243d5d11fd97e57b650b2cc8b2cd8f24744", "package-lock.json").packages?.["node_modules/prisma"]?.version;
           if (!prismaVersion || prismaVersion !== recoveryPrismaVersion) throw new Error("Recovery Prisma CLI differs from the exact release lockfile.");
           let target;
           if (mode === "maintenance-no-app-74") {

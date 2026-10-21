@@ -216,6 +216,50 @@ describe("canonical active-energy persistence", () => {
     expect(db.state.revisions).toHaveLength(1);
   });
 
+  it("does not revise an unchanged selected source when only another input fingerprint changes", async () => {
+    const db = database();
+    const selectedCandidate = candidate("bodycast-strength-estimate", "session:21", 320);
+    const losingCandidate = candidate("device-kcal", "workout:42:device", 260);
+    const input = eventInput({ candidates: [selectedCandidate, losingCandidate] });
+
+    await persistActiveEnergyCanonicalResolutionV1(db.client as never, input);
+    const replay = await persistActiveEnergyCanonicalResolutionV1(db.client as never, {
+      ...input,
+      inputFingerprint: "new-losing-candidate-context",
+      candidates: [selectedCandidate, { ...losingCandidate, valueKcal: 275,
+        sourceFingerprint: "workout:42:device:new-source-fingerprint" }],
+    });
+
+    expect(replay).toEqual({ eventId: 1, revision: 1, current: true });
+    expect(db.state.events[0]).toMatchObject({
+      inputFingerprint: "new-losing-candidate-context",
+      currentSource: "bodycast-strength-estimate",
+      currentKcal: 320,
+      resolutionRevision: 1,
+    });
+    expect(db.state.candidates).toContainEqual(expect.objectContaining({ source: "device-kcal", valueKcal: 275,
+      sourceFingerprint: "workout:42:device:new-source-fingerprint" }));
+    expect(db.state.revisions).toHaveLength(1);
+  });
+
+  it("revises when the selected candidate fingerprint changes", async () => {
+    const db = database();
+    const initial = eventInput({ candidates: [candidate("device-kcal", "workout:42:device", 260)] });
+    await persistActiveEnergyCanonicalResolutionV1(db.client as never, initial);
+
+    const changedCandidate = {
+      ...candidate("device-kcal", "workout:42:device", 260),
+      sourceFingerprint: "workout:42:device:updated-source",
+    };
+    const replay = await persistActiveEnergyCanonicalResolutionV1(db.client as never, {
+      ...initial,
+      candidates: [changedCandidate],
+    });
+
+    expect(replay).toEqual({ eventId: 1, revision: 2, current: true });
+    expect(db.state.revisions).toHaveLength(2);
+  });
+
   it("uses Stepper source precedence without summing candidates", async () => {
     const db = database();
     const input = eventInput({

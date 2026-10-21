@@ -28,6 +28,7 @@ bodycast_v4_cutover_phase="release-lock-setup"
 source "${ROOT_DIR}/scripts/production-release-marker.sh"
 source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 source "${ROOT_DIR}/scripts/production-release-lock.sh"
+source "${ROOT_DIR}/scripts/production-v4-recovered-release.sh"
 
 bodycast_v4_cutover_phase="app-host-validation"
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
@@ -413,10 +414,11 @@ resume_pre_ddl_previous_release() {
 }
 
 publish_candidate_route() {
-  local temporary marker reload_failed=false reload_unknown=false route_file maintenance_backup marker_status
+  local temporary marker reload_failed=false reload_unknown=false route_file maintenance_backup marker_status require_absent_marker
   local expected_marker_sha="${1:-}" expected_marker_digest="${2:-}" expected_marker_state="${3:-v4-ready}"
   local staged_route="${4:-}" main_sha_already_refreshed="${5:-false}"
   local fence_pid="${6:-}" defer_fence_finalize="${7:-false}"
+  require_absent_marker="${8:-false}"
   marker="$(bodycast_maintenance_marker_from_route)" || return 1
   bodycast_verify_exact_maintenance_route || return 1
   if [[ -n "$staged_route" ]]; then
@@ -453,7 +455,20 @@ publish_candidate_route() {
     return 1
   fi
   route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy"
-  if [[ -n "$expected_marker_sha$expected_marker_digest" ]]; then
+  if [[ "$require_absent_marker" == "true" ]]; then
+    if read_bodycast_release_marker; then
+      rm -f -- "$temporary"
+      echo "A production release marker appeared before the recovered-V4 route commit." >&2
+      return 1
+    else
+      marker_status=$?
+    fi
+    [[ "$marker_status" -eq 1 ]] || {
+      rm -f -- "$temporary"
+      echo "Production release marker state is unreadable before recovered-V4 route commit." >&2
+      return 1
+    }
+  elif [[ -n "$expected_marker_sha$expected_marker_digest" ]]; then
     [[ -n "$expected_marker_sha" && -n "$expected_marker_digest" ]] || {
       rm -f -- "$temporary"
       echo "Route resume marker compare is incomplete." >&2
@@ -649,9 +664,10 @@ restore_training_maintenance_after_fence_failure() {
 }
 
 serve_training_release() {
-  local expected_release_sha="$1" marker_digest app_image_id latest_image_id maintenance_marker staged_route
+  local expected_release_sha="$1" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
   local fence_status fence_route_budget_ms
+  local recovered_v4_release=false recovery_marker_path recovery_marker_digest
 
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
     echo "Training serving requires an exact requested release SHA." >&2; return 1;
@@ -660,19 +676,35 @@ serve_training_release() {
   git cat-file -e "$expected_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null || {
     echo "The exact requested SHA does not contain the Training queue migration." >&2; return 1;
   }
-  require_ready_release_marker
-  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
-    && "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-    && "$BODYCAST_MARKER_STATE" == "app-ready" \
-    && "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" == "$expected_release_sha" \
-    && "$BODYCAST_MARKER_DEPLOY_SHA" == "$expected_release_sha" ]] || {
-    echo "Training serving requires the exact V3 app-ready marker bound to the migration and deploy SHA." >&2
-    return 1
-  }
-  node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
-    "$BODYCAST_MARKER_FILE_PATH" "$expected_release_sha" "$ROOT_DIR"
-  marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-  [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training V3 marker digest is invalid." >&2; return 1; }
+  if [[ "${BODYCAST_RECOVERED_V4_SERVE:-0}" == "1" ]]; then
+    [[ "${BODYCAST_RECOVERED_V4_SERVE}" == "1" ]] || return 1
+    if read_bodycast_release_marker; then
+      echo "Recovered-V4 serving cannot override an existing schema/deploy release marker." >&2
+      return 1
+    else
+      local release_marker_status=$?
+      [[ "$release_marker_status" -eq 1 ]] || return 1
+    fi
+    bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"
+    recovery_marker_path="/var/lib/bodycast/recovery/unified-v4-derived-$(node --input-type=module -e 'import { LEGACY_V4_RECOVERY } from "./scripts/production-v4-derived-recovery.mjs"; process.stdout.write(LEGACY_V4_RECOVERY.sourceSha)').json"
+    recovery_marker_digest="$(sha256sum "$recovery_marker_path" | awk '{print $1}')"
+    [[ "$recovery_marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Completed V4 recovery marker digest is invalid." >&2; return 1; }
+    recovered_v4_release=true
+  else
+    require_ready_release_marker
+    [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+      && "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
+      && "$BODYCAST_MARKER_STATE" == "app-ready" \
+      && "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" == "$expected_release_sha" \
+      && "$BODYCAST_MARKER_DEPLOY_SHA" == "$expected_release_sha" ]] || {
+      echo "Training serving requires the exact V3 app-ready marker bound to the migration and deploy SHA." >&2
+      return 1
+    }
+    node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
+      "$BODYCAST_MARKER_FILE_PATH" "$expected_release_sha" "$ROOT_DIR"
+    marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+    [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training V3 marker digest is invalid." >&2; return 1; }
+  fi
 
   app_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
   latest_image_id="$(docker image inspect --format '{{.Id}}' bodycast-app:latest)"
@@ -684,6 +716,9 @@ serve_training_release() {
   maintenance_marker="$(bodycast_maintenance_marker_from_route)"
   bodycast_probe_public_maintenance "$maintenance_marker"
   compose --profile tools build migrate
+  if [[ "$recovered_v4_release" == "true" ]]; then
+    bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"
+  fi
   bodycast_stage_serving_route_config
   staged_route="$BODYCAST_ROUTE_STAGE_PATH"
   # Hold the same profile advisory transaction lock used by Training/Health
@@ -739,7 +774,27 @@ serve_training_release() {
     echo "Training serve blocked: canonical-main freshness could not be confirmed within the fenced route budget." >&2
     return 1
   fi
-  if ! publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true; then
+  if [[ "$recovered_v4_release" == "true" ]]; then
+    bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"
+    [[ "$(sha256sum "$recovery_marker_path" | awk '{print $1}')" == "$recovery_marker_digest" ]] || {
+      printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+      exec {fence_input_fd}>&-
+      if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+      exec {fence_output_fd}<&-
+      rm -f -- "$staged_route"
+      echo "Completed V4 recovery evidence changed during the currentness fence." >&2
+      return 1
+    }
+  fi
+  if [[ "$recovered_v4_release" == "true" ]]; then
+    if ! publish_candidate_route "" "" "" "$staged_route" true "$fence_pid" true true; then
+      printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+      exec {fence_input_fd}>&-
+      if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+      exec {fence_output_fd}<&-
+      return 1
+    fi
+  elif ! publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true; then
     printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
@@ -767,10 +822,23 @@ serve_training_release() {
     restore_training_maintenance_after_fence_failure || true
     return 1
   }
-  if ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest" \
-    || ! bodycast_verify_exact_serving_route; then
+  if [[ "$recovered_v4_release" != "true" ]] \
+    && ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest"; then
     echo "Training serving was committed by the PostgreSQL fence, but final marker/route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
     return 1
+  fi
+  if ! bodycast_verify_exact_serving_route; then
+    echo "Training serving was committed by the PostgreSQL fence, but final route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
+    return 1
+  fi
+  if [[ "$recovered_v4_release" == "true" ]]; then
+    if ! rm -f -- "$BODYCAST_TRAINING_MAINTENANCE_BACKUP"; then
+      echo "Training serving committed with V4 recovery provenance; route backup remains at $BODYCAST_TRAINING_MAINTENANCE_BACKUP." >&2
+      return 1
+    fi
+    BODYCAST_TRAINING_MAINTENANCE_BACKUP=""
+    echo "Exact recovered V4 release is serving under the atomic currentness fence; the terminal recovery marker is retained."
+    return 0
   fi
   local marker_backup marker_directory marker_tmp
   marker_directory="$(dirname "$BODYCAST_MARKER_FILE_PATH")"

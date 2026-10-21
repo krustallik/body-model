@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
+import { persistActiveEnergyCanonicalResolutionV1 } from "@/model/activity/active-energy-canonical.repository";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { reconcileOrphanActiveEnergyConvergenceBlocks } from "@/modules/training/training-refresh-worker";
 
@@ -130,6 +131,91 @@ describe("Active Energy convergence publication fence on isolated PostgreSQL", (
         convergenceOwner: oldOwner,
       });
     })).rejects.toThrow("Active Energy convergence owner lease was lost");
+  });
+
+  it("keeps PostgreSQL canonical resolution stable when a losing input fingerprint changes", async () => {
+    const logicalEventKey = "test:canonical-selected-source-fingerprint-stability";
+    const inputFingerprintBefore = "a".repeat(64);
+    const inputFingerprintAfter = "b".repeat(64);
+    const selectedSourceFingerprint = "c".repeat(64);
+    const losingSourceFingerprint = "e".repeat(64);
+    const changedSelectedSourceFingerprint = "d".repeat(64);
+    const where = { profileId, logicalEventKey };
+    await prisma.activeEnergyCanonicalEvent.deleteMany({ where });
+    try {
+      const first = await persistActiveEnergyCanonicalResolutionV1(prisma, {
+        profileId,
+        logicalEventKey,
+        eventKind: "strength",
+        occurrenceAt: new Date("2026-01-01T12:00:00.000Z"),
+        modelDate: "2026-01-01",
+        modelTimeZone: "UTC",
+        inputFingerprint: inputFingerprintBefore,
+        aliases: [],
+        candidates: [{
+          source: "bodycast-strength-estimate",
+          sourceIdentity: "test:selected-estimate-source",
+          sourceFingerprint: selectedSourceFingerprint,
+          valueKcal: 100,
+          provenance: { source: "test-estimate" },
+        }, {
+          source: "device-kcal",
+          sourceIdentity: "test:losing-device-source",
+          sourceFingerprint: losingSourceFingerprint,
+          valueKcal: 100,
+          provenance: { source: "test-device-v1" },
+        }],
+      });
+      const replay = await persistActiveEnergyCanonicalResolutionV1(prisma, {
+        profileId,
+        logicalEventKey,
+        eventKind: "strength",
+        occurrenceAt: new Date("2026-01-01T12:00:00.000Z"),
+        modelDate: "2026-01-01",
+        modelTimeZone: "UTC",
+        inputFingerprint: inputFingerprintAfter,
+        aliases: [],
+        candidates: [{
+          source: "bodycast-strength-estimate",
+          sourceIdentity: "test:selected-estimate-source",
+          sourceFingerprint: selectedSourceFingerprint,
+          valueKcal: 100,
+          provenance: { source: "test-estimate" },
+        }, {
+          source: "device-kcal",
+          sourceIdentity: "test:losing-device-source",
+          sourceFingerprint: "f".repeat(64),
+          valueKcal: 110,
+          provenance: { source: "test-device-v2" },
+        }],
+      });
+
+      expect(first).toEqual({ eventId: expect.any(Number), revision: 1, current: true });
+      expect(replay).toEqual({ eventId: first.eventId, revision: 1, current: true });
+      expect(await prisma.activeEnergyResolutionRevision.count({ where: { eventId: first.eventId } })).toBe(1);
+
+      const changedSelectedSource = await persistActiveEnergyCanonicalResolutionV1(prisma, {
+        profileId,
+        logicalEventKey,
+        eventKind: "strength",
+        occurrenceAt: new Date("2026-01-01T12:00:00.000Z"),
+        modelDate: "2026-01-01",
+        modelTimeZone: "UTC",
+        inputFingerprint: inputFingerprintAfter,
+        aliases: [],
+        candidates: [{
+          source: "bodycast-strength-estimate",
+          sourceIdentity: "test:selected-estimate-source",
+          sourceFingerprint: changedSelectedSourceFingerprint,
+          valueKcal: 100,
+          provenance: { source: "test-estimate" },
+        }],
+      });
+      expect(changedSelectedSource).toEqual({ eventId: first.eventId, revision: 2, current: true });
+      expect(await prisma.activeEnergyResolutionRevision.count({ where: { eventId: first.eventId } })).toBe(2);
+    } finally {
+      await prisma.activeEnergyCanonicalEvent.deleteMany({ where });
+    }
   });
 
   it("recreates a durable worker job for an orphan convergence fence and is idempotent while pending", async () => {

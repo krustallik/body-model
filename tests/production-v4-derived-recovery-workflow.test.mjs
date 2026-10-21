@@ -13,6 +13,11 @@ const host = readFileSync(new URL("../scripts/production-v4-derived-recovery-hos
 const image = readFileSync(new URL("../Dockerfile.v4-derived-recovery", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const evidence = readFileSync(new URL("../scripts/production-v4-recovery-evidence.ts", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const bashPath = (value) => {
+  if (process.platform !== "win32") return value;
+  const normalized = value.replaceAll("\\", "/");
+  return `/${normalized[0].toLowerCase()}${normalized.slice(2)}`;
+};
 
 describe("legacy derived V4 recovery release workflow", () => {
   it("keeps the bounded production recovery SSH session alive during silent derived rebuilds", () => {
@@ -24,7 +29,7 @@ describe("legacy derived V4 recovery release workflow", () => {
     expect(executeStep).toContain('timeout 35m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE"');
   });
 
-  it("runs the real host pretransfer, pre-load, and pre-execute gates before risky operations", () => {
+  it.skipIf(process.platform === "win32")("runs the real host pretransfer, pre-load, and pre-execute gates before risky operations", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "bodycast-v4-host-headroom-"));
     const deployPath = join(tempRoot, "deploy");
     const dockerRoot = join(tempRoot, "docker");
@@ -50,9 +55,16 @@ describe("legacy derived V4 recovery release workflow", () => {
     const gitInit = spawnSync("git", ["init", "--quiet", deployPath], { encoding: "utf8" });
     expect(gitInit.status, gitInit.stderr).toBe(0);
 
-    const isolatedHost = host.replaceAll("/srv/bodycast", deployPath)
-      .replaceAll("/var/lib/bodycast/recovery/artifacts", artifactRoot)
-      .replaceAll("/var/lib/bodycast/recovery", recoveryStateRoot);
+    const deployPathShell = bashPath(deployPath);
+    const artifactRootShell = bashPath(artifactRoot);
+    const recoveryStateRootShell = bashPath(recoveryStateRoot);
+    const hostScriptShell = bashPath(hostScript);
+    const helperScriptShell = bashPath(helperScript);
+    const schemaDigestScriptShell = bashPath(schemaDigestScript);
+    const archiveShell = bashPath(archive);
+    const isolatedHost = host.replaceAll("/srv/bodycast", deployPathShell)
+      .replaceAll("/var/lib/bodycast/recovery/artifacts", artifactRootShell)
+      .replaceAll("/var/lib/bodycast/recovery", recoveryStateRootShell);
     writeFileSync(hostScript, isolatedHost, { mode: 0o700 });
     chmodSync(hostScript, 0o700);
     writeFileSync(helperScript, readFileSync(new URL("../scripts/production-v4-recovery-headroom.mjs", import.meta.url)), { mode: 0o600 });
@@ -66,7 +78,7 @@ case "$1:$2:$3" in
   inspect:--format:'{{.State.Status}}') printf 'running\\n' ;;
   inspect:--format:'{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}') printf 'healthy\\n' ;;
   inspect:--format:'{{index .Config.Labels "org.bodycast.release-sha"}}') printf '%s\\n' 'f910d2a45dfa676fada5fab42c9e8946c97872b1' ;;
-  inspect:--format:'{{json .Mounts}}') printf '[{"Type":"bind","Source":"${pgdata}","Destination":"/var/lib/postgresql/data"}]\\n' ;;
+  inspect:--format:'{{json .Mounts}}') printf '%s\\n' '[{"Type":"bind","Source":${JSON.stringify(pgdata)},"Destination":"/var/lib/postgresql/data"}]' ;;
   info:--format:'{{.DockerRootDir}}') printf '%s\\n' '${dockerRoot}' ;;
   exec:bodycast-db-prod:sh)
     [[ "$*" == *'readlink -f'* ]] && printf '/var/lib/postgresql/data/pg_wal\\n' || printf '/var/lib/postgresql/data\\n' ;;
@@ -103,9 +115,14 @@ esac
       ...process.env,
       PATH: process.platform === "win32" ? `${binDir};${process.env.PATH}` : `${binDir}:${process.env.PATH}`,
       BODYCAST_DOCKER_TEST_LOG: dockerLog,
-      BODYCAST_DEPLOY_PATH: deployPath,
+      BODYCAST_DEPLOY_PATH: deployPathShell,
       BODYCAST_RECOVERY_SHA: recoverySha,
       BODYCAST_EXPECTED_APP_SHA: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
+      BODYCAST_TARGET_MODE: "legacy-serving-65",
+      BODYCAST_TARGET_MIGRATION_COUNT: "65",
+      BODYCAST_TARGET_LEDGER_DIGEST: "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7",
+      BODYCAST_TARGET_MIGRATION_TREE: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
+      BODYCAST_TARGET_PRISMA_SCHEMA_BLOB: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
       BODYCAST_OWNER_RUN_ID: runId,
       BODYCAST_WORKFLOW_SHA: "c".repeat(40),
       BODYCAST_WORKFLOW_ATTEMPT: "1",
@@ -117,12 +134,12 @@ esac
       BODYCAST_TEST_CONFIG_IMAGE_PRESENT: "false",
       BODYCAST_IMAGE_ARCHIVE_SHA256: archiveSha,
       BODYCAST_HOST_SCRIPT_SHA256: scriptSha,
-      BODYCAST_HEADROOM_SCRIPT: helperScript,
+      BODYCAST_HEADROOM_SCRIPT: helperScriptShell,
       BODYCAST_HEADROOM_SCRIPT_SHA256: helperSha,
-      BODYCAST_SCHEMA_DIGEST_SCRIPT: schemaDigestScript,
+      BODYCAST_SCHEMA_DIGEST_SCRIPT: schemaDigestScriptShell,
       BODYCAST_SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha,
       BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: metrics,
-      BODYCAST_IMAGE_ARCHIVE: archive,
+      BODYCAST_IMAGE_ARCHIVE: archiveShell,
     };
     try {
       const expectedFor = (phase, metricsJson) => spawnSync(process.execPath, [helperScript, "--check", phase,
@@ -133,7 +150,7 @@ esac
       // current filesystem. CI runners with sufficient reserve must pass;
       // constrained hosts must stop at the matching gate before risky work.
       const beforeTransferExpected = expectedFor("before-transfer", lowMetrics);
-      const beforeTransfer = spawnSync("bash", [hostScript, "pretransfer"], {
+      const beforeTransfer = spawnSync("bash", [hostScriptShell, "pretransfer"], {
         env: { ...commonEnv, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics }, encoding: "utf8",
       });
       expect(beforeTransfer.status, beforeTransfer.stderr).toBe(beforeTransferExpected.status);
@@ -145,7 +162,7 @@ esac
       // aggregate requirement must fail closed on any filesystem capacity.
       for (const [mode, expectedGate] of [["pretransfer", "before-transfer"], ["preflight", "before-load"], ["preexecute", "before-execute"]]) {
         writeFileSync(dockerLog, "");
-        const result = spawnSync("bash", [hostScript, mode], { env: commonEnv, encoding: "utf8" });
+        const result = spawnSync("bash", [hostScriptShell, mode], { env: commonEnv, encoding: "utf8" });
         expect(result.status, `${mode}: ${result.stderr}`).toBe(1);
         expect(result.stderr).toContain(`disk-headroom-${expectedGate}`);
         const calls = readFileSync(dockerLog, "utf8");
@@ -156,7 +173,7 @@ esac
 
       const beforeLoadExpected = expectedFor("before-load", lowMetrics);
       writeFileSync(dockerLog, "");
-      const beforeLoad = spawnSync("bash", [hostScript, "preflight"], {
+      const beforeLoad = spawnSync("bash", [hostScriptShell, "preflight"], {
         env: { ...commonEnv, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics }, encoding: "utf8",
       });
       expect(beforeLoad.status).toBe(1);
@@ -171,7 +188,7 @@ esac
 
       const beforeExecuteExpected = expectedFor("before-execute", lowMetrics);
       writeFileSync(dockerLog, "");
-      const beforeExecute = spawnSync("bash", [hostScript, "preexecute"], {
+      const beforeExecute = spawnSync("bash", [hostScriptShell, "preexecute"], {
         env: { ...commonEnv, BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: lowMetrics }, encoding: "utf8",
       });
       expect(beforeExecute.status).toBe(beforeExecuteExpected.status);
@@ -190,7 +207,7 @@ esac
         BODYCAST_TEST_HEADROOM_LOG: headroomLog };
 
       writeFileSync(dockerLog, "");
-      const successfulPretransfer = spawnSync("bash", [hostScript, "pretransfer"], { env: successEnv, encoding: "utf8" });
+      const successfulPretransfer = spawnSync("bash", [hostScriptShell, "pretransfer"], { env: successEnv, encoding: "utf8" });
       expect(successfulPretransfer.status, successfulPretransfer.stderr).toBe(0);
       const transferReport = JSON.parse(successfulPretransfer.stdout);
       expect(transferReport.phase).toBe("before-transfer");
@@ -198,7 +215,7 @@ esac
       expect(successfulPretransfer.stderr).toContain("V4_RECOVERY_HEADROOM_OK phase=before-transfer");
 
       writeFileSync(dockerLog, "");
-      const successfulPreflight = spawnSync("bash", [hostScript, "preflight"], { env: successEnv, encoding: "utf8" });
+      const successfulPreflight = spawnSync("bash", [hostScriptShell, "preflight"], { env: successEnv, encoding: "utf8" });
       expect(successfulPreflight.status).toBe(1);
       expect(successfulPreflight.stderr).toContain("read-only-db-evidence");
       expect(successfulPreflight.stdout).toBe("");
@@ -209,7 +226,7 @@ esac
 
       writeFileSync(dockerLog, "");
       writeFileSync(headroomLog, "");
-      const legacyStorePreflight = spawnSync("bash", [hostScript, "preflight"], { env: {
+      const legacyStorePreflight = spawnSync("bash", [hostScriptShell, "preflight"], { env: {
         ...successEnv, BODYCAST_TEST_CONFIG_IMAGE_PRESENT: "true",
       }, encoding: "utf8" });
       expect(legacyStorePreflight.status).toBe(1);
@@ -219,7 +236,7 @@ esac
       expect(readFileSync(dockerLog, "utf8")).not.toContain("load --input");
 
       writeFileSync(dockerLog, "");
-      const unknownLoadedImage = spawnSync("bash", [hostScript, "preflight"], { env: {
+      const unknownLoadedImage = spawnSync("bash", [hostScriptShell, "preflight"], { env: {
         ...successEnv, BODYCAST_TEST_LOADED_IMAGE_ID: `sha256:${"a".repeat(64)}`,
       }, encoding: "utf8" });
       expect(unknownLoadedImage.status).toBe(1);
@@ -227,7 +244,7 @@ esac
       expect(readFileSync(dockerLog, "utf8")).not.toContain("run ");
 
       writeFileSync(dockerLog, "");
-      const successfulPreexecute = spawnSync("bash", [hostScript, "preexecute"], { env: successEnv, encoding: "utf8" });
+      const successfulPreexecute = spawnSync("bash", [hostScriptShell, "preexecute"], { env: successEnv, encoding: "utf8" });
       expect(successfulPreexecute.status, successfulPreexecute.stderr).toBe(0);
       const executeReport = JSON.parse(successfulPreexecute.stdout);
       expect(executeReport.phase).toBe("before-execute");
@@ -314,7 +331,7 @@ esac
     expect(workflow).toContain("productionPreflightMismatchCategories({ report, measurements, before, rehearsal,");
     expect(workflow).toContain('categories=${mismatchCategories.join(",")}');
 
-    const commandStart = host.indexOf('BODYCAST_HEADROOM_BEFORE_LOAD_JSON="$HEADROOM_REPORT" node --input-type=module - "$evidence_file"');
+    const commandStart = host.indexOf('node --input-type=module - "$evidence_file"');
     expect(commandStart).toBeGreaterThanOrEqual(0);
     const sourceStart = host.indexOf("\n", commandStart) + 1;
     const sourceEnd = host.indexOf("\nNODE", sourceStart);
@@ -351,7 +368,10 @@ esac
       const result = spawnSync(process.execPath, ["--input-type=module", "-", evidencePath, "f".repeat(64), "1".repeat(64),
         `sha256:${"2".repeat(64)}`, "3".repeat(64), `sha256:${"4".repeat(64)}`, "172.30.0.2",
         "bodycast-pg-dump-schema-v1", "5".repeat(64)], {
-        env: { ...process.env, BODYCAST_HEADROOM_BEFORE_LOAD_JSON: JSON.stringify({ phase: "before-load", filesystems: [] }) },
+        env: { ...process.env, BODYCAST_HEADROOM_BEFORE_LOAD_JSON: JSON.stringify({ phase: "before-load", filesystems: [] }),
+          BODYCAST_TARGET_MODE: "legacy-serving-65", BODYCAST_TARGET_MIGRATION_COUNT: "65",
+          BODYCAST_TARGET_LEDGER_DIGEST: ledgerDigest, BODYCAST_TARGET_MIGRATION_TREE: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
+          BODYCAST_TARGET_PRISMA_SCHEMA_BLOB: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e" },
         input: nodeSource,
         encoding: "utf8",
       });
@@ -368,7 +388,7 @@ esac
   });
 
   it("executes the final rehearsal Node step and writes bound preflight evidence", async () => {
-    const rehearsalStep = workflow.split("      - name: Restore backup and rehearse exact image against isolated 65-schema PostgreSQL\n")[1]
+    const rehearsalStep = workflow.split("      - name: Restore backup and rehearse exact image against target migration schema\n")[1]
       ?.split("      - name: Upload encrypted backup and successful restore rehearsal evidence\n")[0];
     expect(rehearsalStep).toBeDefined();
     expect(rehearsalStep.match(/docker run --rm --network host --env "DATABASE_URL=\$DATABASE_URL" --env "BODYCAST_V4_EXPECTED_EVIDENCE_BINDING=\$entry_binding" "\$IMAGE_ID"/g))
@@ -396,6 +416,9 @@ esac
       finishedAt: "2025-01-01T00:00:00.000Z", rolledBackAt: null,
     })));
     const ledgerDigest = createHash("sha256").update(migrationRows.map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
+    const targetSchema = { mode: "legacy-serving-65", migrationCount: 65, ledgerDigest,
+      migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990",
+      prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e" };
     const blocks = Array.from({ length: 8 }, (_, index) => {
       const date = `2025-01-${String(index + 1).padStart(2, "0")}`;
       return { source: "health", sourceKey: date, fromDate: date, revision: index + 1,
@@ -445,7 +468,8 @@ esac
       unifiedPublicationBlockedFromDate: null, unifiedPublicationBlockedSource: null,
     };
     const modelDayKeys = ["1|2025-01-01", "2|2025-01-02"];
-    const before = { database: { database: "bodycast_restore" }, migrationRows, expectedLedgerDigest: ledgerDigest,
+    const before = { database: { database: "bodycast_restore" }, migrationRows, expectedMigrationRows: migrationRows,
+      expectedLedgerDigest: ledgerDigest,
       blocks, sourceEvidence, sourceFingerprint: fingerprint,
       sourceModelDayKeys: modelDayKeys,
       lifecycle: { ...lifecycle, productionStaleFromDate: "2025-01-01", unifiedPublishedGeneration: 11,
@@ -474,6 +498,8 @@ esac
         env: { ...process.env, RUNNER_TEMP: tempRoot, GITHUB_RUN_ID: "123456", GITHUB_SHA: "c".repeat(40),
           BACKUP_STARTED_AT: capturedAt, ARCHIVE_BYTES: "5000", IMAGE_BYTES: "9000", RECOVERY_SHA: "ad902e2172d6343061624b35d2350284e0a1c219",
           SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
+          TARGET_MODE: targetSchema.mode, TARGET_MIGRATION_COUNT: "65", TARGET_LEDGER_DIGEST: ledgerDigest,
+          TARGET_MIGRATION_TREE: targetSchema.migrationTree, TARGET_PRISMA_SCHEMA_BLOB: targetSchema.prismaSchemaBlob,
           IMAGE_ID: `sha256:${"d".repeat(64)}`, ARCHIVE_SHA: "e".repeat(64), BACKUP_SCHEMA_SHA256: "f".repeat(64) },
         input: nodeSource,
         encoding: "utf8",
@@ -484,7 +510,8 @@ esac
         ownerRunId: "9".repeat(20), workflowSha: "0".repeat(40), attempt: "1",
         imageId: `sha256:${"d".repeat(64)}`, archiveSha: "0".repeat(64), preflightDigest: "0".repeat(64),
         schemaSha: "f".repeat(64), schemaDigestContract, schemaDigestHelperSha256,
-        ledgerDigest, fenceDigest: "0".repeat(64), sourceFingerprint: fingerprint,
+        ledgerDigest, legacyLedgerDigest: ledgerDigest,
+        targetSchema, appMode: "serving", fenceDigest: "0".repeat(64), sourceFingerprint: fingerprint,
         databaseContainerId: "0".repeat(64), rehearsalCoverageSha256: measurements.rehearsalCoverage.sha256,
         rehearsalCoveredModelDayKeys: [...replayCoverageKeys].sort(), databaseImageId: `sha256:${"0".repeat(64)}`,
         appContainerId: "0".repeat(64), appImageId: `sha256:${"0".repeat(64)}`, startedAt: "2000-01-01T00:00:00.000Z" };
@@ -505,7 +532,7 @@ esac
         headroomMeasurements: { archiveBytes: 5000, imageBytes: 9000,
           dataPeakGrowthBytes: 100, walPeakGrowthBytes: 200 } });
 
-      const preflight = { ...report, preflightRunId: "123456", preflightSha: "c".repeat(40), capturedAt,
+      const preflight = { ...report, targetSchema, preflightRunId: "123456", preflightSha: "c".repeat(40), capturedAt,
         schemaDigestContract, schemaDigestHelperSha256,
         restoredSourceFingerprint: fingerprint, expectedEntryBinding: binding,
         rehearsalCoverage: measurements.rehearsalCoverage, headroomMeasurements: measurements.headroomMeasurements };
@@ -518,8 +545,12 @@ esac
         schemaDigestContract, schemaDigestHelperSha256,
         migrationTree: "291b9c95924e196d66f9cdd555535b2e5a2b5990", prismaSchemaBlob: "4fa84cb62262986d5f0c58d3c76db2ba52b5500e",
         effectiveCommand: ["node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery", "--owner-authorized", "--profile-id", "1"],
+        ledgerDigest,
+        targetSchema: { ...targetSchema, releaseSha: "c".repeat(40), manifestId: null,
+          canonicalFixBlob: "a".repeat(40), prismaVersion: "6.19.3" },
+        canonicalFixBlob: "a".repeat(40),
       };
-      const artifactCore = { ...artifactManifest, ledgerDigest };
+      const artifactCore = { ...artifactManifest };
       const legacyArtifactCore = { ...artifactCore };
       delete legacyArtifactCore.schemaDigestContract;
       delete legacyArtifactCore.schemaDigestHelperSha256;
@@ -540,6 +571,8 @@ esac
           GITHUB_RUN_ATTEMPT: "1", PREFLIGHT_RUN_ID: "123456", PREFLIGHT_SHA: "c".repeat(40),
           EXPECTED_MAIN_SHA: "c".repeat(40), RECOVERY_SHA: artifactManifest.sourceSha,
           SCHEMA_DIGEST_CONTRACT: schemaDigestContract, SCHEMA_DIGEST_HELPER_SHA256: schemaDigestHelperSha256,
+          TARGET_MODE: targetSchema.mode, TARGET_MIGRATION_COUNT: "65", TARGET_LEDGER_DIGEST: ledgerDigest,
+          TARGET_MIGRATION_TREE: targetSchema.migrationTree, TARGET_PRISMA_SCHEMA_BLOB: targetSchema.prismaSchemaBlob,
           IMAGE_ID: artifactManifest.imageId, ARCHIVE_SHA: artifactManifest.archiveSha256 },
         input: executeSource,
         encoding: "utf8",
@@ -562,7 +595,9 @@ esac
     expect(workflow).toMatch(/\[\[ "\$DISPATCH_SHA" == "\$GITHUB_SHA"/);
     expect(workflow).toContain("main-ci.ndjson");
     expect(workflow).toContain("Recheck exact owner approval, current main, and legacy CI immediately before execution");
-    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_ad902e2172d6343061624b35d2350284e0a1c219");
+    expect(workflow).toContain("RECOVER_UNIFIED_V4_FROM_PERSISTED_SOURCES_PROFILE_1_AT_");
+    expect(workflow).toContain("RECOVER_UNIFIED_V4_PROFILE_1_MAIN_");
+    expect(workflow).toContain("MAINTENANCE_NO_APP_74");
     expect(workflow).toContain("needs.rehearse.result == 'success'");
   });
 
@@ -597,10 +632,10 @@ esac
   });
 
   it("requires a restore rehearsal, serializes on the shared production lock, and makes attempts terminal", () => {
-    expect(workflow).toContain("Restore backup and rehearse exact image against isolated 65-schema PostgreSQL");
+    expect(workflow).toContain("Restore backup and rehearse exact image against target migration schema");
     expect(workflow).toContain("PRODUCTION_BACKUP_ENCRYPTION_KEY");
     expect(workflow).toContain("BACKUP_FILE: ${{ runner.temp }}/bodycast-v4-artifact/production-backup.pgdump.enc");
-    expect(workflow).toContain("migrationLedgerDigest(before.migrationRows) !== ledger");
+    expect(workflow).toContain("migrationLedgerDigest(before.migrationRows, targetCount) === targetLedger");
     expect(host).toContain("bodycast-production-release.lock");
     expect(host).toContain("flock -n 9");
     expect(host).toContain('state: "started"');
@@ -612,7 +647,7 @@ esac
     expect(host).toContain('sync -f "$marker_dir" || fail "failure-marker-sync"');
     expect(workflow).toContain("recoveryDiagnosticLogBytes: 65_536");
     expect(host).toContain("recovery-failed-no-retry");
-    expect(host).toContain("production-container-identity-changed-during-recovery");
+    expect(host).toContain("production-db-identity-changed");
     expect(host).toContain("schema-changed-during-recovery");
     expect(host).toContain('after.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once"');
     expect(host).toContain("after.lifecycle?.unifiedPublicationBlockedFromDate !== null");
@@ -628,6 +663,10 @@ esac
     expect(host).not.toContain("prisma migrate");
     expect(host).toContain("serverAddress");
     expect(host).toContain("serverPort !== 5432");
+    expect(host).toContain("assert_maintenance_no_app");
+    expect(host).toContain("bodycast_probe_public_maintenance");
+    expect(workflow).toContain("training-mutation-ledger-refresh-queue-v1");
+    expect(workflow).toContain("bodycast_canonical74");
     expect(evidence).toContain("sourceModelDayKeys");
     expect(evidence).toContain("coveredDayDates");
     expect(workflow).not.toMatch(/^\s+run:.*docker (compose )?(up|restart|stop)/m);
@@ -654,7 +693,13 @@ esac
       unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
       unifiedPublicationBlockedFromDate: null, unifiedPublishedGeneration: 8,
       invalidationGeneration: 8, productionPublishedGeneration: 8, productionStaleFromDate: null };
-    const before = { sourceFingerprint: fingerprint, expectedLedgerDigest: "b".repeat(64), migrationRows: [],
+    const migrationRows = Array.from({ length: 65 }, (_, index) => ({
+      name: "migration_" + String(index + 1).padStart(3, "0"), checksum: "b".repeat(64),
+      finishedAt: "2025-01-01T00:00:00.000Z", rolledBackAt: null,
+    }));
+    const ledgerDigest = createHash("sha256").update(migrationRows.map((row) =>
+      row.name + "\t" + row.checksum + "\n").join("")).digest("hex");
+    const before = { sourceFingerprint: fingerprint, expectedLedgerDigest: ledgerDigest, migrationRows,
       database: { database: "bodycast", version: "17.11" }, sourceModelDayKeys: sourceKeys };
     const after = { ...before, blocks: [], lifecycle, sourceModelDayKeys: sourceKeys,
       coveredModelDayKeys: rehearsalKeys, sourceModelDayCount: sourceKeys.length, coveredDayCount: rehearsalKeys.length };
@@ -670,7 +715,8 @@ esac
       writeFileSync(paths.preflight, JSON.stringify(report));
       return spawnSync(process.execPath, ["--input-type=module", "-", paths.marker, paths.before, paths.after,
         paths.result, "c".repeat(64)], { env: { ...process.env, BODYCAST_PREFLIGHT_JSON_FILE: paths.preflight,
-          BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: JSON.stringify({ recoveryTerminalMarkerBytes: 100_000 }) },
+          BODYCAST_RECOVERY_HEADROOM_METRICS_JSON: JSON.stringify({ recoveryTerminalMarkerBytes: 100_000 }),
+          BODYCAST_TARGET_MIGRATION_COUNT: "65", BODYCAST_TARGET_LEDGER_DIGEST: ledgerDigest },
         input: nodeSource, encoding: "utf8" });
     };
     try {

@@ -20,6 +20,7 @@ export type DeployGateInput = {
   dispatchConfirm?: string | null;
   nonServingDeploy?: boolean;
   freshEmptyInstall?: boolean;
+  recoveredV4Serve?: boolean;
   currentWorkflowRun?: WorkflowRunEvidence;
   currentWorkflowRunId?: number | string | null;
   currentWorkflowRunAttempt?: number | string | null;
@@ -34,7 +35,7 @@ export type DeployGateResult = {
   decision: "deploy" | "block" | "skip";
   reason: string;
   candidateSha: string | null;
-  mode?: "serving" | "non-serving" | "fresh-empty-install";
+  mode?: "serving" | "non-serving" | "fresh-empty-install" | "recovered-v4-serving";
 };
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -107,7 +108,8 @@ function trustedSuccessfulMainCiRun(input: DeployGateInput): boolean {
 
 /**
  * Ordinary app deploy follows successful current-main CI. Manual deployment
- * supports the existing non-serving schema cutover and one-time empty-host install.
+ * supports the existing non-serving schema cutover, one-time empty-host install,
+ * and a separately confirmed recovered-V4 serving transition.
  */
 export function evaluateProductionDeployGate(input: DeployGateInput): DeployGateResult {
   if (input.repositoryFullName !== REPOSITORY) {
@@ -116,7 +118,18 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
 
   if (input.eventName === "workflow_dispatch") {
     const freshEmptyInstall = input.freshEmptyInstall === true;
-    if (freshEmptyInstall) {
+    const recoveredV4Serve = input.recoveredV4Serve === true;
+    if (freshEmptyInstall && recoveredV4Serve) {
+      return { decision: "block", reason: "Fresh install and recovered-V4 serving are mutually exclusive release paths.", candidateSha: null };
+    }
+    if (recoveredV4Serve) {
+      if (input.dispatchConfirm !== "serve-after-current-v4-recovery") {
+        return { decision: "block", reason: "Recovered-V4 serving requires its distinct confirmation.", candidateSha: null };
+      }
+      if (input.nonServingDeploy !== false) {
+        return { decision: "block", reason: "Recovered-V4 serving must explicitly select serving mode.", candidateSha: null };
+      }
+    } else if (freshEmptyInstall) {
       if (input.dispatchConfirm !== "initialize-empty-bodycast-db") {
         return { decision: "block", reason: "Fresh install requires the exact empty-database confirmation.", candidateSha: null };
       }
@@ -126,7 +139,7 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
     } else if (input.dispatchConfirm !== "deploy") {
       return { decision: "block", reason: "Manual deploy requires confirm_production_deploy=deploy.", candidateSha: null };
     }
-    if (!freshEmptyInstall && input.nonServingDeploy !== true) {
+    if (!freshEmptyInstall && !recoveredV4Serve && input.nonServingDeploy !== true) {
       return { decision: "block", reason: "Manual deploy is reserved for the owner-authorized non-serving schema-cutover path.", candidateSha: null };
     }
     if (!FULL_SHA.test(input.candidateSha)) {
@@ -139,9 +152,11 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
       decision: "deploy",
       reason: freshEmptyInstall
         ? "Owner-authorized fresh empty-host install is bound to the exact current main SHA."
+        : recoveredV4Serve
+          ? "Owner-authorized recovered-V4 serving is bound to the exact current main SHA and requires the completed production recovery marker plus the atomic currentness fence."
         : "Owner-authorized non-serving deploy is bound to the exact current main SHA.",
       candidateSha: input.candidateSha,
-      mode: freshEmptyInstall ? "fresh-empty-install" : "non-serving",
+      mode: freshEmptyInstall ? "fresh-empty-install" : recoveredV4Serve ? "recovered-v4-serving" : "non-serving",
     };
   }
 

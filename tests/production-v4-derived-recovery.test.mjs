@@ -8,6 +8,7 @@ import {
   assertApprovedRecoveryRuns,
   assertArtifactBinding,
   assertProductionIdentity,
+  assertCompletedV4RecoveryForServe,
   assertRehearsedCoverageEvidence,
   assertRecoveryPostflight,
   assertOneShotRecoveryState,
@@ -25,6 +26,14 @@ import {
 const migrationRoot = new URL("../prisma/migrations/", import.meta.url);
 const ledgerRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
   .map((entry) => entry.name).sort().slice(0, LEGACY_V4_RECOVERY.migrationCount).map((name) => ({
+    name,
+    checksum: createHash("sha256").update(readFileSync(join(fileURLToPath(migrationRoot), name, "migration.sql"))
+      .toString("utf8").replaceAll("\r\n", "\n")).digest("hex"),
+    finishedAt: "2026-01-01T00:00:00Z",
+    rolledBackAt: null,
+  }));
+const currentMigrationRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name).sort().map((name) => ({
     name,
     checksum: createHash("sha256").update(readFileSync(join(fileURLToPath(migrationRoot), name, "migration.sql"))
       .toString("utf8").replaceAll("\r\n", "\n")).digest("hex"),
@@ -170,6 +179,50 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
       report: { ...report, evidence: { ...report.evidence, sourceFingerprint: "f".repeat(64) } } });
     expect(changed).toEqual(["raw-source-fingerprint", "rehearsal-source-fingerprint"]);
     expect(JSON.stringify(changed)).not.toMatch(/[a-f0-9]{64}/);
+  });
+
+  it("accepts only the exact 74-migration target while the app is absent behind verified maintenance", () => {
+    const lifecycle = { profileId: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedRolloutEpoch: 1, invalidationGeneration: 10, productionPublishedGeneration: 9,
+      unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null,
+      unifiedPublicationBlockedFromDate: "2026-10-01", unifiedPublicationBlockedSource: "health" };
+    const sourceFingerprint = "d".repeat(64);
+    const targetSchema = { mode: "maintenance-no-app-74", migrationCount: 74,
+      ledgerDigest: migrationLedgerDigest(currentMigrationRows, 74), migrationTree: "a".repeat(40),
+      prismaSchemaBlob: "b".repeat(40) };
+    const before = { migrationRows: currentMigrationRows, blocks, sourceEvidence: makeSourceEvidence(), lifecycle,
+      sourceModelDayKeys: ["2026-10-01", "2026-10-02"], expectedLedgerDigest: migrationLedgerDigest(ledgerRows) };
+    const report = { appMode: "maintenance-no-app", appSha: null, appContainerId: null, appImageId: null,
+      targetSchema, headroomBeforeLoad: { phase: "before-load" }, schemaDigestContract: "bodycast-v4-schema-digest-v1",
+      schemaDigestHelperSha256: "e".repeat(64), schemaSha256: "c".repeat(64),
+      evidence: { database: { database: "bodycast" }, migrationRows: currentMigrationRows, lifecycle,
+        sourceFingerprint, blocks, sourceEvidence: makeSourceEvidence(), sourceModelDayKeys: before.sourceModelDayKeys,
+        expectedLedgerDigest: before.expectedLedgerDigest } };
+    const input = { report, measurements: { schemaDigestContract: report.schemaDigestContract,
+      schemaDigestHelperSha256: report.schemaDigestHelperSha256, schemaSha256: report.schemaSha256,
+      restoredSourceFingerprint: sourceFingerprint }, before, rehearsal: { sourceFingerprint },
+      expectedSchemaHelperSha256: report.schemaDigestHelperSha256, schemaDigestContract: report.schemaDigestContract,
+      schemaDigestHelperSha256: report.schemaDigestHelperSha256, targetSchema };
+    expect(productionPreflightMismatchCategories(input)).toEqual([]);
+    expect(productionPreflightMismatchCategories({ ...input,
+      report: { ...report, targetSchema: { ...targetSchema, ledgerDigest: "f".repeat(64) } } }))
+      .toContain("target-schema-binding");
+    expect(productionPreflightMismatchCategories({ ...input,
+      report: { ...report, appMode: "serving", appContainerId: "1".repeat(64) } }))
+      .toContain("application-state");
+
+    const expected = { migrationCount: 74, ledgerDigest: targetSchema.ledgerDigest,
+      appMode: "maintenance-no-app", schemaSha256: report.schemaSha256, sourceFingerprint,
+      blockDigest: publicationBlockDigest(blocks),
+      database: { containerId: "e".repeat(64), imageId: "sha256:" + "f".repeat(64) },
+      app: { state: "absent" } };
+    const identity = { database: { name: "bodycast", version: "17.11", ...expected.database },
+      app: { name: "bodycast-app-prod", state: "absent", health: "absent", releaseSha: null, containerId: null, imageId: null },
+      migrationRows: currentMigrationRows, schemaSha256: expected.schemaSha256, sourceFingerprint,
+      lifecycle, blocks, sourceEvidence: makeSourceEvidence(), expected };
+    expect(assertProductionIdentity(identity)).toBe(true);
+    expect(() => assertProductionIdentity({ ...identity,
+      app: { ...identity.app, state: "running" } })).toThrow();
   });
 
   it.each([
@@ -800,4 +853,49 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     delete missingGeneration.unifiedPublishedGeneration;
     expect(() => assertProductionIdentity({ ...args, lifecycle: missingGeneration })).toThrow(/stale/);
   });
+
+  it("admits only a completed no-app 74-schema recovery with current database, raw and coverage evidence for serving", () => {
+    const releaseSha = "a".repeat(40);
+    const migrationTree = "b".repeat(40);
+    const prismaSchemaBlob = "c".repeat(40);
+    const ledgerDigest = "d".repeat(64);
+    const schemaSha256 = "e".repeat(64);
+    const databaseContainerId = "f".repeat(64);
+    const databaseImageId = `sha256:${"1".repeat(64)}`;
+    const modelDayKeys = ["1|2026-10-01", "1|2026-10-02"];
+    const marker = {
+      state: "completed", result: "current", sourceSha: LEGACY_V4_RECOVERY.sourceSha,
+      workflowSha: releaseSha, attempt: "1", ownerRunId: "12345", appMode: "maintenance-no-app",
+      rolloutEpoch: 1, unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      unifiedPublicationBlockedFromDate: null, blocksRemaining: 0, unifiedPublishedGeneration: 12,
+      productionPublishedGeneration: 12, sourceFingerprint: "2".repeat(64),
+      rehearsalCoverageSha256: modelDayKeysDigest(modelDayKeys), schemaSha256, postflightSchemaSha256: schemaSha256,
+      schemaDigestContract: "bodycast-v4-schema-digest-v1", schemaDigestHelperSha256: "3".repeat(64),
+      databaseContainerId, databaseImageId, sourceModelDayCount: modelDayKeys.length,
+      coveredDayCount: modelDayKeys.length, sourceModelDayKeys: modelDayKeys, coveredModelDayKeys: modelDayKeys,
+      targetSchema: { mode: "maintenance-no-app-74", migrationCount: 74, ledgerDigest, migrationTree, prismaSchemaBlob },
+    };
+    const expected = { marker, releaseSha, migrationTree, prismaSchemaBlob, ledgerDigest, schemaSha256,
+      sourceFingerprint: marker.sourceFingerprint, databaseContainerId, databaseImageId,
+      schemaDigestContract: marker.schemaDigestContract, schemaDigestHelperSha256: marker.schemaDigestHelperSha256 };
+    expect(assertCompletedV4RecoveryForServe(expected)).toBe(true);
+    for (const changed of [
+      { marker: { ...marker, state: "terminal-failed" } },
+      { marker: { ...marker, workflowSha: "9".repeat(40) } },
+      { releaseSha: "9".repeat(40) },
+      { marker: { ...marker, appMode: "serving" } },
+      { marker: { ...marker, result: "failed" } },
+      { sourceFingerprint: "9".repeat(64) },
+      { marker: { ...marker, unifiedPublishedGeneration: 11 } },
+      { marker: { ...marker, blocksRemaining: 1 } },
+      { migrationTree: "9".repeat(40) },
+      { prismaSchemaBlob: "9".repeat(40) },
+      { ledgerDigest: "9".repeat(64) },
+      { schemaSha256: "9".repeat(64) },
+      { schemaDigestHelperSha256: "9".repeat(64) },
+      { databaseContainerId: "9".repeat(64) },
+      { marker: { ...marker, coveredModelDayKeys: [modelDayKeys[0]], coveredDayCount: 1 } },
+    ]) expect(() => assertCompletedV4RecoveryForServe({ ...expected, ...changed })).toThrow(/completed.*V4 recovery/i);
+  });
+
 });

@@ -61,9 +61,9 @@ export function assertRehearsedCoverageEvidence({ sourceModelDayKeys, coveredMod
   return true;
 }
 
-export function migrationLedgerDigest(rows) {
-  if (!Array.isArray(rows) || rows.length !== LEGACY_V4_RECOVERY.migrationCount) {
-    fail("Production or rehearsal migration ledger does not contain exactly 65 migrations.");
+export function migrationLedgerDigest(rows, expectedCount = LEGACY_V4_RECOVERY.migrationCount) {
+  if (!Number.isSafeInteger(expectedCount) || expectedCount < 1 || !Array.isArray(rows) || rows.length !== expectedCount) {
+    fail(`Production or rehearsal migration ledger does not contain exactly ${expectedCount} migrations.`);
   }
   let previous = "";
   for (const row of rows) {
@@ -79,7 +79,7 @@ export function migrationLedgerDigest(rows) {
 // Return only stable category names so failed production preflights can be
 // diagnosed without logging source payloads or fingerprints.
 export function productionPreflightMismatchCategories({ report, measurements, before, rehearsal,
-  expectedSchemaHelperSha256, schemaDigestContract, schemaDigestHelperSha256 }) {
+  expectedSchemaHelperSha256, schemaDigestContract, schemaDigestHelperSha256, targetSchema }) {
   const mismatches = [];
   const evidence = report?.evidence;
   const lifecycle = evidence?.lifecycle;
@@ -89,7 +89,21 @@ export function productionPreflightMismatchCategories({ report, measurements, be
     : null;
   const sameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
-  if (report?.appSha !== LEGACY_V4_RECOVERY.productionAppSha) mismatches.push("application-sha");
+  const targetMigrationCount = targetSchema?.migrationCount ?? LEGACY_V4_RECOVERY.migrationCount;
+  const targetLedgerDigest = targetSchema?.ledgerDigest ?? LEGACY_V4_RECOVERY.ledgerDigest;
+  const targetAppMode = targetSchema?.appMode
+    ?? (targetSchema?.mode === "maintenance-no-app-74" ? "maintenance-no-app" : "serving");
+  if (targetSchema && (report?.targetSchema?.mode !== targetSchema.mode
+    || report?.targetSchema?.migrationCount !== targetMigrationCount
+    || report?.targetSchema?.ledgerDigest !== targetLedgerDigest
+    || report?.targetSchema?.migrationTree !== targetSchema.migrationTree
+    || report?.targetSchema?.prismaSchemaBlob !== targetSchema.prismaSchemaBlob)) {
+    mismatches.push("target-schema-binding");
+  }
+  if (targetAppMode === "maintenance-no-app") {
+    if (report?.appMode !== "maintenance-no-app" || report?.appSha !== null
+      || report?.appContainerId !== null || report?.appImageId !== null) mismatches.push("application-state");
+  } else if (report?.appSha !== LEGACY_V4_RECOVERY.productionAppSha) mismatches.push("application-sha");
   if (report?.headroomBeforeLoad?.phase !== "before-load") mismatches.push("headroom-before-load");
   if (report?.schemaDigestContract !== measurements?.schemaDigestContract
     || report?.schemaDigestContract !== schemaDigestContract) mismatches.push("schema-digest-contract");
@@ -97,8 +111,16 @@ export function productionPreflightMismatchCategories({ report, measurements, be
     || report?.schemaDigestHelperSha256 !== expectedSchemaHelperSha256
     || report?.schemaDigestHelperSha256 !== schemaDigestHelperSha256) mismatches.push("schema-digest-helper");
   if (evidence?.database?.database !== "bodycast") mismatches.push("database-identity");
-  if (!Array.isArray(evidence?.migrationRows) || evidence.migrationRows.length !== LEGACY_V4_RECOVERY.migrationCount) {
+  if (!Array.isArray(evidence?.migrationRows) || evidence.migrationRows.length !== targetMigrationCount) {
     mismatches.push("migration-row-count");
+  } else {
+    try {
+      if (migrationLedgerDigest(evidence.migrationRows, targetMigrationCount) !== targetLedgerDigest) {
+        mismatches.push("migration-ledger");
+      }
+    } catch {
+      mismatches.push("migration-ledger");
+    }
   }
   if (lifecycle?.unifiedRolloutEpoch !== 1) mismatches.push("unified-rollout-epoch");
   if (report?.schemaSha256 !== measurements?.schemaSha256) mismatches.push("schema-fingerprint");
@@ -122,12 +144,15 @@ export function productionPreflightMismatchCategories({ report, measurements, be
 }
 
 export function assertApprovedRecoveryRuns({
-  actorId, confirmation, runAttempt, repository, workflowRef, workflowPath,
+  actorId, confirmation, targetMode, runAttempt, repository, workflowRef, workflowPath,
   workflowSha, currentMainSha, sourceSha, sourcePr, ciRuns, safetyRuns,
   mainCiRuns,
 }) {
   const approved = LEGACY_V4_RECOVERY;
-  if (String(actorId) !== approved.ownerId || confirmation !== approved.confirmation || runAttempt !== "1"
+  const expectedConfirmation = targetMode === "maintenance-no-app-74"
+    ? `RECOVER_UNIFIED_V4_PROFILE_1_MAIN_${workflowSha}_RECOVERY_${approved.sourceSha}_MAINTENANCE_NO_APP_74`
+    : approved.confirmation;
+  if (String(actorId) !== approved.ownerId || confirmation !== expectedConfirmation || runAttempt !== "1"
     || repository !== approved.repository || workflowRef !== "refs/heads/main"
     || workflowPath !== ".github/workflows/production-v4-derived-recovery.yml"
     || !isSha(workflowSha) || workflowSha !== currentMainSha
@@ -169,7 +194,8 @@ export function assertApprovedRecoveryRuns({
 }
 
 export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archiveSha256, archiveBytes, imageBytes,
-  evidenceBindingContract, manifestSha256, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerRows }) {
+  evidenceBindingContract, manifestSha256, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerRows,
+  targetSchema, canonicalFixBlob }) {
   const approved = LEGACY_V4_RECOVERY;
   if (sourceSha !== approved.sourceSha || !/^sha256:[a-f0-9]{64}$/.test(String(imageId))
     || !/^sha256:[a-f0-9]{64}$/.test(String(imageDigest))
@@ -184,6 +210,21 @@ export function assertArtifactBinding({ sourceSha, imageId, imageDigest, archive
   if (ledgerDigest !== approved.ledgerDigest) fail("Recovery artifact migration rows do not match the exact audited 65-migration ledger.");
   const manifest = { sourceSha, imageId, imageDigest, archiveSha256, archiveBytes, imageBytes,
     evidenceBindingContract, migrationTree, prismaSchemaBlob, effectiveCommand, ledgerDigest };
+  if (targetSchema !== undefined || canonicalFixBlob !== undefined) {
+    const expectedMode = targetSchema?.mode;
+    const expectedCount = expectedMode === "maintenance-no-app-74" ? 74 : expectedMode === "legacy-serving-65" ? 65 : null;
+    if (!targetSchema || !isSha(targetSchema.releaseSha) || !isSha(targetSchema.migrationTree)
+      || !isSha(targetSchema.prismaSchemaBlob) || !isDigest(targetSchema.ledgerDigest)
+      || targetSchema.migrationCount !== expectedCount || !isSha(canonicalFixBlob)
+      || !/^\d+\.\d+\.\d+$/.test(String(targetSchema.prismaVersion ?? ""))
+      || (expectedMode === "maintenance-no-app-74"
+        ? targetSchema.manifestId !== "training-mutation-ledger-refresh-queue-v1"
+        : targetSchema.manifestId !== null)) {
+      fail("Recovery artifact target schema or canonical fix binding is malformed.");
+    }
+    manifest.targetSchema = targetSchema;
+    manifest.canonicalFixBlob = canonicalFixBlob;
+  }
   if (manifestSha256 !== sha256(JSON.stringify(manifest))) fail("Recovery artifact provenance manifest digest does not match its contents.");
   return ledgerDigest;
 }
@@ -533,12 +574,20 @@ export function validatePublicationSourceEvidence({ blocks, sourceEvidence }) {
 export function assertProductionIdentity({ database, app, migrationRows, schemaSha256, sourceFingerprint,
   lifecycle, blocks, sourceEvidence, expected }) {
   const approved = LEGACY_V4_RECOVERY;
-  const ledgerDigest = migrationLedgerDigest(migrationRows);
-  if (ledgerDigest !== approved.ledgerDigest) fail("Live database migration ledger differs from the exact approved legacy ledger.");
+  const expectedMigrationCount = expected?.migrationCount ?? approved.migrationCount;
+  const ledgerDigest = migrationLedgerDigest(migrationRows, expectedMigrationCount);
+  if (ledgerDigest !== (expected?.ledgerDigest ?? approved.ledgerDigest)) {
+    fail("Live database migration ledger differs from the exact approved release ledger.");
+  }
   if (!database || database.name !== "bodycast" || !String(database.version).startsWith("17.")
     || !/^[a-f0-9]{64}$/.test(String(database.containerId))
     || !/^sha256:[a-f0-9]{64}$/.test(String(database.imageId))) fail("Production database identity is unknown or changed.");
-  if (!app || app.name !== "bodycast-app-prod" || app.health !== "healthy"
+  if (expected?.appMode === "maintenance-no-app") {
+    if (!app || app.name !== "bodycast-app-prod" || app.state !== "absent"
+      || app.health !== "absent" || app.releaseSha !== null || app.containerId !== null || app.imageId !== null) {
+      fail("Cold-start recovery requires the exact maintenance/no-app production state.");
+    }
+  } else if (!app || app.name !== "bodycast-app-prod" || app.health !== "healthy"
     || app.releaseSha !== LEGACY_V4_RECOVERY.productionAppSha
     || !/^[a-f0-9]{64}$/.test(String(app.containerId))
     || !/^sha256:[a-f0-9]{64}$/.test(String(app.imageId))) fail("Serving BodyCast app identity is unknown, unhealthy, or changed.");
@@ -567,8 +616,52 @@ export function assertProductionIdentity({ database, app, migrationRows, schemaS
     || schemaSha256 !== expected.schemaSha256 || sourceFingerprint !== expected.sourceFingerprint
     || publicationBlockDigest(blocks) !== expected.blockDigest
     || database.containerId !== expected.database.containerId || database.imageId !== expected.database.imageId
-    || app.containerId !== expected.app.containerId || app.imageId !== expected.app.imageId) {
+    || (expected.appMode === "maintenance-no-app"
+      ? expected.app?.state !== "absent"
+      : app.containerId !== expected.app.containerId || app.imageId !== expected.app.imageId)) {
     fail("Production identity, applied history, schema, raw inputs, or source fences changed after backup rehearsal.");
+  }
+  return true;
+}
+
+export function assertCompletedV4RecoveryForServe({ marker, releaseSha, migrationTree, prismaSchemaBlob,
+  ledgerDigest, schemaSha256, sourceFingerprint, databaseContainerId, databaseImageId,
+  schemaDigestContract, schemaDigestHelperSha256 }) {
+  const target = marker?.targetSchema;
+  const sourceModelDayKeys = marker?.sourceModelDayKeys;
+  const coveredModelDayKeys = marker?.coveredModelDayKeys;
+  if (!marker || marker.state !== "completed" || marker.result !== "current"
+    || marker.sourceSha !== LEGACY_V4_RECOVERY.sourceSha || marker.workflowSha !== releaseSha
+    || !isSha(releaseSha) || marker.attempt !== "1" || !/^[1-9][0-9]*$/.test(String(marker.ownerRunId ?? ""))
+    || marker.appMode !== "maintenance-no-app" || marker.rolloutEpoch !== 1
+    || marker.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once"
+    || marker.unifiedPublicationBlockedFromDate !== null || marker.blocksRemaining !== 0
+    || !Number.isSafeInteger(marker.unifiedPublishedGeneration)
+    || marker.unifiedPublishedGeneration !== marker.productionPublishedGeneration
+    || !isDigest(marker.sourceFingerprint) || marker.sourceFingerprint !== sourceFingerprint
+    || !isDigest(marker.rehearsalCoverageSha256)
+    || !isDigest(marker.schemaSha256) || marker.postflightSchemaSha256 !== marker.schemaSha256
+    || marker.postflightSchemaSha256 !== schemaSha256
+    || marker.schemaDigestContract !== schemaDigestContract
+    || marker.schemaDigestHelperSha256 !== schemaDigestHelperSha256
+    || marker.databaseContainerId !== databaseContainerId || marker.databaseImageId !== databaseImageId
+    || !/^[a-f0-9]{64}$/.test(String(databaseContainerId ?? ""))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(databaseImageId ?? ""))
+    || target?.mode !== "maintenance-no-app-74" || target?.migrationCount !== 74
+    || target?.migrationTree !== migrationTree || target?.prismaSchemaBlob !== prismaSchemaBlob
+    || target?.ledgerDigest !== ledgerDigest
+    || !Array.isArray(sourceModelDayKeys) || sourceModelDayKeys.length < 1
+    || !Array.isArray(coveredModelDayKeys)
+    || marker.sourceModelDayCount !== sourceModelDayKeys.length
+    || marker.coveredDayCount !== coveredModelDayKeys.length
+    || sourceModelDayKeys.some((key) => typeof key !== "string" || !coveredModelDayKeys.includes(key))) {
+    fail("Serving requires a completed, exact-SHA 74-migration V4 recovery with current raw/schema evidence.");
+  }
+  const sourceKeys = normalizedModelDayKeys(sourceModelDayKeys, "Completed recovery source coverage");
+  const coveredKeys = normalizedModelDayKeys(coveredModelDayKeys, "Completed recovery publication coverage");
+  if (sourceKeys.some((key) => !coveredKeys.includes(key))
+    || modelDayKeysDigest(coveredKeys) !== marker.rehearsalCoverageSha256) {
+    fail("Serving recovery marker does not bind complete rehearsal and publication coverage.");
   }
   return true;
 }

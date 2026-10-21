@@ -27,10 +27,8 @@ export async function readMigrationTree(migrationsRoot) {
   return { migrations, digest };
 }
 
-export function verifyFreshMigrationLedger({ migrations, rows, profileCount, sourceCounts = {} } = {}) {
-  if (!Array.isArray(migrations) || migrations.length === 0 || !Array.isArray(rows)) {
-    reject("migration tree or database ledger is unavailable");
-  }
+export function verifyMigrationLedger({ migrations, rows } = {}) {
+  if (!Array.isArray(migrations) || migrations.length === 0 || !Array.isArray(rows)) reject("migration tree or database ledger is unavailable");
   const expectedNames = new Set(migrations.map((entry) => entry?.name));
   if (expectedNames.size !== migrations.length || migrations.some((entry) => !SHA256.test(String(entry?.checksum ?? "")))) {
     reject("migration tree contains duplicates or malformed checksums");
@@ -52,16 +50,24 @@ export function verifyFreshMigrationLedger({ migrations, rows, profileCount, sou
     if (row.finishedAt == null || row.rolledBackAt != null) reject(`migration ${migration.name} is incomplete or rolled back`);
   }
 
+  return {
+    migrationCount: migrations.length,
+    migrationTreeDigest: createHash("sha256")
+      .update(migrations.map(({ name, checksum }) => `${name}\t${checksum}\n`).join(""))
+      .digest("hex"),
+  };
+}
+
+export function verifyFreshMigrationLedger({ migrations, rows, profileCount, sourceCounts = {} } = {}) {
+  const verifiedLedger = verifyMigrationLedger({ migrations, rows });
+
   if (profileCount !== 0) reject("a supposedly fresh database already contains a user profile");
   for (const [table, count] of Object.entries(sourceCounts)) {
     if (!Number.isSafeInteger(count) || count !== 0) reject(`fresh database contains pre-existing ${table} rows`);
   }
 
   return {
-    migrationCount: migrations.length,
-    migrationTreeDigest: createHash("sha256")
-      .update(migrations.map(({ name, checksum }) => `${name}\t${checksum}\n`).join(""))
-      .digest("hex"),
+    ...verifiedLedger,
     profileCount,
     sourceCounts,
   };
@@ -78,6 +84,15 @@ function assertDatabaseTarget(databaseUrl, mode) {
     }
     if (!/^[1-9][0-9]*$/.test(String(process.env.BODYCAST_EMPTY_INSTALL_RUN_ID ?? ""))) {
       reject("owner workflow run binding is missing");
+    }
+    return;
+  }
+  if (mode === "production-schema-postflight") {
+    if (url.hostname !== "db" || url.port !== "5432" || database !== "bodycast" || decodeURIComponent(url.username) !== "bodycast") {
+      reject("production schema verification is restricted to the fixed BodyCast Compose database endpoint");
+    }
+    if (!/^[a-f0-9]{40}$/.test(String(process.env.BODYCAST_RELEASE_SHA ?? ""))) {
+      reject("exact production release SHA is missing");
     }
     return;
   }
@@ -100,6 +115,11 @@ async function verifyDatabase(mode) {
       FROM public."_prisma_migrations"
       ORDER BY migration_name
     `;
+    if (mode === "production-schema-postflight") {
+      const verifiedLedger = verifyMigrationLedger({ migrations: tree.migrations, rows });
+      process.stdout.write(`${JSON.stringify({ ...verifiedLedger, status: "verified" })}\n`);
+      return;
+    }
     const profileCount = await client.profile.count();
     const sourceCounts = {
       DailyHealthData: await client.dailyHealthData.count(),
@@ -120,10 +140,12 @@ async function verifyDatabase(mode) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const mode = process.argv[2];
-  if (mode !== "--test" && mode !== "--production-empty-install") {
-    reject("expected --test or --production-empty-install");
+  if (mode !== "--test" && mode !== "--production-empty-install" && mode !== "--production-schema-postflight") {
+    reject("expected --test, --production-empty-install, or --production-schema-postflight");
   }
-  verifyDatabase(mode === "--test" ? "test" : "production-empty-install").catch((error) => {
+  const targetMode = mode === "--test" ? "test"
+    : mode === "--production-empty-install" ? "production-empty-install" : "production-schema-postflight";
+  verifyDatabase(targetMode).catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : "unknown verification error"}\n`);
     process.exitCode = 1;
   });

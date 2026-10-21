@@ -22,9 +22,11 @@ export APP_HOST CADDY_ROUTES_PATH
 source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 source "$ROOT_DIR/scripts/production-release-lock.sh"
+source "$ROOT_DIR/scripts/production-v4-recovered-release.sh"
 bodycast_acquire_production_release_lock
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
+readonly BODYCAST_RECOVERED_V4_SERVE="${BODYCAST_RECOVERED_V4_SERVE:-0}"
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "DEPLOY_SHA must be a full 40-character commit SHA (got: ${DEPLOY_SHA})." >&2
@@ -32,6 +34,14 @@ if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" != "0" && "$BODYCAST_NON_SERVING_DEPLOY" != "1" ]]; then
   echo "BODYCAST_NON_SERVING_DEPLOY must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_RECOVERED_V4_SERVE" != "0" && "$BODYCAST_RECOVERED_V4_SERVE" != "1" ]]; then
+  echo "BODYCAST_RECOVERED_V4_SERVE must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_RECOVERED_V4_SERVE" == "1" && "$BODYCAST_NON_SERVING_DEPLOY" != "1" ]]; then
+  echo "Recovered-V4 deployment must first start the candidate behind confirmed maintenance." >&2
   exit 1
 fi
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
@@ -60,6 +70,7 @@ previous_app_container_id=""
 previous_app_healthy=false
 rollback_image_pinned=false
 active_schema_cutover=false
+active_recovered_v4_release=false
 post_commit_probe_failed=false
 
 stop_exact_app_container() {
@@ -281,7 +292,14 @@ assert_current_main_sha
 
 marker_status=1
 if read_release_marker; then marker_status=0; else marker_status=$?; fi
-if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 0 \
+if [[ "$BODYCAST_RECOVERED_V4_SERVE" == "1" ]]; then
+  [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 1 ]] || {
+    echo "Recovered-V4 app staging requires no conflicting schema release marker and must remain non-serving." >&2
+    release_failure 1
+  }
+  active_recovered_v4_release=true
+fi
+if [[ "$active_recovered_v4_release" != "true" && "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 0 \
   && ( \
     ( "$BODYCAST_MARKER_RELEASE_SHA" != "$DEPLOY_SHA" && ( \
       ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "schema-applied" ) \
@@ -322,7 +340,8 @@ elif [[ "$marker_status" -ne 1 ]]; then
   echo "Invalid production release marker; refusing deployment." >&2
   release_failure 1
 fi
-if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -ne 0 ]]; then
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -ne 0 \
+  && "$active_recovered_v4_release" != "true" ]]; then
   echo "A non-serving app deploy requires the exact-SHA schema-applied marker; the candidate will not start on the old schema." >&2
   release_failure 1
 fi
@@ -343,12 +362,18 @@ fi
 
 # Maintenance is externally proven before prior-release capture or any app stop.
 publish_and_confirm_maintenance
+if [[ "$active_recovered_v4_release" == "true" ]]; then
+  bodycast_assert_completed_v4_recovery_for_release "$DEPLOY_SHA"
+fi
 capture_previous_release
 
 # Pin the exact running image before building any candidate that can alter the
 # local Docker image store. A failed pin leaves the old app running in maintenance.
 assert_current_main_sha
 compose --profile tools build migrate
+if [[ "$active_recovered_v4_release" == "true" ]]; then
+  bodycast_assert_completed_v4_recovery_for_release "$DEPLOY_SHA"
+fi
 compose build "$APP_SERVICE"
 candidate_image_id="$(docker image inspect --format '{{.Id}}' "$CURRENT_IMAGE")"
 [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
@@ -402,6 +427,12 @@ if [[ "$active_schema_cutover" == "true" ]]; then
   assert_current_main_sha
   write_bodycast_release_marker "$DEPLOY_SHA" app-ready
   echo "Exact SHA is deployed in confirmed maintenance; explicit V4 activation/replay and traffic check remain separate."
+  exit 0
+fi
+if [[ "$active_recovered_v4_release" == "true" ]]; then
+  bodycast_assert_completed_v4_recovery_for_release "$DEPLOY_SHA"
+  release_state="CANDIDATE_VERIFIED"
+  echo "Exact SHA is healthy behind confirmed maintenance; the Training atomic V4 serve fence remains the only route to traffic."
   exit 0
 fi
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then

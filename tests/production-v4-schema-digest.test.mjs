@@ -81,7 +81,7 @@ describe("production V4 PostgreSQL schema digest", () => {
     const smoke = readFileSync("scripts/ci/production-v4-schema-digest-postgres-smoke.mjs", "utf8");
     expect(workflow.match(/\| node scripts\/production-v4-schema-digest\.mjs/g)).toHaveLength(1);
     expect(workflow).toContain('backup_schema="$(node scripts/restore-encrypted-postgres-backup.mjs --schema-digest)"');
-    expect(workflow).toContain("Encrypted backup archive schema differs from canonical 65 migrations");
+    expect(workflow).toContain("Encrypted backup archive schema differs from canonical release migrations");
     expect(workflow).not.toContain("Restore schema differs from canonical 65 migrations");
     expect(workflow).toContain("production-v4-schema-digest.mjs \"$SSH_USER@$SSH_HOST:$artifact_dir/schema-digest.mjs\"");
     expect(workflow).toContain("schemaDigestHelperSha256");

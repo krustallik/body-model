@@ -37,7 +37,9 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(host).toContain('"$migration_count" == "74"');
     expect(host).toContain("--production-empty-install");
     expect(host).toContain("BODYCAST_NON_SERVING_DEPLOY=0");
-    expect(host).toContain('env BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH"');
+    expect(host).toContain('env BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH"');
+    expect(host).toContain('export APP_HOST CADDY_ROUTES_PATH');
+    expect(host).not.toContain('APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH"');
     expect(host).not.toMatch(/\nBODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST=/);
     expect(host).toContain("v4=not-initialized profileCount=0");
   });
@@ -58,7 +60,7 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(workflow).toContain('"initialize-empty-bodycast-db"');
     expect(workflow).toContain('[[ "$SSH_HOST" == "169.58.239.149" ]]');
     expect(workflow).toContain('[[ "$APP_HOST" == "bodycast.ihorhub.eu" ]]');
-    expect(workflow).toContain('if [[ "$DEPLOY_MODE" == "fresh-empty-install" ]]; then');
+    expect(workflow).toContain('if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" ]]; then');
     expect(workflow).toContain("production-empty-install-host.sh");
     expect(workflow).toContain("assertTrustedOwnerWorkflowRun");
     expect(workflow).toContain("Exact current main SHA");

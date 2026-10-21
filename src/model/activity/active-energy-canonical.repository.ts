@@ -150,9 +150,13 @@ export async function persistActiveEnergyCanonicalResolutionV1(
       sourceFingerprint: selected?.sourceFingerprint ?? null,
       evidence: selected?.provenance ?? null,
     };
+    // The event input fingerprint also covers losing candidate dependencies.
+    // Those may change during replay while the selected source and its exact
+    // provenance remain unchanged (for example, a device value while a MET
+    // fallback is unavailable). Canonical revisions represent only the
+    // selected resolution; inputFingerprint remains the transaction CAS token.
     const resolutionFingerprint = stableSha256(JSON.stringify({
-      logicalEventKey: input.logicalEventKey, inputFingerprint: input.inputFingerprint,
-      source, valueKcal, provenance,
+      logicalEventKey: input.logicalEventKey, source, valueKcal, provenance,
     }));
     if (event.currentResolutionFingerprint === resolutionFingerprint) {
       if (event.isStale) {

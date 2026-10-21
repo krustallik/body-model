@@ -98,6 +98,23 @@ describe("evaluateProductionDeployGate", () => {
     expect(manualGate({ dispatchConfirm: "initialize-empty-bodycast-db", nonServingDeploy: false })).toMatchObject({ decision: "block" });
   });
 
+  it("allows recovered V4 serving only with its distinct confirmation and explicit serving mode", () => {
+    expect(manualGate({ dispatchConfirm: "serve-after-current-v4-recovery", nonServingDeploy: false, recoveredV4Serve: true }))
+      .toEqual({
+        decision: "deploy",
+        reason: "Owner-authorized recovered-V4 serving is bound to the exact current main SHA and requires the completed production recovery marker plus the atomic currentness fence.",
+        candidateSha: tip,
+        mode: "recovered-v4-serving",
+      });
+    expect(manualGate({ recoveredV4Serve: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "deploy", nonServingDeploy: false, recoveredV4Serve: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-after-current-v4-recovery", nonServingDeploy: true, recoveredV4Serve: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-after-current-v4-recovery", nonServingDeploy: false, recoveredV4Serve: true, candidateSha: stale }))
+      .toMatchObject({ decision: "skip" });
+    expect(manualGate({ dispatchConfirm: "serve-after-current-v4-recovery", nonServingDeploy: false,
+      freshEmptyInstall: true, recoveredV4Serve: true })).toMatchObject({ decision: "block" });
+  });
+
   it("allows automatic serving only from successful CI for the exact current main SHA", () => {
     expect(automaticGate()).toEqual({
       decision: "deploy",

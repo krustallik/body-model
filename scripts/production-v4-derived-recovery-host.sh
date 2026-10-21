@@ -10,6 +10,13 @@ mode="${1:-}"
 [[ "${BODYCAST_DEPLOY_PATH:-}" == "/srv/bodycast" ]] || fail "deploy-path"
 [[ "${BODYCAST_RECOVERY_SHA:-}" == "ad902e2172d6343061624b35d2350284e0a1c219" ]] || fail "source-sha"
 [[ "${BODYCAST_EXPECTED_APP_SHA:-}" == "f910d2a45dfa676fada5fab42c9e8946c97872b1" ]] || fail "expected-app-sha"
+[[ "${BODYCAST_TARGET_MODE:-}" == "legacy-serving-65" || "${BODYCAST_TARGET_MODE:-}" == "maintenance-no-app-74" ]] || fail "target-mode"
+[[ "${BODYCAST_TARGET_MIGRATION_COUNT:-}" =~ ^(65|74)$ && "${BODYCAST_TARGET_LEDGER_DIGEST:-}" =~ ^[a-f0-9]{64}$ ]] || fail "target-migration-contract"
+[[ "${BODYCAST_TARGET_MIGRATION_TREE:-}" =~ ^[a-f0-9]{40}$ && "${BODYCAST_TARGET_PRISMA_SCHEMA_BLOB:-}" =~ ^[a-f0-9]{40}$ ]] || fail "target-schema-contract"
+if [[ "$BODYCAST_TARGET_MODE" == "maintenance-no-app-74" ]]; then
+  [[ "$BODYCAST_TARGET_MIGRATION_COUNT" == "74" && "${BODYCAST_APP_HOST:-}" =~ ^[A-Za-z0-9.-]+$ \
+    && "${BODYCAST_CADDY_ROUTES_PATH:-}" == /* ]] || fail "maintenance-no-app-contract"
+fi
 [[ "${BODYCAST_OWNER_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || fail "owner-run-id"
 [[ "${BODYCAST_WORKFLOW_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || fail "workflow-sha"
 [[ "${BODYCAST_WORKFLOW_ATTEMPT:-}" == "1" ]] || fail "workflow-attempt"
@@ -32,9 +39,19 @@ artifact_dir="/var/lib/bodycast/recovery/artifacts/${BODYCAST_RECOVERY_SHA}/${BO
 [[ "${BODYCAST_SCHEMA_DIGEST_HELPER_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || fail "schema-digest-script-digest"
 [[ "$(sha256sum "$BODYCAST_SCHEMA_DIGEST_SCRIPT" | awk '{print $1}')" == "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" ]] \
   || fail "schema-digest-script-digest"
+if [[ "$BODYCAST_TARGET_MODE" == "maintenance-no-app-74" ]]; then
+  [[ "${BODYCAST_ROUTE_PRIMITIVES_SCRIPT:-}" == "$artifact_dir/route-primitives.sh" \
+    && -f "$BODYCAST_ROUTE_PRIMITIVES_SCRIPT" && ! -L "$BODYCAST_ROUTE_PRIMITIVES_SCRIPT" \
+    && "$(realpath -e "$BODYCAST_ROUTE_PRIMITIVES_SCRIPT" 2>/dev/null || true)" == "$BODYCAST_ROUTE_PRIMITIVES_SCRIPT" \
+    && "${BODYCAST_ROUTE_PRIMITIVES_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+    && "$(sha256sum "$BODYCAST_ROUTE_PRIMITIVES_SCRIPT" | awk '{print $1}')" == "$BODYCAST_ROUTE_PRIMITIVES_SHA256" ]] || fail "route-primitives-identity"
+fi
 schema_digest_contract="$(node "$BODYCAST_SCHEMA_DIGEST_SCRIPT" --contract 2>/dev/null)" || fail "schema-digest-contract"
 [[ "$schema_digest_contract" == "bodycast-pg-dump-schema-v1" ]] || fail "schema-digest-contract"
-[[ "${BODYCAST_RECOVERY_HEADROOM_METRICS_JSON:-}" =~ ^\{.{2,1022}\}$ ]] || fail "headroom-metrics-missing"
+headroom_metrics_json="${BODYCAST_RECOVERY_HEADROOM_METRICS_JSON:-}"
+[[ ${#headroom_metrics_json} -ge 4 && ${#headroom_metrics_json} -le 1024 \
+  && "${headroom_metrics_json:0:1}" == "{" && "${headroom_metrics_json: -1}" == "}" ]] \
+  || fail "headroom-metrics-missing"
 
 git_dir="$(git -C "$BODYCAST_DEPLOY_PATH" rev-parse --absolute-git-dir 2>/dev/null)" || fail "deploy-git-dir"
 [[ -d "$git_dir" && ! -L "$git_dir" && "$(git -C "$BODYCAST_DEPLOY_PATH" rev-parse --show-toplevel)" == "$BODYCAST_DEPLOY_PATH" ]] || fail "deploy-checkout-identity"
@@ -44,6 +61,13 @@ flock -n 9 || fail "release-lock-contended"
 
 db=bodycast-db-prod
 app=bodycast-app-prod
+if [[ "$BODYCAST_TARGET_MODE" == "maintenance-no-app-74" ]]; then
+  export APP_HOST="$BODYCAST_APP_HOST" CADDY_ROUTES_PATH="$BODYCAST_CADDY_ROUTES_PATH"
+  # The cold-start target is accepted only while the exact, validated
+  # maintenance route is active and the app service is absent.
+  # shellcheck source=scripts/production-route-primitives.sh
+  source "$BODYCAST_ROUTE_PRIMITIVES_SCRIPT"
+fi
 recovery_image_id() {
   local expected observed
   for expected in "$BODYCAST_IMAGE_ID" "$BODYCAST_IMAGE_DIGEST"; do
@@ -58,12 +82,46 @@ recovery_image_id() {
 db_id="$(docker inspect --format '{{.Id}}' "$db" 2>/dev/null)" || fail "db-container-missing"
 db_image="$(docker inspect --format '{{.Image}}' "$db")"
 db_status="$(docker inspect --format '{{.State.Status}}' "$db")"
-app_id="$(docker inspect --format '{{.Id}}' "$app" 2>/dev/null)" || fail "app-container-missing"
-app_image="$(docker inspect --format '{{.Image}}' "$app")"
-app_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app")"
-app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$app")"
 [[ "$db_id" =~ ^[a-f0-9]{64}$ && "$db_image" =~ ^sha256:[a-f0-9]{64}$ && "$db_status" == running ]] || fail "db-container-identity"
-[[ "$app_id" =~ ^[a-f0-9]{64}$ && "$app_image" =~ ^sha256:[a-f0-9]{64}$ && "$app_health" == healthy && "$app_sha" == "$BODYCAST_EXPECTED_APP_SHA" ]] || fail "serving-app-identity"
+assert_maintenance_no_app() {
+  local compose_project app_ids route_marker exact_name_ids
+  compose_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$db" 2>/dev/null)" || fail "db-compose-project"
+  [[ "$compose_project" == "bodycast-prod" ]] || fail "db-compose-project"
+  exact_name_ids="$(docker ps -aq --filter 'name=^/bodycast-app-prod$')" || fail "app-inventory"
+  app_ids="$(docker ps -aq --filter "label=com.docker.compose.project=$compose_project" --filter 'label=com.docker.compose.service=app')" \
+    || fail "app-inventory"
+  [[ -z "$exact_name_ids" && -z "$app_ids" ]] || fail "app-must-remain-absent"
+  bodycast_verify_exact_maintenance_route || fail "maintenance-route-identity"
+  route_marker="$(bodycast_maintenance_marker_from_route)" || fail "maintenance-route-marker"
+  bodycast_probe_public_maintenance "$route_marker" || fail "public-maintenance-probe"
+}
+app_id="null"
+app_image="null"
+app_health="absent"
+app_sha=""
+if [[ "$BODYCAST_TARGET_MODE" == "maintenance-no-app-74" ]]; then
+  assert_maintenance_no_app
+else
+  app_id="$(docker inspect --format '{{.Id}}' "$app" 2>/dev/null)" || fail "app-container-missing"
+  app_image="$(docker inspect --format '{{.Image}}' "$app")"
+  app_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app")"
+  app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$app")"
+  [[ "$app_id" =~ ^[a-f0-9]{64}$ && "$app_image" =~ ^sha256:[a-f0-9]{64}$ && "$app_health" == healthy && "$app_sha" == "$BODYCAST_EXPECTED_APP_SHA" ]] || fail "serving-app-identity"
+fi
+assert_target_runtime_unchanged() {
+  [[ "$(docker inspect --format '{{.Id}}' "$db")" == "$db_id" \
+    && "$(docker inspect --format '{{.Image}}' "$db")" == "$db_image" \
+    && "$(docker inspect --format '{{.State.Status}}' "$db")" == running ]] || fail "production-db-identity-changed"
+  if [[ "$BODYCAST_TARGET_MODE" == "maintenance-no-app-74" ]]; then
+    assert_maintenance_no_app
+  else
+    [[ "$(docker inspect --format '{{.Id}}' "$app")" == "$app_id" \
+      && "$(docker inspect --format '{{.Image}}' "$app")" == "$app_image" \
+      && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app")" == healthy \
+      && "$(docker inspect --format '{{index .Config.Labels \"org.bodycast.release-sha\"}}' "$app")" == "$BODYCAST_EXPECTED_APP_SHA" ]] \
+      || fail "serving-app-identity-changed"
+  fi
+}
 
 headroom_check() {
   local phase="$1" docker_root pgdata_container pgwal_container mounts_json host_paths
@@ -122,16 +180,39 @@ if ! recovery_image_id >/dev/null; then
 fi
 recovery_image_ref="$(recovery_image_id)" || fail "loaded-image-id"
 
-mapfile -t app_networks < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$app" | sort)
 mapfile -t db_networks < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$db" | sort)
-shared_networks=()
-for network in "${app_networks[@]}"; do
-  [[ -n "$network" ]] && printf '%s\n' "${db_networks[@]}" | grep -Fxq "$network" && shared_networks+=("$network")
-done
-[[ "${#shared_networks[@]}" -eq 1 ]] || fail "production-network-identity"
-network="${shared_networks[0]}"
-database_url="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$app" | sed -n 's/^DATABASE_URL=//p')"
-[[ "$database_url" == postgresql://* && "$database_url" != *$'\n'* && "$database_url" != *$'\r'* ]] || fail "app-database-url"
+if [[ "$BODYCAST_TARGET_MODE" == "maintenance-no-app-74" ]]; then
+  network="bodycast-backend-prod"
+  printf '%s\n' "${db_networks[@]}" | grep -Fxq "$network" || fail "production-network-identity"
+  database_config="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$db")" || fail "db-runtime-config"
+  database_url="$(BODYCAST_DB_CONFIG="$database_config" node --input-type=module <<'NODE'
+const config = new Map(process.env.BODYCAST_DB_CONFIG.split(/\r?\n/).filter(Boolean).map((line) => {
+  const index = line.indexOf("="); return [line.slice(0, index), line.slice(index + 1)];
+}));
+const database = config.get("POSTGRES_DB");
+const username = config.get("POSTGRES_USER");
+const password = config.get("POSTGRES_PASSWORD");
+if (![database, username, password].every((value) => typeof value === "string" && value.length > 0)) {
+  throw new Error("PostgreSQL runtime identity is incomplete.");
+}
+const url = new URL("postgresql://localhost");
+url.username = username; url.password = password; url.hostname = "bodycast-db-prod"; url.port = "5432";
+url.pathname = `/${database}`; url.searchParams.set("schema", "public");
+process.stdout.write(url.toString());
+NODE
+  )" || fail "db-runtime-config"
+  [[ "$database_url" == postgresql://* && "$database_url" != *$'\n'* && "$database_url" != *$'\r'* ]] || fail "db-runtime-config"
+else
+  mapfile -t app_networks < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$app" | sort)
+  shared_networks=()
+  for network in "${app_networks[@]}"; do
+    [[ -n "$network" ]] && printf '%s\n' "${db_networks[@]}" | grep -Fxq "$network" && shared_networks+=("$network")
+  done
+  [[ "${#shared_networks[@]}" -eq 1 ]] || fail "production-network-identity"
+  network="${shared_networks[0]}"
+  database_url="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$app" | sed -n 's/^DATABASE_URL=//p')"
+  [[ "$database_url" == postgresql://* && "$database_url" != *$'\n'* && "$database_url" != *$'\r'* ]] || fail "app-database-url"
+fi
 network_json="$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$db")"
 db_ip="$(BODYCAST_DATABASE_URL="$database_url" BODYCAST_NETWORK_JSON="$network_json" BODYCAST_NETWORK_NAME="$network" node --input-type=module <<'NODE'
 const networks = JSON.parse(process.env.BODYCAST_NETWORK_JSON);
@@ -173,18 +254,28 @@ schema_digest="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-
 if [[ "$mode" == "preflight" ]]; then
   marker="/var/lib/bodycast/recovery/unified-v4-derived-${BODYCAST_RECOVERY_SHA}.json"
   [[ ! -e "$marker" && ! -L "$marker" ]] || fail "recovery-already-started-or-terminal"
-  BODYCAST_HEADROOM_BEFORE_LOAD_JSON="$HEADROOM_REPORT" node --input-type=module - "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$schema_digest_contract" "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" <<'NODE'
+  BODYCAST_HEADROOM_BEFORE_LOAD_JSON="$HEADROOM_REPORT" BODYCAST_TARGET_MODE="$BODYCAST_TARGET_MODE" \
+  BODYCAST_TARGET_MIGRATION_COUNT="$BODYCAST_TARGET_MIGRATION_COUNT" \
+  BODYCAST_TARGET_LEDGER_DIGEST="$BODYCAST_TARGET_LEDGER_DIGEST" \
+  BODYCAST_TARGET_MIGRATION_TREE="$BODYCAST_TARGET_MIGRATION_TREE" \
+  BODYCAST_TARGET_PRISMA_SCHEMA_BLOB="$BODYCAST_TARGET_PRISMA_SCHEMA_BLOB" \
+  node --input-type=module - "$evidence_file" "$schema_digest" "$db_id" "$db_image" "$app_id" "$app_image" "$db_ip" "$schema_digest_contract" "$BODYCAST_SCHEMA_DIGEST_HELPER_SHA256" <<'NODE'
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 const evidence = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const headroomBeforeLoad = JSON.parse(process.env.BODYCAST_HEADROOM_BEFORE_LOAD_JSON ?? "");
 if (headroomBeforeLoad.phase !== "before-load") throw new Error("Pre-load disk-headroom evidence is malformed.");
-const ledgerDigest = createHash("sha256").update(evidence.expectedMigrationRows
+const ledgerDigest = createHash("sha256").update(evidence.migrationRows
   .map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
+const legacyLedgerDigest = createHash("sha256").update(evidence.expectedMigrationRows
+  .map((row) => `${row.name}\t${row.checksum}\n`).join("")).digest("hex");
+const targetCount = Number(process.env.BODYCAST_TARGET_MIGRATION_COUNT);
+const targetLedgerDigest = process.env.BODYCAST_TARGET_LEDGER_DIGEST;
 if (evidence.database?.database !== "bodycast" || !evidence.database.version.startsWith("17.")
-    || evidence.migrationRows?.length !== 65 || evidence.expectedMigrationRows?.length !== 65
-    || ledgerDigest !== "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7"
-    || evidence.migrationRows.some((row, index) => row.name !== evidence.expectedMigrationRows[index].name
+    || evidence.migrationRows?.length !== targetCount || evidence.expectedMigrationRows?.length !== 65
+    || ledgerDigest !== targetLedgerDigest
+    || legacyLedgerDigest !== "a4153cad028db966759935cb997b15ac3c6f1670dfc9ebd8a114f6b9520746a7"
+    || evidence.migrationRows.slice(0, 65).some((row, index) => row.name !== evidence.expectedMigrationRows[index].name
       || row.checksum !== evidence.expectedMigrationRows[index].checksum || !row.finishedAt || row.rolledBackAt !== null)
     || evidence.lifecycle?.unifiedRolloutEpoch !== 1 || evidence.database?.serverAddress !== process.argv[8]
     || evidence.database?.serverPort !== 5432
@@ -192,13 +283,19 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || !/^[a-f0-9]{64}$/.test(evidence.sourceFingerprint)
     || !Array.isArray(evidence.blocks) || evidence.blocks.length < 1
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
-  throw new Error("Live database is not the expected stale 65-migration V4 source state.");
+  throw new Error("Live database is not the exact stale V4 source schema/state for the approved target.");
 }
 const output = { sourceSha: "ad902e2172d6343061624b35d2350284e0a1c219",
   schemaSha256: process.argv[3], databaseContainerId: process.argv[4], databaseImageId: process.argv[5],
-  appContainerId: process.argv[6], appImageId: process.argv[7], appSha: "f910d2a45dfa676fada5fab42c9e8946c97872b1",
+  appContainerId: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : process.argv[6],
+  appImageId: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : process.argv[7],
+  appSha: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? null : "f910d2a45dfa676fada5fab42c9e8946c97872b1",
+  appMode: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? "maintenance-no-app" : "serving",
   databaseContainerAddress: process.argv[8], schemaDigestContract: process.argv[9],
-  schemaDigestHelperSha256: process.argv[10], headroomBeforeLoad, evidence };
+  schemaDigestHelperSha256: process.argv[10], headroomBeforeLoad, evidence,
+  targetSchema: { mode: process.env.BODYCAST_TARGET_MODE, migrationCount: targetCount,
+    ledgerDigest: targetLedgerDigest, migrationTree: process.env.BODYCAST_TARGET_MIGRATION_TREE,
+    prismaSchemaBlob: process.env.BODYCAST_TARGET_PRISMA_SCHEMA_BLOB } };
 process.stdout.write(`${JSON.stringify(output)}\n`);
 NODE
   exit 0
@@ -218,6 +315,18 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 const expected = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const live = JSON.parse(readFileSync(process.argv[3], "utf8"));
+const expectedAppMode = process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? "maintenance-no-app" : "serving";
+if (expected.appMode !== expectedAppMode
+    || expected.targetSchema?.mode !== process.env.BODYCAST_TARGET_MODE
+    || expected.targetSchema?.migrationCount !== Number(process.env.BODYCAST_TARGET_MIGRATION_COUNT)
+    || expected.targetSchema?.ledgerDigest !== process.env.BODYCAST_TARGET_LEDGER_DIGEST
+    || expected.targetSchema?.migrationTree !== process.env.BODYCAST_TARGET_MIGRATION_TREE
+    || expected.targetSchema?.prismaSchemaBlob !== process.env.BODYCAST_TARGET_PRISMA_SCHEMA_BLOB
+    || (expectedAppMode === "maintenance-no-app" && (expected.appSha !== null
+      || expected.appContainerId !== null || expected.appImageId !== null))
+    || (expectedAppMode === "serving" && expected.appSha !== process.env.BODYCAST_EXPECTED_APP_SHA)) {
+  throw new Error("Execute preflight target schema or application mode differs from the authorized workflow target.");
+}
 const fences = expected.evidence?.blocks ?? [];
 const modelDayKeyPattern = /^[1-9][0-9]*\|\d{4}-\d{2}-\d{2}$/;
 const normalizeModelDayKeys = (keys) => {
@@ -234,9 +343,11 @@ const sourceModelDayKeys = normalizeModelDayKeys(expected.evidence?.sourceModelD
 const rehearsalCoverageSha256 = createHash("sha256").update(`${rehearsalCoveredModelDayKeys.join("\n")}\n`).digest("hex");
 const fenceDigest = createHash("sha256").update([...fences].sort((a, b) => `${a.source}\0${a.sourceKey}`.localeCompare(`${b.source}\0${b.sourceKey}`))
   .map((block) => [block.source, block.sourceKey, block.fromDate, block.revision].join("\t") + "\n").join("")).digest("hex");
+const appContainerId = process.argv[7] === "null" ? null : process.argv[7];
+const appImageId = process.argv[8] === "null" ? null : process.argv[8];
 if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !== process.argv[5]
-    || expected.databaseImageId !== process.argv[6] || expected.appContainerId !== process.argv[7]
-    || expected.appImageId !== process.argv[8] || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
+    || expected.databaseImageId !== process.argv[6] || expected.appContainerId !== appContainerId
+    || expected.appImageId !== appImageId || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
     || JSON.stringify(expected.evidence?.sourceModelDayKeys) !== JSON.stringify(live.sourceModelDayKeys)
     || JSON.stringify(expected.evidence?.migrationRows) !== JSON.stringify(live.migrationRows)
     || JSON.stringify(expected.evidence?.blocks) !== JSON.stringify(live.blocks)
@@ -268,12 +379,7 @@ if (!preflight.expectedEntryBinding || JSON.stringify(preflight.expectedEntryBin
 }
 NODE
 printf 'BODYCAST_V4_EXPECTED_EVIDENCE_BINDING=%s\n' "$binding_json" >> "$database_env_file"
-[[ "$(docker inspect --format '{{.Id}}' "$db")" == "$db_id" \
-  && "$(docker inspect --format '{{.Image}}' "$db")" == "$db_image" \
-  && "$(docker inspect --format '{{.Id}}' "$app")" == "$app_id" \
-  && "$(docker inspect --format '{{.Image}}' "$app")" == "$app_image" \
-  && "$(docker inspect --format '{{.State.Status}}' "$db")" == running \
-  && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app")" == healthy ]] || fail "production-container-identity-changed"
+assert_target_runtime_unchanged
 
 headroom_check before-execute
 
@@ -303,10 +409,15 @@ const preflightDigest = createHash("sha256").update(await readFile(preflightPath
 const marker = { state: "started", sourceSha, ownerRunId: runId, workflowSha, attempt,
   imageId, archiveSha, preflightDigest, schemaSha,
   schemaDigestContract: preflight.schemaDigestContract, schemaDigestHelperSha256: preflight.schemaDigestHelperSha256,
-  ledgerDigest: preflight.evidence.expectedLedgerDigest,
+  ledgerDigest: process.env.BODYCAST_TARGET_LEDGER_DIGEST,
+  legacyLedgerDigest: preflight.evidence.expectedLedgerDigest,
   fenceDigest, sourceFingerprint: preflight.evidence.sourceFingerprint, databaseContainerId: dbId,
   rehearsalCoverageSha256, rehearsalCoveredModelDayKeys: normalizedRehearsalCoverage,
-  databaseImageId: dbImage, appContainerId: appId, appImageId: appImage, startedAt: new Date().toISOString() };
+  databaseImageId: dbImage, appMode: process.env.BODYCAST_TARGET_MODE === "maintenance-no-app-74" ? "maintenance-no-app" : "serving",
+  appContainerId: appId === "null" ? null : appId, appImageId: appImage === "null" ? null : appImage,
+  targetSchema: { mode: process.env.BODYCAST_TARGET_MODE, migrationCount: Number(process.env.BODYCAST_TARGET_MIGRATION_COUNT),
+    ledgerDigest: process.env.BODYCAST_TARGET_LEDGER_DIGEST, migrationTree: process.env.BODYCAST_TARGET_MIGRATION_TREE,
+    prismaSchemaBlob: process.env.BODYCAST_TARGET_PRISMA_SCHEMA_BLOB }, startedAt: new Date().toISOString() };
 const markerContents = `${JSON.stringify(marker)}\n`;
 const markerBytes = Buffer.byteLength(markerContents);
 const headroomMetrics = JSON.parse(process.env.BODYCAST_RECOVERY_HEADROOM_METRICS_JSON ?? "null");
@@ -406,14 +517,7 @@ fi
 schema_digest_after="$(docker exec "$db" sh -c 'pg_dump --schema-only --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' \
   | node "$BODYCAST_SCHEMA_DIGEST_SCRIPT")" || fail "postflight-schema-signature"
 [[ "$schema_digest_after" == "$schema_digest" ]] || fail "schema-changed-during-recovery"
-[[ "$(docker inspect --format '{{.Id}}' "$db")" == "$db_id" \
-  && "$(docker inspect --format '{{.Image}}' "$db")" == "$db_image" \
-  && "$(docker inspect --format '{{.State.Status}}' "$db")" == running \
-  && "$(docker inspect --format '{{.Id}}' "$app")" == "$app_id" \
-  && "$(docker inspect --format '{{.Image}}' "$app")" == "$app_image" \
-  && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app")" == healthy \
-  && "$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$app")" == "$BODYCAST_EXPECTED_APP_SHA" ]] \
-  || fail "production-container-identity-changed-during-recovery"
+assert_target_runtime_unchanged
 node --input-type=module - "$marker" "$evidence_file" "$after_file" "$result_file" "$schema_digest" <<'NODE'
 import { readFileSync, writeFileSync, openSync, fsyncSync, closeSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -446,6 +550,9 @@ if (before.sourceFingerprint !== after.sourceFingerprint || before.expectedLedge
     || after.sourceModelDayKeys.some((key) => !rehearsalCoverage.includes(key))
     || after.sourceModelDayCount !== after.sourceModelDayKeys.length || after.coveredDayCount !== after.coveredModelDayKeys.length
     || JSON.stringify(before.sourceModelDayKeys) !== JSON.stringify(after.sourceModelDayKeys)
+    || after.migrationRows?.length !== Number(process.env.BODYCAST_TARGET_MIGRATION_COUNT)
+    || createHash("sha256").update(after.migrationRows.map((row) => row.name + "\t" + row.checksum + "\n").join("")).digest("hex")
+      !== process.env.BODYCAST_TARGET_LEDGER_DIGEST
     || result.command !== "unified-v4-derived-recovery"
     || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.sourceFingerprint) {
   throw new Error("Read-only postflight did not prove strict raw parity and V4 CURRENT coverage at epoch 1.");

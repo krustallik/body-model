@@ -794,6 +794,7 @@ export function createFixture(): Fixture {
     "production-route-path.sh",
     "production-route-primitives.sh",
     "production-release-lock.sh",
+    "production-v4-recovered-release.sh",
     "production-traffic-cutover.sh",
     "production-app-container-health-wait.sh",
     "production-writer-drain.sh",

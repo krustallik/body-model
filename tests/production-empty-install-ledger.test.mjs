@@ -2,13 +2,28 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { readMigrationTree, verifyFreshMigrationLedger } from "../scripts/production-empty-install-ledger.mjs";
+import { readMigrationTree, verifyFreshMigrationLedger, verifyMigrationLedger } from "../scripts/production-empty-install-ledger.mjs";
 
 const migration = { name: "20260101000000_first", checksum: "a".repeat(64) };
 const applied = [{ name: migration.name, checksum: migration.checksum, finishedAt: new Date(), rolledBackAt: null }];
 const emptyCounts = { DailyHealthData: 0, Workout: 0, StrengthDiarySession: 0 };
 
 describe("fresh empty-install migration verification", () => {
+  it("verifies an exact already-populated migration ledger without inspecting or assuming user data is empty", () => {
+    expect(verifyMigrationLedger({ migrations: [migration], rows: applied }))
+      .toMatchObject({ migrationCount: 1, migrationTreeDigest: expect.any(String) });
+  });
+
+  it.each([
+    ["missing row", []],
+    ["extra row", [...applied, { ...applied[0], name: "20260102000000_extra" }]],
+    ["changed checksum", [{ ...applied[0], checksum: "b".repeat(64) }]],
+    ["incomplete row", [{ ...applied[0], finishedAt: null }]],
+    ["rolled back row", [{ ...applied[0], rolledBackAt: new Date() }]],
+  ])("fails closed for schema-only %s", (_label, rows) => {
+    expect(() => verifyMigrationLedger({ migrations: [migration], rows })).toThrow();
+  });
+
   it("accepts every exact successful migration on an empty profile/source database", () => {
     expect(verifyFreshMigrationLedger({ migrations: [migration], rows: applied, profileCount: 0, sourceCounts: emptyCounts }))
       .toMatchObject({ migrationCount: 1, profileCount: 0, sourceCounts: emptyCounts });

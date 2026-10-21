@@ -1,10 +1,10 @@
 # Production release operations
 
-Automatic serving deployment is paused while the legacy V4 recovery and schema cutover are pending.
-The deploy workflow currently exposes only its owner-authorized, exact-current-main non-serving
-dispatch. Resume serving only through the separately owner-controlled SSH serve step after V4 and
-the approved DDL checkpoints. Manual deployment checks GitHub's triggering actor against owner ID
-`126446430`.
+Automatic serving deployment is paused while the imported-data V4 recovery is pending. The deploy
+workflow exposes exact-current-main owner dispatches for non-serving deploy, first install, and
+serving after a completed no-app V4 recovery. Recovered serving keeps maintenance active until the
+existing PostgreSQL currentness fence commits the exact route. Manual deployment checks GitHub's
+triggering actor against owner ID `126446430`.
 
 ## Release components
 
@@ -14,8 +14,9 @@ the approved DDL checkpoints. Manual deployment checks GitHub's triggering actor
 - `.github/workflows/production-migrate.yml` verifies the exact signed owner authorization,
   current SHA, selected exact migration manifest and hashes, database identity, backup/restore evidence, and
   writer drain before invoking `scripts/deploy-migrate.sh` over SSH.
-- `.github/workflows/deploy-production.yml` currently has no CI-completion trigger. Its manual
-  exact-SHA dispatch remains owner-gated and non-serving while this release pause is active.
+- `.github/workflows/deploy-production.yml` has no CI-completion trigger. Manual dispatches require
+  successful CI for the exact current-main SHA; recovered-V4 serving has a distinct confirmation
+  and never applies Prisma migrations.
 - Unified V4 activation/replay was a one-time rollout operation. Its workflow dispatch has been
   removed; guarded cutover and recovery helpers remain available to the retained release paths.
 - `scripts/deploy.sh`, `scripts/deploy-migrate.sh`, `scripts/production-traffic-cutover.sh`, and
@@ -70,14 +71,24 @@ claiming the Docker image cache is read-only.
 
 ## Owner-authorized release order
 
-A. Run the owner-approved legacy V4 recovery against the verified 65-migration schema.
-B. Verify V4 CURRENT and coverage read-only; keep V4 epoch 1.
-C. For the combined Training release, use the exact nine-migration manifest from the 65-migration
-   baseline, fresh current-main preflight, encrypted backup, isolated restore/DDL rehearsal, and
-   one separate signed DDL approval bound to that exact manifest and SHA.
-D. Deploy the exact-current-main app without serving traffic.
-E. Serve through the owner-controlled SSH path only after all approved schema checkpoints pass.
-F. Run production health, API, UI, V4, Training, and Health smoke checks.
+A. For the imported-data database, run the owner-authorized derived-only V4 recovery in
+   `maintenance-no-app-74` mode. It requires exact current-main CI, the approved recovery image,
+   encrypted backup, isolated restore/rehearsal, disk headroom, current source binding, and a
+   fresh root-only terminal marker. It does not run Prisma migrations or start an app.
+B. Verify the recovery marker, 74-row migration ledger, schema digest, raw-source fingerprint,
+   complete V4 coverage, synchronized generations, zero publication fences, and V4 epoch 1.
+C. Dispatch `deploy-production.yml` with `serve_recovered_v4=true`,
+   `non_serving_deploy=false`, `fresh_empty_install=false`, exact current-main `commit_sha`, and
+   confirmation `serve-after-current-v4-recovery`. The workflow first starts the exact app behind
+   confirmed maintenance, then calls `production-traffic-cutover.sh serve`. That path rechecks the
+   completed recovery marker and 74 successful migration rows, verifies current raw/schema evidence,
+   and holds the existing `(927001, profileId)` PostgreSQL currentness fence through route publication,
+   reload, and health probe.
+D. Run production health, API, UI, V4, Training, Health, and historical-integrity smoke checks.
+
+For a later schema change, use the separate migration preflight, encrypted backup and isolated
+restore/DDL rehearsal, exact signed DDL authorization, migration workflow, schema postflight, and
+non-serving app deploy. Do not rerun that path for an already-current 74-migration imported database.
 
 An unknown or partial Training DDL result stops the sequence: keep maintenance active and do not
 retry Prisma, apply manual SQL, or automatically roll back. Do not run Prisma commands or

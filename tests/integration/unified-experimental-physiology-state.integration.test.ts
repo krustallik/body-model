@@ -16,6 +16,7 @@ import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@
 import { healthSyncRepository } from "@/modules/health/health.repository";
 import { syncHealthData } from "@/modules/health/health.service";
 import * as glycogenStateShadowService from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
+import * as relativeMuscleShadowService from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import * as strengthGlycogenDemandShadowService from "@/modules/training/experimental-strength-glycogen-demand-shadow.service";
 import * as stepperActiveEnergyShadowService from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import * as stepperGlycogenShadowService from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
@@ -692,6 +693,18 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }, profileId);
       await trainingService.finishSession(session.id, profileId);
 
+      // An older persisted Training fence can widen the required replay suffix
+      // beyond the deleted session's own event day. Keep a real child-delete
+      // fence in the same group so the service must replay the earliest date
+      // before clearing the exact deletion evidence group.
+      await new PhysiologyV7PersistenceRepository().blockUnifiedPublication({
+        profileId, fromDate: dates[0], source: "training", sourceKey: String(session.id),
+      });
+      const persistedSet = await prisma.strengthSet.findFirstOrThrow({
+        where: { sessionExercise: { sessionId: session.id } }, select: { id: true },
+      });
+      expect(await trainingRepository.deleteSet(persistedSet.id, session.id, profileId)).toBe(true);
+
       const failFirstGlycogenRefresh = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
         .mockRejectedValueOnce(new Error("injected completed-session deletion shadow failure"));
       let firstDelete: Awaited<ReturnType<typeof trainingService.deleteDiarySession>>;
@@ -705,15 +718,28 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(session.id) } },
       })).not.toBeNull();
+      expect(await prisma.unifiedPublicationBlock.findMany({
+        where: { profileId, source: "training", sourceKey: { in: [
+          String(session.id), `training-delete-session:${session.id}`, `training-delete-set:${session.id}:${persistedSet.id}`,
+        ] } }, select: { sourceKey: true, fromDate: true },
+      })).toHaveLength(3);
       const blockedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(blockedLifecycle.unifiedRolloutEpoch).toBe(1);
       expect(blockedLifecycle.unifiedPublicationBlockedFromDate).not.toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
 
-      await expect(trainingService.deleteDiarySession(session.id, profileId)).resolves.toMatchObject({
-        matchedWorkoutId: null,
-        modelPublicationStatus: "current",
-      });
+      const relativeMuscleReplay = vi.spyOn(relativeMuscleShadowService, "rebuildAuthoritativeRelativeMuscleTrajectory");
+      let relativeMuscleReplayInput: Parameters<typeof relativeMuscleShadowService.rebuildAuthoritativeRelativeMuscleTrajectory>[0] | undefined;
+      try {
+        await expect(trainingService.deleteDiarySession(session.id, profileId)).resolves.toMatchObject({
+          matchedWorkoutId: null,
+          modelPublicationStatus: "current",
+        });
+        relativeMuscleReplayInput = relativeMuscleReplay.mock.calls.at(-1)?.[0];
+      } finally {
+        relativeMuscleReplay.mockRestore();
+      }
+      expect(relativeMuscleReplayInput).toEqual({ fromInstant: new Date("2070-12-31T23:00:00.000Z"), profileId });
       expect(await prisma.strengthDiarySession.findUnique({ where: { id: session.id }, select: { id: true } })).toBeNull();
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "training", sourceKey: String(session.id) } },

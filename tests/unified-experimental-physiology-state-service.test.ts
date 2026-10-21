@@ -111,7 +111,7 @@ function prepare() {
     throughInstant,
     days: [sourceDay()],
   });
-  mocks.rebuildTransient.mockResolvedValue({ earliestModelDate: null, sourceToken: "transient-token" });
+  mocks.rebuildTransient.mockResolvedValue({ earliestModelDate: null, latestModelDate: null, sourceToken: "transient-token" });
   mocks.readSourceToken.mockResolvedValue("transient-token");
 }
 
@@ -256,6 +256,36 @@ describe("Unified V2 rebuild publication", () => {
       where: expect.objectContaining({ profileId: 4, invalidationGeneration: 5, productionPublishedGeneration: 5 }),
       data: { unifiedPublishedGeneration: 5, unifiedPublishedRolloutEpoch: 0 },
     }));
+  });
+
+  it("extends the replay end date through the latest removed transient shadow date", async () => {
+    const days = [1, 2, 3, 4].map((day) => {
+      const date = `2026-10-0${day}`;
+      return sourceDay({
+        date,
+        boundaryAt: `${date}T00:00:00.000Z`,
+        transientWaterBoundaries: [{ episodeId: 9, modelDate: date, boundaryInstant: `${date}T00:00:00.000Z` }],
+      });
+    });
+    mocks.loadRange.mockResolvedValue({
+      fromInstant: boundaryAt,
+      throughInstant: "2026-10-05T00:00:00.000Z",
+      days,
+    });
+    mocks.rebuildTransient.mockResolvedValue({
+      earliestModelDate: "2026-10-02",
+      latestModelDate: "2026-10-04",
+      sourceToken: "transient-token",
+    });
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 });
+
+    expect(mocks.loadRange.mock.calls[0]?.[0]).toMatchObject({
+      profileId: 4,
+      fromInstant: new Date("2026-10-01T00:00:00.000Z"),
+      throughInstant: new Date("2026-10-05T00:00:00.000Z"),
+    });
+    expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).toHaveBeenCalledTimes(4);
   });
 
   it("follows the active V4 lifecycle revision and epoch when an ordinary rebuild omits rollout inputs", async () => {

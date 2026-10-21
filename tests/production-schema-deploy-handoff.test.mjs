@@ -120,11 +120,19 @@ describe("schema deploy compatibility handoff", () => {
     const expectedV4Bindings = {
       "src/modules/activity/active-energy-materialization.ts": {
         migrationOriginBlob: "ec066afe744ec0de47f8c5503266764eff311608",
-        deployBlob: "f163d3116638e44a6e42e10fac261f57acd11579",
+        deployBlob: "3e49808b1be3e7188a004d202778eddd78f9a30b",
       },
       "src/modules/activity/active-energy-publication.ts": {
         migrationOriginBlob: "3c1fcfec0ca73ac6b599ae6a7527c067b77adb2f",
-        deployBlob: "b76617954f03b700d7a783aa2f30a11388b769c9",
+        deployBlob: "e2b499afb6b7bbfc43d3d440aec8bd7b574269fd",
+      },
+      "scripts/production-full-history-recalculate.ts": {
+        migrationOriginBlob: "4bce126c880af008295b4648701575c4b967da5e",
+        deployBlob: "667df800575c02a31b3a338aa55d5b3236c06f1c",
+      },
+      ".github/workflows/ci.yml": {
+        migrationOriginBlob: "ea1f581e1ee17e0e3ca6ed811f15ba51e94670a2",
+        deployBlob: "5d174f4045ab34a2d5698199c879fd2bc6deb92d",
       },
       "src/modules/health/health.repository.ts": {
         migrationOriginBlob: "a8040b6f8a0eede730c67ba1a4df90063570bc13",
@@ -180,11 +188,23 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/model-episode.service.ts": {
         migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
-        deployBlob: "0c26958724115a8af43081cb127350213ece1488",
+        deployBlob: "7ef145cc9b60362e0e96a4165cd23e1ccd4b567e",
+      },
+      "src/modules/model-episodes/unified-experimental-physiology-state.service.ts": {
+        migrationOriginBlob: "0c7850cbb866f62d20a4a35ab384f18906a67ef8",
+        deployBlob: "0539c383df630be9980a7b0967df9c13fe1709d9",
+      },
+      "src/modules/training/experimental-transient-exercise-water-shadow.service.ts": {
+        migrationOriginBlob: "4291768358207464a59476a75e3897e5a85f9332",
+        deployBlob: "04ec3b9aab6254ef70735d1c0cc37de7205c12b4",
+      },
+      "src/modules/model-episodes/unified-v4-derived-recovery.service.ts": {
+        migrationOriginBlob: null,
+        deployBlob: "ad345b256086cee5d701dfb250f12cfcd1a27cb0",
       },
       "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
         migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
-        deployBlob: "931fafdc488b460a080588ec7b981f08befd537f",
+        deployBlob: "97a3b66d8f6aa16152d24d1ed0102c219826cd2d",
       },
       "src/modules/profile/experimental-stepper-active-energy-shadow.service.ts": {
         migrationOriginBlob: "b4ec529a9755c9a3b15ea2b6c9ba19216bd6e888",
@@ -192,11 +212,15 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/training/experimental-strength-energy-shadow.service.ts": {
         migrationOriginBlob: "2f556ff6817db3dff23a09d0ff15ba8254543551",
-        deployBlob: "4e9f5da57b7b60c0c553c35f62c12d994c9f9126",
+        deployBlob: "d71feacc49ec151295f9a783acad5becdb235ffd",
+      },
+      "src/modules/training/training.repository.ts": {
+        migrationOriginBlob: "b3c1e67807030129a9175e1704ab47c5061c899a",
+        deployBlob: "1f599db58a6098895ec4fd3a9bb3b4bd97592233",
       },
       "src/modules/training/training.service.ts": {
         migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",
-        deployBlob: "408efc5996e9ad701057ab7f261d0cb045541ff4",
+        deployBlob: "615d511b052d63eed76a455cdb9d5b3468435f2f",
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
@@ -278,7 +302,7 @@ describe("schema deploy compatibility handoff", () => {
       markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
       changedPaths: [...compatibility.changedPaths, "prisma/schema.prisma"],
     })).toThrow(/allowlist/);
-    for (const changedPath of ["Dockerfile", "scripts/production-full-history-recalculate.ts"]) {
+    for (const changedPath of ["Dockerfile"]) {
       expect(() => evaluateSchemaDeployHandoff({
         markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
         changedPaths: [...compatibility.changedPaths, changedPath],

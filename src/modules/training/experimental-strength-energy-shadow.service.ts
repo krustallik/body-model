@@ -48,6 +48,8 @@ export function historicalBodyweightSourceChangeMayAffectSessionV1(input: {
 export async function recordExperimentalStrengthEnergyShadow(input: {
   session: StrengthSessionDto;
   profileId: number;
+  /** Compare persisted source state without materializing legacy accounting fields. */
+  skipAccountingMaterialization?: boolean;
   /** Deterministic barrier for exercising the source CAS in PostgreSQL integration tests. */
   onCandidateComputed?: () => Promise<void>;
   /** Return the exact lifecycle fence committed with a shadow-triggered invalidation. */
@@ -196,8 +198,9 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     if (!current || current.revision !== input.session.revision
         || current.matchedWorkoutId !== input.session.matchedWorkoutId
         || current.currentSnapshotRevision !== expectedSnapshotRevision
-        || current.accountingTimeZone !== input.session.accountingTimeZone
-        || (current.effectiveAccountingAt?.toISOString() ?? null) !== (input.session.effectiveAccountingAt ?? null)
+        || (!input.skipAccountingMaterialization && current.accountingTimeZone !== input.session.accountingTimeZone)
+        || (!input.skipAccountingMaterialization
+          && (current.effectiveAccountingAt?.toISOString() ?? null) !== (input.session.effectiveAccountingAt ?? null))
         || (current.webStartedAt?.toISOString() ?? null) !== (input.session.webStartedAt ?? null)
         || (current.webEndedAt?.toISOString() ?? null) !== (input.session.webEndedAt ?? null)) return false;
     const currentSets = await tx.strengthSet.findMany({
@@ -326,19 +329,25 @@ export async function recordExperimentalStrengthEnergyShadowBySessionId(input: {
   sessionId: number;
   profileId: number;
   refreshAccounting?: boolean;
+  /** Recovery-only: consume the persisted session snapshot without materializing accounting. */
+  skipAccountingMaterialization?: boolean;
   onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
 }): Promise<{ session: StrengthSessionDto | null; publicationBlockToken: { revision: number; fromDate: string } | null }> {
   const repository = new TrainingRepository(prisma);
-  await repository.materializeAccounting({
-    sessionId: input.sessionId,
-    profileId: input.profileId,
-    mode: input.refreshAccounting ? "refresh" : "ordinary",
-  });
+  if (!input.skipAccountingMaterialization) {
+    await repository.materializeAccounting({
+      sessionId: input.sessionId,
+      profileId: input.profileId,
+      mode: input.refreshAccounting ? "refresh" : "ordinary",
+    });
+  }
   const session = await repository.getSession(input.sessionId, input.profileId);
   if (session === null) return { session: null, publicationBlockToken: null };
   await recordExperimentalStrengthEnergyShadow({
     session,
     profileId: input.profileId,
+    ...(input.skipAccountingMaterialization === undefined
+      ? {} : { skipAccountingMaterialization: input.skipAccountingMaterialization }),
     ...(input.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: input.onLifecycleFenceChanged }),
   });
   const captured = await prisma.$transaction(async (tx) => {

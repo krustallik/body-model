@@ -775,7 +775,11 @@ serve_training_release() {
     return 1
   fi
   if [[ "$recovered_v4_release" == "true" ]]; then
-    bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"
+    # The held currentness fence already owns this profile's advisory lock.
+    # Re-running the full recovery/currentness check here opens another DB
+    # transaction and waits on that same lock before the route can be committed.
+    # The fence itself rechecks V4 currentness; the immutable recovery marker
+    # digest is checked below while the fence remains held.
     [[ "$(sha256sum "$recovery_marker_path" | awk '{print $1}')" == "$recovery_marker_digest" ]] || {
       printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
       exec {fence_input_fd}>&-

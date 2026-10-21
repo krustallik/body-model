@@ -34,6 +34,15 @@ describe("recovered V4 serving release contract", () => {
     expect(cutover).toContain('publish_candidate_route "" "" "" "$staged_route" true "$fence_pid" true true');
     expect(cutover).toContain('if [[ "$require_absent_marker" == "true" ]]');
     expect(cutover).toContain('Exact recovered V4 release is serving under the atomic currentness fence; the terminal recovery marker is retained.');
+
+    const recoveredServe = cutover.slice(cutover.indexOf("serve_training_release()"), cutover.indexOf("cleanup_pre_ddl_recovery_pin_after_serving_commit()"));
+    const fenceStart = recoveredServe.indexOf("coproc BODYCAST_TRAINING_V4_FENCE");
+    const fenceAck = recoveredServe.indexOf("printf 'route-committed\\n'");
+    expect(fenceStart).toBeGreaterThan(-1);
+    expect(fenceAck).toBeGreaterThan(fenceStart);
+    expect(recoveredServe.slice(0, fenceStart)).toContain('bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"');
+    expect(recoveredServe.slice(fenceStart, fenceAck)).not.toContain('bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"');
+    expect(recoveredServe.slice(fenceStart, fenceAck)).toContain('recovery_marker_digest');
   });
 
   it("binds serving to the completed recovery marker, current 74-row schema ledger, and unchanged schema/source evidence", () => {

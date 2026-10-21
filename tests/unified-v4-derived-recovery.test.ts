@@ -84,6 +84,7 @@ const mocks = vi.hoisted(() => {
     $transaction: vi.fn(),
     physiologyV7Lifecycle: { findUnique: vi.fn() },
     unifiedPublicationBlock: { findMany: vi.fn(), findUnique: vi.fn(), count: vi.fn() },
+    unifiedExperimentalPhysiologyStateV2: { count: vi.fn(async () => 9) },
     dailyHealthData: { findMany: vi.fn() },
     healthMetricSample: { findMany: vi.fn() },
     strengthDiarySession: { findFirst: vi.fn(), findUnique: vi.fn() },
@@ -91,6 +92,9 @@ const mocks = vi.hoisted(() => {
     strengthSessionExercise: { findUnique: vi.fn(async () => null) },
   };
   const shadow = vi.fn(async () => {
+    if (state.failAt === "audit-change") {
+      state.inventoryRows.HealthSyncAudit = [{ id: 1, raw_row: "{\"body\":\"changed-during-recovery\"}" }];
+    }
     if (state.failAt === "health") throw Object.assign(new Error("transaction conflict"), { code: "P2034" });
   });
   const training = vi.fn(async (input: { sessionId: number }) => {
@@ -219,6 +223,7 @@ async function recover(expectedEvidenceBinding?: ReturnType<typeof createV4Recov
   const raw = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
   const expected = expectedEvidenceBinding ?? createV4RecoveryEvidenceBindingV1({
     rawFingerprint: raw.fingerprint,
+    healthSyncAuditFingerprint: raw.healthSyncAuditFingerprint,
     blocks: mocks.state.blocks,
     lifecycle: mocks.state.lifecycle as never,
   });
@@ -246,13 +251,16 @@ describe("persisted-source V4 derived recovery", () => {
     }
     const expectedTables: Record<string, string> = {
       ModelEpisode: modelEpisodeDigest.digest("hex"),
+      HealthSyncAudit: createHash("sha256").update(`HealthSyncAudit\0${0}\0`).digest("hex"),
       DailyHealthData: createHash("sha256").update(`DailyHealthData\0${0}\0`).digest("hex"),
     };
     for (const table of ["StrengthDiarySession", "StrengthSessionAccountingSnapshot", "StrengthSessionAccountingOperation"]) {
       expectedTables[table] = createHash("sha256").update(`${table}\0${0}\0`).digest("hex");
     }
     const expectedFingerprint = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
-    for (const [table, tableDigest] of Object.entries(expectedTables)) expectedFingerprint.update(`${table}\0${tableDigest}\0`);
+    for (const [table, tableDigest] of Object.entries(expectedTables)) {
+      if (table !== "HealthSyncAudit") expectedFingerprint.update(`${table}\0${tableDigest}\0`);
+    }
 
     expect(result.tables).toEqual(expectedTables);
     expect(result.fingerprint).toBe(expectedFingerprint.digest("hex"));
@@ -279,14 +287,15 @@ describe("persisted-source V4 derived recovery", () => {
     });
   });
 
-  it("excludes retention-managed HealthSyncAudit while keeping V4 source rows fingerprinted", async () => {
+  it("separates retention-managed HealthSyncAudit preservation from V4 currentness", async () => {
     mocks.state.inventoryRows.HealthSyncAudit = [{ id: 1, raw_row: "{\"body\":\"retained\"}" }];
     const baseline = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
 
     mocks.state.inventoryRows.HealthSyncAudit = [{ id: 1, raw_row: "{\"body\":\"expired\"}" }];
     const auditChanged = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
     expect(auditChanged.fingerprint).toBe(baseline.fingerprint);
-    expect(mocks.queryRaw.mock.calls.some(([query]) => String(query).includes('public.\"HealthSyncAudit\"'))).toBe(false);
+    expect(auditChanged.healthSyncAuditFingerprint).not.toBe(baseline.healthSyncAuditFingerprint);
+    expect(mocks.queryRaw.mock.calls.some(([query]) => String(query).includes('public.\"HealthSyncAudit\"'))).toBe(true);
 
     mocks.state.inventoryRows.DailyHealthData = [{ id: 1, raw_row: "{\"rawPayload\":\"changed\"}" }];
     const sourceChanged = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
@@ -315,8 +324,50 @@ describe("persisted-source V4 derived recovery", () => {
     expect(mocks.clearAll).toHaveBeenCalledTimes(1);
     expect(mocks.state.blocks).toHaveLength(0);
     expect(mocks.replay).toHaveBeenCalledWith({ profileId: 1, client: mocks.prisma });
-    expect(result).toMatchObject({ rolloutEpoch: 1, dayCount: 9, healthDatesRefreshed: dates, trainingSessionIdsRefreshed: [20, 24, 25] });
+    expect(result).toMatchObject({ rolloutEpoch: 1, dayCount: 9, alreadyCurrent: false,
+      healthDatesRefreshed: dates, trainingSessionIdsRefreshed: [20, 24, 25] });
     expect(result.rawInputFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("rebinds already-current V4 with a read-only evidence check and no replay", async () => {
+    reset(false);
+    Object.assign(mocks.state.lifecycle, {
+      unifiedPublishedGeneration: 12,
+      unifiedPublishedRolloutEpoch: 1,
+      unifiedPublicationBlockedFromDate: null,
+      unifiedPublicationBlockedSource: null,
+    });
+
+    const result = await recover();
+
+    expect(result).toMatchObject({ rolloutEpoch: 1, dayCount: 9, alreadyCurrent: true,
+      healthDatesRefreshed: [], trainingSessionIdsRefreshed: [], deletedTrainingSessionIdsReconciled: [] });
+    expect(mocks.prisma.unifiedExperimentalPhysiologyStateV2.count).toHaveBeenCalledTimes(2);
+    expect(mocks.shadow).not.toHaveBeenCalled();
+    expect(mocks.training).not.toHaveBeenCalled();
+    expect(mocks.recalculate).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
+    expect(mocks.state.blocks).toHaveLength(0);
+  });
+
+  it("fails closed when Unified is current but V7 production currentness is stale", async () => {
+    reset(false);
+    Object.assign(mocks.state.lifecycle, {
+      productionStaleFromDate: "2071-01-01",
+      productionPublishedGeneration: 11,
+      unifiedPublishedGeneration: 12,
+      unifiedPublishedRolloutEpoch: 1,
+      unifiedPublicationBlockedFromDate: null,
+      unifiedPublicationBlockedSource: null,
+    });
+
+    await expect(recover()).rejects.toThrow("cannot be treated as current while its V7 production generation is stale");
+    expect(mocks.prisma.unifiedExperimentalPhysiologyStateV2.count).not.toHaveBeenCalled();
+    expect(mocks.shadow).not.toHaveBeenCalled();
+    expect(mocks.recalculate).not.toHaveBeenCalled();
+    expect(mocks.clearAll).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
   });
 
   it("leaves fences armed and withholds V4 when a dependent refresh returns P2034", async () => {
@@ -345,7 +396,8 @@ describe("persisted-source V4 derived recovery", () => {
     async (changedBinding) => {
       const raw = await inventoryV4RecoveryRawSourcesV1(mocks.prisma as never);
       const expected = createV4RecoveryEvidenceBindingV1({
-        rawFingerprint: raw.fingerprint, blocks: mocks.state.blocks, lifecycle: mocks.state.lifecycle as never,
+        rawFingerprint: raw.fingerprint, healthSyncAuditFingerprint: raw.healthSyncAuditFingerprint,
+        blocks: mocks.state.blocks, lifecycle: mocks.state.lifecycle as never,
       });
       if (changedBinding === "raw fingerprint") expected.rawFingerprint = "f".repeat(64);
       if (changedBinding === "fence digest") expected.fenceDigest = "e".repeat(64);
@@ -358,6 +410,18 @@ describe("persisted-source V4 derived recovery", () => {
       expect(mocks.state.blocks).toHaveLength(11);
     },
   );
+
+  it("fails closed when audit payloads change after exact-image rehearsal", async () => {
+    mocks.state.inventoryRows.HealthSyncAudit = [{ id: 1, raw_row: "{\"body\":\"retained\"}" }];
+    mocks.state.failAt = "audit-change";
+
+    const error = await recover().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors[1]).toMatchObject({ message: expect.stringContaining("HealthSyncAudit") });
+    expect(mocks.clearAll).not.toHaveBeenCalled();
+    expect(mocks.replay).not.toHaveBeenCalled();
+    expect(mocks.state.blocks).toHaveLength(11);
+  });
 
   it("withholds fence clearing and V4 publication if the second Training refresh fails", async () => {
     mocks.state.failAt = "training:24";

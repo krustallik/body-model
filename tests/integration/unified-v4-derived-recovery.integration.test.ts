@@ -84,7 +84,8 @@ async function captureRecoveryBinding() {
       select: { source: true, sourceKey: true, fromDate: true, revision: true },
     }),
   ]);
-  return createV4RecoveryEvidenceBindingV1({ rawFingerprint: raw.fingerprint, blocks, lifecycle });
+  return createV4RecoveryEvidenceBindingV1({ rawFingerprint: raw.fingerprint,
+    healthSyncAuditFingerprint: raw.healthSyncAuditFingerprint, blocks, lifecycle });
 }
 
 async function referenceHealthSnapshotDigestV2(): Promise<string> {
@@ -818,9 +819,11 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
     const result = await recoverWithCurrentEvidence();
     const after = await inventoryV4RecoveryRawSourcesV1(prisma);
     expect(after.fingerprint).toBe(before.fingerprint);
+    expect(after.healthSyncAuditFingerprint).toBe(before.healthSyncAuditFingerprint);
     expect(result).toMatchObject({
       rolloutEpoch: 1,
       dayCount: 25,
+      healthSyncAuditFingerprint: before.healthSyncAuditFingerprint,
       healthDatesRefreshed: healthDates.slice(0, 8),
       trainingSessionIdsRefreshed: [...trainingSessionIds],
     });
@@ -888,7 +891,8 @@ describe("Unified V4 persisted-source recovery on isolated PostgreSQL", () => {
       energyCandidates: await prisma.activeEnergyCandidate.count({ where: { event: { profileId } } }),
     };
     const retried = await recoverWithCurrentEvidence();
-    expect(retried).toMatchObject({ rolloutEpoch: 1, dayCount: 25, healthDatesRefreshed: [], trainingSessionIdsRefreshed: [] });
+    expect(retried).toMatchObject({ rolloutEpoch: 1, dayCount: 25, alreadyCurrent: true,
+      healthDatesRefreshed: [], trainingSessionIdsRefreshed: [], deletedTrainingSessionIdsReconciled: [] });
     expect({
       strengthEnergy: await prisma.experimentalStrengthEnergyShadow.count({ where: { sessionId: { in: [...trainingSessionIds] } } }),
       strengthGlycogen: await prisma.experimentalStrengthGlycogenDemandShadow.count({ where: { sessionId: { in: [...trainingSessionIds] } } }),

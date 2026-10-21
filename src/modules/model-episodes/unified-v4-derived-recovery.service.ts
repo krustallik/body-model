@@ -45,8 +45,9 @@ type RecoveryLifecycleBinding = {
 };
 
 export type V4RecoveryEvidenceBindingV1 = {
-  contract: "bodycast-v4-recovery-evidence-binding-v1";
+  contract: "bodycast-v4-recovery-evidence-binding-v2";
   rawFingerprint: string;
+  healthSyncAuditFingerprint: string;
   fenceDigest: string;
   lifecycleDigest: string;
   bindingDigest: string;
@@ -83,18 +84,21 @@ function lifecycleBindingValues(lifecycle: RecoveryLifecycleBinding) {
 
 export function createV4RecoveryEvidenceBindingV1(input: {
   rawFingerprint: string;
+  healthSyncAuditFingerprint: string;
   blocks: readonly PublicationBlock[];
   lifecycle: RecoveryLifecycleBinding;
 }): V4RecoveryEvidenceBindingV1 {
   if (!/^[a-f0-9]{64}$/.test(input.rawFingerprint)) throw new Error("V4 recovery raw fingerprint is malformed");
+  if (!/^[a-f0-9]{64}$/.test(input.healthSyncAuditFingerprint)) throw new Error("V4 recovery audit preservation fingerprint is malformed");
   const fenceDigest = sortedFenceDigest(input.blocks);
   const lifecycleDigest = sha256(JSON.stringify(lifecycleBindingValues(input.lifecycle)));
   return {
-    contract: "bodycast-v4-recovery-evidence-binding-v1",
+    contract: "bodycast-v4-recovery-evidence-binding-v2",
     rawFingerprint: input.rawFingerprint,
+    healthSyncAuditFingerprint: input.healthSyncAuditFingerprint,
     fenceDigest,
     lifecycleDigest,
-    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v1\n${input.rawFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
+    bindingDigest: sha256(`bodycast-v4-recovery-evidence-binding-v2\n${input.rawFingerprint}\n${input.healthSyncAuditFingerprint}\n${fenceDigest}\n${lifecycleDigest}\n`),
   };
 }
 
@@ -180,19 +184,21 @@ async function assertExpectedRecoveryEvidenceBindingV1(input: {
   client: PrismaClient;
   profileId: number;
   expected: V4RecoveryEvidenceBindingV1;
-}): Promise<{ lifecycle: Awaited<ReturnType<PrismaClient["physiologyV7Lifecycle"]["findUnique"]>>; blocks: PublicationBlock[]; raw: { fingerprint: string; tables: Record<string, string> } }> {
+}): Promise<{ lifecycle: Awaited<ReturnType<PrismaClient["physiologyV7Lifecycle"]["findUnique"]>>; blocks: PublicationBlock[]; raw: { fingerprint: string; healthSyncAuditFingerprint: string; tables: Record<string, string> } }> {
   const current = await readConsistentRecoveryEvidenceV1(input.client, input.profileId);
   const actual = createV4RecoveryEvidenceBindingV1({
     rawFingerprint: current.raw.fingerprint,
+    healthSyncAuditFingerprint: current.raw.healthSyncAuditFingerprint,
     blocks: current.blocks,
     lifecycle: current.lifecycle,
   });
   if (input.expected.contract !== actual.contract
       || input.expected.rawFingerprint !== actual.rawFingerprint
+      || input.expected.healthSyncAuditFingerprint !== actual.healthSyncAuditFingerprint
       || input.expected.fenceDigest !== actual.fenceDigest
       || input.expected.lifecycleDigest !== actual.lifecycleDigest
       || input.expected.bindingDigest !== actual.bindingDigest) {
-    throw new Error("Persisted source, publication fence, or lifecycle binding changed after exact-image rehearsal; recovery stopped before derived writes");
+    throw new Error("Persisted source, audit preservation, publication fence, or lifecycle binding changed after exact-image rehearsal; recovery stopped before derived writes");
   }
   return current;
 }
@@ -259,6 +265,7 @@ function groupTrainingBlocks(blocks: readonly SupportedTrainingBlock[]) {
  * not omit, coalesce, or normalize any stored source field. */
 export async function inventoryV4RecoveryRawSourcesV1(client: PrismaClient): Promise<{
   fingerprint: string;
+  healthSyncAuditFingerprint: string;
   tables: Record<string, string>;
 }> {
   return client.$transaction(
@@ -269,13 +276,13 @@ export async function inventoryV4RecoveryRawSourcesV1(client: PrismaClient): Pro
 
 async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): Promise<{
   fingerprint: string;
+  healthSyncAuditFingerprint: string;
   tables: Record<string, string>;
 }> {
   const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
   const tables: Record<string, string> = {};
   const immutableTables = [
-    // HealthSyncAudit is a 30-day operational log, not a V4 calculation input.
-    ...FULL_HISTORY_RAW_INPUT_TABLES.filter((table) => table !== "HealthSyncAudit"),
+    ...FULL_HISTORY_RAW_INPUT_TABLES,
     // Recovery must consume, never rematerialize, persisted Training accounting.
     "StrengthSessionAccountingSnapshot",
     "StrengthSessionAccountingOperation",
@@ -527,9 +534,11 @@ async function inventoryV4RecoveryRawSourcesInSnapshotV1(client: PrismaClient): 
       throw new Error(`V4 strict source fingerprint row count changed for ${table}`);
     }
     tables[table] = tableDigest.digest("hex");
-    digest.update(`${table}\0${tables[table]}\0`);
+    // Keep exact audit payloads bound to recovery preservation while excluding
+    // retention-managed operational logs from V4's long-lived currentness key.
+    if (table !== "HealthSyncAudit") digest.update(`${table}\0${tables[table]}\0`);
   }
-  return { fingerprint: digest.digest("hex"), tables };
+  return { fingerprint: digest.digest("hex"), healthSyncAuditFingerprint: tables.HealthSyncAudit!, tables };
 }
 
 /**
@@ -549,6 +558,8 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   trainingSessionIdsRefreshed: number[];
   deletedTrainingSessionIdsReconciled: number[];
   rawInputFingerprint: string;
+  healthSyncAuditFingerprint: string;
+  alreadyCurrent: boolean;
 }> {
   if (input.ownerAuthorized !== true) throw new Error("V4 derived recovery requires explicit owner authorization");
   if (!Number.isSafeInteger(input.profileId) || input.profileId !== 1) {
@@ -556,7 +567,7 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   }
   const client: PrismaClient = prisma;
   const { profileId } = input;
-  if (!input.expectedEvidenceBinding || input.expectedEvidenceBinding.contract !== "bodycast-v4-recovery-evidence-binding-v1") {
+  if (!input.expectedEvidenceBinding || input.expectedEvidenceBinding.contract !== "bodycast-v4-recovery-evidence-binding-v2") {
     throw new Error("V4 derived recovery requires the exact rehearsal evidence binding");
   }
   const initialEvidence = await assertExpectedRecoveryEvidenceBindingV1({
@@ -567,6 +578,50 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
       || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
       || lifecycle.unifiedRolloutEpoch !== 1) {
     throw new Error("Persisted-source V4 recovery requires the existing V4 epoch 1");
+  }
+
+  const productionCurrent = lifecycle.productionStaleFromDate === null
+    && lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration;
+  const unifiedCurrent = lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration
+    && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch
+    && lifecycle.unifiedPublicationBlockedFromDate === null
+    && lifecycle.unifiedPublicationBlockedSource === null;
+  if (initialEvidence.blocks.length === 0 && unifiedCurrent) {
+    if (!productionCurrent) {
+      throw new Error("Unified V4 cannot be treated as current while its V7 production generation is stale");
+    }
+    const where = { profileId, modelRevision: lifecycle.unifiedTargetRevision };
+    const currentRowCount = await client.unifiedExperimentalPhysiologyStateV2.count({ where });
+    if (!Number.isSafeInteger(currentRowCount) || currentRowCount < 1) {
+      throw new Error("Current V4 recovery evidence has no published model rows");
+    }
+    const confirmed = await assertExpectedRecoveryEvidenceBindingV1({
+      client, profileId, expected: input.expectedEvidenceBinding,
+    });
+    if (confirmed.blocks.length !== 0 || confirmed.lifecycle?.productionStaleFromDate !== null
+        || confirmed.lifecycle?.productionPublishedGeneration !== confirmed.lifecycle?.invalidationGeneration
+        || confirmed.lifecycle?.unifiedPublishedGeneration !== confirmed.lifecycle?.invalidationGeneration
+        || confirmed.lifecycle?.unifiedPublishedRolloutEpoch !== confirmed.lifecycle?.unifiedRolloutEpoch) {
+      throw new Error("Already-current V4 evidence changed during its read-only recovery check");
+    }
+    const finalRowCount = await client.unifiedExperimentalPhysiologyStateV2.count({ where });
+    if (finalRowCount !== currentRowCount) {
+      throw new Error("Published V4 row count changed during its read-only recovery check");
+    }
+    return {
+      profileId,
+      rolloutEpoch: lifecycle.unifiedRolloutEpoch,
+      dayCount: currentRowCount,
+      healthDatesRefreshed: [],
+      trainingSessionIdsRefreshed: [],
+      deletedTrainingSessionIdsReconciled: [],
+      rawInputFingerprint: confirmed.raw.fingerprint,
+      healthSyncAuditFingerprint: confirmed.raw.healthSyncAuditFingerprint,
+      alreadyCurrent: true,
+    };
+  }
+  if (unifiedCurrent && initialEvidence.blocks.length > 0) {
+    throw new Error("Current Unified V4 cannot retain publication fences");
   }
 
   const beforeRaw = initialEvidence.raw;
@@ -806,8 +861,9 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     throw new Error("Production generation remains stale after derived refresh; Unified publication is withheld");
   }
   const beforePublicationRaw = await inventoryV4RecoveryRawSourcesV1(client);
-  if (beforePublicationRaw.fingerprint !== beforeRaw.fingerprint) {
-    throw new Error("Persisted raw sources changed during dependency refresh; publication remains blocked");
+  if (beforePublicationRaw.fingerprint !== beforeRaw.fingerprint
+      || beforePublicationRaw.healthSyncAuditFingerprint !== beforeRaw.healthSyncAuditFingerprint) {
+    throw new Error("Persisted raw sources or HealthSyncAudit payloads changed during dependency refresh; publication remains blocked");
   }
 
   // Training and Health fences clear only after every dependent shadow and the
@@ -827,8 +883,9 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
   const replay = await activateAndReplayUnifiedV4({ profileId, client });
   if (replay.rolloutEpoch !== 1) throw new Error("V4 recovery changed the existing rollout epoch");
   const afterRaw = await inventoryV4RecoveryRawSourcesV1(client);
-  if (afterRaw.fingerprint !== beforeRaw.fingerprint) {
-    throw new Error("Persisted-source V4 recovery mutated raw Health/Training inputs or provenance");
+  if (afterRaw.fingerprint !== beforeRaw.fingerprint
+      || afterRaw.healthSyncAuditFingerprint !== beforeRaw.healthSyncAuditFingerprint) {
+    throw new Error("Persisted-source V4 recovery mutated raw Health/Training inputs, provenance, or HealthSyncAudit payloads");
   }
   return {
     profileId,
@@ -838,10 +895,13 @@ export async function recoverUnifiedV4FromPersistedSourcesV1(input: {
     trainingSessionIdsRefreshed: refreshedSessionIds,
     deletedTrainingSessionIdsReconciled: [...deletedTrainingSessionIds].sort((left, right) => left - right),
     rawInputFingerprint: afterRaw.fingerprint,
+    healthSyncAuditFingerprint: afterRaw.healthSyncAuditFingerprint,
+    alreadyCurrent: false,
   };
   } catch (error) {
     const afterFailureRaw = await inventoryV4RecoveryRawSourcesV1(client);
-    if (afterFailureRaw.fingerprint !== beforeRaw.fingerprint) {
+    if (afterFailureRaw.fingerprint !== beforeRaw.fingerprint
+        || afterFailureRaw.healthSyncAuditFingerprint !== beforeRaw.healthSyncAuditFingerprint) {
       throw new AggregateError(
         [error, new Error(`Strict source table hashes changed: ${Object.keys(beforeRaw.tables).filter((table) => afterFailureRaw.tables[table] !== beforeRaw.tables[table]).join(", ")}`)],
         "V4 recovery failed and its raw-source preservation check detected a change",

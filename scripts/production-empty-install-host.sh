@@ -27,6 +27,7 @@ CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}"
 }
 [[ "$CONFIRMATION" == "initialize-empty-bodycast-db" \
   && "$EXPECTED_TARGET_IP" == "169.58.239.149" \
+  && "$APP_HOST" == "bodycast.ihorhub.eu" \
   && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || {
   echo "Fresh BodyCast initialization confirmation or new-VPS target binding is invalid." >&2; exit 2;
 }

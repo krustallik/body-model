@@ -43,9 +43,9 @@ through V3 and V4 readiness.
 ## First install on the verified empty VPS
 
 The owner-only `fresh_empty_install` mode in `.github/workflows/deploy-production.yml` is a separate,
-one-time path for the new VPS at `169.58.239.149`. It requires the exact current-main SHA and its
-successful CI, confirmation `initialize-empty-bodycast-db`, the configured app hostname resolving
-to that VPS, a clean checkout, no prior `.env`, no BodyCast app/database container or Compose
+one-time path for `bodycast.ihorhub.eu` on the new VPS at `169.58.239.149`. It requires the exact
+current-main SHA and its successful CI, confirmation `initialize-empty-bodycast-db`, that exact app
+hostname resolving to the VPS, a clean checkout, no prior `.env`, no BodyCast app/database container or Compose
 container, no PostgreSQL volume, no install marker, and a healthy existing Caddy on
 `gymbeam-internal`. It does not change Gymbeam services or the old server.
 

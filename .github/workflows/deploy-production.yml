@@ -308,6 +308,7 @@ jobs:
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Production traffic topology inputs are invalid."; exit 1; }
           if [[ "$DEPLOY_MODE" == "fresh-empty-install" ]]; then
             [[ "$SSH_HOST" == "169.58.239.149" ]] || { echo "::error::Fresh BodyCast initialization is restricted to the newly authorized VPS address."; exit 1; }
+            [[ "$APP_HOST" == "bodycast.ihorhub.eu" ]] || { echo "::error::Fresh BodyCast initialization is restricted to bodycast.ihorhub.eu."; exit 1; }
             getent ahostsv4 "$APP_HOST" | awk '$1 == "169.58.239.149" { found = 1 } END { exit !found }' || {
               echo "::error::APP_HOST does not resolve to the new VPS address."; exit 1;
             }

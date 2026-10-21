@@ -13,6 +13,7 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(host).toContain('BODYCAST_EMPTY_INSTALL_CONFIRMATION:-');
     expect(host).toContain('BODYCAST_EMPTY_INSTALL_TARGET_IP:-');
     expect(host).toContain('"$EXPECTED_TARGET_IP" == "169.58.239.149"');
+    expect(host).toContain('"$APP_HOST" == "bodycast.ihorhub.eu"');
     expect(host).toContain('bodycast_assert_current_main_sha "$RELEASE_SHA"');
     expect(host).toContain('git status --porcelain=v1 --untracked-files=all');
     expect(host).toContain('[[ ! -e "$ROOT_DIR/.env" && ! -L "$ROOT_DIR/.env" ]]');
@@ -54,6 +55,7 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(workflow).toContain("fresh_empty_install:");
     expect(workflow).toContain('"initialize-empty-bodycast-db"');
     expect(workflow).toContain('[[ "$SSH_HOST" == "169.58.239.149" ]]');
+    expect(workflow).toContain('[[ "$APP_HOST" == "bodycast.ihorhub.eu" ]]');
     expect(workflow).toContain('if [[ "$DEPLOY_MODE" == "fresh-empty-install" ]]; then');
     expect(workflow).toContain("production-empty-install-host.sh");
     expect(workflow).toContain("assertTrustedOwnerWorkflowRun");

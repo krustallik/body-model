@@ -253,10 +253,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-deploy-run.json"
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest" > "$RUNNER_TEMP/current-deploy-jobs.json"
           TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
           [[ "$TIP" == "$CANDIDATE" ]] || { echo "::error::Canonical main advanced before production credentials."; exit 1; }
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" "$RUNNER_TEMP/current-deploy-jobs.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
           assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
@@ -267,6 +268,9 @@ jobs:
             ref: "refs/heads/main",
             sha: process.env.GITHUB_SHA,
             requireInProgress: true,
+            jobs: JSON.parse(readFileSync(process.argv[3], "utf8")).jobs,
+            activeJobName: "Deploy exact current-main SHA",
+            authorizedJobName: "Authorize exact current-main app deploy",
           });
           NODE
           else

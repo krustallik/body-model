@@ -42,6 +42,32 @@ describe("pinned single-owner GitHub identity", () => {
     expect(assertTrustedOwnerWorkflowRun(run({ status: "queued" }), expected)).toBe(true);
   });
 
+  it("accepts an exact active deploy job when the workflow-runs API lags between dependent jobs", () => {
+    const candidate = run({ status: "completed", conclusion: "failure" });
+    const jobs = [
+      { name: "Authorize exact current-main app deploy", run_id: 1234, run_attempt: 2, head_sha: sha,
+        head_branch: "main", status: "completed", conclusion: "success" },
+      { name: "Deploy exact current-main SHA", run_id: 1234, run_attempt: 2, head_sha: sha,
+        head_branch: "main", status: "in_progress", conclusion: null },
+    ];
+    expect(assertTrustedOwnerWorkflowRun(candidate, { ...expected, jobs,
+      activeJobName: "Deploy exact current-main SHA",
+      authorizedJobName: "Authorize exact current-main app deploy" })).toBe(true);
+  });
+
+  it("rejects lagging run metadata unless the exact deploy attempt and successful authorization job are active", () => {
+    const candidate = run({ status: "completed", conclusion: "failure" });
+    const jobs = [
+      { name: "Authorize exact current-main app deploy", run_id: 1234, run_attempt: 2, head_sha: sha,
+        head_branch: "main", status: "completed", conclusion: "success" },
+      { name: "Deploy exact current-main SHA", run_id: 1234, run_attempt: 1, head_sha: sha,
+        head_branch: "main", status: "in_progress", conclusion: null },
+    ];
+    expect(() => assertTrustedOwnerWorkflowRun(candidate, { ...expected, jobs,
+      activeJobName: "Deploy exact current-main SHA",
+      authorizedJobName: "Authorize exact current-main app deploy" })).toThrow(/active authorization attempt/);
+  });
+
   it.each([
     ["another actor", run({ actor: { id: 24680, login: "other" } })],
     ["non-owner rerun", run({ triggering_actor: { id: 24680, login: "other" } })],

@@ -30,6 +30,9 @@ export function assertTrustedOwnerWorkflowRun(run, {
   sha,
   event = "workflow_dispatch",
   requireInProgress = false,
+  jobs = [],
+  activeJobName,
+  authorizedJobName,
 } = {}) {
   if (!run || run.repository?.full_name !== BODYCAST_REPOSITORY) {
     throw new Error("GitHub workflow run is not from the canonical BodyCast repository.");
@@ -45,12 +48,20 @@ export function assertTrustedOwnerWorkflowRun(run, {
   }
   assertPinnedOwnerId(run.actor?.id, "GitHub workflow actor ID");
   assertPinnedOwnerId(run.triggering_actor?.id, "GitHub workflow triggering actor ID");
-  // The workflow-runs API can briefly lag job scheduling and report `queued`
-  // while this exact run's authorization step is already executing. Keep the
-  // exact identity bindings above and accept that transient state only while
-  // GitHub still reports no conclusion.
+  // The workflow-runs API can lag behind the jobs API between dependent jobs.
+  // If its run-level status is no longer active, accept only the exact active
+  // deploy job for this run/attempt/SHA plus its successful authorization job.
   if (requireInProgress && (!["queued", "in_progress"].includes(run.status) || run.conclusion !== null)) {
-    throw new Error("GitHub workflow run is no longer the exact active authorization attempt.");
+    const sameAttempt = (job) => job && String(job.run_id) === String(run.id)
+      && Number(job.run_attempt) === Number(run.run_attempt)
+      && job.head_sha === run.head_sha && job.head_branch === run.head_branch;
+    const activeJob = jobs.find((job) => job.name === activeJobName && sameAttempt(job));
+    const authorizedJob = jobs.find((job) => job.name === authorizedJobName && sameAttempt(job));
+    const activeJobProvesAttempt = activeJob?.status === "in_progress" && activeJob.conclusion == null
+      && authorizedJob?.status === "completed" && authorizedJob.conclusion === "success";
+    if (!activeJobProvesAttempt) {
+      throw new Error("GitHub workflow run is no longer the exact active authorization attempt.");
+    }
   }
   return true;
 }

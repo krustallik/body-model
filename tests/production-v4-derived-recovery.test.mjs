@@ -13,6 +13,7 @@ import {
   assertRecoveryPostflight,
   assertOneShotRecoveryState,
   assertSchemaSignature,
+  migrationFilesDigest,
   migrationLedgerDigest,
   productionPreflightMismatchCategories,
   modelDayKeysDigest,
@@ -150,6 +151,17 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
     expect(() => migrationLedgerDigest(ledgerRows.slice(1))).toThrow();
     expect(() => migrationLedgerDigest(ledgerRows.map((row, i) => i === 4 ? { ...row, rolledBackAt: "now" } : row))).toThrow();
     expect(() => migrationLedgerDigest([...ledgerRows].reverse())).toThrow();
+  });
+
+  it("binds immutable migration files without treating them as applied ledger rows", () => {
+    const migrationFiles = currentMigrationRows.map(({ name, checksum }) => ({ name, checksum }));
+    expect(migrationFilesDigest(migrationFiles.slice(0, 65), 65)).toBe(LEGACY_V4_RECOVERY.ledgerDigest);
+    expect(migrationFilesDigest(migrationFiles, 74)).toBe(migrationLedgerDigest(currentMigrationRows, 74));
+    expect(() => migrationFilesDigest(migrationFiles.slice(1), 74)).toThrow();
+    expect(() => migrationFilesDigest(migrationFiles.map((file, index) => index === 5
+      ? { ...file, checksum: "invalid" } : file), 74)).toThrow();
+    expect(() => migrationFilesDigest([...migrationFiles].reverse(), 74)).toThrow();
+    expect(() => migrationLedgerDigest(migrationFiles.slice(0, 65), 65)).toThrow();
   });
 
   it("reports only safe categories for exact production preflight evidence mismatches", () => {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const host = readFileSync(resolve("scripts/production-empty-install-host.sh"), "utf8").replace(/\r\n/g, "\n");
 const ledger = readFileSync(resolve("scripts/production-empty-install-ledger.mjs"), "utf8");
 const workflow = readFileSync(resolve(".github/workflows/deploy-production.yml"), "utf8").replace(/\r\n/g, "\n");
+const safetyWorkflow = readFileSync(resolve(".github/workflows/production-migration-safety-ci.yml"), "utf8").replace(/\r\n/g, "\n");
 const dockerfile = readFileSync(resolve("Dockerfile"), "utf8").replace(/\r\n/g, "\n");
 
 describe("one-time fresh empty BodyCast install contract", () => {
@@ -57,6 +58,7 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(workflow).toContain("production-empty-install-host.sh");
     expect(workflow).toContain("assertTrustedOwnerWorkflowRun");
     expect(workflow).toContain("Exact current main SHA");
+    expect(safetyWorkflow).toContain("scripts/production-empty-install-host.sh");
     expect(dockerfile).toContain("COPY scripts/production-empty-install-ledger.mjs ./scripts/");
   });
 });

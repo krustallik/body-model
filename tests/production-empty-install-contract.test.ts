@@ -37,6 +37,8 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(host).toContain('"$migration_count" == "74"');
     expect(host).toContain("--production-empty-install");
     expect(host).toContain("BODYCAST_NON_SERVING_DEPLOY=0");
+    expect(host).toContain('env BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH"');
+    expect(host).not.toMatch(/\nBODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST=/);
     expect(host).toContain("v4=not-initialized profileCount=0");
   });
 

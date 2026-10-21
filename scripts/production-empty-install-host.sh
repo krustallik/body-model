@@ -165,7 +165,7 @@ sync -f "$git_dir"
 # The exact empty-schema case has no user profile or model history to claim as
 # Unified V4 current. The app shell is served; V4 remains uninitialized until
 # real profile/source inputs are entered through the application.
-BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+env BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
   DEPLOY_SHA="$RELEASE_SHA" BODYCAST_NON_SERVING_DEPLOY=0 bash "$ROOT_DIR/scripts/deploy.sh"
 
 app_identity="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}|{{.Image}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$APP_CONTAINER")"

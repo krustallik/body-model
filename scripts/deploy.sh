@@ -427,13 +427,10 @@ if [[ "$active_recovered_v4_release" == "true" ]]; then
   bodycast_assert_completed_v4_recovery_for_release "$DEPLOY_SHA"
 fi
 capture_previous_release
-if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$previous_app_present" != "true" ]]; then
-  echo "Migration-free serving requires an existing app image to pin for rollback." >&2
-  release_failure 1
-fi
 
-# Pin the exact running image before building any candidate that can alter the
-# local Docker image store. A failed pin leaves the old app running in maintenance.
+# Pin the exact running image when one exists before building a candidate that
+# can alter the local Docker image store. A failed pin leaves the old app running
+# in maintenance; an already-absent app remains the fail-closed rollback state.
 assert_current_main_sha
 compose --profile tools build migrate
 if [[ "$active_recovered_v4_release" == "true" ]]; then
@@ -451,33 +448,37 @@ if [[ "$previous_app_present" == "true" ]]; then
   # exact candidate is still the canonical main tip immediately before stop.
   assert_current_main_sha
   stop_exact_app_container "$previous_app_sha" "$previous_app_image_id" "$previous_app_container_id"
-  if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
-    bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
-    bodycast_assert_production_db_identity_unchanged "$database_identity_before"
-    expected_prisma_database_identity="$(bodycast_production_db_endpoint_from_identity "$database_identity_before")"
-    raw_fingerprint_output="$(compose --profile tools run --rm --no-deps \
-      -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
-      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --capture-raw-input-fingerprint)"
-    expected_raw_source_fingerprint="$(printf '%s\n' "$raw_fingerprint_output" \
-      | sed -n 's/^BODYCAST_RAW_SOURCE_FINGERPRINT=//p')"
-    expected_health_sync_audit_retention_baseline="$(printf '%s\n' "$raw_fingerprint_output" \
-      | sed -n 's/^BODYCAST_HEALTH_SYNC_AUDIT_RETENTION_BASELINE=//p')"
-    [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
-      echo "Read-only Health/Training raw-input baseline is unavailable or malformed." >&2
-      release_failure 1
-    }
-    if ! node --input-type=module -e '
-      const value = JSON.parse(process.argv[1]);
-      if (value?.schemaVersion !== 1 || typeof value.capturedAt !== "string"
-        || !Number.isSafeInteger(value.rowCount) || value.rowCount < 0
-        || !Number.isSafeInteger(value.maxId) || value.maxId < 0
-        || !/^[a-f0-9]{64}$/.test(value.rowXor ?? "")) process.exit(1);
-    ' "$expected_health_sync_audit_retention_baseline"; then
-      echo "Read-only HealthSyncAudit retention baseline is unavailable or malformed." >&2
-      release_failure 1
-    fi
-    echo "Captured strict Health/Training raw fingerprint and HealthSyncAudit retention baseline after maintenance and writer drain."
+fi
+
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+  # With an old app, the container is stopped above. With no app, confirmed
+  # maintenance is already the rollback state. In either case, prove there are
+  # no DB clients before capturing the immutable-input and retention baselines.
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+  bodycast_assert_production_db_identity_unchanged "$database_identity_before"
+  expected_prisma_database_identity="$(bodycast_production_db_endpoint_from_identity "$database_identity_before")"
+  raw_fingerprint_output="$(compose --profile tools run --rm --no-deps \
+    -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
+    /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --capture-raw-input-fingerprint)"
+  expected_raw_source_fingerprint="$(printf '%s\n' "$raw_fingerprint_output" \
+    | sed -n 's/^BODYCAST_RAW_SOURCE_FINGERPRINT=//p')"
+  expected_health_sync_audit_retention_baseline="$(printf '%s\n' "$raw_fingerprint_output" \
+    | sed -n 's/^BODYCAST_HEALTH_SYNC_AUDIT_RETENTION_BASELINE=//p')"
+  [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "Read-only Health/Training raw-input baseline is unavailable or malformed." >&2
+    release_failure 1
+  }
+  if ! node --input-type=module -e '
+    const value = JSON.parse(process.argv[1]);
+    if (value?.schemaVersion !== 1 || typeof value.capturedAt !== "string"
+      || !Number.isSafeInteger(value.rowCount) || value.rowCount < 0
+      || !Number.isSafeInteger(value.maxId) || value.maxId < 0
+      || !/^[a-f0-9]{64}$/.test(value.rowXor ?? "")) process.exit(1);
+  ' "$expected_health_sync_audit_retention_baseline"; then
+    echo "Read-only HealthSyncAudit retention baseline is unavailable or malformed." >&2
+    release_failure 1
   fi
+  echo "Captured strict Health/Training raw fingerprint and HealthSyncAudit retention baseline after maintenance and writer drain."
 fi
 
 # DB is deliberately excluded from this exact-SHA app-only replacement.

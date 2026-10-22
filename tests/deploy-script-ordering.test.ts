@@ -149,6 +149,38 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(captureBody).not.toContain("continuing with exact container-identity stop only");
   });
 
+  it("supports a no-app migration-free roll-forward with the same writer and raw-integrity gates", () => {
+    const releaseStart = deploySh.indexOf("publish_and_confirm_maintenance\n");
+    const captureAt = deploySh.indexOf("capture_previous_release\n", releaseStart);
+    const toolsBuildAt = deploySh.indexOf("compose --profile tools build migrate", captureAt);
+    const appBuildAt = deploySh.indexOf('compose build "$APP_SERVICE"', toolsBuildAt);
+    const previousAppBlockStart = deploySh.indexOf('if [[ "$previous_app_present" == "true" ]]; then', appBuildAt);
+    const previousAppBlockEnd = deploySh.indexOf('\nfi\n\nif [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then', previousAppBlockStart);
+    const previousAppBlock = deploySh.slice(previousAppBlockStart, previousAppBlockEnd);
+    const writerDrainAt = deploySh.indexOf('bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert', previousAppBlockEnd);
+    const rawFingerprintAt = deploySh.indexOf("--capture-raw-input-fingerprint", writerDrainAt);
+    const candidateStartAt = deploySh.indexOf('candidate_start_attempted=true', rawFingerprintAt);
+
+    expect(releaseStart).toBeGreaterThan(-1);
+    expect(captureAt).toBeGreaterThan(releaseStart);
+    expect(toolsBuildAt).toBeGreaterThan(captureAt);
+    expect(appBuildAt).toBeGreaterThan(toolsBuildAt);
+    expect(previousAppBlockStart).toBeGreaterThan(appBuildAt);
+    expect(previousAppBlockEnd).toBeGreaterThan(previousAppBlockStart);
+    expect(previousAppBlock).toContain('stop_exact_app_container "$previous_app_sha"');
+    expect(previousAppBlock).not.toContain('production-writer-drain.sh" --assert');
+    expect(previousAppBlock).not.toContain("--capture-raw-input-fingerprint");
+    expect(writerDrainAt).toBeGreaterThan(previousAppBlockEnd);
+    expect(rawFingerprintAt).toBeGreaterThan(writerDrainAt);
+    expect(candidateStartAt).toBeGreaterThan(rawFingerprintAt);
+    expect(deploySh).not.toContain('BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$previous_app_present" != "true"');
+    expect(deploySh).toContain('if [[ "$previous_app_present" == "true" ]]; then');
+    expect(deploySh).toContain('bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert');
+    expect(deploySh).toContain("BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT");
+    expect(deploySh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");
+    expect(deploySh).toContain('bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving');
+  });
+
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {
     expect(deploySh).not.toMatch(/compose\s+up\s+-d\s+db\b/);
     expect(deploySh).not.toMatch(/compose\s+up\s+-d\s+\"\$DB/);

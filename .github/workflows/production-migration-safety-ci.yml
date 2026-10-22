@@ -278,6 +278,9 @@ jobs:
           git archive "$LEGACY_SHA" | tar -x -C "$RUNNER_TEMP/bodycast-v4-tool/source"
           cp Dockerfile.v4-derived-recovery "$RUNNER_TEMP/bodycast-v4-tool/source/Dockerfile.v4-derived-recovery"
           cp scripts/production-v4-recovery-evidence.ts "$RUNNER_TEMP/bodycast-v4-tool/source/scripts/production-v4-recovery-evidence.ts"
+          mkdir -p "$RUNNER_TEMP/bodycast-v4-tool/source/src/modules/health"
+          cp src/modules/health/health-sync-audit-retention-integrity.ts \
+            "$RUNNER_TEMP/bodycast-v4-tool/source/src/modules/health/health-sync-audit-retention-integrity.ts"
           cp scripts/production-v4-derived-recovery.mjs "$RUNNER_TEMP/bodycast-v4-tool/source/scripts/production-v4-derived-recovery.mjs"
           docker build --file "$RUNNER_TEMP/bodycast-v4-tool/source/Dockerfile.v4-derived-recovery" \
             --tag bodycast-v4-derived-recovery-ci "$RUNNER_TEMP/bodycast-v4-tool/source"

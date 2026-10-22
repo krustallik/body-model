@@ -171,6 +171,13 @@ describe("active production release entrypoints", () => {
     expect(isProductionV4RecoveryEvidenceEntrypoint(undefined)).toBe(false);
   });
 
+  it("assembles the current retention helper into the isolated legacy recovery image", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-safety-ci.yml"), "utf8");
+    expect(workflow).toContain('mkdir -p "$RUNNER_TEMP/bodycast-v4-tool/source/src/modules/health"');
+    expect(workflow).toContain("src/modules/health/health-sync-audit-retention-integrity.ts");
+    expect(workflow).toContain("$RUNNER_TEMP/bodycast-v4-tool/source/src/modules/health/health-sync-audit-retention-integrity.ts");
+  });
+
   it("keeps owner-authorized full-history recalculation fail-closed before V4 activation", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-full-history-recalculate.yml"), "utf8");
     const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");

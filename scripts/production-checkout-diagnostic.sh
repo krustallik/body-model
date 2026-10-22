@@ -91,26 +91,40 @@ WITH eligible_aliases AS (
     bool_or("sourceType" = 'strength-session') AS has_strength_session_source_alias
   FROM eligible_aliases
   GROUP BY event_id
-), target_strength_session_day AS (
-  SELECT count(*) AS target_session_matches,
-    min(TIMESTAMP '2026-10-22 00:00:00' AT TIME ZONE "accountingTimeZone") AS local_day_start
-  FROM "StrengthDiarySession"
-  WHERE "profileId" = 1
-    AND "status" = 'COMPLETED'
-    AND "entryMode" = 'LIVE'
-    AND "matchedWorkoutId" IS NULL
-    AND "accountingTimeZone" IS NOT NULL
-    AND (
+), target_strength_session_candidates AS (
+  SELECT "status", "entryMode", "matchedWorkoutId", "accountingTimeZone",
+    COALESCE("effectiveAccountingAt", "webStartedAt") AS session_instant,
+    (
       ("effectiveAccountingAt" >= TIMESTAMPTZ '2026-10-21 00:00:00+00'
         AND "effectiveAccountingAt" < TIMESTAMPTZ '2026-10-24 00:00:00+00')
       OR ("effectiveAccountingAt" IS NULL
         AND "webStartedAt" >= TIMESTAMPTZ '2026-10-21 00:00:00+00'
         AND "webStartedAt" < TIMESTAMPTZ '2026-10-24 00:00:00+00')
-    )
-    AND to_char(
-      COALESCE("effectiveAccountingAt", "webStartedAt") AT TIME ZONE "accountingTimeZone",
-      'YYYY-MM-DD HH24:MI'
-    ) = '2026-10-22 14:40'
+    ) AS is_in_acceptance_utc_window
+  FROM "StrengthDiarySession"
+  WHERE "profileId" = 1
+), target_strength_session_localized AS (
+  SELECT *,
+    CASE WHEN is_in_acceptance_utc_window AND "accountingTimeZone" IS NOT NULL AND session_instant IS NOT NULL THEN
+      to_char(session_instant AT TIME ZONE "accountingTimeZone", 'YYYY-MM-DD HH24:MI') = '2026-10-22 14:40'
+    ELSE false END AS is_target_local_minute,
+    CASE WHEN is_in_acceptance_utc_window AND "accountingTimeZone" IS NOT NULL THEN
+      TIMESTAMP '2026-10-22 00:00:00' AT TIME ZONE "accountingTimeZone"
+    ELSE NULL END AS local_day_start
+  FROM target_strength_session_candidates
+), target_strength_session_day AS (
+  SELECT
+    count(*) FILTER (WHERE is_in_acceptance_utc_window) AS target_utc_window_matches,
+    count(*) FILTER (WHERE is_in_acceptance_utc_window AND "accountingTimeZone" IS NULL) AS target_utc_window_missing_timezone,
+    count(*) FILTER (WHERE is_in_acceptance_utc_window AND is_target_local_minute) AS target_local_minute_matches,
+    count(*) FILTER (WHERE is_in_acceptance_utc_window AND is_target_local_minute AND "status" = 'COMPLETED') AS target_completed_matches,
+    count(*) FILTER (WHERE is_in_acceptance_utc_window AND is_target_local_minute
+      AND "status" = 'COMPLETED' AND "entryMode" = 'LIVE') AS target_live_matches,
+    count(*) FILTER (WHERE is_in_acceptance_utc_window AND is_target_local_minute
+      AND "status" = 'COMPLETED' AND "entryMode" = 'LIVE' AND "matchedWorkoutId" IS NULL) AS target_session_matches,
+    min(local_day_start) FILTER (WHERE is_in_acceptance_utc_window AND is_target_local_minute
+      AND "status" = 'COMPLETED' AND "entryMode" = 'LIVE' AND "matchedWorkoutId" IS NULL) AS local_day_start
+  FROM target_strength_session_localized
 )
 SELECT count(*),
   count(*) FILTER (WHERE has_superseded_workout),
@@ -121,6 +135,11 @@ SELECT count(*),
   count(*) FILTER (WHERE has_workout_source_alias),
   count(*) FILTER (WHERE has_strength_session_source_alias),
   (SELECT count(DISTINCT workout_id) FROM eligible_aliases),
+  (SELECT target_utc_window_matches FROM target_strength_session_day),
+  (SELECT target_utc_window_missing_timezone FROM target_strength_session_day),
+  (SELECT target_local_minute_matches FROM target_strength_session_day),
+  (SELECT target_completed_matches FROM target_strength_session_day),
+  (SELECT target_live_matches FROM target_strength_session_day),
   (SELECT target_session_matches FROM target_strength_session_day),
   (SELECT count(*) FROM current_events CROSS JOIN target_strength_session_day
     WHERE target_session_matches = 1 AND event_occurrence_at < local_day_start),
@@ -138,7 +157,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
-  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^([0-9]+\|){16}[0-9]+$ ]] || return 1
   printf '%s\n' "$inventory"
 }
 
@@ -401,7 +420,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
-    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date <<< "$energy_inventory"
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_local_minute_matches energy_target_completed_matches energy_target_live_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
     emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
@@ -412,6 +431,11 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_workout_alias_source_type "$energy_workout_source"
     emit energy_diagnostic_events_with_strength_session_alias_source_type "$energy_strength_session_source"
     emit energy_diagnostic_distinct_workout_ids_with_available_energy "$energy_workout_ids"
+    emit energy_diagnostic_strength_session_utc_window_matches "$energy_target_utc_window_matches"
+    emit energy_diagnostic_strength_session_utc_window_missing_timezone "$energy_target_utc_window_missing_timezone"
+    emit energy_diagnostic_strength_session_target_local_minute_matches "$energy_target_local_minute_matches"
+    emit energy_diagnostic_strength_session_completed_target_matches "$energy_target_completed_matches"
+    emit energy_diagnostic_strength_session_live_target_matches "$energy_target_live_matches"
     emit energy_diagnostic_target_strength_session_scope_matches "$energy_target_strength_session_matches"
     emit energy_diagnostic_canonical_events_before_target_strength_local_date "$energy_before_strength_local_date"
     emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date "$energy_on_or_after_strength_local_date"
@@ -426,6 +450,11 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_workout_alias_source_type unavailable
     emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
     emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
+    emit energy_diagnostic_strength_session_utc_window_matches unavailable
+    emit energy_diagnostic_strength_session_utc_window_missing_timezone unavailable
+    emit energy_diagnostic_strength_session_target_local_minute_matches unavailable
+    emit energy_diagnostic_strength_session_completed_target_matches unavailable
+    emit energy_diagnostic_strength_session_live_target_matches unavailable
     emit energy_diagnostic_target_strength_session_scope_matches unavailable
     emit energy_diagnostic_canonical_events_before_target_strength_local_date unavailable
     emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date unavailable
@@ -448,6 +477,11 @@ else
   emit energy_diagnostic_events_with_workout_alias_source_type unavailable
   emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
   emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
+  emit energy_diagnostic_strength_session_utc_window_matches unavailable
+  emit energy_diagnostic_strength_session_utc_window_missing_timezone unavailable
+  emit energy_diagnostic_strength_session_target_local_minute_matches unavailable
+  emit energy_diagnostic_strength_session_completed_target_matches unavailable
+  emit energy_diagnostic_strength_session_live_target_matches unavailable
   emit energy_diagnostic_target_strength_session_scope_matches unavailable
   emit energy_diagnostic_canonical_events_before_target_strength_local_date unavailable
   emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date unavailable

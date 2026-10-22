@@ -225,6 +225,27 @@ emit git_index_owner_matches_effective_user "$(bool "$([[ "$INDEX_UID" == "$EUID
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   emit docker_daemon_available yes
+  caddy_named_inventory="unknown"
+  if caddy_names="$(docker ps -a --filter "name=caddy" --format '{{.Names}}' 2>/dev/null)"; then
+    caddy_named_inventory="none"
+    safe_caddy_names=()
+    invalid_caddy_name=false
+    while IFS= read -r caddy_name; do
+      [[ -n "$caddy_name" ]] || continue
+      if [[ ! "$caddy_name" =~ ^[A-Za-z0-9_.-]{1,128}$ || "${caddy_name,,}" != *caddy* ]]; then
+        invalid_caddy_name=true
+        continue
+      fi
+      safe_caddy_names+=("$caddy_name")
+      (( ${#safe_caddy_names[@]} <= 10 )) || break
+    done <<< "$caddy_names"
+    if [[ "$invalid_caddy_name" == "true" || ${#safe_caddy_names[@]} -gt 10 ]]; then
+      caddy_named_inventory="unknown"
+    elif [[ ${#safe_caddy_names[@]} -gt 0 ]]; then
+      caddy_named_inventory="$(IFS=,; printf '%s' "${safe_caddy_names[*]}")"
+    fi
+  fi
+  emit caddy_named_container_inventory "$caddy_named_inventory"
   for container in bodycast-app-prod bodycast-db-prod gymbeam-caddy; do
     key="${container//-/_}"
     fields="$(docker inspect --format '{{.Id}}|{{.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.HostConfig.RestartPolicy.Name}}|{{index .Config.Labels "org.bodycast.release-sha"}}' "$container" 2>/dev/null)"
@@ -284,6 +305,7 @@ else
   emit bodycast_app_prod_found unknown
   emit bodycast_db_prod_found unknown
   emit gymbeam_caddy_found unknown
+  emit caddy_named_container_inventory unknown
   emit deploy_rollback_pin_state unknown
   emit deploy_rollback_pin_image_id unavailable
 fi

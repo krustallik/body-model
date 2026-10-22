@@ -43,6 +43,11 @@ if [[ "$1" == ps ]]; then
     name=^/bodycast-app-prod$) requested=bodycast-app-prod ;;
     name=^/bodycast-db-prod$) requested=bodycast-db-prod ;;
     name=^/gymbeam-caddy$) requested=gymbeam-caddy ;;
+    name=caddy)
+      [[ "${5:-}" == --format && "${6:-}" == '{{.Names}}' && "$#" == 6 ]] || exit 98
+      [[ -z "${DOCKER_CADDY_NAMES:-gymbeam-caddy}" ]] || printf '%s\n' "${DOCKER_CADDY_NAMES:-gymbeam-caddy}"
+      exit 0
+      ;;
     *) exit 92 ;;
   esac
   [[ "${DOCKER_PS_PRESENT:-}" == "$requested" ]] && printf '%s\n' "$requested"
@@ -124,6 +129,7 @@ run_inspector() {
     DOCKER_INSPECT_FAIL="${DOCKER_INSPECT_FAIL:-}" \
     DOCKER_PS_PRESENT="${DOCKER_PS_PRESENT:-}" \
     DOCKER_PS_FAIL="${DOCKER_PS_FAIL:-0}" \
+    DOCKER_CADDY_NAMES="${DOCKER_CADDY_NAMES-gymbeam-caddy}" \
     DOCKER_INFO_FAIL="${DOCKER_INFO_FAIL:-0}" \
     DOCKER_IMAGE_LS_FAIL="${DOCKER_IMAGE_LS_FAIL:-0}" \
     DOCKER_IMAGE_LIST_OUTPUT="${DOCKER_IMAGE_LIST_OUTPUT-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
@@ -153,6 +159,7 @@ assert_field "$CLEAN_REPORT" tracked_unstaged_path_count 0
 assert_field "$CLEAN_REPORT" tracked_staged_path_count 0
 assert_field "$CLEAN_REPORT" untracked_path_count 0
 assert_field "$CLEAN_REPORT" docker_daemon_available yes
+assert_field "$CLEAN_REPORT" caddy_named_container_inventory gymbeam-caddy
 assert_field "$CLEAN_REPORT" bodycast_app_prod_found yes
 assert_field "$CLEAN_REPORT" bodycast_app_prod_state running
 assert_field "$CLEAN_REPORT" bodycast_app_prod_health healthy
@@ -212,7 +219,13 @@ fi
 
 DOCKER_UNAVAILABLE_REPORT="$(DOCKER_INFO_FAIL=1 run_inspector "$TEST_REPO")"
 assert_field "$DOCKER_UNAVAILABLE_REPORT" docker_daemon_available no
+assert_field "$DOCKER_UNAVAILABLE_REPORT" caddy_named_container_inventory unknown
 assert_field "$DOCKER_UNAVAILABLE_REPORT" deploy_rollback_pin_state unknown
+
+CADDY_VARIANT_REPORT="$(DOCKER_CADDY_NAMES=gymbeam-caddy-1 run_inspector "$TEST_REPO")"
+assert_field "$CADDY_VARIANT_REPORT" caddy_named_container_inventory gymbeam-caddy-1
+CADDY_TOO_MANY_REPORT="$(DOCKER_CADDY_NAMES=$'caddy-1\ncaddy-2\ncaddy-3\ncaddy-4\ncaddy-5\ncaddy-6\ncaddy-7\ncaddy-8\ncaddy-9\ncaddy-10\ncaddy-11' run_inspector "$TEST_REPO")"
+assert_field "$CADDY_TOO_MANY_REPORT" caddy_named_container_inventory unknown
 
 API_FAILURE_REPORT="$(FIXTURE_API_HEALTH_STATUS=503 FIXTURE_API_HEALTH_BODY='{"status":"error","private":"do-not-print"}' run_inspector "$TEST_REPO")"
 assert_field "$API_FAILURE_REPORT" public_api_health_status 503

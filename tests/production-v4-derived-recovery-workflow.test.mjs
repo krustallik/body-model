@@ -843,5 +843,5 @@ exit "$postflight_status"
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });

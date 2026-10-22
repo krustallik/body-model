@@ -571,9 +571,6 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
     BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE="$expected_health_sync_audit_retention_baseline" \
     BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS="$expected_health_sync_audit_prune_events" \
     BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" \
-    BODYCAST_RELEASE_WORKFLOW_RUN_ID="$BODYCAST_RELEASE_WORKFLOW_RUN_ID" \
-    BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT="$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" \
-    APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
     bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving
   release_state="COMMITTED"
   trap - ERR

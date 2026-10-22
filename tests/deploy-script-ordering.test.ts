@@ -189,7 +189,11 @@ describe("production maintenance-first deploy safety contracts", () => {
       deploySh.indexOf('\nif [[ "$BODYCAST_NON_SERVING_DEPLOY"', migrationFreeCutoverAt),
     );
     expect(migrationFreeCutoverBlock).toContain('BODYCAST_DEPLOY_SHA="$DEPLOY_SHA"');
-    expect(migrationFreeCutoverBlock).not.toMatch(/(?:^|\s)DEPLOY_SHA="\$DEPLOY_SHA"/);
+    expect(deploySh).toContain("export BODYCAST_RELEASE_WORKFLOW_RUN_ID BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT");
+    expect(deploySh).toContain("export APP_HOST CADDY_ROUTES_PATH");
+    expect(migrationFreeCutoverBlock).not.toMatch(
+      /(?:^|\s)(?:DEPLOY_SHA|BODYCAST_RELEASE_WORKFLOW_RUN_ID|BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT|APP_HOST|CADDY_ROUTES_PATH)=/,
+    );
   });
 
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {

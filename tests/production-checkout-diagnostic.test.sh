@@ -64,8 +64,10 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'ActiveEnergyEventAlias' "$DOCKER_EXEC_INPUT" || exit 95
   grep -Fq 'ActiveEnergyCanonicalEvent' "$DOCKER_EXEC_INPUT" || exit 94
   grep -Fq 'Workout' "$DOCKER_EXEC_INPUT" || exit 93
+  grep -Fq 'sourceType' "$DOCKER_EXEC_INPUT" || exit 91
+  grep -Fq 'count(DISTINCT workout_id)' "$DOCKER_EXEC_INPUT" || exit 90
   if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-34|1|33|0|12|3}"
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6}"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -156,7 +158,7 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
-    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-34|1|33|0|12|3}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
@@ -192,12 +194,15 @@ assert_field "$CLEAN_REPORT" gymbeam_caddy_state running
 assert_field "$CLEAN_REPORT" deploy_rollback_pin_state present
 assert_field "$CLEAN_REPORT" deploy_rollback_pin_image_id sha256:1111111111111111111111111111111111111111111111111111111111111111
 assert_field "$CLEAN_REPORT" energy_diagnostic_inventory_status available
-assert_field "$CLEAN_REPORT" energy_diagnostic_available_events_with_visible_workout_alias 34
-assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_superseded_workout_alias 1
-assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_current_workout_alias 33
+assert_field "$CLEAN_REPORT" energy_diagnostic_available_events_with_visible_workout_alias 7
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_superseded_workout_alias 2
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_current_workout_alias 5
 assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_both_workout_alias_kinds 0
-assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_stair_climbing_workout_type 12
-assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_training_workout_type 3
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_stair_climbing_workout_type 2
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_training_workout_type 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_workout_alias_source_type 6
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_session_alias_source_type 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_distinct_workout_ids_with_available_energy 6
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes

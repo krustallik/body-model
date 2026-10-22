@@ -64,8 +64,10 @@ on:
       - "scripts/production-db-preflight.mjs"
       - "scripts/production-db-preflight.sql"
       - "scripts/production-db-data-fingerprint.sh"
+      - "scripts/production-db-identity.sh"
       - "scripts/production-db-target-url.mjs"
       - "scripts/production-db-target.sh"
+      - "scripts/ci/production-db-identity-postgres-smoke.sh"
       - "scripts/deploy-migrate.sh"
       - "scripts/run-prisma-migrate-with-lock-timeout.mjs"
       - "scripts/ci/production-migration-prisma-checksum.integration.mjs"
@@ -598,6 +600,9 @@ jobs:
         env:
           BODYCAST_CUTBACK_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_cutback_test
         run: node scripts/ci/production-database-cutback-postgres-smoke.mjs
+
+      - name: Reproduce missing TCP password and verify protected PostgreSQL identity auth
+        run: bash scripts/ci/production-db-identity-postgres-smoke.sh
 
   production-safety-gate:
     name: Disposable PostgreSQL backup and restore safety smoke

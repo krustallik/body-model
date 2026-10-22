@@ -16,9 +16,33 @@ bodycast_capture_production_db_identity() {
     echo "Production PostgreSQL is not attached to its fixed BodyCast backend network." >&2
     return 1
   }
-  endpoint_identity="$(docker exec "$container" sh -c \
-    'exec psql --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host "$1" --username="$POSTGRES_USER" --dbname=bodycast --command "$2"' \
-    _ "$server_ip" 'SELECT current_database() || chr(124) || (SELECT oid::text FROM pg_database WHERE datname = current_database()) || chr(124) || (SELECT system_identifier::text FROM pg_control_system()) || chr(124) || current_user || chr(124) || current_setting('"'"'server_version'"'"') || chr(124) || host(inet_server_addr()) || chr(124) || inet_server_port()::text WHERE pg_is_in_recovery() = false')" || return 1
+  endpoint_identity="$(docker exec --interactive "$container" bash -s -- "$server_ip" \
+    'SELECT current_database() || chr(124) || (SELECT oid::text FROM pg_database WHERE datname = current_database()) || chr(124) || (SELECT system_identifier::text FROM pg_control_system()) || chr(124) || current_user || chr(124) || current_setting('"'"'server_version'"'"') || chr(124) || host(inet_server_addr()) || chr(124) || inet_server_port()::text WHERE pg_is_in_recovery() = false' <<'BASH'
+set -Eeuo pipefail
+server_ip="$1"
+query="$2"
+[[ "${POSTGRES_USER:-}" == "bodycast" && -n "${POSTGRES_PASSWORD:-}" ]] || {
+  echo "Production PostgreSQL credentials are unavailable for the read-only identity check." >&2
+  exit 1
+}
+if [[ "$POSTGRES_PASSWORD" == *$'\n'* || "$POSTGRES_PASSWORD" == *$'\r'* ]]; then
+  echo "Production PostgreSQL password cannot be represented in a protected libpq passfile." >&2
+  exit 1
+fi
+umask 077
+passfile="$(mktemp /tmp/bodycast-production-db-identity.XXXXXX)"
+trap 'rm -f -- "$passfile"' EXIT
+chmod 600 "$passfile"
+escaped_password="${POSTGRES_PASSWORD//\\/\\\\}"
+escaped_password="${escaped_password//:/\\:}"
+printf '%s:%s:%s:%s:%s\n' "$server_ip" 5432 bodycast "$POSTGRES_USER" "$escaped_password" > "$passfile"
+PGPASSFILE="$passfile" \
+PGAPPNAME=bodycast-production-db-identity \
+PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
+  psql --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+    --host "$server_ip" --username="$POSTGRES_USER" --dbname=bodycast --command "$query"
+BASH
+  )" || return 1
   IFS='|' read -r database database_oid cluster_id role server_version server_address server_port <<< "$endpoint_identity"
   [[ "$container_id" =~ ^[a-f0-9]{64}$ && "$image_id" =~ ^sha256:[a-f0-9]{64}$ \
     && "$database" == "bodycast" && "$database_oid" =~ ^[1-9][0-9]*$ \

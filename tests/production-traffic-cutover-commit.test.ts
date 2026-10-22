@@ -1,17 +1,24 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { bashAvailable, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish } from "./helpers/production-release-cutover-fixture";
+import { bashAvailable, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish, PRODUCTION_DB_IDENTITY } from "./helpers/production-release-cutover-fixture";
 
 function prepareTrainingServeFixture() {
   const fixture = createFixture();
+  execFileSync(fixture.realGit, ["-C", fixture.repo, "config", "core.autocrlf", "false"]);
   const migrationPath = "prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql";
   const absoluteMigrationPath = path.join(fixture.repo, migrationPath);
   mkdirSync(path.dirname(absoluteMigrationPath), { recursive: true });
   execFileSync(fixture.realGit, ["-C", fixture.repo, "checkout", "-B", "main", fixture.candidateSha], { stdio: "ignore" });
   writeFileSync(absoluteMigrationPath, "-- Training release identity fixture\n");
-  execFileSync(fixture.realGit, ["-C", fixture.repo, "add", migrationPath]);
+  for (let index = 1; index < 74; index += 1) {
+    const name = `20250000000000_fixture_${String(index).padStart(3, "0")}`;
+    const fixtureMigration = path.join(fixture.repo, "prisma", "migrations", name, "migration.sql");
+    mkdirSync(path.dirname(fixtureMigration), { recursive: true });
+    writeFileSync(fixtureMigration, `-- fixture migration ${index}\n`);
+  }
+  execFileSync(fixture.realGit, ["-C", fixture.repo, "add", "prisma/migrations"]);
   execFileSync(fixture.realGit, ["-C", fixture.repo, "commit", "-m", "fixture Training release"], { stdio: "ignore" });
   const trainingReleaseSha = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   execFileSync(fixture.realGit, ["-C", fixture.repo, "push", "origin", "main"], { stdio: "ignore" });
@@ -129,6 +136,9 @@ describe("serving-route commit boundary", () => {
     const routeCommit = events.indexOf("live-route-mutation:serving");
     const reload = events.indexOf("caddy-reload:serving");
     const healthProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/health");
+    const readinessProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/readiness");
+    const uiProbe = events.indexOf("public-probe:200:https://bodycast.example.test/settings/profile");
+    const historyProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
     const fenceCommit = events.indexOf("unified-v4-fence-committed");
     expect(fenceReady).toBeGreaterThanOrEqual(0);
     expect(fenceReady).toBeLessThan(finalMainFetch);
@@ -137,8 +147,150 @@ describe("serving-route commit boundary", () => {
     expect(finalMaintenanceProbe).toBeLessThan(routeCommit);
     expect(routeCommit).toBeLessThan(reload);
     expect(reload).toBeLessThan(healthProbe);
-    expect(healthProbe).toBeLessThan(fenceCommit);
+    expect(healthProbe).toBeLessThan(readinessProbe);
+    expect(readinessProbe).toBeLessThan(uiProbe);
+    expect(uiProbe).toBeLessThan(historyProbe);
+    expect(historyProbe).toBeLessThan(fenceCommit);
+    expect(result.stdout).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=33 strength=visible");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("migration-context-pin");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("serves a migration-free Training candidate only after 74/74 schema, raw identity, and held currentness gates", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const expectedDatabaseIdentity = PRODUCTION_DB_IDENTITY;
+    const expectedRawFingerprint = "e".repeat(64);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: expectedDatabaseIdentity,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: expectedRawFingerprint,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+    });
+    expect(result.status).toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    expect(events).toContain("unified-v4-raw-fingerprint-assertion");
+    expect(events).toContain("unified-v4-fence-committed");
+    expect(events).toContain("schema-preflight-no-deps");
+    const refreshWait = events.indexOf("training-refresh-current");
+    const fenceReady = events.indexOf("unified-v4-fence-ready");
+    const schemaPreflight = events.lastIndexOf("schema-preflight-no-deps");
+    const routeCommit = events.indexOf("live-route-mutation:serving");
+    const fenceCommit = events.indexOf("unified-v4-fence-committed");
+    expect(schemaPreflight).toBeGreaterThanOrEqual(0);
+    expect(refreshWait).toBeGreaterThan(schemaPreflight);
+    expect(refreshWait).toBeLessThan(fenceReady);
+    expect(fenceReady).toBeGreaterThan(schemaPreflight);
+    expect(fenceReady).toBeLessThan(routeCommit);
+    expect(routeCommit).toBeLessThan(fenceCommit);
+    expect(existsSync(markerPath)).toBe(false);
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("prisma migrate deploy");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog.match(/-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=/g)).toHaveLength(2);
+    expect(dockerLog).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=bodycast|16384|7419276301947620311|bodycast|17.5|172.20.0.2|5432');
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps migration-free serving in maintenance when the durable Training refresh does not converge", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      FAIL_TRAINING_REFRESH_WAIT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("training-refresh-current-timeout");
+    expect(events).not.toContain("unified-v4-fence-start");
+    expect(events).not.toContain("live-route-mutation:serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps migration-free serving in maintenance when the currentness fence rejects", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      FAIL_TRAINING_V4_CHECK: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-fence-rejected");
+    expect(events).not.toContain("live-route-mutation:serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("restores and confirms migration-free maintenance when exact serving-route verification fails after fence commit", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      CORRUPT_ROUTE_AFTER_SERVING_RELOAD: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    expect(existsSync(markerPath)).toBe(false);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-fence-committed");
+    expect(events).toContain("route-corrupted-after-serving-reload");
+    expect(events).toContain("caddy-active-config:maintenance");
+    expect(events).toContain("public-probe:503:https://bodycast.example.test/");
+    expect(result.stderr).toContain("Maintenance is confirmed after the post-fence route verification failure");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("stop --time 0 bodycast-app-prod");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable).each([
+    ["readiness", { FAIL_CANDIDATE_READINESS_PROBE: "1" }],
+    ["UI", { FAIL_CANDIDATE_UI_PROBE: "1" }],
+    ["Training history", { FAIL_CANDIDATE_TRAINING_HISTORY_PROBE: "1" }],
+  ])("restores migration-free maintenance when the public %s probe fails under the held fence", (_name, failureEnv) => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      ...failureEnv,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("caddy-active-config:maintenance");
+    expect(events).toContain("unified-v4-fence-aborted");
+    expect(events).not.toContain("unified-v4-fence-committed");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("stop --time 0 bodycast-app-prod");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("does not publish the route when the final maintenance 503 probe fails", () => {

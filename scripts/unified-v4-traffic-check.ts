@@ -1,6 +1,9 @@
 import { createInterface } from "node:readline";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
+import { inventoryV4RecoveryRawSourcesV1 } from "./production-v4-recovery-evidence";
+import { evaluateMigrationFreeEnergyAcceptanceV1 } from "./production-migration-free-acceptance";
 
 function profileIdArg(): number {
   const index = process.argv.indexOf("--profile-id");
@@ -12,8 +15,113 @@ function profileIdArg(): number {
 const profileId = profileIdArg();
 const holdCurrentnessFence = process.argv.includes("--hold-currentness-fence");
 const preTrainingMigration = process.argv.includes("--pre-training-migration");
+const captureRawInputFingerprint = process.argv.includes("--capture-raw-input-fingerprint");
+const waitTrainingRefreshCurrent = process.argv.includes("--wait-training-refresh-current");
+const expectedRawInputFingerprintIndex = process.argv.indexOf("--expected-raw-input-fingerprint");
+const expectedRawInputFingerprint = expectedRawInputFingerprintIndex < 0
+  ? null : process.argv[expectedRawInputFingerprintIndex + 1] ?? null;
+const expectedHealthSyncAuditFingerprintIndex = process.argv.indexOf("--expected-health-sync-audit-fingerprint");
+const expectedHealthSyncAuditFingerprint = expectedHealthSyncAuditFingerprintIndex < 0
+  ? null : process.argv[expectedHealthSyncAuditFingerprintIndex + 1] ?? null;
+const expectedPrismaDatabaseIdentity = process.env.BODYCAST_EXPECTED_PRISMA_DB_IDENTITY ?? null;
+if (captureRawInputFingerprint && (holdCurrentnessFence || preTrainingMigration || profileId !== 1)) {
+  throw new Error("Raw-input fingerprint capture is restricted to standalone production profile 1 evidence.");
+}
+if (waitTrainingRefreshCurrent
+  && (holdCurrentnessFence || captureRawInputFingerprint || preTrainingMigration || profileId !== 1)) {
+  throw new Error("Training refresh convergence wait is restricted to standalone production profile 1 evidence.");
+}
+if (expectedRawInputFingerprintIndex >= 0
+  && (!holdCurrentnessFence || !/^[a-f0-9]{64}$/.test(expectedRawInputFingerprint ?? ""))) {
+  throw new Error("Expected raw-input fingerprint requires a held currentness fence and a full SHA-256 digest.");
+}
+if (expectedHealthSyncAuditFingerprintIndex >= 0
+  && (!holdCurrentnessFence || !/^[a-f0-9]{64}$/.test(expectedHealthSyncAuditFingerprint ?? ""))) {
+  throw new Error("Expected HealthSyncAudit fingerprint requires a held currentness fence and a full SHA-256 digest.");
+}
+if ((expectedRawInputFingerprintIndex >= 0) !== (expectedHealthSyncAuditFingerprintIndex >= 0)) {
+  throw new Error("Migration-free raw integrity requires both source and HealthSyncAudit fingerprints.");
+}
+if ((captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null)
+  && !expectedPrismaDatabaseIdentity) {
+  throw new Error("Migration-free production checks require the exact Prisma database identity captured from bodycast-db-prod.");
+}
 if (holdCurrentnessFence && preTrainingMigration) {
   throw new Error("A held serve fence cannot skip the durable Training refresh queue.");
+}
+
+async function readPrismaDatabaseIdentity(client: typeof prisma): Promise<string> {
+  const rows = await client.$queryRaw<Array<{
+    database: string;
+    databaseOid: string;
+    clusterSystemIdentifier: string;
+    role: string;
+    serverVersion: string;
+    serverAddress: string | null;
+    serverPort: number | null;
+  }>>`
+    SELECT current_database() AS database,
+      (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS "databaseOid",
+      (SELECT system_identifier::text FROM pg_control_system()) AS "clusterSystemIdentifier",
+      current_user AS role,
+      current_setting('server_version') AS "serverVersion",
+      host(inet_server_addr()) AS "serverAddress",
+      inet_server_port() AS "serverPort" WHERE pg_is_in_recovery() = false
+  `;
+  const row = rows[0];
+  if (rows.length !== 1 || !row || row.database !== "bodycast"
+    || !/^[1-9][0-9]*$/.test(row.databaseOid)
+    || !/^[1-9][0-9]*$/.test(row.clusterSystemIdentifier)
+    || row.role !== "bodycast" || !/^17\./.test(row.serverVersion)
+    || !row.serverAddress || !Number.isInteger(row.serverPort)) {
+    throw new Error("Migration-free serving is blocked: Prisma did not reach the expected canonical BodyCast PostgreSQL primary.");
+  }
+  return [row.database, row.databaseOid, row.clusterSystemIdentifier, row.role, row.serverVersion,
+    row.serverAddress, row.serverPort].join("|");
+}
+
+async function assertPrismaDatabaseIdentityV1(client: typeof prisma) {
+  if (!expectedPrismaDatabaseIdentity) return;
+  const actual = await readPrismaDatabaseIdentity(client);
+  if (actual !== expectedPrismaDatabaseIdentity) {
+    throw new Error("Migration-free serving is blocked: the Prisma DATABASE_URL target differs from bodycast-db-prod.");
+  }
+}
+
+async function assertMigrationFreeEnergyAcceptanceV1(client: typeof prisma) {
+  const workoutAliases = await client.activeEnergyEventAlias.findMany({
+    where: { profileId, sourceType: { in: ["workout", "strength-session"] } },
+    select: {
+      sourceType: true,
+      sourceId: true,
+      workoutId: true,
+      workout: { select: { type: true, hiddenFromHistory: true } },
+      event: { select: {
+        id: true, logicalEventKey: true, eventKind: true, supersededByEventId: true, isStale: true,
+        currentResolutionFingerprint: true, currentSource: true, currentKcal: true, currentProvenance: true,
+        candidates: {
+          where: { source: "bodycast-strength-estimate", availability: "available", valueKcal: { not: null } },
+          select: { source: true, sourceIdentity: true, sourceFingerprint: true, availability: true, valueKcal: true, provenance: true },
+        },
+      } },
+    },
+  });
+  const targetSessions = await client.strengthDiarySession.findMany({
+    where: {
+      profileId, status: "COMPLETED", entryMode: "LIVE", matchedWorkoutId: null,
+      OR: [
+        { effectiveAccountingAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") } },
+        { effectiveAccountingAt: null, webStartedAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") } },
+      ],
+    },
+    select: {
+      id: true, status: true, entryMode: true, effectiveAccountingAt: true, webStartedAt: true, webEndedAt: true,
+      matchStatus: true, matchedWorkoutId: true, accountingTimeZone: true, accountingInputRevision: true,
+      currentSnapshotRevision: true,
+      exercises: { select: { sets: { select: { completedAt: true } } } },
+    },
+  });
+  return evaluateMigrationFreeEnergyAcceptanceV1({ workoutAliases, strengthSessions: targetSessions });
 }
 
 async function waitForRouteCommit(timeoutMs: number): Promise<string> {
@@ -36,6 +144,55 @@ async function waitForRouteCommit(timeoutMs: number): Promise<string> {
 }
 
 const verify = async () => {
+  if (waitTrainingRefreshCurrent) {
+    await assertPrismaDatabaseIdentityV1(prisma);
+    const startedAt = Date.now();
+    const timeoutMs = 20 * 60_000;
+    let lastObservedState = "";
+    while (Date.now() - startedAt < timeoutMs) {
+      const job = await prisma.trainingRefreshJob.findUnique({
+        where: { profileId },
+        select: {
+          requestedGeneration: true,
+          completedGeneration: true,
+          attemptCount: true,
+          lastErrorType: true,
+          lastProgressStage: true,
+        },
+      });
+      if (!job) throw new Error("Training refresh convergence is blocked because its durable queue row is missing.");
+      const state = JSON.stringify(job);
+      if (state !== lastObservedState) {
+        process.stdout.write(`BODYCAST_TRAINING_REFRESH_PROGRESS ${state}\n`);
+        lastObservedState = state;
+      }
+      if (job.requestedGeneration === job.completedGeneration) {
+        process.stdout.write(`BODYCAST_TRAINING_REFRESH_CURRENT ${state}\n`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    throw new Error("Timed out waiting for the app's standard durable Training refresh worker; no queue or source rows were changed.");
+  }
+  if (captureRawInputFingerprint) {
+    const evidence = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
+      const [retentionWindow] = await tx.$queryRaw<Array<{ rowsDueForPruneWithinReleaseWindow: number }>>`
+        SELECT count(*)::int AS "rowsDueForPruneWithinReleaseWindow"
+        FROM public."HealthSyncAudit"
+        WHERE "receivedAt" < now() - interval '30 days' + interval '45 minutes'
+      `;
+      if (!Number.isSafeInteger(retentionWindow?.rowsDueForPruneWithinReleaseWindow)
+        || retentionWindow.rowsDueForPruneWithinReleaseWindow !== 0) {
+        throw new Error("HealthSyncAudit retention could delete raw audit rows during the bounded release window.");
+      }
+      return inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 240_000 });
+    process.stdout.write(`BODYCAST_RAW_SOURCE_FINGERPRINT=${evidence.sourceFingerprint}\n`);
+    process.stdout.write(`BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT=${evidence.healthSyncAuditFingerprint}\n`);
+    return;
+  }
   if (!holdCurrentnessFence) {
     if (preTrainingMigration && profileId !== 1) {
       throw new Error("Pre-Training-migration readiness is restricted to production profile 1.");
@@ -49,11 +206,35 @@ const verify = async () => {
   }
   if (profileId !== 1) throw new Error("The held production currentness fence is restricted to profile 1.");
   const fenceStartedAt = Date.now();
-  const transactionTimeoutMs = 90_000;
+  const transactionTimeoutMs = 180_000;
   const routeSafetyMarginMs = 5_000;
-  const minimumRouteBudgetMs = 75_000;
+  const minimumRouteBudgetMs = 120_000;
   const result = await prisma.$transaction(async (tx) => {
+    if (expectedRawInputFingerprint !== null) await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
     const readiness = await verifyUnifiedV4ReadyForTraffic({ profileId, client: tx });
+    const trainingRefresh = await tx.trainingRefreshJob.findUnique({
+      where: { profileId },
+      select: { requestedGeneration: true, completedGeneration: true },
+    });
+    if (!trainingRefresh || trainingRefresh.requestedGeneration !== trainingRefresh.completedGeneration) {
+      throw new Error("Training serving is blocked until requestedGeneration equals completedGeneration.");
+    }
+    const p1EnergyAcceptance = expectedRawInputFingerprint === null
+      ? null : await assertMigrationFreeEnergyAcceptanceV1(tx as unknown as typeof prisma);
+    if (p1EnergyAcceptance !== null) {
+      process.stdout.write(`BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID ${p1EnergyAcceptance.diagnosticWorkoutId}\n`);
+    }
+    let rawSourceFingerprint: string | null = null;
+    let healthSyncAuditFingerprint: string | null = null;
+    if (expectedRawInputFingerprint !== null) {
+      const rawEvidence = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
+      rawSourceFingerprint = rawEvidence.sourceFingerprint;
+      healthSyncAuditFingerprint = rawEvidence.healthSyncAuditFingerprint;
+      if (rawSourceFingerprint !== expectedRawInputFingerprint
+        || healthSyncAuditFingerprint !== expectedHealthSyncAuditFingerprint) {
+        throw new Error("Training serving is blocked because Health/Training raw-input integrity differs from the pre-deploy baseline.");
+      }
+    }
     const routeBudgetMs = transactionTimeoutMs - (Date.now() - fenceStartedAt) - routeSafetyMarginMs;
     if (routeBudgetMs < minimumRouteBudgetMs) {
       throw new Error("Unified V4 verification left too little transaction time for a bounded SSH route commit.");
@@ -61,7 +242,13 @@ const verify = async () => {
     process.stdout.write(`BODYCAST_UNIFIED_V4_FENCE_READY ${routeBudgetMs}\n`);
     const decision = await waitForRouteCommit(routeBudgetMs);
     if (decision !== "route-committed") throw new Error("SSH route did not commit while Unified V4 currentness was fenced.");
-    return readiness;
+    const loggedP1EnergyAcceptance = p1EnergyAcceptance === null ? null : {
+      currentWorkoutResolutions: p1EnergyAcceptance.currentWorkoutResolutions,
+      currentStepperResolutions: p1EnergyAcceptance.currentStepperResolutions,
+      strengthSessionCurrent: p1EnergyAcceptance.strengthSessionCurrent,
+    };
+    return { ...readiness, trainingRefresh, rawSourceFingerprint, healthSyncAuditFingerprint,
+      p1EnergyAcceptance: loggedP1EnergyAcceptance };
   }, { maxWait: 5_000, timeout: transactionTimeoutMs });
   process.stdout.write("BODYCAST_UNIFIED_V4_FENCE_COMMITTED " + JSON.stringify(result) + "\n");
 };

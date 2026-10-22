@@ -26,6 +26,7 @@ FROM dependencies AS unified-rollout-tooling
 WORKDIR /app
 COPY src ./src
 COPY scripts/unified-v3-postflight.ts scripts/unified-v4-activate-replay.ts scripts/unified-v4-traffic-check.ts scripts/production-full-history-recalculate.ts ./scripts/
+COPY scripts/production-v4-recovery-evidence.ts scripts/production-migration-free-acceptance.ts ./scripts/
 COPY tsconfig.json ./tsconfig.json
 RUN mkdir -p /app/dist && \
     ./node_modules/.bin/esbuild scripts/unified-v3-postflight.ts --bundle --platform=node --format=esm --packages=external --tsconfig=tsconfig.json --outfile=/app/dist/unified-v3-postflight.mjs && \
@@ -39,6 +40,7 @@ ENV NODE_ENV=production
 COPY prisma ./prisma
 RUN DATABASE_URL=postgresql://build:build@localhost:5432/build npx prisma generate --schema prisma/schema.prisma
 COPY scripts/production-migration-*.mjs ./scripts/
+COPY scripts/production-deploy-attestation.mjs scripts/production-prisma-database-identity.mjs ./scripts/
 COPY scripts/production-empty-install-ledger.mjs ./scripts/
 COPY scripts/production-migration-verification-keys.json ./scripts/
 COPY scripts/production-migration-preflight.mjs ./scripts/

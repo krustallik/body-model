@@ -25,6 +25,10 @@ export const PREVIOUS_IMAGE_ID = `sha256:${"a".repeat(64)}`;
 export const LATEST_IMAGE_ID = `sha256:${"b".repeat(64)}`;
 export const CANDIDATE_IMAGE_ID = `sha256:${"c".repeat(64)}`;
 export const WRONG_IMAGE_ID = `sha256:${"d".repeat(64)}`;
+export const PRODUCTION_DB_CONTAINER_ID = "a".repeat(64);
+export const PRODUCTION_DB_IMAGE_ID = `sha256:${"b".repeat(64)}`;
+export const PRODUCTION_DB_ENDPOINT_IDENTITY = "bodycast|16384|7419276301947620311|bodycast|17.5|172.20.0.2|5432";
+export const PRODUCTION_DB_IDENTITY = `${PRODUCTION_DB_CONTAINER_ID}|${PRODUCTION_DB_IMAGE_ID}|${PRODUCTION_DB_ENDPOINT_IDENTITY}`;
 
 function runGit(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -146,6 +150,21 @@ advance_main() {
   event "main-advanced"
 }
 joined=" $* "
+if [[ "$1" == "inspect" && "$2" == "--format" && "$4" == "bodycast-db-prod" ]]; then
+  case "$3" in
+    "{{.Id}}") printf '%s\n' "$PRODUCTION_DB_CONTAINER_ID"; exit 0 ;;
+    "{{.Image}}") printf '%s\n' "$PRODUCTION_DB_IMAGE_ID"; exit 0 ;;
+    *".IPAddress"*) printf '%s\n' "172.20.0.2"; exit 0 ;;
+  esac
+fi
+if [[ "$1" == "exec" && "$2" == "bodycast-db-prod" && "$joined" == *"count(*) FILTER"* ]]; then
+  printf '%s\n' "74|0"
+  exit 0
+fi
+if [[ "$1" == "exec" && "$2" == "bodycast-db-prod" && "$joined" == *"pg_control_system()"* ]]; then
+  printf '%s\n' "$PRODUCTION_DB_ENDPOINT_IDENTITY"
+  exit 0
+fi
 if [[ "$1" == "image" && "$2" == "inspect" ]]; then
   if [[ "$3" == "--format" ]]; then format="$4"; image="$5"; else format=""; image="$3"; fi
   case "$image" in
@@ -249,6 +268,11 @@ if [[ "$1" == "compose" ]]; then
     event "forbidden-db-start"
     exit 80
   fi
+  if [[ "$joined" == *"production-prisma-database-identity.mjs"* ]]; then
+    event "prisma-db-identity"
+    printf '%s\n' "BODYCAST_PRISMA_DB_IDENTITY=$PRODUCTION_DB_ENDPOINT_IDENTITY"
+    exit 0
+  fi
   if [[ "$joined" == *"production-db-target-url.mjs"* ]]; then
     event "previous-app-db-url-resolved"
     printf '%s\n' 'postgresql://bodycast:fixture@bodycast-db-prod:5432/bodycast'
@@ -257,6 +281,12 @@ if [[ "$1" == "compose" ]]; then
   if [[ "$joined" == *" config --quiet "* || "$joined" == *" logs --tail=100 "* ]]; then exit 0; fi
   if [[ "$joined" == *" build migrate "* ]]; then
     advance_main migrator-build
+    exit 0
+  fi
+  if [[ "$joined" == *"--capture-raw-input-fingerprint"* ]]; then
+    event "raw-input-fingerprint-capture"
+    printf '%s\n' "BODYCAST_RAW_SOURCE_FINGERPRINT=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    printf '%s\n' "BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     exit 0
   fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint npx migrate prisma migrate status "* ]]; then
@@ -270,8 +300,7 @@ if [[ "$1" == "compose" ]]; then
     if [[ "$schema_count" -ge 2 ]]; then advance_main final-schema; fi
     exit 0
   fi
-if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* \
-    || "$joined" == *" run --rm --no-deps --interactive --no-TTY --entrypoint node migrate "* ]]; then
+if [[ "$joined" == *" run --rm --no-deps "* && "$joined" == *"--entrypoint node migrate "* ]]; then
     if [[ "$joined" == *"production-full-history-recalculate.mjs"* ]]; then
       event "full-history-recalculate"
       if [[ "\${FAIL_FULL_HISTORY_RECALCULATE:-0}" == "1" ]]; then exit 45; fi
@@ -302,11 +331,24 @@ if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* \
       if [[ "\${FAIL_V4_ACTIVATION:-0}" == "1" ]]; then exit 44; fi
       exit 0
     fi
+    if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--wait-training-refresh-current"* ]]; then
+      event "training-refresh-current-wait"
+      if [[ "\${FAIL_TRAINING_REFRESH_WAIT:-0}" == "1" ]]; then
+        event "training-refresh-current-timeout"
+        exit 42
+      fi
+      event "training-refresh-current"
+      exit 0
+    fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--hold-currentness-fence"* ]]; then
       event "unified-v4-fence-start"
+      if [[ "$joined" == *"--expected-raw-input-fingerprint"* ]]; then event "unified-v4-raw-fingerprint-assertion"; fi
       if [[ "\${FAIL_TRAINING_V4_CHECK:-0}" == "1" ]]; then event "unified-v4-fence-rejected"; exit 42; fi
+      if [[ "$joined" == *"--expected-raw-input-fingerprint"* ]]; then
+        printf '%s\n' 'BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID 1'
+      fi
       event "unified-v4-fence-ready"
-      printf '%s\n' 'BODYCAST_UNIFIED_V4_FENCE_READY 85000'
+      printf '%s\n' 'BODYCAST_UNIFIED_V4_FENCE_READY 160000'
       if [[ "\${FAIL_TRAINING_FENCE_AFTER_READY:-0}" == "1" ]]; then event "unified-v4-fence-exited-after-ready"; exit 43; fi
       IFS= read -r decision || exit 42
       [[ "$decision" == "route-committed" ]] || { event "unified-v4-fence-aborted"; exit 42; }
@@ -436,6 +478,10 @@ if [[ "$1" == "inspect" ]]; then
     printf '%s\n' "$(printf 'a%.0s' {1..64})"
     exit 0
   fi
+  if [[ "$target" == "bodycast-db-prod" && "$format" == *"{{.Image}}"* ]]; then
+    printf '%s\n' "sha256:$(printf 'b%.0s' {1..64})"
+    exit 0
+  fi
   if [[ "$target" == "bodycast-app-prod" && "\${FAIL_DOCKER_APP_INSPECT:-0}" == "1" ]]; then
     event "docker-app-inspect-failed:$format"
     exit 58
@@ -468,7 +514,11 @@ if [[ "$1" == "inspect" ]]; then
   exit 0
 fi
 if [[ "$1" == "exec" && "$*" == *"psql"* && "$*" == *"bodycast-db-prod"* && "$*" == *"--command"* ]]; then
-  if [[ "$*" == *"SELECT tablename FROM pg_catalog.pg_tables"* ]]; then
+  if [[ "$*" == *"current_database()"* ]]; then
+    printf '%s\n' 'bodycast|false'
+  elif [[ "$*" == *"_prisma_migrations"* ]]; then
+    printf '%s\n' '74|0'
+  elif [[ "$*" == *"SELECT tablename FROM pg_catalog.pg_tables"* ]]; then
     printf '%s\n' DailyHealthData ExperimentalTransientExerciseWaterShadow PhysiologyV7Lifecycle UnifiedExperimentalPhysiologyStateV2
   elif [[ "$*" == *"COPY (SELECT row_to_json"* && "\${CHANGE_V4_SOURCE_AFTER_ACTIVATION:-0}" == "1" \
     && -f "$EVENT_LOG" && "$(cat "$EVENT_LOG")" == *"unified-v4-activation"* ]]; then
@@ -645,6 +695,18 @@ elif [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
   status=200
   response_body='{"status":"ok"}'
   response_headers=$'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+  if [[ "$url" == *"/api/v1/days?"* ]]; then
+    history_events=""
+    for event_id in $(seq 1 33); do
+      [[ -z "$history_events" ]] || history_events+=','
+      history_events+="{\"eventId\":\"workout-$event_id\",\"source\":\"workout\",\"type\":\"Running\",\"occurrenceAt\":\"2026-10-21T12:00:00.000Z\",\"activeEnergyKcal\":100,\"energySource\":\"garmin-active-kcal\"}"
+    done
+    history_events+=',{"eventId":"strength-900","source":"diary","type":"Traditional Strength Training","occurrenceAt":"2026-10-22T12:40:00.000Z","activeEnergyKcal":245.5,"energySource":"shadow-diary-estimate"}'
+    response_body="{\"trainingDays\":[{\"date\":\"2026-10-21\",\"events\":[$history_events]}]}"
+  fi
+  if [[ "$url" == */api/v1/workouts/*/stepper-diagnostic ]]; then
+    response_body='{"diagnostic":{"activeEnergyResolution":{},"programEnergy":{}}}'
+  fi
 else
   status=502
   response_body='unavailable'
@@ -656,6 +718,21 @@ if [[ "$url" == *"/" && "\${CURL_REDIRECT:-0}" == "1" ]]; then
 fi
 if [[ "\${FAIL_MAINTENANCE_PROBE:-0}" == "1" && "$url" == *"/" ]]; then status=200; fi
 if [[ "\${FAIL_CANDIDATE_PUBLIC_PROBE:-0}" == "1" && "$url" == *"/api/health" ]]; then
+  status=502
+  response_body='unavailable'
+  response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
+fi
+if [[ "\${FAIL_CANDIDATE_READINESS_PROBE:-0}" == "1" && "$url" == *"/api/readiness" ]]; then
+  status=503
+  response_body='{"status":"unavailable"}'
+  response_headers=$'HTTP/1.1 503 Service Unavailable\r\n'
+fi
+if [[ "\${FAIL_CANDIDATE_UI_PROBE:-0}" == "1" && "$url" == *"/settings/profile" ]]; then
+  status=502
+  response_body='unavailable'
+  response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
+fi
+if [[ "\${FAIL_CANDIDATE_TRAINING_HISTORY_PROBE:-0}" == "1" && "$url" == *"/api/v1/days?"* ]]; then
   status=502
   response_body='unavailable'
   response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
@@ -795,6 +872,8 @@ export function createFixture(): Fixture {
     "production-route-primitives.sh",
     "production-release-lock.sh",
     "production-v4-recovered-release.sh",
+    "production-db-identity.sh",
+    "production-deploy-attestation.sh",
     "production-traffic-cutover.sh",
     "production-app-container-health-wait.sh",
     "production-writer-drain.sh",
@@ -835,6 +914,16 @@ else
   printf '%s\n' "$V4_BOUNDARY_AFTER_JSON"
 fi
 `, { mode: 0o755 });
+  writeFileSync(path.join(repo, "scripts", "production-deploy-attestation.sh"), shellScript`#!/usr/bin/env bash
+set -Eeuo pipefail
+bodycast_prepare_migration_free_attestation() { return 0; }
+bodycast_assert_migration_free_attestation_receipt() {
+  local release_sha="\${1:-}" run_id="\${2:-}" run_attempt="\${3:-}"
+  [[ "\${BODYCAST_TEST_ATTESTATION_OK:-}" == "1" && "$release_sha" == "\${CANDIDATE_SHA:-}"
+    && "$run_id" == "40123456790" && "$run_attempt" == "1" ]] || return 1
+  printf '%s\n' "migration-free-attestation-consumed:$release_sha:$run_id:$run_attempt" >> "$EVENT_LOG"
+}
+` , { mode: 0o755 });
   writeFileSync(path.join(repo, "docker-compose.prod.yml"), "services: {}\n");
   writeFileSync(path.join(bin, "docker"), fakeDocker, { mode: 0o755 });
   writeFileSync(path.join(bin, "curl"), fakeCurl, { mode: 0o755 });
@@ -942,6 +1031,13 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     PREVIOUS_IMAGE_ID,
     LATEST_IMAGE_ID,
     CANDIDATE_IMAGE_ID,
+    PRODUCTION_DB_CONTAINER_ID,
+    PRODUCTION_DB_IMAGE_ID,
+    PRODUCTION_DB_ENDPOINT_IDENTITY,
+    BODYCAST_RELEASE_WORKFLOW_RUN_ID: "40123456790",
+    BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT: "1",
+    BODYCAST_TEST_ATTESTATION_OK: "1",
+    BODYCAST_EXPECTED_PRISMA_DB_IDENTITY: PRODUCTION_DB_ENDPOINT_IDENTITY,
   };
   const replayInputFingerprint = execFileSync(findBash() ?? "bash", ["--noprofile", "--norc", "-c",
     'export PATH="$FIXTURE_BIN:$PATH"; bash scripts/production-db-data-fingerprint.sh --production-container bodycast-db-prod --v4-replay-inputs'], {

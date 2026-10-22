@@ -102,6 +102,60 @@ describe("active production release entrypoints", () => {
     expect(cutover).toContain('marker_status" -eq 1 && -f "$recovery_record"');
   });
 
+  it("limits migration-free serving to exact owner confirmation and fenced existing-host replacement", () => {
+    const workflow = readFileSync(resolve(workflowDir, "deploy-production.yml"), "utf8");
+    const deploy = readFileSync(resolve("scripts/deploy.sh"), "utf8");
+    const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const schemaPreflight = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), "utf8");
+    const dbIdentity = readFileSync(resolve("scripts/production-db-identity.sh"), "utf8");
+    const currentnessCheck = readFileSync(resolve("scripts/unified-v4-traffic-check.ts"), "utf8");
+    const attestation = readFileSync(resolve("scripts/production-deploy-attestation.mjs"), "utf8");
+    const dockerfile = readFileSync(resolve("Dockerfile"), "utf8");
+    const routeProbes = readFileSync(resolve("scripts/production-route-primitives.sh"), "utf8");
+
+    expect(workflow).toContain("migration_free_serving:");
+    expect(workflow).toContain('"serve-migration-free"');
+    expect(workflow).toContain('MODE="migration-free-serving"');
+    expect(workflow).toContain('[[ "$SSH_HOST" == "169.58.239.149" ]]');
+    expect(workflow).toContain("assertTrustedOwnerWorkflowRun");
+    expect(workflow).toContain("bodycast_acquire_production_release_lock");
+    expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("bodycast-production-migration-free-serving");
+    expect(workflow.indexOf("bodycast_acquire_production_release_lock"))
+      .toBeLessThan(workflow.indexOf('git fetch --no-tags origin "$DEPLOY_SHA"'));
+
+    expect(deploy).toContain("BODYCAST_MIGRATION_FREE_CANDIDATE");
+    expect(deploy).toContain("BODYCAST_EXPECTED_MIGRATION_COUNT=74");
+    expect(deploy).toContain("--capture-raw-input-fingerprint");
+    expect(deploy).toContain("production-writer-drain.sh\" --assert");
+    expect(deploy).toContain('production-traffic-cutover.sh" migration-free-serving');
+    expect(deploy).toContain('docker compose');
+    expect(deploy).toContain('--no-deps --force-recreate "$APP_SERVICE"');
+    expect(deploy).not.toMatch(/prisma\s+migrate\s+deploy|prisma\s+migrate\s+reset/);
+
+    expect(schemaPreflight).toContain("EXPECTED_MIGRATION_COUNT");
+    expect(schemaPreflight).toContain('"_prisma_migrations"');
+    expect(schemaPreflight).toContain("Database schema is up to date");
+    expect(dbIdentity).toContain("current_database()");
+    expect(dbIdentity).toContain("pg_is_in_recovery()");
+    expect(dbIdentity).toContain("bodycast_assert_prisma_database_identity_matches");
+    expect(attestation).toContain("verifyProductionDeployAttestation");
+    expect(attestation).toContain("consumeProductionDeployAttestationJti");
+    expect(dockerfile).toContain("scripts/production-v4-recovery-evidence.ts scripts/production-migration-free-acceptance.ts ./scripts/");
+    expect(routeProbes).toContain("/api/v1/days?to=2026-10-22&limit=100&offset=0");
+    expect(routeProbes).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT");
+    expect(cutover).toContain("--hold-currentness-fence --expected-raw-input-fingerprint");
+    expect(cutover).toContain("--expected-health-sync-audit-fingerprint");
+    expect(currentnessCheck).toContain('requestedGeneration !== trainingRefresh.completedGeneration');
+    expect(currentnessCheck).toContain("expectedRawInputFingerprint");
+    expect(currentnessCheck).toContain("expectedHealthSyncAuditFingerprint");
+    expect(currentnessCheck).toContain("rowsDueForPruneWithinReleaseWindow");
+    expect(cutover).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity"');
+    expect(deploy).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity"');
+    expect(cutover).toContain('require_absent_marker=true');
+    expect(currentnessCheck).toContain("Health/Training raw-input integrity differs from the pre-deploy baseline.");
+  });
+
   it("keeps owner-authorized full-history recalculation fail-closed before V4 activation", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-full-history-recalculate.yml"), "utf8");
     const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");

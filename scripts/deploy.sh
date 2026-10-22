@@ -23,10 +23,15 @@ source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 source "$ROOT_DIR/scripts/production-release-lock.sh"
 source "$ROOT_DIR/scripts/production-v4-recovered-release.sh"
+source "$ROOT_DIR/scripts/production-db-identity.sh"
+source "$ROOT_DIR/scripts/production-deploy-attestation.sh"
 bodycast_acquire_production_release_lock
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 readonly BODYCAST_RECOVERED_V4_SERVE="${BODYCAST_RECOVERED_V4_SERVE:-0}"
+readonly BODYCAST_MIGRATION_FREE_CANDIDATE="${BODYCAST_MIGRATION_FREE_CANDIDATE:-0}"
+readonly BODYCAST_RELEASE_WORKFLOW_RUN_ID="${BODYCAST_RELEASE_WORKFLOW_RUN_ID:-}"
+readonly BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT="${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT:-}"
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "DEPLOY_SHA must be a full 40-character commit SHA (got: ${DEPLOY_SHA})." >&2
@@ -40,8 +45,29 @@ if [[ "$BODYCAST_RECOVERED_V4_SERVE" != "0" && "$BODYCAST_RECOVERED_V4_SERVE" !=
   echo "BODYCAST_RECOVERED_V4_SERVE must be 0 or 1." >&2
   exit 1
 fi
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" != "0" && "$BODYCAST_MIGRATION_FREE_CANDIDATE" != "1" ]]; then
+  echo "BODYCAST_MIGRATION_FREE_CANDIDATE must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+  [[ "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ \
+    && "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+      echo "Migration-free deployment requires the exact authorized workflow run identity." >&2
+      exit 1
+    }
+  export BODYCAST_RELEASE_WORKFLOW_RUN_ID BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT
+  [[ -n "${BODYCAST_MIGRATION_FREE_OIDC_TOKEN_FILE:-}" ]] || {
+    echo "Migration-free deployment requires a signed GitHub Actions OIDC attestation." >&2
+    exit 1
+  }
+fi
 if [[ "$BODYCAST_RECOVERED_V4_SERVE" == "1" && "$BODYCAST_NON_SERVING_DEPLOY" != "1" ]]; then
   echo "Recovered-V4 deployment must first start the candidate behind confirmed maintenance." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" \
+  && ( "$BODYCAST_NON_SERVING_DEPLOY" != "1" || "$BODYCAST_RECOVERED_V4_SERVE" == "1" ) ]]; then
+  echo "Migration-free candidates must be staged as ordinary non-serving apps without a recovery override." >&2
   exit 1
 fi
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
@@ -56,12 +82,24 @@ export BODYCAST_DEPLOY_SHA="$DEPLOY_SHA"
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
+run_schema_preflight() {
+  if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+    BODYCAST_EXPECTED_MIGRATION_COUNT=74 BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="$database_identity_before" \
+      bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
+  else
+    bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
+  fi
+}
+
 release_state="PREPARE"
 maintenance_marker=""
 route_stage=""
 maintenance_route_stage=""
 candidate_image_id=""
 candidate_container_id=""
+database_identity_before=""
+expected_raw_source_fingerprint=""
+expected_health_sync_audit_fingerprint=""
 candidate_start_attempted=false
 previous_app_present=false
 previous_app_sha=""
@@ -132,6 +170,7 @@ stop_candidate_fail_closed() {
 
 release_failure() {
   local exit_code=$?
+  local maintenance_confirmed=false
   if [[ $# -gt 0 ]]; then exit_code="$1"; fi
   trap - ERR
   set +e
@@ -148,8 +187,17 @@ release_failure() {
   else
     echo "Deploy failed before serving commit; traffic remains in maintenance." >&2
     if [[ "$candidate_start_attempted" == "true" ]]; then
-      if ! stop_candidate_fail_closed; then
-        echo "Candidate could not be safely removed; operator intervention is required." >&2
+      if [[ -n "$maintenance_marker" ]] \
+        && bodycast_verify_exact_maintenance_route \
+        && bodycast_probe_public_maintenance "$maintenance_marker"; then
+        maintenance_confirmed=true
+      fi
+      if [[ "$maintenance_confirmed" == "true" ]]; then
+        if ! stop_candidate_fail_closed; then
+          echo "Candidate could not be safely removed; operator intervention is required." >&2
+        fi
+      else
+        echo "Maintenance is not externally confirmed; the candidate remains running and route recovery artifacts are retained." >&2
       fi
     fi
     if [[ "$rollback_image_pinned" == "true" ]]; then
@@ -292,6 +340,10 @@ assert_current_main_sha
 
 marker_status=1
 if read_release_marker; then marker_status=0; else marker_status=$?; fi
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$marker_status" -ne 1 ]]; then
+  echo "Migration-free serving is blocked by any present or unreadable schema/release marker." >&2
+  release_failure 1
+fi
 if [[ "$BODYCAST_RECOVERED_V4_SERVE" == "1" ]]; then
   [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 1 ]] || {
     echo "Recovered-V4 app staging requires no conflicting schema release marker and must remain non-serving." >&2
@@ -341,6 +393,7 @@ elif [[ "$marker_status" -ne 1 ]]; then
   release_failure 1
 fi
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -ne 0 \
+  && "$BODYCAST_MIGRATION_FREE_CANDIDATE" != "1" \
   && "$active_recovered_v4_release" != "true" ]]; then
   echo "A non-serving app deploy requires the exact-SHA schema-applied marker; the candidate will not start on the old schema." >&2
   release_failure 1
@@ -348,7 +401,14 @@ fi
 
 compose config --quiet
 assert_existing_db_healthy
-bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+  database_identity_before="$(bodycast_capture_production_db_identity "$DB_CONTAINER")"
+fi
+run_schema_preflight
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+  bodycast_prepare_migration_free_attestation "$DEPLOY_SHA" \
+    "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT"
+fi
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" && "$marker_status" -eq 1 ]] \
     && is_current_release_already_serving; then
@@ -366,6 +426,10 @@ if [[ "$active_recovered_v4_release" == "true" ]]; then
   bodycast_assert_completed_v4_recovery_for_release "$DEPLOY_SHA"
 fi
 capture_previous_release
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$previous_app_present" != "true" ]]; then
+  echo "Migration-free serving requires an existing app image to pin for rollback." >&2
+  release_failure 1
+fi
 
 # Pin the exact running image before building any candidate that can alter the
 # local Docker image store. A failed pin leaves the old app running in maintenance.
@@ -386,6 +450,27 @@ if [[ "$previous_app_present" == "true" ]]; then
   # exact candidate is still the canonical main tip immediately before stop.
   assert_current_main_sha
   stop_exact_app_container "$previous_app_sha" "$previous_app_image_id" "$previous_app_container_id"
+  if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+    bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+    bodycast_assert_production_db_identity_unchanged "$database_identity_before"
+    expected_prisma_database_identity="$(bodycast_production_db_endpoint_from_identity "$database_identity_before")"
+    raw_fingerprint_output="$(compose --profile tools run --rm --no-deps \
+      -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
+      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --capture-raw-input-fingerprint)"
+    expected_raw_source_fingerprint="$(printf '%s\n' "$raw_fingerprint_output" \
+      | sed -n 's/^BODYCAST_RAW_SOURCE_FINGERPRINT=//p')"
+    expected_health_sync_audit_fingerprint="$(printf '%s\n' "$raw_fingerprint_output" \
+      | sed -n 's/^BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT=//p')"
+    [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "Read-only Health/Training raw-input baseline is unavailable or malformed." >&2
+      release_failure 1
+    }
+    [[ "$expected_health_sync_audit_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "Read-only HealthSyncAudit preservation baseline is unavailable or malformed." >&2
+      release_failure 1
+    }
+    echo "Captured immutable Health/Training and HealthSyncAudit fingerprints after maintenance and writer drain."
+  fi
 fi
 
 # DB is deliberately excluded from this exact-SHA app-only replacement.
@@ -435,6 +520,26 @@ if [[ "$active_recovered_v4_release" == "true" ]]; then
   echo "Exact SHA is healthy behind confirmed maintenance; the Training atomic V4 serve fence remains the only route to traffic."
   exit 0
 fi
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+  release_state="CANDIDATE_VERIFIED"
+  assert_current_main_sha
+  assert_existing_db_healthy
+  BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 BODYCAST_MIGRATION_FREE_SERVE=1 \
+    BODYCAST_EXPECTED_DB_IDENTITY="$database_identity_before" \
+    BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" \
+    BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT="$expected_raw_source_fingerprint" \
+    BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT="$expected_health_sync_audit_fingerprint" \
+    BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_SHA="$DEPLOY_SHA" \
+    BODYCAST_RELEASE_WORKFLOW_RUN_ID="$BODYCAST_RELEASE_WORKFLOW_RUN_ID" \
+    BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT="$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" \
+    APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+    bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving
+  release_state="COMMITTED"
+  trap - ERR
+  set +e
+  echo "Exact SHA ${DEPLOY_SHA} passed database identity, raw-input integrity, 74/74 schema, Training generation, Unified V4, and atomic serving-route fences."
+  exit 0
+fi
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
   release_state="CANDIDATE_VERIFIED"
   echo "Exact SHA is deployed in confirmed maintenance; serving commit was explicitly skipped."
@@ -443,7 +548,7 @@ fi
 
 # All fatal correctness checks precede the only potentially serving mutation.
 assert_existing_db_healthy
-bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
+run_schema_preflight
 marker_status=1
 if read_release_marker; then marker_status=0; else marker_status=$?; fi
 [[ "$marker_status" -eq 1 ]] || { echo "A release/recovery marker blocks ordinary serving." >&2; release_failure 1; }

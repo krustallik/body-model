@@ -44,7 +44,10 @@ const RECOVERY_RAW_INPUT_TABLES = [
   "StrengthSessionAccountingSnapshot",
   "StrengthSessionAccountingOperation",
 ] as const;
-const RECOVERY_RAW_FINGERPRINT_PAGE_SIZE = 32;
+// Larger deterministic pages avoid hundreds of database round trips while the
+// migration-free release holds its currentness fence. The per-row digest and
+// ordered-ID checks still detect missing, reordered, or changing source rows.
+const RECOVERY_RAW_FINGERPRINT_PAGE_SIZE = 512;
 
 async function readExpectedV4ModelDayBoundariesV1(client: typeof prisma, profileId: number) {
   const episodes = await client.modelEpisode.findMany({
@@ -89,7 +92,7 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 
-async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<{
+export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<{
   sourceFingerprint: string;
   healthSyncAuditFingerprint: string;
 }> {

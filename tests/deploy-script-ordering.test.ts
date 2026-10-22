@@ -30,10 +30,13 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deployWorkflow).toContain('workflowRunEventAttempt: process.env.EVENT_RUN_ATTEMPT || null');
     expect(deployWorkflow).not.toContain("git checkout --detach --force");
     expect(deployWorkflow).toContain('git checkout --detach "$DEPLOY_SHA"');
+    expect(deployWorkflow).toContain("migration_free_serving:");
+    expect(deployWorkflow).toContain('"serve-migration-free"');
+    expect(deployWorkflow).toContain('MODE="migration-free-serving"');
 
   });
 
-  it.skipIf(!bashExecutable)("passes the authorized deploy mode through SSH and maps both allowed modes remotely", () => {
+  it.skipIf(!bashExecutable)("passes the authorized deploy mode through SSH and routes migration-free serving through the fenced runner", () => {
     const remoteScript = deployWorkflow.match(/REMOTE_SCRIPT="\$\(cat <<'REMOTE'\n([\s\S]*?)\n\s*REMOTE\n/)?.[1];
     expect(remoteScript).toBeTruthy();
       expect(remoteScript).toContain('DEPLOY_MODE="${5:-}"');
@@ -49,6 +52,9 @@ describe("production maintenance-first deploy safety contracts", () => {
       expect(result.status, mode).toBe(0);
       expect(result.stdout, mode).toBe(expected);
     }
+    expect(modeBlock).toContain("migration-free-serving)");
+    expect(modeBlock).toContain("BODYCAST_MIGRATION_FREE_CANDIDATE=1");
+    expect(modeBlock).toContain('bash scripts/deploy.sh');
   });
 
   it("checks out current main before the production-job owner identity import", () => {
@@ -83,7 +89,9 @@ describe("production maintenance-first deploy safety contracts", () => {
       'release_state="CANDIDATE_VERIFIED"',
       'release_state="SERVING_COMMIT"',
       'release_state="COMMITTED"',
-    ].map((needle) => deploySh.indexOf(needle));
+    ].map((needle, index) => index === 4 || index === 6
+      ? deploySh.lastIndexOf(needle)
+      : deploySh.indexOf(needle));
     expect(states.every((index) => index >= 0)).toBe(true);
     expect(states).toEqual([...states].sort((left, right) => left - right));
 
@@ -165,7 +173,12 @@ describe("production maintenance-first deploy safety contracts", () => {
     const routeStageCheckAt = deploySh.indexOf('[[ -f "$route_stage"', mainFenceAt);
     const commitAt = deploySh.indexOf("release_state=\"SERVING_COMMIT\"", routeStageCheckAt);
     expect(deploySh).not.toContain("run_v4_traffic_check");
-    expect(deploySh).not.toContain("unified-v4-traffic-check.mjs");
+    expect(deploySh).toContain("--capture-raw-input-fingerprint");
+    expect(deploySh).toContain("BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT");
+    expect(deploySh).not.toContain("--hold-currentness-fence");
+    expect(deploySh).toContain('bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving');
+    expect(cutoverSh).toContain("--hold-currentness-fence --expected-raw-input-fingerprint");
+    expect(cutoverSh).toContain("--expected-health-sync-audit-fingerprint");
     expect(modelForecastService).toContain("if (!v4IsCurrent) return blockedV2");
     expect(modelForecastService).toContain("latestUnifiedRow?.modelRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION");
     expect(mainFenceAt).toBeGreaterThan(-1);
@@ -179,6 +192,8 @@ describe("production maintenance-first deploy safety contracts", () => {
     const failureBody = deploySh.slice(failureAt, failureEnd);
     expect(failureBody).toContain('release_state" == "PREPARE"');
     expect(failureBody).toContain("traffic remains in maintenance");
+    expect(failureBody).toContain("bodycast_probe_public_maintenance");
+    expect(failureBody).toContain('maintenance_confirmed" == "true"');
     expect(failureBody).toContain("stop_candidate_fail_closed");
     expect(failureBody).toContain("Automatic prior-app restoration is disabled because this attempt has no proof of the exact prior runtime configuration.");
     expect(failureBody).not.toContain("compose up");
@@ -211,6 +226,13 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(preflightSh).not.toContain("--entrypoint npx migrate prisma migrate deploy");
     expect(deploySh).not.toContain("bodycast-production-operation");
     expect(deploySh).toContain("bodycast_acquire_production_release_lock");
+    expect(deploySh).toContain("BODYCAST_MIGRATION_FREE_CANDIDATE");
+    expect(deploySh).toContain("production-writer-drain.sh");
+    expect(deploySh).toContain("bodycast_capture_production_db_identity");
+    expect(preflightSh).toContain("BODYCAST_EXPECTED_MIGRATION_COUNT");
+    expect(preflightSh).toContain('"_prisma_migrations"');
+    expect(readFileSync(resolve("scripts/production-db-identity.sh"), "utf8"))
+      .toContain("bodycast_assert_production_db_identity_unchanged");
     expect(migrateSh).toContain("authorization-envelope.json");
     expect(migrateSh).toContain("--before-ddl");
     expect(migrateSh).toContain("run-prisma-migrate-with-lock-timeout.mjs");

@@ -50,8 +50,14 @@ describe("active production release entrypoints", () => {
     expect(inspector).not.toMatch(/\bgit\s+(?:fetch|checkout|reset|clean|add|commit)\b/);
     expect(inspector).toContain("docker inspect");
     expect(inspector).toContain("curl --silent --show-error --max-time 10");
-    expect(inspector).not.toMatch(/\bdocker\s+(?:compose|exec|start|stop|restart|rm|run|update|kill)\b/);
-    expect(inspector).not.toMatch(/(^|\n)\s*(?:psql|caddy|prisma)\s/m);
+    expect(inspector).not.toMatch(/\bdocker\s+(?:compose|start|stop|restart|rm|run|update|kill)\b/);
+    expect(inspector.match(/\bdocker\s+exec\b/g)).toHaveLength(1);
+    expect(inspector).toContain('docker exec --interactive bodycast-db-prod bash -s -- "$server_ip"');
+    expect(inspector).toContain("PGOPTIONS='-c default_transaction_read_only=on");
+    expect(inspector).toContain('BEGIN READ ONLY;');
+    expect(inspector.match(/^\s*psql\b/gm)).toHaveLength(1);
+    expect(inspector).toContain("psql --no-psqlrc --quiet --tuples-only --no-align");
+    expect(inspector).not.toMatch(/(^|\n)\s*(?:caddy|prisma)\s/m);
   });
 
   it("routes the Training ledger manifest through only the standard owner-gated migration path", () => {

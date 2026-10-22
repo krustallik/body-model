@@ -115,6 +115,27 @@ describe("evaluateProductionDeployGate", () => {
       freshEmptyInstall: true, recoveredV4Serve: true })).toMatchObject({ decision: "block" });
   });
 
+  it("allows migration-free serving only with its distinct owner confirmation and exact current-main SHA", () => {
+    expect(manualGate({ dispatchConfirm: "serve-migration-free", nonServingDeploy: false, migrationFreeServing: true }))
+      .toEqual({
+        decision: "deploy",
+        reason: "Owner-authorized migration-free serving is bound to the exact current main SHA and requires unchanged database/raw-input identity plus the held Training/Unified currentness fence before route commit.",
+        candidateSha: tip,
+        mode: "migration-free-serving",
+      });
+    expect(manualGate({ migrationFreeServing: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "deploy", nonServingDeploy: false, migrationFreeServing: true }))
+      .toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-migration-free", nonServingDeploy: true, migrationFreeServing: true }))
+      .toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-migration-free", nonServingDeploy: false, migrationFreeServing: true,
+      freshEmptyInstall: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-migration-free", nonServingDeploy: false, migrationFreeServing: true,
+      recoveredV4Serve: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-migration-free", nonServingDeploy: false, migrationFreeServing: true,
+      candidateSha: stale })).toMatchObject({ decision: "skip" });
+  });
+
   it("allows automatic serving only from successful CI for the exact current main SHA", () => {
     expect(automaticGate()).toEqual({
       decision: "deploy",

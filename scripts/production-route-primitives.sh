@@ -179,15 +179,104 @@ bodycast_probe_public_maintenance() {
 }
 
 bodycast_probe_public_candidate_observational() {
-  local headers body status
+  local headers body status diagnostic_id endpoint
+  local api_endpoints=(/api/health)
+  if [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]]; then api_endpoints+=(/api/readiness); fi
+  for endpoint in "${api_endpoints[@]}"; do
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
+      --dump-header "$headers" --output "$body" --write-out '%{http_code}' "https://${APP_HOST}${endpoint}")" \
+        || [[ "$status" != "200" ]] || ! grep -Fq '"status":"ok"' "$body"; then
+      rm -f -- "$headers" "$body"
+      echo "Public candidate API probe failed for ${endpoint}." >&2
+      return 1
+    fi
+    rm -f -- "$headers" "$body"
+  done
+
+  # These P1 acceptance checks are specific to the migration-free app-only
+  # release. Ordinary serving continues to use the existing public health gate.
+  [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]] || return 0
   headers="$(mktemp)"
   body="$(mktemp)"
-  if status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
-    --dump-header "$headers" --output "$body" --write-out '%{http_code}' "https://${APP_HOST}/api/health")" \
-      && [[ "$status" == "200" ]] && grep -Fq '"status":"ok"' "$body"; then
+  if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
+    --dump-header "$headers" --output "$body" --write-out '%{http_code}' "https://${APP_HOST}/api/readiness")" \
+      || [[ "$status" != "200" ]] || ! grep -Fq '"status":"ok"' "$body"; then
     rm -f -- "$headers" "$body"
-    return 0
+    echo "Public candidate API probe failed for /api/readiness." >&2
+    return 1
   fi
   rm -f -- "$headers" "$body"
-  return 1
+
+  headers="$(mktemp)"
+  body="$(mktemp)"
+  if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
+    --dump-header "$headers" --output "$body" --write-out '%{http_code}' "https://${APP_HOST}/settings/profile")" \
+      || [[ ! "$status" =~ ^(200|301|302|307|308)$ ]]; then
+    rm -f -- "$headers" "$body"
+    echo "Public BodyCast UI route probe failed for /settings/profile." >&2
+    return 1
+  fi
+  rm -f -- "$headers" "$body"
+
+  headers="$(mktemp)"
+  body="$(mktemp)"
+  if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 20 \
+    --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
+    "https://${APP_HOST}/api/v1/days?to=2026-10-22&limit=100&offset=0")" \
+      || [[ "$status" != "200" ]] \
+      || ! node --input-type=module - "$body" <<'NODE'
+import { readFileSync } from "node:fs";
+const response = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (!Array.isArray(response?.trainingDays)) throw new Error("History API omitted Training facts.");
+const events = response.trainingDays.flatMap((day) => Array.isArray(day?.events) ? day.events : []);
+const available = (event) => Number.isFinite(event?.activeEnergyKcal)
+  && event.activeEnergyKcal >= 0 && event.energySource !== "unavailable";
+const workoutEnergy = events.filter((event) => available(event)
+  && (event.source === "workout" || event.source === "matched"));
+const minuteInBodyCastTime = (value) => {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Bratislava", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${fields.year}-${fields.month}-${fields.day}T${fields.hour}:${fields.minute}`;
+};
+const strength = events.find((event) => available(event)
+  && minuteInBodyCastTime(event.occurrenceAt) === "2026-10-22T14:40"
+  && (event.source === "diary" || event.source === "matched")
+  && ["shadow-diary-estimate", "bodycast-strength-estimate"].includes(event.energySource));
+if (workoutEnergy.length < 33 || !strength) {
+  throw new Error("History API does not expose the current historical Training energy and target Strength kcal.");
+}
+process.stdout.write(`BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=${workoutEnergy.length} strength=visible\n`);
+NODE
+  then
+    rm -f -- "$headers" "$body"
+    echo "Public historical Training energy probe failed for /api/v1/days." >&2
+    return 1
+  fi
+  rm -f -- "$headers" "$body"
+
+  diagnostic_id="${BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID:-}"
+  if [[ -n "$diagnostic_id" ]]; then
+    [[ "$diagnostic_id" =~ ^[1-9][0-9]*$ ]] || return 1
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 20 \
+      --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
+      "https://${APP_HOST}/api/v1/workouts/${diagnostic_id}/stepper-diagnostic")" \
+        || [[ "$status" != "200" ]] \
+        || ! grep -Eq '"diagnostic"[[:space:]]*:' "$body" \
+        || ! grep -Eq '"activeEnergyResolution"[[:space:]]*:' "$body" \
+        || ! grep -Eq '"programEnergy"[[:space:]]*:' "$body"; then
+      rm -f -- "$headers" "$body"
+      echo "Public Stepper diagnostic API probe failed for the current accepted Stepper event." >&2
+      return 1
+    fi
+    rm -f -- "$headers" "$body"
+  fi
 }

@@ -29,12 +29,14 @@ source "${ROOT_DIR}/scripts/production-release-marker.sh"
 source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 source "${ROOT_DIR}/scripts/production-release-lock.sh"
 source "${ROOT_DIR}/scripts/production-v4-recovered-release.sh"
+source "${ROOT_DIR}/scripts/production-db-identity.sh"
+source "${ROOT_DIR}/scripts/production-deploy-attestation.sh"
 
 bodycast_v4_cutover_phase="app-host-validation"
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
 bodycast_v4_cutover_phase="mode-validation"
-[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "full-history-recalculate" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" || "$MODE" == "v4-post-ddl-backup" ]] || {
-  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|full-history-recalculate|serve|activate-v4-and-serve|v4-post-ddl-backup" >&2
+[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "full-history-recalculate" || "$MODE" == "serve" || "$MODE" == "migration-free-serving" || "$MODE" == "activate-v4-and-serve" || "$MODE" == "v4-post-ddl-backup" ]] || {
+  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|full-history-recalculate|serve|migration-free-serving|activate-v4-and-serve|v4-post-ddl-backup" >&2
   exit 1
 }
 
@@ -664,19 +666,50 @@ restore_training_maintenance_after_fence_failure() {
 }
 
 serve_training_release() {
-  local expected_release_sha="$1" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
+  local expected_release_sha="$1" migration_free_serving="${2:-false}" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
-  local fence_status fence_route_budget_ms
+  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_fingerprint expected_prisma_database_identity stepper_diagnostic_workout_id require_absent_marker=false route_marker_sha
+  stepper_diagnostic_workout_id=""
   local recovered_v4_release=false recovery_marker_path recovery_marker_digest
 
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
     echo "Training serving requires an exact requested release SHA." >&2; return 1;
   }
+  route_marker_sha="$expected_release_sha"
   bodycast_assert_current_main_sha "$expected_release_sha"
   git cat-file -e "$expected_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null || {
     echo "The exact requested SHA does not contain the Training queue migration." >&2; return 1;
   }
-  if [[ "${BODYCAST_RECOVERED_V4_SERVE:-0}" == "1" ]]; then
+  if [[ "$migration_free_serving" == "true" ]]; then
+    [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]] || {
+      echo "Migration-free serving requires the owner-authorized release runner context." >&2; return 1;
+    }
+    bodycast_assert_migration_free_attestation_receipt "$expected_release_sha" \
+      "${BODYCAST_RELEASE_WORKFLOW_RUN_ID:-}" "${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT:-}" || return 1
+    if read_bodycast_release_marker; then
+      echo "Migration-free serving is blocked by any present schema/release marker." >&2
+      return 1
+    else
+      local release_marker_status=$?
+      [[ "$release_marker_status" -eq 1 ]] || return 1
+    fi
+    expected_raw_source_fingerprint="${BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT:-}"
+    [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "Migration-free serving requires the exact pre-deploy raw-source fingerprint." >&2; return 1;
+    }
+    expected_health_sync_audit_fingerprint="${BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT:-}"
+    [[ "$expected_health_sync_audit_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "Migration-free serving requires the exact pre-deploy HealthSyncAudit fingerprint." >&2; return 1;
+    }
+    bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
+    expected_prisma_database_identity="$(bodycast_production_db_endpoint_from_identity "${BODYCAST_EXPECTED_DB_IDENTITY:-}")" || return 1
+    [[ "${BODYCAST_EXPECTED_PRISMA_DB_IDENTITY:-}" == "$expected_prisma_database_identity" ]] || {
+      echo "Migration-free serving requires the Prisma endpoint identity bound to the fixed production database." >&2; return 1;
+    }
+    bodycast_assert_prisma_database_identity_matches "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
+    require_absent_marker=true
+    route_marker_sha=""
+  elif [[ "${BODYCAST_RECOVERED_V4_SERVE:-0}" == "1" ]]; then
     [[ "${BODYCAST_RECOVERED_V4_SERVE}" == "1" ]] || return 1
     if read_bodycast_release_marker; then
       echo "Recovered-V4 serving cannot override an existing schema/deploy release marker." >&2
@@ -706,6 +739,13 @@ serve_training_release() {
     [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training V3 marker digest is invalid." >&2; return 1; }
   fi
 
+  if [[ "$migration_free_serving" == "true" ]]; then
+    app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+    app_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
+    [[ "$app_release_sha" == "$expected_release_sha" && "$app_health" == "healthy" ]] || {
+      echo "Migration-free serving requires the exact healthy candidate app SHA." >&2; return 1;
+    }
+  fi
   app_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
   latest_image_id="$(docker image inspect --format '{{.Id}}' bodycast-app:latest)"
   [[ "$app_image_id" =~ ^sha256:[a-f0-9]{64}$ && "$latest_image_id" == "$app_image_id" ]] || {
@@ -716,6 +756,18 @@ serve_training_release() {
   maintenance_marker="$(bodycast_maintenance_marker_from_route)"
   bodycast_probe_public_maintenance "$maintenance_marker"
   compose --profile tools build migrate
+  if [[ "$migration_free_serving" == "true" ]]; then
+    bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
+    BODYCAST_EXPECTED_MIGRATION_COUNT=74 BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="${BODYCAST_EXPECTED_DB_IDENTITY:-}" \
+      bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
+    bodycast_assert_prisma_database_identity_matches "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
+    if ! timeout 20m docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
+      -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
+      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --wait-training-refresh-current; then
+      echo "The durable Training refresh did not converge during its bounded wait; traffic remains in maintenance." >&2
+      return 1
+    fi
+  fi
   if [[ "$recovered_v4_release" == "true" ]]; then
     bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"
   fi
@@ -724,20 +776,40 @@ serve_training_release() {
   # Hold the same profile advisory transaction lock used by Training/Health
   # mutations until the route and its health postcondition pass.
   coproc BODYCAST_TRAINING_V4_FENCE {
-    timeout 95s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
-      --entrypoint node migrate /app/scripts/unified-v4-traffic-check.mjs \
-      --profile-id 1 --hold-currentness-fence
+    if [[ "$migration_free_serving" == "true" ]]; then
+      timeout 185s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
+        -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
+        /app/scripts/unified-v4-traffic-check.mjs \
+        --profile-id 1 --hold-currentness-fence --expected-raw-input-fingerprint "$expected_raw_source_fingerprint" \
+        --expected-health-sync-audit-fingerprint "$expected_health_sync_audit_fingerprint"
+    else
+      timeout 185s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
+        --entrypoint node migrate /app/scripts/unified-v4-traffic-check.mjs \
+        --profile-id 1 --hold-currentness-fence
+    fi
   }
   fence_pid="$BODYCAST_TRAINING_V4_FENCE_PID"
   exec {fence_output_fd}<&"${BODYCAST_TRAINING_V4_FENCE[0]}"
   exec {fence_input_fd}>&"${BODYCAST_TRAINING_V4_FENCE[1]}"
-  fence_deadline=$((SECONDS + 95))
+  fence_deadline=$((SECONDS + 185))
   while (( SECONDS < fence_deadline )); do
     fence_remaining=$((fence_deadline - SECONDS))
     if IFS= read -r -t "$fence_remaining" -u "$fence_output_fd" fence_line; then
+      if [[ "$fence_line" == BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID\ * ]]; then
+        stepper_diagnostic_workout_id="${fence_line#BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID }"
+        [[ "$stepper_diagnostic_workout_id" =~ ^[1-9][0-9]*$ ]] || {
+          printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+          exec {fence_input_fd}>&-
+          if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+          exec {fence_output_fd}<&-
+          echo "Held currentness fence returned an invalid Stepper diagnostic target." >&2
+          return 1
+        }
+        continue
+      fi
       if [[ "$fence_line" == BODYCAST_UNIFIED_V4_FENCE_READY\ * ]]; then
         fence_route_budget_ms="${fence_line#BODYCAST_UNIFIED_V4_FENCE_READY }"
-        [[ "$fence_route_budget_ms" =~ ^[0-9]+$ && "$fence_route_budget_ms" -ge 75000 ]] || {
+        [[ "$fence_route_budget_ms" =~ ^[0-9]+$ && "$fence_route_budget_ms" -ge 120000 ]] || {
           printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
           exec {fence_input_fd}>&-
           if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
@@ -761,6 +833,15 @@ serve_training_release() {
     exec {fence_output_fd}<&-
     rm -f -- "$staged_route"
     echo "Training serve blocked: Unified V4 did not establish a currentness fence." >&2
+    return 1
+  fi
+  if [[ "$migration_free_serving" == "true" && ! "$stepper_diagnostic_workout_id" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    exec {fence_input_fd}>&-
+    if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+    exec {fence_output_fd}<&-
+    rm -f -- "$staged_route"
+    echo "Migration-free serving is blocked because the held fence did not select a Stepper diagnostic target." >&2
     return 1
   fi
 
@@ -790,6 +871,25 @@ serve_training_release() {
       return 1
     }
   fi
+  if [[ "$migration_free_serving" == "true" ]]; then
+    bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}" || {
+      printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+      exec {fence_input_fd}>&-
+      if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+      exec {fence_output_fd}<&-
+      rm -f -- "$staged_route"
+      return 1
+    }
+    bodycast_assert_migration_free_attestation_receipt "$expected_release_sha" \
+      "${BODYCAST_RELEASE_WORKFLOW_RUN_ID:-}" "${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT:-}" || {
+        printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+        exec {fence_input_fd}>&-
+        if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+        exec {fence_output_fd}<&-
+        rm -f -- "$staged_route"
+        return 1
+      }
+  fi
   if [[ "$recovered_v4_release" == "true" ]]; then
     if ! publish_candidate_route "" "" "" "$staged_route" true "$fence_pid" true true; then
       printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
@@ -798,7 +898,8 @@ serve_training_release() {
       exec {fence_output_fd}<&-
       return 1
     fi
-  elif ! publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true; then
+  elif ! BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID="$stepper_diagnostic_workout_id" \
+      publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true "$require_absent_marker"; then
     printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
@@ -826,14 +927,34 @@ serve_training_release() {
     restore_training_maintenance_after_fence_failure || true
     return 1
   }
-  if [[ "$recovered_v4_release" != "true" ]] \
+  if [[ "$recovered_v4_release" != "true" && "$migration_free_serving" != "true" ]] \
     && ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest"; then
     echo "Training serving was committed by the PostgreSQL fence, but final marker/route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
     return 1
   fi
   if ! bodycast_verify_exact_serving_route; then
-    echo "Training serving was committed by the PostgreSQL fence, but final route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
+    if [[ "$migration_free_serving" == "true" ]]; then
+      echo "Migration-free route verification failed after the currentness fence; restoring and confirming maintenance before returning failure." >&2
+      if restore_training_maintenance_after_fence_failure; then
+        echo "Maintenance is confirmed after the post-fence route verification failure; the candidate remains available for diagnosis." >&2
+      else
+        echo "Maintenance is UNKNOWN after the post-fence route verification failure; the candidate and route backup remain in place for recovery." >&2
+      fi
+    else
+      echo "Training serving was committed by the PostgreSQL fence, but final route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
+    fi
     return 1
+  fi
+  if [[ "$migration_free_serving" == "true" ]]; then
+    if [[ -n "${BODYCAST_TRAINING_MAINTENANCE_BACKUP:-}" ]]; then
+      if ! rm -f -- "$BODYCAST_TRAINING_MAINTENANCE_BACKUP"; then
+        echo "POST-COMMIT CLEANUP WARNING: migration-free serving is committed; the prior maintenance route backup remains at $BODYCAST_TRAINING_MAINTENANCE_BACKUP." >&2
+      else
+        BODYCAST_TRAINING_MAINTENANCE_BACKUP=""
+      fi
+    fi
+    echo "Exact migration-free SHA is serving under unchanged DB/raw-input identity and the held Training/Unified currentness fence."
+    return 0
   fi
   if [[ "$recovered_v4_release" == "true" ]]; then
     if ! rm -f -- "$BODYCAST_TRAINING_MAINTENANCE_BACKUP"; then
@@ -1218,6 +1339,18 @@ activate_v4_and_serve() {
 if [[ "$MODE" == "activate-v4-and-serve" ]]; then
   activate_v4_and_serve
   echo "Unified V4 activation/replay, currentness gates, and exact-SHA serve completed under one production lock."
+  exit 0
+fi
+
+if [[ "$MODE" == "migration-free-serving" ]]; then
+  requested_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
+  [[ "$requested_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
+    echo "Migration-free serving requires an exact requested release SHA." >&2; exit 1;
+  }
+  git cat-file -e "$requested_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null || {
+    echo "Migration-free serving is restricted to the exact 74-migration Training release lineage." >&2; exit 1;
+  }
+  if ! serve_training_release "$requested_release_sha" true; then exit 1; fi
   exit 0
 fi
 

@@ -17,7 +17,8 @@ describe("recovered V4 serving release contract", () => {
     expect(workflow).toContain('recoveredV4Serve: process.env.SERVE_RECOVERED_V4 === "true"');
     expect(workflow).toContain("CI_RUN_URL=\"$(CANDIDATE=\"$CANDIDATE\"");
     expect(deployGate).toContain('input.dispatchConfirm !== "serve-after-current-v4-recovery"');
-    expect(deployGate).toContain('mode: freshEmptyInstall ? "fresh-empty-install" : recoveredV4Serve ? "recovered-v4-serving" : "non-serving"');
+    expect(deployGate).toContain('mode: freshEmptyInstall ? "fresh-empty-install" : migrationFreeServing ? "migration-free-serving"');
+    expect(deployGate).toContain(': recoveredV4Serve ? "recovered-v4-serving" : "non-serving"');
   });
 
   it("stages the exact app behind maintenance and invokes only the existing atomic Training serve path", () => {

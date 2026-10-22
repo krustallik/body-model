@@ -64,8 +64,8 @@ escaped_password="${escaped_password//:/\\:}"
 printf '%s:%s:%s:%s:%s\n' "$server_ip" 5432 bodycast "$POSTGRES_USER" "$escaped_password" > "$passfile"
 query="$(cat <<'SQL'
 WITH eligible_aliases AS (
-  SELECT e."id" AS event_id, a."sourceType", w."id" AS workout_id,
-    w."supersededByWorkoutId", w."type", w."startAt" AS workout_start_at
+  SELECT e."id" AS event_id, e."occurrenceAt" AS event_occurrence_at,
+    a."sourceType", w."id" AS workout_id, w."supersededByWorkoutId", w."type"
   FROM "ActiveEnergyEventAlias" AS a
   JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
   JOIN "Workout" AS w ON w."id" = a."workoutId"
@@ -82,7 +82,7 @@ WITH eligible_aliases AS (
     AND e."currentKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')
     AND e."currentResolutionFingerprint" ~ '^[a-f0-9]{64}$'
 ), current_events AS (
-  SELECT event_id,
+  SELECT event_id, min(event_occurrence_at) AS event_occurrence_at,
     bool_or("supersededByWorkoutId" IS NOT NULL) AS has_superseded_workout,
     bool_or("supersededByWorkoutId" IS NULL) AS has_current_workout,
     bool_or(lower(btrim("type")) = 'stair climbing') AS has_stair_climbing_workout,
@@ -91,6 +91,26 @@ WITH eligible_aliases AS (
     bool_or("sourceType" = 'strength-session') AS has_strength_session_source_alias
   FROM eligible_aliases
   GROUP BY event_id
+), target_strength_session_day AS (
+  SELECT count(*) AS target_session_matches,
+    min(TIMESTAMP '2026-10-22 00:00:00' AT TIME ZONE "accountingTimeZone") AS local_day_start
+  FROM "StrengthDiarySession"
+  WHERE "profileId" = 1
+    AND "status" = 'COMPLETED'
+    AND "entryMode" = 'LIVE'
+    AND "matchedWorkoutId" IS NULL
+    AND "accountingTimeZone" IS NOT NULL
+    AND (
+      ("effectiveAccountingAt" >= TIMESTAMPTZ '2026-10-21 00:00:00+00'
+        AND "effectiveAccountingAt" < TIMESTAMPTZ '2026-10-24 00:00:00+00')
+      OR ("effectiveAccountingAt" IS NULL
+        AND "webStartedAt" >= TIMESTAMPTZ '2026-10-21 00:00:00+00'
+        AND "webStartedAt" < TIMESTAMPTZ '2026-10-24 00:00:00+00')
+    )
+    AND to_char(
+      COALESCE("effectiveAccountingAt", "webStartedAt") AT TIME ZONE "accountingTimeZone",
+      'YYYY-MM-DD HH24:MI'
+    ) = '2026-10-22 14:40'
 )
 SELECT count(*),
   count(*) FILTER (WHERE has_superseded_workout),
@@ -101,10 +121,11 @@ SELECT count(*),
   count(*) FILTER (WHERE has_workout_source_alias),
   count(*) FILTER (WHERE has_strength_session_source_alias),
   (SELECT count(DISTINCT workout_id) FROM eligible_aliases),
-  (SELECT count(DISTINCT workout_id) FROM eligible_aliases
-    WHERE workout_start_at AT TIME ZONE 'UTC' < TIMESTAMPTZ '2026-10-21 22:00:00+00'),
-  (SELECT count(DISTINCT workout_id) FROM eligible_aliases
-    WHERE workout_start_at AT TIME ZONE 'UTC' >= TIMESTAMPTZ '2026-10-21 22:00:00+00')
+  (SELECT target_session_matches FROM target_strength_session_day),
+  (SELECT count(*) FROM current_events CROSS JOIN target_strength_session_day
+    WHERE target_session_matches = 1 AND event_occurrence_at < local_day_start),
+  (SELECT count(*) FROM current_events CROSS JOIN target_strength_session_day
+    WHERE target_session_matches = 1 AND event_occurrence_at >= local_day_start)
 FROM current_events
 SQL
 )"
@@ -117,7 +138,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
-  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
   printf '%s\n' "$inventory"
 }
 
@@ -380,7 +401,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
-    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_before_strength_local_date energy_on_or_after_strength_local_date <<< "$energy_inventory"
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
     emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
@@ -391,8 +412,9 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_workout_alias_source_type "$energy_workout_source"
     emit energy_diagnostic_events_with_strength_session_alias_source_type "$energy_strength_session_source"
     emit energy_diagnostic_distinct_workout_ids_with_available_energy "$energy_workout_ids"
-    emit energy_diagnostic_distinct_workout_ids_before_strength_session_local_date "$energy_before_strength_local_date"
-    emit energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date "$energy_on_or_after_strength_local_date"
+    emit energy_diagnostic_target_strength_session_scope_matches "$energy_target_strength_session_matches"
+    emit energy_diagnostic_canonical_events_before_target_strength_local_date "$energy_before_strength_local_date"
+    emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date "$energy_on_or_after_strength_local_date"
   else
     emit energy_diagnostic_inventory_status unavailable
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
@@ -404,8 +426,9 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_workout_alias_source_type unavailable
     emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
     emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
-    emit energy_diagnostic_distinct_workout_ids_before_strength_session_local_date unavailable
-    emit energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date unavailable
+    emit energy_diagnostic_target_strength_session_scope_matches unavailable
+    emit energy_diagnostic_canonical_events_before_target_strength_local_date unavailable
+    emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date unavailable
   fi
 else
   emit docker_daemon_available no
@@ -425,8 +448,9 @@ else
   emit energy_diagnostic_events_with_workout_alias_source_type unavailable
   emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
   emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
-  emit energy_diagnostic_distinct_workout_ids_before_strength_session_local_date unavailable
-  emit energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date unavailable
+  emit energy_diagnostic_target_strength_session_scope_matches unavailable
+  emit energy_diagnostic_canonical_events_before_target_strength_local_date unavailable
+  emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

@@ -324,6 +324,7 @@ export function TrainingAttentionPanel({
 
 function stepperSelectedEnergyText(workout: StepperWorkoutDto, uk: boolean): string {
   return formatSelectedActiveEnergyText({
+    status: workout.selectedActiveEnergyStatus,
     kcal: workout.selectedActiveEnergyKcal,
     source: workout.selectedActiveEnergySource,
     fullCoverage: workout.selectedActiveEnergyFullCoverage,

@@ -1,3 +1,6 @@
+import { resolveStrengthEnergyMassReferenceV1 } from "@/modules/training/session-mass-reference";
+import { isValidTimeZone } from "@/model/time-zone";
+import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -195,8 +198,9 @@ function strengthEstimatorInputs(input: {
     modelVersion: string;
   }[];
   heartRateSamples: readonly { id: number; timestamp: Date; bpm: number; source: string }[];
+  energyMass?: StrengthSessionDto["activeEnergyMassReference"];
 }) {
-  const stage02Mass = strengthStage02MassSnapshot(input.session);
+  const stage02Mass = input.energyMass === undefined ? strengthStage02MassSnapshot(input.session) : input.energyMass;
   const occurrenceAt = input.session.matchedWorkout?.startAt
     ?? input.session.effectiveAccountingAt
     ?? input.session.webStartedAt
@@ -473,7 +477,9 @@ export class ModelEpisodeRepository {
     return record ? toEpisode(record) : null;
   }
 
-  async loadSources(from: string, to: string, timeZone = DEFAULT_TIME_ZONE): Promise<HistoricalModelSources> {
+  async loadSources(from: string, to: string, timeZone = DEFAULT_TIME_ZONE,
+    options: { resolveEnergyMass?: boolean } = {},
+  ): Promise<HistoricalModelSources> {
     const contextFrom = addCalendarDays(from, -2);
     const contextTo = addCalendarDays(to, 2);
     const workoutWindowStart = localDateTimeToInstant(from, "00:00", timeZone);
@@ -571,6 +577,7 @@ export class ModelEpisodeRepository {
               webStartedAt: true,
               webEndedAt: true,
               effectiveAccountingAt: true,
+              accountingTimeZone: true,
               createdAt: true,
               currentSnapshotRevision: true,
               accountingInputRevision: true,
@@ -630,6 +637,7 @@ export class ModelEpisodeRepository {
           webStartedAt: true,
           webEndedAt: true,
           effectiveAccountingAt: true,
+          accountingTimeZone: true,
           createdAt: true,
           currentSnapshotRevision: true,
           accountingInputRevision: true,
@@ -692,6 +700,20 @@ export class ModelEpisodeRepository {
       ...webSessions,
       ...workoutRows.flatMap((workout) => workout.matchedDiarySession ? [workout.matchedDiarySession] : []),
     ];
+    const energyMassBySessionId = new Map<number, StrengthSessionDto["activeEnergyMassReference"]>();
+    if (options.resolveEnergyMass !== false) {
+      for (const session of strengthSessions) {
+        const massTimeZone = session.accountingTimeZone && isValidTimeZone(session.accountingTimeZone)
+          ? session.accountingTimeZone : DEFAULT_TIME_ZONE;
+        const massInstant = session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
+        const stage02Mass = strengthStage02MassSnapshot(session);
+        energyMassBySessionId.set(session.id, await resolveStrengthEnergyMassReferenceV1(this.client, {
+          stage02Mass,
+          localDate: stage02Mass?.reference.localDate ?? instantToLocalDateTime(massInstant, massTimeZone).date,
+          timeZone: massTimeZone,
+        }));
+      }
+    }
     const modelEpisodes = strengthSessions.length > 0 ? await this.client.modelEpisode.findMany({
       where: { profileId: 1 },
       select: {
@@ -753,7 +775,10 @@ export class ModelEpisodeRepository {
         const estimate = session?.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
-        const stage02MassKg = session ? strengthStage02MassKg(session) : null;
+        const energyMass = session ? energyMassBySessionId.get(session.id) : undefined;
+        const stage02MassKg = energyMass === undefined
+          ? session ? strengthStage02MassKg(session) : null
+          : energyMass?.reference.valueKg ?? null;
         const sets = session?.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
           ...set,
           resistanceType: exercise.resistanceType,
@@ -790,6 +815,7 @@ export class ModelEpisodeRepository {
                 episodes: modelEpisodes,
                 modelDays,
                 heartRateSamples,
+                energyMass,
               }),
             }),
           strengthSessionCompleted: session?.status === "COMPLETED",
@@ -804,7 +830,8 @@ export class ModelEpisodeRepository {
         const estimate = session.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
-        const stage02MassKg = strengthStage02MassKg(session);
+        const energyMass = energyMassBySessionId.get(session.id);
+        const stage02MassKg = energyMass === undefined ? strengthStage02MassKg(session) : energyMass?.reference.valueKg ?? null;
         const sets = session.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
           ...set,
           resistanceType: exercise.resistanceType,
@@ -831,6 +858,7 @@ export class ModelEpisodeRepository {
               episodes: modelEpisodes,
               modelDays,
               heartRateSamples,
+              energyMass,
             }),
           }),
           inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)

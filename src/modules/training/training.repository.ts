@@ -1,11 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
-import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
-import { calculateHistoricalBodyweightAsOfV1, MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
-import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/model/time-zone";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { selectPersistedEnergyResolutionV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
@@ -32,10 +29,10 @@ import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 import { historicalExerciseStableKey } from "./exercise-mapping-snapshot";
 import { calculateLoadAccountingWithBreakdownV1, LOAD_ACCOUNTING_METHOD_V1, LEGACY_LOAD_INTERPRETATION_V1, classifyPersistedExerciseIdentityV1, loadConfigV1Schema, type BodyweightReferenceV1, type IdentityStatusV1, type LoadAccountingOutputV1 } from "./load-accounting-v1";
-import { resolveBodyweightReferenceV2, BODYWEIGHT_RESOLUTION_METHOD_V2 } from "./bodyweight-reference-v2";
+import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "./bodyweight-reference-v2";
 import { buildMassResolutionIdentity, isPersistedLoadAccountingPayloadVersion, PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2, persistedPayloadFromUnknown, sha256Canonical } from "./persisted-load-accounting-v1";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accounting-snapshot";
-import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { resolveSessionHistoricalMassReferenceV1, resolveStrengthEnergyMassReferenceV1 } from "./session-mass-reference";
 import { sessionPlanCompletion } from "./session-plan-completion";
 import {
   SetCreateOperationConflictError,
@@ -549,82 +546,7 @@ async function resolveSessionBodyweightReference(
   if (!record.exercises.some((exercise) => (
     exercise.resistanceType === RESISTANCE.BODYWEIGHT && exercise.sets.length > 0
   ))) return unavailable;
-  const dataClient = db as unknown as {
-    healthMetricSample?: {
-      findMany?: (args: unknown) => Promise<Array<{
-        id: number;
-        timestamp: Date;
-        value: { toNumber(): number };
-        source: string | null;
-      }>>;
-    };
-  };
-  const findSamples = dataClient.healthMetricSample?.findMany;
-  if (typeof findSamples !== "function") return unavailable;
-  let start: Date;
-  let end: Date;
-  try {
-    start = localDateTimeToInstant(addCalendarDays(localDate, -7), "00:00", timeZone);
-    end = localDateTimeToInstant(addCalendarDays(localDate, 8), "00:00", timeZone);
-  } catch {
-    return unavailable;
-  }
-  let observedSamples;
-  try {
-    const samples = await findSamples.call(dataClient.healthMetricSample, {
-      where: {
-        metric: "weight-kg",
-        source: "apple-health-shortcut",
-        timestamp: { gte: start, lt: end },
-      },
-      orderBy: [{ timestamp: "desc" }, { id: "desc" }],
-      select: { id: true, timestamp: true, value: true, source: true },
-    });
-    observedSamples = samples.map((sample) => ({
-      id: String(sample.id),
-      timestamp: sample.timestamp,
-      valueKg: sample.value.toNumber(),
-      source: sample.source,
-    }));
-  } catch {
-    return unavailable;
-  }
-
-  const observedReference = resolveBodyweightReferenceV2({
-    localDate,
-    timeZone,
-    observedSamples,
-  });
-  if (observedReference.status !== "unavailable") return observedReference;
-
-  let modelEstimate = null;
-  try {
-    const episodes = new ModelEpisodeRepository(db);
-    const episode = await episodes.getAsOf(localDate);
-    if (episode && calendarDayIndex(localDate) - calendarDayIndex(episode.startDate) + 1
-        <= MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1) {
-      const sources = await episodes.loadSources(episode.startDate, localDate);
-      const estimate = calculateHistoricalBodyweightAsOfV1({ episode, sources, localDate });
-      if (estimate.status === "available" && estimate.valueKg !== null) {
-        modelEstimate = {
-          localDate: estimate.localDate,
-          valueKg: estimate.valueKg,
-          episodeId: estimate.episodeId,
-          modelVersion: estimate.modelVersion,
-          uncertainty: estimate.uncertainty,
-        };
-      }
-    }
-  } catch {
-    // Historical fallback is optional; fail closed while preserving observed inputs.
-  }
-
-  return resolveBodyweightReferenceV2({
-    localDate,
-    timeZone,
-    observedSamples,
-    modelEstimate,
-  });
+  return resolveSessionHistoricalMassReferenceV1(db, localDate, timeZone);
 }
 
 function calculateSessionLoadAccounting(
@@ -747,6 +669,7 @@ export function toSessionDto(
         classification: "traditional-strength-training",
       });
       return {
+        status: selected.selectedKcal === null || canonicalActiveEnergy?.isStale === true ? "unavailable" : "current",
         kcal: selected.selectedKcal,
         source: selected.source,
         fullCoverage: selected.fullCoverage,
@@ -817,6 +740,7 @@ export async function hideSessionDerivedResultsWhileTrainingRefreshIsPending(
       // physiology generation is pending; only hide the model-derived energy
       // selection until its generation is published.
       selectedActiveEnergy: {
+        status: "pending",
         kcal: null,
         source: "unavailable",
         fullCoverage: false,
@@ -842,12 +766,17 @@ export async function readActiveEnergyMassReferencesV1(
     const snapshot = currentSnapshotForRecord(row);
     const payload = snapshot.state === "current" ? snapshot.payload : null;
     if (payload === null) continue;
-    references.set(row.id, {
-      reference: payload.massReference,
-      snapshotRevision: payload.snapshotRevision,
-      inputFingerprint: payload.inputFingerprint,
-      massResolutionIdentity: payload.massResolutionIdentity,
+    const reference = await resolveStrengthEnergyMassReferenceV1(db, {
+      stage02Mass: {
+        reference: payload.massReference,
+        snapshotRevision: payload.snapshotRevision,
+        inputFingerprint: payload.inputFingerprint,
+        massResolutionIdentity: payload.massResolutionIdentity,
+      },
+      localDate: payload.effectiveLocalDate,
+      timeZone: payload.timeZone,
     });
+    if (reference !== null) references.set(row.id, reference);
   }
   return references;
 }

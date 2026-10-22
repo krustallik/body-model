@@ -69,6 +69,7 @@ describe("Stepper workout currentness during Training refresh", () => {
       selectedActiveEnergyKcal: null,
       selectedActiveEnergySource: "unavailable",
       selectedActiveEnergyFullCoverage: false,
+      selectedActiveEnergyStatus: "pending",
     });
   });
 
@@ -83,6 +84,7 @@ describe("Stepper workout currentness during Training refresh", () => {
     const [workout] = await repository().list();
     expect(workout?.selectedActiveEnergyKcal).toBeNull();
     expect(workout?.selectedActiveEnergySource).toBe("unavailable");
+    expect(workout?.selectedActiveEnergyStatus).toBe("pending");
   });
 
   it("hides canonical energy while Active Energy convergence is in progress", async () => {
@@ -90,6 +92,7 @@ describe("Stepper workout currentness during Training refresh", () => {
     const [workout] = await repository().list();
     expect(workout?.selectedActiveEnergyKcal).toBeNull();
     expect(workout?.selectedActiveEnergySource).toBe("unavailable");
+    expect(workout?.selectedActiveEnergyStatus).toBe("pending");
   });
 
   it("masks if convergence starts while the list query is in flight", async () => {
@@ -97,6 +100,7 @@ describe("Stepper workout currentness during Training refresh", () => {
     fences.convergenceChanged.mockImplementation(async (_client, _profileId, before) => before === null);
     const [workout] = await repository().list();
     expect(workout?.selectedActiveEnergyKcal).toBeNull();
+    expect(workout?.selectedActiveEnergyStatus).toBe("pending");
   });
 
   it("keeps current canonical energy visible when the fence remains stable", async () => {
@@ -109,5 +113,6 @@ describe("Stepper workout currentness during Training refresh", () => {
     const [workout] = await repository().list();
     expect(workout?.selectedActiveEnergyKcal).toBe(245);
     expect(workout?.selectedActiveEnergySource).toBe("model-v1");
+    expect(workout?.selectedActiveEnergyStatus).toBe("current");
   });
 });

@@ -34,7 +34,9 @@ import * as activeEnergyPublication from "@/modules/activity/active-energy-publi
 import * as activeEnergyMaterialization from "@/modules/activity/active-energy-materialization";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { trainingService } from "@/modules/training/training.service";
+import { getModelStatus } from "@/modules/model-episodes/model-episode.service";
 import { processNextTrainingRefreshJob } from "@/modules/training/training-refresh-worker";
+import { enqueueTrainingSourceChangeInTransaction } from "@/modules/training/training-refresh-queue";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import { trainingChildDeletionPublicationSourceKey, trainingRepository } from "@/modules/training/training.repository";
 import { recordExperimentalStrengthEnergyShadow } from "@/modules/training/experimental-strength-energy-shadow.service";
@@ -460,6 +462,34 @@ async function runTrainingRefreshToCompletion(profileId: number, maxAttempts = 5
   if (remaining && remaining.completedGeneration < remaining.requestedGeneration) {
     throw new Error(`Training refresh fixture did not complete generation ${remaining.requestedGeneration}`);
   }
+}
+
+async function seedUnmodeledHealthWeightRefresh(withDayBlock: boolean): Promise<void> {
+  await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
+  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+  await verifyAndPublishUnifiedV3Postflight({ profileId });
+  await activateAndReplayUnifiedV4({ profileId });
+      // Jan 4 is still in progress at fixtureNow: persist its source and
+      // publish only the existing partial-quality Unified source-day state,
+      // never a production DailyModelState for an incomplete local day.
+  await prisma.dailyHealthData.create({ data: {
+    date: futureDate, weightKg: 79.7, caloriesKcal: 2_200,
+    proteinG: 160, fatG: 70, carbsG: 230, steps: 7_000,
+    walkingDistanceKm: 5, workoutFeedObserved: true, rawPayload: {},
+  } });
+  await prisma.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(profileId);
+    await lifecycle.invalidate(profileId, futureDate);
+    if (withDayBlock) {
+      await lifecycle.blockUnifiedPublication({ profileId, source: "day", sourceKey: futureDate, fromDate: futureDate });
+    }
+    await enqueueTrainingSourceChangeInTransaction(tx, {
+      profileId, operationKind: "health_weight_accounting_refresh",
+      affectedSessionIds: [], oldModelDates: [futureDate], newModelDates: [futureDate],
+      deadlineMode: "health-fast",
+    });
+  });
 }
 
 async function runHealthRefreshToCompletion(profileId: number, maxAttempts = 5): Promise<void> {
@@ -972,6 +1002,127 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         where: { id: sessionExerciseId }, select: { id: true },
       })).toBeNull();
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it.each([false, true])("completes an unmodeled Health weight day with existing day fence=%s", async (withDayBlock) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixtureNow);
+    try {
+      await seedUnmodeledHealthWeightRefresh(withDayBlock);
+      const rawBefore = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: futureDate } });
+      await runOneTrainingRefreshAttempt(profileId);
+      const job = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(job.completedGeneration).toBe(job.requestedGeneration);
+      expect(job.lastProgressStage).toBe("completed");
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(0);
+      expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(0);
+      expect(await prisma.dailyModelState.count({ where: { episodeId: episodeId!, date: futureDate } })).toBe(0);
+      await expect(getModelStatus(episodeId!, prisma)).resolves.toMatchObject({
+        productionCurrent: true, latestModeledDate: dates[2],
+      });
+      await expect(prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
+        where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: futureDate } },
+      })).resolves.toMatchObject({ date: futureDate, qualityStatus: "partial" });
+      await expect(prisma.experimentalFfmRetentionShadow.findUniqueOrThrow({
+        where: { profileId_date: { profileId, date: futureDate } },
+      })).resolves.toMatchObject({ date: futureDate });
+      await expect(prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+        where: { profileId_date: { profileId, date: futureDate } },
+      })).resolves.toMatchObject({ date: futureDate });
+      expect(await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: futureDate } })).toEqual(rawBefore);
+      // A duplicate poll is a no-op, without another journal/event revision.
+      await expect(processNextTrainingRefreshJob()).resolves.toBe(false);
+      expect(await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } })).toEqual(job);
+      await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 4 });
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("retains an unmodeled Health day dependency and journal when its dependent refresh fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixtureNow);
+    try {
+      await seedUnmodeledHealthWeightRefresh(true);
+      const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
+      const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate });
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterProgressStage: async (_job, stage) => {
+          if (stage === "ffm-hypertrophy-suffix") throw new Error("fixture failed source-date dependency");
+        },
+      });
+      const failed = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(failed.completedGeneration).toBeLessThan(failed.requestedGeneration);
+      expect(failed.lastProgressStage).toBe("retry-wait");
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(1);
+      expect(await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate })).toEqual(token);
+      await runTrainingRefreshToCompletion(profileId);
+      expect(await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate })).toBeNull();
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it.each([false, true])("preserves a newer unmodeled Health day fence when initial fence=%s", async (withDayBlock) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixtureNow);
+    try {
+      await seedUnmodeledHealthWeightRefresh(withDayBlock);
+      const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
+      let newerToken: { revision: number; fromDate: string } | null = null;
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterProgressStage: async (_job, stage) => {
+          if (stage !== "clear-exact-training-blocks") return;
+          await lifecycle.blockUnifiedPublication({ profileId, source: "day", sourceKey: futureDate, fromDate: futureDate });
+          newerToken = await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate });
+        },
+      });
+      expect(newerToken).not.toBeNull();
+      expect(await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate })).toEqual(newerToken);
+      const failed = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(failed.completedGeneration).toBeLessThan(failed.requestedGeneration);
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(1);
+      await runTrainingRefreshToCompletion(profileId);
+      expect(await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate })).toBeNull();
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("leaves a newer Health source generation unacknowledged when it revokes the replay lease", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(fixtureNow);
+    try {
+      await seedUnmodeledHealthWeightRefresh(true);
+      const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
+      await runOneTrainingRefreshAttempt(profileId, {
+        afterProgressStage: async (_job, stage) => {
+          if (stage !== "clear-exact-training-blocks") return;
+          await prisma.$transaction(async (tx) => {
+            await new PhysiologyV7PersistenceRepository(tx).blockUnifiedPublication({
+              profileId, source: "day", sourceKey: futureDate, fromDate: futureDate,
+            });
+            await enqueueTrainingSourceChangeInTransaction(tx, {
+              profileId, operationKind: "health_weight_accounting_refresh", affectedSessionIds: [],
+              oldModelDates: [futureDate], newModelDates: [futureDate], deadlineMode: "health-fast",
+            });
+          });
+        },
+      });
+      const job = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+      expect(job.requestedGeneration).toBe(2);
+      expect(job.completedGeneration).toBe(0);
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(2);
+      expect(await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate }))
+        .toMatchObject({ revision: 2 });
+      await runTrainingRefreshToCompletion(profileId);
+      expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(0);
+      expect(await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "day", sourceKey: futureDate })).toBeNull();
     } finally {
       vi.useRealTimers();
     }

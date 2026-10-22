@@ -53,9 +53,29 @@ if [[ "$1" == ps ]]; then
   [[ "${DOCKER_PS_PRESENT:-}" == "$requested" ]] && printf '%s\n' "$requested"
   exit 0
 fi
+if [[ "$1" == exec ]]; then
+  [[ "${DOCKER_EXEC_FAIL:-0}" == 0 ]] || exit 99
+  [[ "$#" == 7 && "${2:-}" == --interactive && "${3:-}" == bodycast-db-prod \
+    && "${4:-}" == bash && "${5:-}" == -s && "${6:-}" == -- \
+    && "${7:-}" == 172.20.0.2 ]] || exit 98
+  cat > "$DOCKER_EXEC_INPUT"
+  grep -Fq "PGOPTIONS='-c default_transaction_read_only=on" "$DOCKER_EXEC_INPUT" || exit 97
+  grep -Fq 'BEGIN READ ONLY;' "$DOCKER_EXEC_INPUT" || exit 96
+  grep -Fq 'ActiveEnergyEventAlias' "$DOCKER_EXEC_INPUT" || exit 95
+  grep -Fq 'ActiveEnergyCanonicalEvent' "$DOCKER_EXEC_INPUT" || exit 94
+  grep -Fq 'Workout' "$DOCKER_EXEC_INPUT" || exit 93
+  if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-34|1|33|0|12|3}"
+  exit 0
+fi
 [[ "$1" == inspect ]] || exit 90
 container="${@: -1}"
 [[ "${DOCKER_INSPECT_FAIL:-}" != "$container" ]] || exit 1
+if [[ "$container" == bodycast-db-prod && "${2:-}" == --format \
+  && "${3:-}" == *NetworkSettings.Networks* ]]; then
+  printf '%s\n' '172.20.0.2'
+  exit 0
+fi
 case "$container" in
   bodycast-app-prod)
     printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|running|healthy|unless-stopped|1111111111111111111111111111111111111111'
@@ -135,6 +155,9 @@ run_inspector() {
     DOCKER_IMAGE_LIST_OUTPUT="${DOCKER_IMAGE_LIST_OUTPUT-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
+    DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-34|1|33|0|12|3}" \
+    DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
     FIXTURE_UI_FINAL_STATUS="${FIXTURE_UI_FINAL_STATUS:-200}" \
@@ -168,6 +191,13 @@ assert_field "$CLEAN_REPORT" bodycast_db_prod_health healthy
 assert_field "$CLEAN_REPORT" gymbeam_caddy_state running
 assert_field "$CLEAN_REPORT" deploy_rollback_pin_state present
 assert_field "$CLEAN_REPORT" deploy_rollback_pin_image_id sha256:1111111111111111111111111111111111111111111111111111111111111111
+assert_field "$CLEAN_REPORT" energy_diagnostic_inventory_status available
+assert_field "$CLEAN_REPORT" energy_diagnostic_available_events_with_visible_workout_alias 34
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_superseded_workout_alias 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_current_workout_alias 33
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_both_workout_alias_kinds 0
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_stair_climbing_workout_type 12
+assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_training_workout_type 3
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes
@@ -190,6 +220,14 @@ if [[ "$CLEAN_REPORT" == *'bodycast.example.test'* || "$CLEAN_REPORT" == *'fixtu
   echo 'Runtime diagnostic exposed the hostname, marker value, or raw HTTP body.' >&2
   exit 1
 fi
+if [[ "$CLEAN_REPORT" == *'rawBody'* || "$CLEAN_REPORT" == *'sourceId'* || "$CLEAN_REPORT" == *'POSTGRES_PASSWORD='* ]]; then
+  echo 'Energy acceptance diagnostic exposed row-level or credential data.' >&2
+  exit 1
+fi
+
+ENERGY_DIAGNOSTIC_FAILURE_REPORT="$(DOCKER_EXEC_FAIL=1 run_inspector "$TEST_REPO")"
+assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_inventory_status unavailable
+assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_available_events_with_visible_workout_alias unavailable
 
 PIN_ABSENT_REPORT="$(DOCKER_IMAGE_LIST_OUTPUT= run_inspector "$TEST_REPO")"
 assert_field "$PIN_ABSENT_REPORT" deploy_rollback_pin_state absent

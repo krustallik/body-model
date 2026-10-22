@@ -174,16 +174,32 @@ describe("production maintenance-first deploy safety contracts", () => {
     const commitAt = deploySh.indexOf("release_state=\"SERVING_COMMIT\"", routeStageCheckAt);
     expect(deploySh).not.toContain("run_v4_traffic_check");
     expect(deploySh).toContain("--capture-raw-input-fingerprint");
-    expect(deploySh).toContain("BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT");
+    expect(deploySh).toContain("BODYCAST_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");
+    expect(deploySh).toContain("BODYCAST_HEALTH_SYNC_AUDIT_PRUNE_V1");
     expect(deploySh).not.toContain("--hold-currentness-fence");
     expect(deploySh).toContain('bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving');
     expect(cutoverSh).toContain("--hold-currentness-fence --expected-raw-input-fingerprint");
-    expect(cutoverSh).toContain("--expected-health-sync-audit-fingerprint");
+    expect(cutoverSh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");
+    expect(cutoverSh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS");
     expect(modelForecastService).toContain("if (!v4IsCurrent) return blockedV2");
     expect(modelForecastService).toContain("latestUnifiedRow?.modelRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION");
     expect(mainFenceAt).toBeGreaterThan(-1);
     expect(routeStageCheckAt).toBeGreaterThan(mainFenceAt);
     expect(commitAt).toBeGreaterThan(routeStageCheckAt);
+  });
+
+  it("waits longer for cleanup evidence than the bounded cleanup transaction", () => {
+    const cleanupSource = readFileSync(resolve("src/modules/health/health-sync-audit.ts"), "utf8");
+    const cleanupTimeoutMs = Number(cleanupSource.match(/timeout:\s*([\d_]+),/)?.[1]?.replaceAll("_", ""));
+    const cleanupMaxWaitMs = Number(cleanupSource.match(/maxWait:\s*([\d_]+),/)?.[1]?.replaceAll("_", ""));
+    const evidenceStart = deploySh.indexOf('prune_event_lines=""');
+    const evidenceBlock = deploySh.slice(evidenceStart, deploySh.indexOf('\nfi\n\nif [[ "$active_schema_cutover"', evidenceStart));
+    const evidenceWaitSeconds = Number(evidenceBlock.match(/for attempt in \$\(seq 1 (\d+)\); do/)?.[1]);
+
+    expect(cleanupTimeoutMs).toBeGreaterThan(0);
+    expect(cleanupMaxWaitMs).toBeGreaterThan(0);
+    expect(evidenceStart).toBeGreaterThan(-1);
+    expect(evidenceWaitSeconds * 1_000).toBeGreaterThan(cleanupMaxWaitMs + cleanupTimeoutMs);
   });
 
   it("leaves pre-commit failures fail-closed without assuming the prior runtime can be reproduced", () => {

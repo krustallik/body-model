@@ -99,7 +99,8 @@ candidate_image_id=""
 candidate_container_id=""
 database_identity_before=""
 expected_raw_source_fingerprint=""
-expected_health_sync_audit_fingerprint=""
+expected_health_sync_audit_retention_baseline=""
+expected_health_sync_audit_prune_events=""
 candidate_start_attempted=false
 previous_app_present=false
 previous_app_sha=""
@@ -459,17 +460,23 @@ if [[ "$previous_app_present" == "true" ]]; then
       /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --capture-raw-input-fingerprint)"
     expected_raw_source_fingerprint="$(printf '%s\n' "$raw_fingerprint_output" \
       | sed -n 's/^BODYCAST_RAW_SOURCE_FINGERPRINT=//p')"
-    expected_health_sync_audit_fingerprint="$(printf '%s\n' "$raw_fingerprint_output" \
-      | sed -n 's/^BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT=//p')"
+    expected_health_sync_audit_retention_baseline="$(printf '%s\n' "$raw_fingerprint_output" \
+      | sed -n 's/^BODYCAST_HEALTH_SYNC_AUDIT_RETENTION_BASELINE=//p')"
     [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
       echo "Read-only Health/Training raw-input baseline is unavailable or malformed." >&2
       release_failure 1
     }
-    [[ "$expected_health_sync_audit_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
-      echo "Read-only HealthSyncAudit preservation baseline is unavailable or malformed." >&2
+    if ! node --input-type=module -e '
+      const value = JSON.parse(process.argv[1]);
+      if (value?.schemaVersion !== 1 || typeof value.capturedAt !== "string"
+        || !Number.isSafeInteger(value.rowCount) || value.rowCount < 0
+        || !Number.isSafeInteger(value.maxId) || value.maxId < 0
+        || !/^[a-f0-9]{64}$/.test(value.rowXor ?? "")) process.exit(1);
+    ' "$expected_health_sync_audit_retention_baseline"; then
+      echo "Read-only HealthSyncAudit retention baseline is unavailable or malformed." >&2
       release_failure 1
-    }
-    echo "Captured immutable Health/Training and HealthSyncAudit fingerprints after maintenance and writer drain."
+    fi
+    echo "Captured strict Health/Training raw fingerprint and HealthSyncAudit retention baseline after maintenance and writer drain."
   fi
 fi
 
@@ -507,6 +514,38 @@ deployed_container_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAI
   release_failure 1
 }
 
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
+  [[ "$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")" == "$candidate_container_id" ]] || {
+    echo "Candidate container identity changed before HealthSyncAudit cleanup evidence capture." >&2
+    release_failure 1
+  }
+  prune_event_lines=""
+  # Account for Prisma's 10s transaction-acquisition wait plus its 120s
+  # transaction timeout, with a small margin for log delivery.
+  for attempt in $(seq 1 135); do
+    prune_event_lines="$(docker logs "$APP_CONTAINER" 2>&1 | grep -F 'BODYCAST_HEALTH_SYNC_AUDIT_PRUNE_V1 ' || true)"
+    if [[ -n "$prune_event_lines" ]]; then
+      expected_health_sync_audit_prune_events="$(printf '%s\n' "$prune_event_lines" | node --input-type=module -e '
+        let input = "";
+        for await (const chunk of process.stdin) input += chunk;
+        const prefix = "BODYCAST_HEALTH_SYNC_AUDIT_PRUNE_V1 ";
+        const events = input.split(/\r?\n/).filter(Boolean).map((line) => {
+          if (!line.startsWith(prefix)) throw new Error("HealthSyncAudit cleanup log prefix is invalid.");
+          return JSON.parse(line.slice(prefix.length));
+        });
+        if (events.length === 0) throw new Error("Candidate has no HealthSyncAudit cleanup event.");
+        process.stdout.write(JSON.stringify(events));
+      ' 2>/dev/null)" || expected_health_sync_audit_prune_events=""
+      [[ -n "$expected_health_sync_audit_prune_events" ]] && break
+    fi
+    [[ "$attempt" == "135" ]] && {
+      echo "Candidate HealthSyncAudit 30-day cleanup evidence did not appear before currentness verification." >&2
+      release_failure 1
+    }
+    sleep 1
+  done
+fi
+
 if [[ "$active_schema_cutover" == "true" ]]; then
   release_state="CANDIDATE_VERIFIED"
   assert_current_main_sha
@@ -528,7 +567,8 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
     BODYCAST_EXPECTED_DB_IDENTITY="$database_identity_before" \
     BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" \
     BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT="$expected_raw_source_fingerprint" \
-    BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT="$expected_health_sync_audit_fingerprint" \
+    BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE="$expected_health_sync_audit_retention_baseline" \
+    BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS="$expected_health_sync_audit_prune_events" \
     BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_SHA="$DEPLOY_SHA" \
     BODYCAST_RELEASE_WORKFLOW_RUN_ID="$BODYCAST_RELEASE_WORKFLOW_RUN_ID" \
     BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT="$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" \

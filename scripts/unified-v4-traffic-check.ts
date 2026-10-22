@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { assertHealthSyncAuditRetentionTransitionV1 } from "@/modules/health/health-sync-audit-retention-integrity";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
 
 function profileIdArg(): number {
@@ -19,9 +20,22 @@ const waitTrainingRefreshCurrent = process.argv.includes("--wait-training-refres
 const expectedRawInputFingerprintIndex = process.argv.indexOf("--expected-raw-input-fingerprint");
 const expectedRawInputFingerprint = expectedRawInputFingerprintIndex < 0
   ? null : process.argv[expectedRawInputFingerprintIndex + 1] ?? null;
-const expectedHealthSyncAuditFingerprintIndex = process.argv.indexOf("--expected-health-sync-audit-fingerprint");
-const expectedHealthSyncAuditFingerprint = expectedHealthSyncAuditFingerprintIndex < 0
-  ? null : process.argv[expectedHealthSyncAuditFingerprintIndex + 1] ?? null;
+const expectedHealthSyncAuditRetentionBaselineText = process.env.BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE ?? null;
+const expectedHealthSyncAuditPruneEventsText = process.env.BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS ?? null;
+function parseJsonEvidence(name: string, value: string | null): unknown | null {
+  if (value === null) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new Error(`${name} is not valid JSON.`);
+  }
+}
+const expectedHealthSyncAuditRetentionBaseline = parseJsonEvidence(
+  "Expected HealthSyncAudit retention baseline", expectedHealthSyncAuditRetentionBaselineText,
+);
+const expectedHealthSyncAuditPruneEvents = parseJsonEvidence(
+  "Expected HealthSyncAudit cleanup events", expectedHealthSyncAuditPruneEventsText,
+);
 const expectedPrismaDatabaseIdentity = process.env.BODYCAST_EXPECTED_PRISMA_DB_IDENTITY ?? null;
 if (captureRawInputFingerprint && (holdCurrentnessFence || preTrainingMigration || profileId !== 1)) {
   throw new Error("Raw-input fingerprint capture is restricted to standalone production profile 1 evidence.");
@@ -38,12 +52,12 @@ if (expectedRawInputFingerprintIndex >= 0
   && (!holdCurrentnessFence || !/^[a-f0-9]{64}$/.test(expectedRawInputFingerprint ?? ""))) {
   throw new Error("Expected raw-input fingerprint requires a held currentness fence and a full SHA-256 digest.");
 }
-if (expectedHealthSyncAuditFingerprintIndex >= 0
-  && (!holdCurrentnessFence || !/^[a-f0-9]{64}$/.test(expectedHealthSyncAuditFingerprint ?? ""))) {
-  throw new Error("Expected HealthSyncAudit fingerprint requires a held currentness fence and a full SHA-256 digest.");
+if ((expectedHealthSyncAuditRetentionBaselineText !== null || expectedHealthSyncAuditPruneEventsText !== null)
+  && (!holdCurrentnessFence || expectedHealthSyncAuditRetentionBaseline === null || expectedHealthSyncAuditPruneEvents === null)) {
+  throw new Error("HealthSyncAudit retention evidence requires a held currentness fence and both baseline and cleanup events.");
 }
-if ((expectedRawInputFingerprintIndex >= 0) !== (expectedHealthSyncAuditFingerprintIndex >= 0)) {
-  throw new Error("Migration-free raw integrity requires both source and HealthSyncAudit fingerprints.");
+if ((expectedRawInputFingerprintIndex >= 0) !== (expectedHealthSyncAuditRetentionBaselineText !== null)) {
+  throw new Error("Migration-free raw integrity requires both the strict source fingerprint and HealthSyncAudit retention baseline.");
 }
 if ((assertPrismaDatabaseIdentity || captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null)
   && !expectedPrismaDatabaseIdentity) {
@@ -192,19 +206,21 @@ const verify = async () => {
     const evidence = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET TRANSACTION READ ONLY`;
       await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
-      const [retentionWindow] = await tx.$queryRaw<Array<{ rowsDueForPruneWithinReleaseWindow: number }>>`
-        SELECT count(*)::int AS "rowsDueForPruneWithinReleaseWindow"
-        FROM public."HealthSyncAudit"
-        WHERE "receivedAt" < now() - interval '30 days' + interval '45 minutes'
+      const [captureTime] = await tx.$queryRaw<Array<{ capturedAt: Date }>>`
+        SELECT transaction_timestamp() AS "capturedAt"
       `;
-      if (!Number.isSafeInteger(retentionWindow?.rowsDueForPruneWithinReleaseWindow)
-        || retentionWindow.rowsDueForPruneWithinReleaseWindow !== 0) {
-        throw new Error("HealthSyncAudit retention could delete raw audit rows during the bounded release window.");
+      if (!(captureTime?.capturedAt instanceof Date) || !Number.isFinite(captureTime.capturedAt.getTime())) {
+        throw new Error("HealthSyncAudit retention baseline timestamp is unavailable.");
       }
-      return inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
+      const client = tx as unknown as typeof prisma;
+      return inventoryV4RecoveryRawSourcesV1(client, {
+        healthSyncAuditBaselineCapturedAt: captureTime.capturedAt,
+      });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 240_000 });
     process.stdout.write(`BODYCAST_RAW_SOURCE_FINGERPRINT=${evidence.sourceFingerprint}\n`);
     process.stdout.write(`BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT=${evidence.healthSyncAuditFingerprint}\n`);
+    if (!evidence.healthSyncAuditRetentionBaseline) throw new Error("Read-only HealthSyncAudit retention baseline is unavailable.");
+    process.stdout.write(`BODYCAST_HEALTH_SYNC_AUDIT_RETENTION_BASELINE=${JSON.stringify(evidence.healthSyncAuditRetentionBaseline)}\n`);
     return;
   }
   if (!holdCurrentnessFence) {
@@ -223,7 +239,10 @@ const verify = async () => {
   const transactionTimeoutMs = 180_000;
   const routeSafetyMarginMs = 5_000;
   const minimumRouteBudgetMs = 120_000;
+  // READ COMMITTED is deliberate: after profile-lock acquisition, readiness
+  // checks must observe any publication that committed while the lock waited.
   const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET TRANSACTION READ ONLY`;
     if (expectedRawInputFingerprint !== null) await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
     const readiness = await verifyUnifiedV4ReadyForTraffic({ profileId, client: tx });
     // The existing readiness helper treats an absent queue row as no pending
@@ -244,13 +263,26 @@ const verify = async () => {
     let healthSyncAuditFingerprint: string | null = null;
     if (expectedRawInputFingerprint !== null) {
       const { inventoryV4RecoveryRawSourcesV1 } = await import("./production-v4-recovery-evidence");
-      const rawEvidence = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
+      const baseline = expectedHealthSyncAuditRetentionBaseline as { maxId?: number } | null;
+      if (!Number.isSafeInteger(baseline?.maxId) || baseline!.maxId! < 0) {
+        throw new Error("HealthSyncAudit retention baseline maximum id is malformed.");
+      }
+      const rawEvidence = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma, {
+        healthSyncAuditBaselineMaxId: baseline!.maxId!,
+      });
       rawSourceFingerprint = rawEvidence.sourceFingerprint;
       healthSyncAuditFingerprint = rawEvidence.healthSyncAuditFingerprint;
-      if (rawSourceFingerprint !== expectedRawInputFingerprint
-        || healthSyncAuditFingerprint !== expectedHealthSyncAuditFingerprint) {
+      if (rawSourceFingerprint !== expectedRawInputFingerprint) {
         throw new Error("Training serving is blocked because Health/Training raw-input integrity differs from the pre-deploy baseline.");
       }
+      if (!rawEvidence.healthSyncAuditRetentionCurrentState) {
+        throw new Error("HealthSyncAudit retention post-deploy state is unavailable.");
+      }
+      assertHealthSyncAuditRetentionTransitionV1({
+        baseline: expectedHealthSyncAuditRetentionBaseline,
+        current: rawEvidence.healthSyncAuditRetentionCurrentState,
+        pruneEvents: expectedHealthSyncAuditPruneEvents,
+      });
     }
     const routeBudgetMs = transactionTimeoutMs - (Date.now() - fenceStartedAt) - routeSafetyMarginMs;
     if (routeBudgetMs < minimumRouteBudgetMs) {
@@ -266,7 +298,7 @@ const verify = async () => {
     };
     return { ...readiness, trainingRefresh, rawSourceFingerprint, healthSyncAuditFingerprint,
       p1EnergyAcceptance: loggedP1EnergyAcceptance };
-  }, { maxWait: 5_000, timeout: transactionTimeoutMs });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 5_000, timeout: transactionTimeoutMs });
   process.stdout.write("BODYCAST_UNIFIED_V4_FENCE_COMMITTED " + JSON.stringify(result) + "\n");
 };
 

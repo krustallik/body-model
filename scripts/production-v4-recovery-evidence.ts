@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { prisma } from "@/lib/db/prisma";
+import { addHealthSyncAuditRetentionRowV1, createHealthSyncAuditRetentionAccumulatorV1,
+  createHealthSyncAuditRetentionBaselineV1, healthSyncAuditRetentionCurrentStateV1,
+} from "@/modules/health/health-sync-audit-retention-integrity";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
@@ -48,6 +51,7 @@ const RECOVERY_RAW_INPUT_TABLES = [
 // migration-free release holds its currentness fence. The per-row digest and
 // ordered-ID checks still detect missing, reordered, or changing source rows.
 const RECOVERY_RAW_FINGERPRINT_PAGE_SIZE = 512;
+const RECOVERY_AUDIT_FINGERPRINT_PAGE_SIZE = 32;
 
 async function readExpectedV4ModelDayBoundariesV1(client: typeof prisma, profileId: number) {
   const episodes = await client.modelEpisode.findMany({
@@ -92,10 +96,27 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 
-export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Promise<{
+export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma, options: {
+  healthSyncAuditBaselineCapturedAt?: Date;
+  healthSyncAuditBaselineMaxId?: number;
+} = {}): Promise<{
   sourceFingerprint: string;
   healthSyncAuditFingerprint: string;
+  healthSyncAuditRetentionBaseline?: ReturnType<typeof createHealthSyncAuditRetentionBaselineV1>;
+  healthSyncAuditRetentionCurrentState?: { existingRowCount: number; existingRowXor: string; newRowCount: number };
 }> {
+  if ((options.healthSyncAuditBaselineCapturedAt !== undefined && options.healthSyncAuditBaselineMaxId !== undefined)
+    || (options.healthSyncAuditBaselineCapturedAt !== undefined
+      && !Number.isFinite(options.healthSyncAuditBaselineCapturedAt.getTime()))
+    || (options.healthSyncAuditBaselineMaxId !== undefined
+      && (!Number.isSafeInteger(options.healthSyncAuditBaselineMaxId) || options.healthSyncAuditBaselineMaxId < 0))) {
+    throw new Error("HealthSyncAudit retention inventory requires exactly one valid baseline mode.");
+  }
+  const auditRetentionBaseline = options.healthSyncAuditBaselineCapturedAt
+    ? createHealthSyncAuditRetentionAccumulatorV1() : null;
+  const auditRetentionExisting = options.healthSyncAuditBaselineMaxId !== undefined
+    ? createHealthSyncAuditRetentionAccumulatorV1() : null;
+  let auditRetentionNewRowCount = 0;
   const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
   let healthSyncAuditFingerprint: string | null = null;
   for (const table of RECOVERY_RAW_INPUT_TABLES) {
@@ -120,7 +141,7 @@ export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Pr
            FROM public."${table}" AS source_row
            ORDER BY source_row.id
            LIMIT $1`,
-          RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
+          table === "HealthSyncAudit" ? RECOVERY_AUDIT_FINGERPRINT_PAGE_SIZE : RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
         );
       } else {
         rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
@@ -130,7 +151,7 @@ export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Pr
            ORDER BY source_row.id
            LIMIT $2`,
           lastId,
-          RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
+          table === "HealthSyncAudit" ? RECOVERY_AUDIT_FINGERPRINT_PAGE_SIZE : RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
         );
       }
       if (rows.length === 0) {
@@ -141,6 +162,24 @@ export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Pr
           throw new Error(`V4 strict source fingerprint returned invalid ${table} row`);
         }
         tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);
+        if (table === "HealthSyncAudit" && (auditRetentionBaseline !== null || auditRetentionExisting !== null)) {
+          const parsed = JSON.parse(row.raw_row) as { receivedAt?: unknown };
+          const receivedAt = typeof parsed.receivedAt === "string" ? new Date(parsed.receivedAt) : null;
+          if (!(receivedAt instanceof Date) || !Number.isFinite(receivedAt.getTime())) {
+            throw new Error("HealthSyncAudit retention inventory contains a malformed receivedAt timestamp.");
+          }
+          if (auditRetentionBaseline !== null) {
+            addHealthSyncAuditRetentionRowV1(auditRetentionBaseline, {
+              id: row.id, rawRow: row.raw_row, receivedAt,
+            });
+          } else if (row.id <= options.healthSyncAuditBaselineMaxId!) {
+            addHealthSyncAuditRetentionRowV1(auditRetentionExisting!, {
+              id: row.id, rawRow: row.raw_row, receivedAt,
+            });
+          } else {
+            auditRetentionNewRowCount += 1;
+          }
+        }
         lastId = row.id;
         seen += 1;
       }
@@ -153,7 +192,20 @@ export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma): Pr
     else digest.update(`${table}\0${tableFingerprint}\0`);
   }
   if (healthSyncAuditFingerprint === null) throw new Error("V4 recovery evidence omitted the audit preservation fingerprint");
-  return { sourceFingerprint: digest.digest("hex"), healthSyncAuditFingerprint };
+  return {
+    sourceFingerprint: digest.digest("hex"),
+    healthSyncAuditFingerprint,
+    ...(auditRetentionBaseline !== null ? {
+      healthSyncAuditRetentionBaseline: createHealthSyncAuditRetentionBaselineV1(
+        options.healthSyncAuditBaselineCapturedAt!, auditRetentionBaseline,
+      ),
+    } : {}),
+    ...(auditRetentionExisting !== null ? {
+      healthSyncAuditRetentionCurrentState: healthSyncAuditRetentionCurrentStateV1(
+        auditRetentionExisting, auditRetentionNewRowCount,
+      ),
+    } : {}),
+  };
 }
 
 function dateKey(value: Date | string): string {
@@ -633,7 +685,15 @@ async function main() {
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`V4 recovery read-only evidence failed: ${error instanceof Error ? error.message : "unknown error"}\n`);
-  process.exitCode = 1;
-}).finally(async () => prisma.$disconnect());
+export function isProductionV4RecoveryEvidenceEntrypoint(executablePath: string | undefined): boolean {
+  const entrypoint = executablePath ? basename(executablePath) : "";
+  return entrypoint === "production-v4-recovery-evidence.ts"
+    || entrypoint === "production-v4-recovery-evidence.mjs";
+}
+
+if (isProductionV4RecoveryEvidenceEntrypoint(process.argv[1])) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`V4 recovery read-only evidence failed: ${error instanceof Error ? error.message : "unknown error"}\n`);
+    process.exitCode = 1;
+  }).finally(async () => prisma.$disconnect());
+}

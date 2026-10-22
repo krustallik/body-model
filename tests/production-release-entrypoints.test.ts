@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { isProductionV4RecoveryEvidenceEntrypoint } from "../scripts/production-v4-recovery-evidence";
 
 const workflowDir = resolve(".github/workflows");
 const releaseWorkflows = [
@@ -109,6 +110,7 @@ describe("active production release entrypoints", () => {
     const schemaPreflight = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), "utf8");
     const dbIdentity = readFileSync(resolve("scripts/production-db-identity.sh"), "utf8");
     const currentnessCheck = readFileSync(resolve("scripts/unified-v4-traffic-check.ts"), "utf8");
+    const recoveryEvidence = readFileSync(resolve("scripts/production-v4-recovery-evidence.ts"), "utf8");
     const attestation = readFileSync(resolve("scripts/production-deploy-attestation.mjs"), "utf8");
     const dockerfile = readFileSync(resolve("Dockerfile"), "utf8");
     const routeProbes = readFileSync(resolve("scripts/production-route-primitives.sh"), "utf8");
@@ -145,15 +147,28 @@ describe("active production release entrypoints", () => {
     expect(routeProbes).toContain("/api/v1/days?to=2026-10-22&limit=100&offset=0");
     expect(routeProbes).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT");
     expect(cutover).toContain("--hold-currentness-fence --expected-raw-input-fingerprint");
-    expect(cutover).toContain("--expected-health-sync-audit-fingerprint");
+    expect(cutover).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");
+    expect(cutover).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS");
     expect(currentnessCheck).toContain('requestedGeneration !== trainingRefresh.completedGeneration');
     expect(currentnessCheck).toContain("expectedRawInputFingerprint");
-    expect(currentnessCheck).toContain("expectedHealthSyncAuditFingerprint");
-    expect(currentnessCheck).toContain("rowsDueForPruneWithinReleaseWindow");
+    expect(currentnessCheck).toContain("expectedHealthSyncAuditRetentionBaseline");
+    expect(currentnessCheck).toContain("assertHealthSyncAuditRetentionTransitionV1");
+    expect(currentnessCheck).toContain("SET TRANSACTION READ ONLY");
+    expect(currentnessCheck).toContain("TransactionIsolationLevel.ReadCommitted");
+    expect(currentnessCheck).not.toContain("rowsDueForPruneWithinReleaseWindow");
+    expect(currentnessCheck).not.toContain("HealthSyncAudit retention could delete raw audit rows");
+    expect(recoveryEvidence).not.toContain("import.meta.url");
     expect(cutover).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity"');
     expect(deploy).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity"');
     expect(cutover).toContain('require_absent_marker=true');
     expect(currentnessCheck).toContain("Health/Training raw-input integrity differs from the pre-deploy baseline.");
+  });
+
+  it("runs recovery evidence only from its own bundled or TypeScript entrypoint", () => {
+    expect(isProductionV4RecoveryEvidenceEntrypoint("/app/dist/production-v4-recovery-evidence.mjs")).toBe(true);
+    expect(isProductionV4RecoveryEvidenceEntrypoint("/app/scripts/production-v4-recovery-evidence.ts")).toBe(true);
+    expect(isProductionV4RecoveryEvidenceEntrypoint("/app/dist/unified-v4-traffic-check.mjs")).toBe(false);
+    expect(isProductionV4RecoveryEvidenceEntrypoint(undefined)).toBe(false);
   });
 
   it("keeps owner-authorized full-history recalculation fail-closed before V4 activation", () => {

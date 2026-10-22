@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { spawn } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HealthDayInput } from "@/modules/health/health.types";
@@ -14,6 +15,15 @@ const { POST } = await import("@/app/api/v1/health/sync/route");
 const { PATCH: patchDay } = await import("@/app/api/v1/days/[date]/route");
 const { PrismaHealthSyncRepository } = await import("@/modules/health/health.repository");
 const { claimNextHealthSyncRefreshJob, processNextHealthSyncRefreshJob } = await import("@/modules/health/health-sync-refresh-worker");
+const { pruneExpiredHealthSyncAudits } = await import("@/modules/health/health-sync-audit");
+const {
+  assertHealthSyncAuditRetentionTransitionV1,
+  createHealthSyncAuditPruneEvidenceV1,
+  createHealthSyncAuditRetentionAccumulatorV1,
+  createHealthSyncAuditRetentionBaselineV1,
+  HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX,
+} = await import("@/modules/health/health-sync-audit-retention-integrity");
+const { inventoryV4RecoveryRawSourcesV1 } = await import("../../scripts/production-v4-recovery-evidence");
 const { runWithHealthSyncRefreshWorkerLease } = await import("@/modules/health/health-sync-worker-context");
 const { DailyMetricRepository } = await import("@/modules/days/day.repository");
 const { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX } = await import("@/modules/health/workout-source-identity");
@@ -339,6 +349,42 @@ async function cleanTestRows(): Promise<void> {
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: testDates } } });
   await prisma.healthActivityInterval.deleteMany({ where: { date: { in: testDates } } });
   await deleteDailyHealthRows(prisma, testDates);
+}
+
+async function runWorkerStartupUntilAuditPruneEvidence(): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const childCode = `
+    const { prisma } = await import("./src/lib/db/prisma.ts");
+    const { startHealthSyncRefreshWorker } = await import("./src/modules/health/health-sync-refresh-worker.ts");
+    const prefix = "${HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX}";
+    const write = process.stdout.write.bind(process.stdout);
+    let pruneEvidenceSeen = false;
+    process.stdout.write = (chunk, ...args) => {
+      if (String(chunk).startsWith(prefix)) pruneEvidenceSeen = true;
+      return write(chunk, ...args);
+    };
+    startHealthSyncRefreshWorker();
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline && !pruneEvidenceSeen) await new Promise((resolve) => setTimeout(resolve, 10));
+    if (!pruneEvidenceSeen) {
+      process.stderr.write("Worker startup did not emit HealthSyncAudit cleanup evidence.\\n");
+      process.exit(2);
+    }
+    process.exit(0);
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", childCode], {
+    cwd: process.cwd(),
+    env: { ...process.env, NODE_ENV: "production" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 20_000);
+    child.once("error", (error) => { clearTimeout(timeout); reject(error); });
+    child.once("exit", (code) => { clearTimeout(timeout); resolve({ code, stdout, stderr }); });
+  });
 }
 
 describe("Apple Health sync with PostgreSQL", () => {
@@ -2061,4 +2107,146 @@ describe("Apple Health sync with PostgreSQL", () => {
       await restoreTrainingRefreshState(priorTraining);
     }
   }, 900_000);
+
+  it("runs the 30-day HealthSyncAudit cleanup at app startup and races concurrent cleanup safely", async () => {
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
+      const [transactionMode] = await tx.$queryRaw<Array<{ readOnly: boolean }>>`
+        SELECT current_setting('transaction_read_only') = 'on' AS "readOnly"
+      `;
+      expect(transactionMode?.readOnly).toBe(true);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    const releaseReferenceAt = new Date(Date.now() + 2_000);
+    const releaseCutoff = new Date(releaseReferenceAt.getTime() - 30 * 86_400_000);
+    const baselineCapturedAt = new Date(releaseReferenceAt.getTime() - 2_000);
+    const expiredAtBaseline = new Date(releaseCutoff.getTime() - 3_000);
+    const crossingAtDeploy = new Date(releaseCutoff.getTime() - 1_000);
+    const retainedAt = new Date(releaseReferenceAt.getTime() - 86_400_000);
+    const startupExpiredAt = new Date(releaseReferenceAt.getTime() - 45 * 86_400_000);
+    const expiredBefore = await prisma.healthSyncAudit.count({ where: { receivedAt: { lt: releaseCutoff } } });
+    expect(expiredBefore, "test DB must not contain unrelated expired HealthSyncAudit rows").toBe(0);
+
+    const sourceFingerprintBefore = (await inventoryV4RecoveryRawSourcesV1(applicationPrisma)).sourceFingerprint;
+    const created = await prisma.healthSyncAudit.createManyAndReturn({
+      data: [
+        { receivedAt: expiredAtBaseline, outcome: "success", httpStatus: 200, rawBody: "expired-at-baseline", contentType: "text/plain" },
+        { receivedAt: crossingAtDeploy, outcome: "success", httpStatus: 200, rawBody: "crosses-cutoff-during-deploy", contentType: "text/plain" },
+        { receivedAt: retainedAt, outcome: "success", httpStatus: 200, rawBody: "younger-than-cutoff", contentType: "text/plain" },
+      ],
+      select: { id: true },
+    });
+    const startupRow = await prisma.healthSyncAudit.create({
+      data: { receivedAt: startupExpiredAt, outcome: "success", httpStatus: 200, rawBody: "startup-cleanup", contentType: "text/plain" },
+      select: { id: true },
+    });
+    const batchRows = await prisma.healthSyncAudit.createManyAndReturn({
+      data: Array.from({ length: 35 }, (_, index) => ({
+        receivedAt: expiredAtBaseline,
+        outcome: "success" as const,
+        httpStatus: 200,
+        rawBody: `bounded-prune-batch-${index}`,
+        contentType: "text/plain",
+      })),
+      select: { id: true },
+    });
+    const fixtureIds = [...created.map(({ id }) => id), startupRow.id, ...batchRows.map(({ id }) => id)];
+
+    try {
+      const baselineEvidence = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        return inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof applicationPrisma, {
+          healthSyncAuditBaselineCapturedAt: baselineCapturedAt,
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      const baseline = baselineEvidence.healthSyncAuditRetentionBaseline;
+      if (!baseline) throw new Error("HealthSyncAudit retention baseline was not produced.");
+
+      const stdoutSpy = vi.spyOn(process.stdout, "write");
+      let cleanupResults: boolean[] = [];
+      let cleanupOutput: string[] = [];
+      try {
+        cleanupResults = await Promise.all([
+          pruneExpiredHealthSyncAudits(releaseReferenceAt),
+          pruneExpiredHealthSyncAudits(releaseReferenceAt),
+        ]);
+        cleanupOutput = stdoutSpy.mock.calls.map(([chunk]) => String(chunk));
+      } finally {
+        stdoutSpy.mockRestore();
+      }
+      expect(cleanupResults).toEqual([true, true]);
+      const pruneEvents = cleanupOutput.flatMap((chunk) => chunk
+        .split(/\r?\n/).filter((line) => line.startsWith(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX))
+        .map((line) => JSON.parse(line.slice(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX.length)) as unknown));
+      expect(pruneEvents).toHaveLength(2);
+      const currentEvidence = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        return inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof applicationPrisma, {
+          healthSyncAuditBaselineMaxId: baseline!.maxId,
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      const current = currentEvidence.healthSyncAuditRetentionCurrentState;
+      if (!current) throw new Error("HealthSyncAudit retention state was not produced.");
+      expect(assertHealthSyncAuditRetentionTransitionV1({
+        baseline,
+        current,
+        pruneEvents,
+        now: new Date(releaseReferenceAt.getTime() + 5_000),
+      })).toBe(true);
+
+      const deletedCount = pruneEvents.reduce<number>((count, event) =>
+        count + Number((event as { deletedRowCount: number }).deletedRowCount), 0);
+      expect(deletedCount).toBe(38);
+      expect(await prisma.healthSyncAudit.count({
+        where: { id: { in: [...created.slice(0, 2).map(({ id }) => id), ...batchRows.map(({ id }) => id)] } },
+      })).toBe(0);
+      expect(await prisma.healthSyncAudit.count({ where: { id: created[2]!.id } })).toBe(1);
+
+      const startup = await prisma.healthSyncAudit.create({
+        data: { receivedAt: startupExpiredAt, outcome: "success", httpStatus: 200, rawBody: "worker-startup-cleanup", contentType: "text/plain" },
+        select: { id: true },
+      });
+      fixtureIds.push(startup.id);
+      const startupBaselineCapturedAt = new Date();
+      const startupBaselineEvidence = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        return inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof applicationPrisma, {
+          healthSyncAuditBaselineCapturedAt: startupBaselineCapturedAt,
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      const startupBaseline = startupBaselineEvidence.healthSyncAuditRetentionBaseline;
+      if (!startupBaseline) throw new Error("Startup HealthSyncAudit baseline was not produced.");
+
+      const startupResult = await runWorkerStartupUntilAuditPruneEvidence();
+      expect(startupResult.code, startupResult.stderr).toBe(0);
+      expect(startupResult.stdout).toContain(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX);
+      expect(await prisma.healthSyncAudit.findUnique({ where: { id: startup.id } })).toBeNull();
+      const startupPruneEvents = startupResult.stdout.split(/\r?\n/)
+        .filter((line) => line.startsWith(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX))
+        .map((line) => JSON.parse(line.slice(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX.length)) as unknown);
+      expect(startupPruneEvents).toHaveLength(1);
+      const startupCurrentEvidence = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        return inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof applicationPrisma, {
+          healthSyncAuditBaselineMaxId: startupBaseline!.maxId,
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      const startupCurrent = startupCurrentEvidence.healthSyncAuditRetentionCurrentState;
+      if (!startupCurrent) throw new Error("Startup HealthSyncAudit post-deploy state was not produced.");
+      expect(assertHealthSyncAuditRetentionTransitionV1({
+        baseline: startupBaseline,
+        current: startupCurrent,
+        pruneEvents: startupPruneEvents,
+      })).toBe(true);
+
+      const sourceFingerprintAfter = (await inventoryV4RecoveryRawSourcesV1(applicationPrisma)).sourceFingerprint;
+      expect(sourceFingerprintAfter).toBe(sourceFingerprintBefore);
+      const emptyAuditAccumulator = createHealthSyncAuditRetentionAccumulatorV1();
+      expect(createHealthSyncAuditPruneEvidenceV1(releaseReferenceAt, emptyAuditAccumulator).deletedRowCount).toBe(0);
+      expect(createHealthSyncAuditRetentionBaselineV1(baselineCapturedAt, emptyAuditAccumulator).rowCount).toBe(0);
+    } finally {
+      await prisma.healthSyncAudit.deleteMany({ where: { id: { in: fixtureIds } } });
+    }
+  }, 30_000);
 });

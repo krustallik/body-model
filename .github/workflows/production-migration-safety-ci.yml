@@ -15,6 +15,7 @@ on:
       - ".github/workflows/production-migrate.yml"
       - ".github/workflows/production-full-history-recalculate.yml"
       - ".github/workflows/deploy-production.yml"
+      - ".github/workflows/ci.yml"
       - ".github/workflows/production-database-cutback.yml"
       - "Dockerfile"
       - "Dockerfile.v4-derived-recovery"
@@ -78,6 +79,8 @@ on:
       - "docs/development/production-migration-v5-runbook.md"
       - "docs/architecture/unified-glycogen-v4-rollout.md"
       - "src/modules/model-episodes/unified-rollout-v4.service.ts"
+      - "src/modules/health/health-sync-audit.ts"
+      - "src/modules/health/health-sync-audit-retention-integrity.ts"
       - "src/modules/model-episodes/unified-v4-derived-recovery.service.ts"
       - "src/model/body-composition/physical-glycogen-water-v4.ts"
       - "scripts/backup-postgres.mjs"
@@ -114,6 +117,8 @@ on:
       - "tests/production-release-marker.test.mjs"
       - "tests/production-schema-deploy-handoff.test.mjs"
       - "tests/production-v4-derived-recovery.test.mjs"
+      - "tests/health-sync-audit-retention-integrity.test.ts"
+      - "tests/integration/health-sync.integration.test.ts"
       - "tests/production-v4-derived-recovery-workflow.test.mjs"
       - "tests/production-v4-recovery-headroom.test.mjs"
       - "tests/production-v4-schema-digest.test.mjs"
@@ -180,7 +185,7 @@ jobs:
         run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-no-app-preflight.test.mjs tests/production-no-app-workflow.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs tests/production-v4-recovery-headroom.test.mjs tests/production-v4-schema-digest.test.mjs tests/postgres-storage-peak-sampler.test.mjs
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs tests/production-v4-derived-recovery.test.mjs tests/production-v4-derived-recovery-workflow.test.mjs tests/production-v4-recovery-headroom.test.mjs tests/production-v4-schema-digest.test.mjs tests/postgres-storage-peak-sampler.test.mjs tests/health-sync-audit-retention-integrity.test.ts
 
       - name: Run PostgreSQL 17.11 storage sampler real-container smoke
         env:

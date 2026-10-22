@@ -164,6 +164,8 @@ jobs:
             testArgs: "tests/integration/health-sync.integration.test.ts --testNamePattern='completes Training edits through Health coordination, stale-worker fencing, and restart recovery'"
           - shard: 4
             testArgs: "tests/integration/health-sync.integration.test.ts --testNamePattern='rebuilds and clears an acknowledged legacy Stepper block only after stable publication'"
+          - shard: 5
+            testArgs: "tests/integration/health-sync.integration.test.ts --testNamePattern='runs the 30-day HealthSyncAudit cleanup at app startup and races concurrent cleanup safely'"
     services:
       postgres:
         image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24

@@ -195,6 +195,10 @@ if [[ "$1" == "image" && "$2" == "inspect" ]]; then
   if [[ "$format" == *".Id"* ]]; then cat "$image_file"; fi
   exit 0
 fi
+if [[ "$1" == "logs" && "$2" == "bodycast-app-prod" ]]; then
+  printf '%s\n' 'BODYCAST_HEALTH_SYNC_AUDIT_PRUNE_V1 {"schemaVersion":1,"referenceAt":"2026-10-22T20:01:00.000Z","cutoffAt":"2026-09-22T20:01:00.000Z","deletedRowCount":0,"deletedRowXor":"0000000000000000000000000000000000000000000000000000000000000000","newestDeletedReceivedAt":null}'
+  exit 0
+fi
 if [[ "$1" == "inspect" && "$2" == "--format" && "$3" == *"{{.Id}}|{{.Image}}|"* && "$4" == "bodycast-app-prod" ]]; then
   sample="$(cat "$APP_HEALTH_SAMPLE_COUNT_FILE" 2>/dev/null || printf '0')"
   sample=$((sample + 1))
@@ -291,6 +295,7 @@ if [[ "$1" == "compose" ]]; then
     event "raw-input-fingerprint-capture"
     printf '%s\n' "BODYCAST_RAW_SOURCE_FINGERPRINT=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     printf '%s\n' "BODYCAST_HEALTH_SYNC_AUDIT_FINGERPRINT=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    printf '%s\n' 'BODYCAST_HEALTH_SYNC_AUDIT_RETENTION_BASELINE={"schemaVersion":1,"capturedAt":"2026-10-22T20:00:00.000Z","rowCount":0,"maxId":0,"rowXor":"0000000000000000000000000000000000000000000000000000000000000000"}'
     exit 0
   fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint npx migrate prisma migrate status "* ]]; then

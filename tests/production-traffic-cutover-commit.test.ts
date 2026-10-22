@@ -4,6 +4,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { bashAvailable, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish, PRODUCTION_DB_IDENTITY } from "./helpers/production-release-cutover-fixture";
 
+const AUDIT_RETENTION_BASELINE = JSON.stringify({ schemaVersion: 1, capturedAt: "2026-10-22T20:00:00.000Z",
+  rowCount: 0, maxId: 0, rowXor: "0".repeat(64) });
+const AUDIT_PRUNE_EVENTS = JSON.stringify([{ schemaVersion: 1, referenceAt: "2026-10-22T20:01:00.000Z",
+  cutoffAt: "2026-09-22T20:01:00.000Z", deletedRowCount: 0, deletedRowXor: "0".repeat(64),
+  newestDeletedReceivedAt: null }]);
+
 function prepareTrainingServeFixture() {
   const fixture = createFixture();
   execFileSync(fixture.realGit, ["-C", fixture.repo, "config", "core.autocrlf", "false"]);
@@ -162,7 +168,8 @@ describe("serving-route commit boundary", () => {
       BODYCAST_MIGRATION_FREE_SERVE: "1",
       BODYCAST_EXPECTED_DB_IDENTITY: expectedDatabaseIdentity,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: expectedRawFingerprint,
-      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
     });
     expect(result.status).toBe(0);
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
@@ -207,7 +214,8 @@ describe("serving-route commit boundary", () => {
       BODYCAST_MIGRATION_FREE_SERVE: "1",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
-      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
       FAIL_TRAINING_REFRESH_WAIT: "1",
     });
 
@@ -230,7 +238,8 @@ describe("serving-route commit boundary", () => {
       BODYCAST_MIGRATION_FREE_SERVE: "1",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
-      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
       FAIL_TRAINING_V4_CHECK: "1",
     });
 
@@ -252,7 +261,8 @@ describe("serving-route commit boundary", () => {
       BODYCAST_MIGRATION_FREE_SERVE: "1",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
-      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
       CORRUPT_ROUTE_AFTER_SERVING_RELOAD: "1",
     });
 
@@ -283,7 +293,8 @@ describe("serving-route commit boundary", () => {
       BODYCAST_MIGRATION_FREE_SERVE: "1",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
-      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
       ...failureEnv,
     });
 

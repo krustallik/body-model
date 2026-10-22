@@ -668,7 +668,7 @@ restore_training_maintenance_after_fence_failure() {
 serve_training_release() {
   local expected_release_sha="$1" migration_free_serving="${2:-false}" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
-  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_fingerprint expected_prisma_database_identity stepper_diagnostic_workout_id require_absent_marker=false route_marker_sha
+  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id require_absent_marker=false route_marker_sha
   stepper_diagnostic_workout_id=""
   local recovered_v4_release=false recovery_marker_path recovery_marker_digest
 
@@ -697,9 +697,11 @@ serve_training_release() {
     [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
       echo "Migration-free serving requires the exact pre-deploy raw-source fingerprint." >&2; return 1;
     }
-    expected_health_sync_audit_fingerprint="${BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_FINGERPRINT:-}"
-    [[ "$expected_health_sync_audit_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
-      echo "Migration-free serving requires the exact pre-deploy HealthSyncAudit fingerprint." >&2; return 1;
+    expected_health_sync_audit_retention_baseline="${BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE:-}"
+    expected_health_sync_audit_prune_events="${BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS:-}"
+    [[ "$expected_health_sync_audit_retention_baseline" == \{*\} \
+      && "$expected_health_sync_audit_prune_events" == \[*\] ]] || {
+      echo "Migration-free serving requires the captured HealthSyncAudit retention baseline and candidate cleanup evidence." >&2; return 1;
     }
     bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
     expected_prisma_database_identity="$(bodycast_production_db_endpoint_from_identity "${BODYCAST_EXPECTED_DB_IDENTITY:-}")" || return 1
@@ -778,10 +780,11 @@ serve_training_release() {
   coproc BODYCAST_TRAINING_V4_FENCE {
     if [[ "$migration_free_serving" == "true" ]]; then
       timeout 185s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
-        -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
+        -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" \
+        -e BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE="$expected_health_sync_audit_retention_baseline" \
+        -e BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS="$expected_health_sync_audit_prune_events" --entrypoint node migrate \
         /app/scripts/unified-v4-traffic-check.mjs \
-        --profile-id 1 --hold-currentness-fence --expected-raw-input-fingerprint "$expected_raw_source_fingerprint" \
-        --expected-health-sync-audit-fingerprint "$expected_health_sync_audit_fingerprint"
+        --profile-id 1 --hold-currentness-fence --expected-raw-input-fingerprint "$expected_raw_source_fingerprint"
     else
       timeout 185s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
         --entrypoint node migrate /app/scripts/unified-v4-traffic-check.mjs \

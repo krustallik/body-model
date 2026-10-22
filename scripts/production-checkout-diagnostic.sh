@@ -65,7 +65,7 @@ printf '%s:%s:%s:%s:%s\n' "$server_ip" 5432 bodycast "$POSTGRES_USER" "$escaped_
 query="$(cat <<'SQL'
 WITH eligible_aliases AS (
   SELECT e."id" AS event_id, a."sourceType", w."id" AS workout_id,
-    w."supersededByWorkoutId", w."type"
+    w."supersededByWorkoutId", w."type", w."startAt" AS workout_start_at
   FROM "ActiveEnergyEventAlias" AS a
   JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
   JOIN "Workout" AS w ON w."id" = a."workoutId"
@@ -100,7 +100,11 @@ SELECT count(*),
   count(*) FILTER (WHERE has_strength_training_workout),
   count(*) FILTER (WHERE has_workout_source_alias),
   count(*) FILTER (WHERE has_strength_session_source_alias),
-  (SELECT count(DISTINCT workout_id) FROM eligible_aliases)
+  (SELECT count(DISTINCT workout_id) FROM eligible_aliases),
+  (SELECT count(DISTINCT workout_id) FROM eligible_aliases
+    WHERE workout_start_at AT TIME ZONE 'UTC' < TIMESTAMPTZ '2026-10-21 22:00:00+00'),
+  (SELECT count(DISTINCT workout_id) FROM eligible_aliases
+    WHERE workout_start_at AT TIME ZONE 'UTC' >= TIMESTAMPTZ '2026-10-21 22:00:00+00')
 FROM current_events
 SQL
 )"
@@ -113,7 +117,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
-  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
   printf '%s\n' "$inventory"
 }
 
@@ -376,7 +380,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
-    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids <<< "$energy_inventory"
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_before_strength_local_date energy_on_or_after_strength_local_date <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
     emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
@@ -387,6 +391,8 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_workout_alias_source_type "$energy_workout_source"
     emit energy_diagnostic_events_with_strength_session_alias_source_type "$energy_strength_session_source"
     emit energy_diagnostic_distinct_workout_ids_with_available_energy "$energy_workout_ids"
+    emit energy_diagnostic_distinct_workout_ids_before_strength_session_local_date "$energy_before_strength_local_date"
+    emit energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date "$energy_on_or_after_strength_local_date"
   else
     emit energy_diagnostic_inventory_status unavailable
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
@@ -398,6 +404,8 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_workout_alias_source_type unavailable
     emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
     emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
+    emit energy_diagnostic_distinct_workout_ids_before_strength_session_local_date unavailable
+    emit energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date unavailable
   fi
 else
   emit docker_daemon_available no
@@ -417,6 +425,8 @@ else
   emit energy_diagnostic_events_with_workout_alias_source_type unavailable
   emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
   emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
+  emit energy_diagnostic_distinct_workout_ids_before_strength_session_local_date unavailable
+  emit energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

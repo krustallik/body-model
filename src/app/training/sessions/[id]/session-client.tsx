@@ -1717,6 +1717,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                     {session.selectedActiveEnergy === undefined
                       ? "—"
                       : formatSelectedActiveEnergyText({
+                        status: session.selectedActiveEnergy.status,
                         kcal: session.selectedActiveEnergy.kcal,
                         source: session.selectedActiveEnergy.source,
                         fullCoverage: session.selectedActiveEnergy.fullCoverage,

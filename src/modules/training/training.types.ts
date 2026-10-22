@@ -116,6 +116,8 @@ export type StrengthSessionExerciseDto = {
 };
 
 export type SelectedActiveEnergyDto = {
+  /** Additive currentness state; omitted by older API responses. */
+  status?: "current" | "pending" | "unavailable";
   kcal: number | null;
   source: string;
   fullCoverage: boolean;

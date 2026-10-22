@@ -66,6 +66,8 @@ export type StepperWorkoutDto = {
   selectedActiveEnergyKcal: number | null;
   selectedActiveEnergySource: string;
   selectedActiveEnergyFullCoverage: boolean;
+  /** Additive currentness state; existing selected-energy fields remain compatible. */
+  selectedActiveEnergyStatus?: "current" | "pending" | "unavailable";
   reconciliationStatus: "pending" | "ambiguous" | "confirmed" | null;
   reconciliationGroupId: number | null;
   reconciliationPeerWorkoutId: number | null;
@@ -146,6 +148,7 @@ function toDto(row: {
     manualActiveEnergyKcal: row.manualActiveEnergyKcal,
     selectedActiveEnergyKcal,
     selectedActiveEnergySource,
+    selectedActiveEnergyStatus: selectedActiveEnergyKcal === null ? "unavailable" : "current",
     selectedActiveEnergyFullCoverage: canonical
       ? !canonical.isStale && selectedActiveEnergyKcal !== null
       : selected.fullCoverage,
@@ -249,6 +252,7 @@ export class StepperWorkoutRepository {
         selectedActiveEnergyKcal: null,
         selectedActiveEnergySource: "unavailable",
         selectedActiveEnergyFullCoverage: false,
+        selectedActiveEnergyStatus: "pending" as const,
       }));
     }
     return workouts;

@@ -5,6 +5,7 @@ const visibility = vi.hoisted(() => ({
   convergenceChanged: vi.fn(),
   trainingChanged: vi.fn(),
   workerOwns: vi.fn(),
+  pending: vi.fn(),
 }));
 
 vi.mock("@/modules/training/training-refresh-queue", () => ({
@@ -12,7 +13,7 @@ vi.mock("@/modules/training/training-refresh-queue", () => ({
   activeEnergyConvergenceFenceChanged: visibility.convergenceChanged,
   trainingRefreshFenceChanged: visibility.trainingChanged,
   trainingRefreshWorkerOwnsGeneration: visibility.workerOwns,
-  isTrainingRefreshPending: () => false,
+  isTrainingRefreshPending: visibility.pending,
 }));
 
 import { hideSessionDerivedResultsWhileTrainingRefreshIsPending } from "@/modules/training/training.repository";
@@ -30,12 +31,25 @@ describe("Training session Active Energy convergence currentness", () => {
     visibility.convergenceChanged.mockResolvedValue(false);
     visibility.trainingChanged.mockResolvedValue(false);
     visibility.workerOwns.mockResolvedValue(false);
+    visibility.pending.mockReturnValue(false);
+  });
+
+  it("labels a pending Training generation without exposing its prior canonical energy", async () => {
+    visibility.pending.mockReturnValue(true);
+    const result = await hideSessionDerivedResultsWhileTrainingRefreshIsPending({} as never, 1, null, session);
+    expect(result.selectedActiveEnergy).toMatchObject({ status: "pending", kcal: null, source: "unavailable" });
+  });
+
+  it("retains current energy when the generation and convergence fences stay stable", async () => {
+    const result = await hideSessionDerivedResultsWhileTrainingRefreshIsPending({} as never, 1, null, session);
+    expect(result).toBe(session);
   });
 
   it("hides only model-derived energy while convergence is active", async () => {
     visibility.convergenceRead.mockResolvedValue({ active: true, revision: 3, fromDate: "2026-09-01", lifecycleUpdatedAt: "2026-10-17T10:00:00.000Z" });
     const result = await hideSessionDerivedResultsWhileTrainingRefreshIsPending({} as never, 1, null, session);
     expect(result.selectedActiveEnergy).toEqual({
+      status: "pending",
       kcal: null,
       source: "unavailable",
       fullCoverage: false,
@@ -48,5 +62,6 @@ describe("Training session Active Energy convergence currentness", () => {
     visibility.convergenceChanged.mockResolvedValue(true);
     const result = await hideSessionDerivedResultsWhileTrainingRefreshIsPending({} as never, 1, null, session);
     expect(result.selectedActiveEnergy?.kcal).toBeNull();
+    expect(result.selectedActiveEnergy?.status).toBe("pending");
   });
 });

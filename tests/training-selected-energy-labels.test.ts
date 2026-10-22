@@ -2,6 +2,35 @@ import { describe, expect, it } from "vitest";
 import { formatSelectedActiveEnergyText } from "@/app/training/training-labels";
 
 describe("formatSelectedActiveEnergyText", () => {
+  it("distinguishes pending calculation in both languages without exposing stale or device kcal", () => {
+    for (const uk of [false, true]) {
+      expect(formatSelectedActiveEnergyText({
+        status: "pending",
+        kcal: null,
+        source: "unavailable",
+        fullCoverage: false,
+        deviceKcalUnused: 90,
+        uk,
+      })).toBe(uk ? "Оновлення розрахунку" : "Calculation updating");
+      expect(formatSelectedActiveEnergyText({
+        status: "pending",
+        kcal: 250,
+        source: "manual-kcal",
+        fullCoverage: true,
+        uk,
+      })).toBe(uk ? "Оновлення розрахунку" : "Calculation updating");
+    }
+  });
+
+  it("preserves current and genuinely unavailable states with the additive status", () => {
+    expect(formatSelectedActiveEnergyText({
+      status: "current", kcal: 250, source: "manual-kcal", fullCoverage: true, uk: false,
+    })).toBe("250 active kcal · Manual kcal");
+    expect(formatSelectedActiveEnergyText({
+      status: "unavailable", kcal: null, source: "unavailable", fullCoverage: false, uk: true,
+    })).toBe("Енергія недоступна");
+  });
+
   it("uses provenance labels instead of raw source keys", () => {
     expect(formatSelectedActiveEnergyText({
       kcal: 250,

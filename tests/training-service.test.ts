@@ -301,6 +301,7 @@ describe("canonical Strength active-energy reads", () => {
       }),
     }));
     expect(session?.selectedActiveEnergy).toEqual({
+      status: "current",
       kcal: 273,
       source: "bodycast-strength-met-fallback",
       fullCoverage: true,

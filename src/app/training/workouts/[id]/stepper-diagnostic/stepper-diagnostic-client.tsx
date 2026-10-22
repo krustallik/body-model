@@ -7,7 +7,7 @@ import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import type { StepperWorkoutDiagnosticV7 } from "@/modules/profile/stepper-workout-diagnostic";
 import { useI18n } from "@/i18n/i18n-provider";
-import { formatTrainingKcal } from "../../../training-labels";
+import { formatSelectedActiveEnergyText, formatTrainingKcal } from "../../../training-labels";
 import styles from "./stepper-diagnostic.module.css";
 
 type DiagnosticResponse = { diagnostic?: StepperWorkoutDiagnosticV7; error?: string };
@@ -123,6 +123,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
   const [diagnostic, setDiagnostic] = useState<StepperWorkoutDiagnosticV7 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshPending, setRefreshPending] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -130,11 +131,24 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
       .then(async (response) => {
         const body = await response.json() as DiagnosticResponse;
         if (!response.ok || !body.diagnostic) throw new Error(body.error ?? "internal_error");
-        if (active) setDiagnostic(body.diagnostic);
+        if (active) {
+          setDiagnostic(body.diagnostic);
+          setError(null);
+          setRefreshPending(false);
+        }
       })
       .catch((reason: unknown) => {
         if (!active) return;
+        setDiagnostic(null);
         const code = reason instanceof Error ? reason.message : "internal_error";
+        const pending = code === "training_refresh_pending" || code === "model_refresh_pending";
+        setRefreshPending(pending);
+        if (pending) {
+          setError(formatSelectedActiveEnergyText({
+            status: "pending", kcal: null, source: "unavailable", fullCoverage: false, uk,
+          }));
+          return;
+        }
         setError(code === "not_found" ? (uk ? "Тренування не знайдено." : "Workout not found.")
           : code === "not_stair_workout" ? (uk ? "Це тренування не належить до Stair Climbing." : "This workout is not a Stair Climbing event.")
             : (uk ? "Не вдалося завантажити діагностику." : "Could not load diagnostics."));
@@ -165,7 +179,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
       </header>
 
       {loading && <p className={styles.loading} role="status">{uk ? "Завантаження діагностики…" : "Loading diagnostics…"}</p>}
-      {error && <p className={styles.error} role="alert">{error}</p>}
+      {error && <p className={refreshPending ? styles.loading : styles.error} role={refreshPending ? "status" : "alert"}>{error}</p>}
 
       {diagnostic && (
         <div className={styles.stack}>

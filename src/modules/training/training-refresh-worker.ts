@@ -531,6 +531,17 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
   ]).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort();
   const healthWeightSourceDates = dateList(job.sourceChanges.filter((change) =>
     change.operationKind === "health_weight_accounting_refresh"));
+  const lifecycle = new PhysiologyV7PersistenceRepository();
+  // A day edit can arrive without creating another Training generation. Keep
+  // its token from before dependency computation, never adopt a newer fence
+  // observed after those dependencies have already been rebuilt.
+  const healthDayBlockTokens = new Map<string, { revision: number; fromDate: string } | null>();
+  for (const date of healthWeightSourceDates) {
+    await assertTrainingRefreshLease(job);
+    healthDayBlockTokens.set(date, await lifecycle.readUnifiedPublicationBlockToken({
+      profileId: job.profileId, source: "day", sourceKey: date,
+    }));
+  }
 
   await markTrainingRefreshProgress(job, "invalidate-replay-suffix", hooks);
   await new PhysiologyV7PersistenceRepository().invalidate(job.profileId, dirtyFromDate);
@@ -623,7 +634,14 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
   await markTrainingRefreshProgress(job, "relative-muscle-suffix-published", hooks);
 
   await markTrainingRefreshProgress(job, "ffm-hypertrophy-suffix", hooks);
-  const replayDates = enumerateDates(replayFromDate, rebuiltThroughDate);
+  // Source days and modeled days have different horizons: an in-progress
+  // Health day is a valid dependency input although production intentionally
+  // models only completed local days. Its date-scoped shadows accept missing
+  // model state and will be rebuilt normally when that day becomes modelable.
+  const replayDates = [...new Set([
+    ...enumerateDates(replayFromDate, rebuiltThroughDate),
+    ...healthWeightSourceDates,
+  ])].sort();
   const hypertrophyWeeks = new Set<string>();
   for (const date of replayDates) {
     await assertTrainingRefreshLease(job);
@@ -641,7 +659,6 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
   }
 
   await markTrainingRefreshProgress(job, "clear-exact-training-blocks", hooks);
-  const lifecycle = new PhysiologyV7PersistenceRepository();
   for (const sourceKey of publicationBlockSourceKeys) {
     await assertTrainingRefreshLease(job);
     const token = await lifecycle.readUnifiedPublicationBlockToken({
@@ -679,20 +696,13 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
   // A Health weight refresh may synchronously rebuild completed-session
   // accounting after committing the raw Health source. That creates a fast
   // Training journal entry, and its worker owns the final suffix publication.
-  // Clear only the exact day fences named by that journal, and only when this
-  // complete replay covers their dates; a concurrent/newer day edit keeps its
-  // own revision and remains blocked.
+  // Date-scoped source dependencies above also cover days outside the modeled
+  // suffix. Clear only the token captured before that work; a concurrent/newer
+  // day edit keeps its own revision and remains blocked.
   for (const date of healthWeightSourceDates) {
-    if (date < replayFromDate || date > rebuiltThroughDate) {
-      throw new Error("Health weight replay boundary is outside the rebuilt Training suffix");
-    }
     await assertTrainingRefreshLease(job);
-    const token = await lifecycle.readUnifiedPublicationBlockToken({
-      profileId: job.profileId,
-      source: "day",
-      sourceKey: date,
-    });
-    if (token === null) continue;
+    const token = healthDayBlockTokens.get(date);
+    if (token == null) continue;
     const cleared = await lifecycle.clearUnifiedPublicationBlock({
       profileId: job.profileId,
       source: "day",

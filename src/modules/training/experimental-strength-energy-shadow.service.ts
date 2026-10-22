@@ -10,6 +10,8 @@ import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import type { StrengthSessionDto } from "./training.types";
 import { TrainingRepository } from "./training.repository";
+import { resolveStrengthEnergyMassReferenceV1, STRENGTH_ENERGY_MASS_RESOLUTION_V1 } from "./session-mass-reference";
+import { sha256Canonical } from "./persisted-load-accounting-v1";
 import { PhysiologyV7PersistenceRepository, type ActiveEnergyConvergenceOwnerToken } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   estimateExperimentalStrengthActiveEnergyV1,
@@ -70,9 +72,15 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       });
   const heartRateBpms = heartRateSamples.map((row) => row.bpm);
   const stage02Mass = input.session.activeEnergyMassReference ?? null;
-  const bodyMassKg = stage02Mass !== null && stage02Mass.reference.status !== "unavailable"
-      && Number.isFinite(stage02Mass.reference.valueKg) && stage02Mass.reference.valueKg > 0
-    ? stage02Mass.reference.valueKg
+  const massTimeZone = input.session.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+  const massDate = stage02Mass?.reference.localDate ?? instantToLocalDateTime(new Date(input.session.effectiveAccountingAt
+    ?? input.session.matchedWorkout?.startAt ?? input.session.webStartedAt ?? input.session.createdAt), massTimeZone).date;
+  const energyMass = await resolveStrengthEnergyMassReferenceV1(prisma, {
+    stage02Mass, localDate: massDate, timeZone: massTimeZone,
+  });
+  const bodyMassKg = energyMass !== null && energyMass.reference.status !== "unavailable"
+      && Number.isFinite(energyMass.reference.valueKg) && energyMass.reference.valueKg > 0
+    ? energyMass.reference.valueKg
     : null;
   const result = estimateExperimentalStrengthActiveEnergyV1({
     session: input.session,
@@ -124,10 +132,12 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     startAt: input.session.matchedWorkout?.startAt ?? input.session.webStartedAt,
     endAt: input.session.matchedWorkout?.endAt ?? input.session.webEndedAt,
     durationMinutes: input.session.matchedWorkout?.durationMinutes ?? null,
-    stage02MassReference: stage02Mass?.reference ?? null,
-    stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null,
-    stage02InputFingerprint: stage02Mass?.inputFingerprint ?? null,
-    stage02MassResolutionIdentity: stage02Mass?.massResolutionIdentity ?? null,
+    // Keep the established fingerprint field names; the independent mass
+    // identity carries its own acquisition version without changing formulas.
+    stage02MassReference: energyMass?.reference ?? null,
+    stage02SnapshotRevision: energyMass?.snapshotRevision ?? null,
+    stage02InputFingerprint: energyMass?.inputFingerprint ?? null,
+    stage02MassResolutionIdentity: energyMass?.massResolutionIdentity ?? null,
     modelEpisodeId: episode?.id ?? null,
     modelEpisodeVersion: episode?.modelVersion ?? null,
     modelEpisodeStartDate: episode?.startDate ?? null,
@@ -152,9 +162,13 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     activeEnergyResolution,
     sessionRevision: input.session.revision,
     inputFingerprint,
-    stage02MassReference: estimatorInputs.stage02MassReference,
-    stage02SnapshotRevision: estimatorInputs.stage02SnapshotRevision,
-    stage02MassResolutionIdentity: estimatorInputs.stage02MassResolutionIdentity,
+    stage02MassReference: stage02Mass?.reference ?? null,
+    stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null,
+    stage02MassResolutionIdentity: stage02Mass?.massResolutionIdentity ?? null,
+    energyMassReference: energyMass?.reference ?? null,
+    energyMassResolutionMethodVersion: energyMass?.massResolutionIdentity !== stage02Mass?.massResolutionIdentity
+      ? STRENGTH_ENERGY_MASS_RESOLUTION_V1 : null,
+    energyMassResolutionIdentity: energyMass?.massResolutionIdentity ?? null,
   };
   const sourceFingerprint = stableSha256(`${experimentalStrengthActiveEnergyV1Fingerprint(result)}|${inputFingerprint}`);
   const previous = await prisma.experimentalStrengthEnergyShadow.findUnique({
@@ -202,6 +216,10 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
         || (current.effectiveAccountingAt?.toISOString() ?? null) !== (input.session.effectiveAccountingAt ?? null)
         || (current.webStartedAt?.toISOString() ?? null) !== (input.session.webStartedAt ?? null)
         || (current.webEndedAt?.toISOString() ?? null) !== (input.session.webEndedAt ?? null)) return false;
+    const currentEnergyMass = await resolveStrengthEnergyMassReferenceV1(tx, {
+      stage02Mass, localDate: massDate, timeZone: massTimeZone,
+    });
+    if (sha256Canonical(currentEnergyMass) !== sha256Canonical(energyMass)) return false;
     const currentSets = await tx.strengthSet.findMany({
       where: { sessionExercise: { sessionId: input.session.id } },
       select: {
@@ -267,7 +285,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
   };
   const candidates: ActiveEnergyCandidateV1[] = [
     ...(input.session.status === "COMPLETED" && result.availability === "available" && result.estimatedActiveKcal !== null
-      ? [{ source: "bodycast-strength-estimate" as const, sourceIdentity: `strength-session:${input.session.id}`, sourceFingerprint: inputFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { estimator: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION, stage02MassReference: stage02Mass?.reference ?? null, stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null } }]
+      ? [{ source: "bodycast-strength-estimate" as const, sourceIdentity: `strength-session:${input.session.id}`, sourceFingerprint: inputFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { estimator: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION, stage02MassReference: stage02Mass?.reference ?? null, stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null, energyMassReference: energyMass?.reference ?? null, energyMassResolutionIdentity: energyMass?.massResolutionIdentity ?? null, energyMassResolutionMethodVersion: energyMass?.massResolutionIdentity !== stage02Mass?.massResolutionIdentity ? STRENGTH_ENERGY_MASS_RESOLUTION_V1 : null } }]
       : []),
     ...(metFallbackKcal !== null && Number.isFinite(metFallbackKcal) && metFallbackKcal >= 0
       ? [{ source: "bodycast-strength-met-fallback" as const, sourceIdentity: `strength-met:${input.session.id}:${modelDate}`, sourceFingerprint: stableSha256(`${inputFingerprint}|${modelDay?.dynamicRmrKcalPerDay}`), valueKcal: metFallbackKcal, provenance: { modelEpisodeId: episode?.id ?? null, modelVersion: modelDay?.modelVersion ?? null, modelDate, dynamicRmrKcalPerDay: modelDay?.dynamicRmrKcalPerDay ?? null, massKg: bodyMassKg } }]

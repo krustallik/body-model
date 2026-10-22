@@ -195,6 +195,7 @@ export function selectedActiveEnergySourceLabel(source: string, uk: boolean): st
 }
 
 export function formatSelectedActiveEnergyText(input: {
+  status?: "current" | "pending" | "unavailable";
   kcal: number | null | undefined;
   source: string | null | undefined;
   fullCoverage: boolean | null | undefined;
@@ -202,6 +203,9 @@ export function formatSelectedActiveEnergyText(input: {
   deviceKcalUnused?: number | null;
 }): string {
   const { uk } = input;
+  if (input.status === "pending") {
+    return uk ? "Оновлення розрахунку" : "Calculation updating";
+  }
   const kcalText = formatTrainingKcal(input.kcal, uk ? "uk" : "en");
   if (kcalText !== null) {
     const source = selectedActiveEnergySourceLabel(input.source ?? "unavailable", uk);

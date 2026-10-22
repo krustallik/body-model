@@ -66,9 +66,13 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'Workout' "$DOCKER_EXEC_INPUT" || exit 93
   grep -Fq 'sourceType' "$DOCKER_EXEC_INPUT" || exit 91
   grep -Fq 'count(DISTINCT workout_id)' "$DOCKER_EXEC_INPUT" || exit 90
-  grep -Fq "2026-10-21 22:00:00+00" "$DOCKER_EXEC_INPUT" || exit 89
+  grep -Fq '"StrengthDiarySession"' "$DOCKER_EXEC_INPUT" || exit 89
+  grep -Fq '"accountingTimeZone"' "$DOCKER_EXEC_INPUT" || exit 88
+  grep -Fq "to_char(" "$DOCKER_EXEC_INPUT" || exit 87
+  grep -Fq 'TIMESTAMPTZ '\''2026-10-21 00:00:00+00'\''' "$DOCKER_EXEC_INPUT" || exit 86
+  if grep -Fq '"matchStatus" = '\''UNMATCHED'\''' "$DOCKER_EXEC_INPUT"; then exit 85; fi
   if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|5|1}"
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|5|2}"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -159,7 +163,7 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
-    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|5|1}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|5|2}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
@@ -204,8 +208,9 @@ assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_training_wor
 assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_workout_alias_source_type 6
 assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_session_alias_source_type 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_distinct_workout_ids_with_available_energy 6
-assert_field "$CLEAN_REPORT" energy_diagnostic_distinct_workout_ids_before_strength_session_local_date 5
-assert_field "$CLEAN_REPORT" energy_diagnostic_distinct_workout_ids_on_or_after_strength_session_local_date 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_target_strength_session_scope_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_canonical_events_before_target_strength_local_date 5
+assert_field "$CLEAN_REPORT" energy_diagnostic_canonical_events_on_or_after_target_strength_local_date 2
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes

@@ -179,6 +179,17 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain("BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT");
     expect(deploySh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");
     expect(deploySh).toContain('bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving');
+
+    const migrationFreeCutoverAt = deploySh.indexOf(
+      'if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then',
+      candidateStartAt,
+    );
+    const migrationFreeCutoverBlock = deploySh.slice(
+      migrationFreeCutoverAt,
+      deploySh.indexOf('\nif [[ "$BODYCAST_NON_SERVING_DEPLOY"', migrationFreeCutoverAt),
+    );
+    expect(migrationFreeCutoverBlock).toContain('BODYCAST_DEPLOY_SHA="$DEPLOY_SHA"');
+    expect(migrationFreeCutoverBlock).not.toMatch(/(?:^|\s)DEPLOY_SHA="\$DEPLOY_SHA"/);
   });
 
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {

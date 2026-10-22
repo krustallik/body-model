@@ -46,6 +46,68 @@ safe_path_sample() {
   if (( count == 0 )); then printf 'none'; elif (( count > 20 )); then printf ';[additional paths omitted]'; fi
 }
 
+read_only_energy_diagnostic_inventory() {
+  local server_ip inventory
+  server_ip="$(docker inspect --format '{{ with index .NetworkSettings.Networks "bodycast-backend-prod" }}{{.IPAddress}}{{end}}' bodycast-db-prod 2>/dev/null)" || return 1
+  [[ "$server_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  inventory="$(docker exec --interactive bodycast-db-prod bash -s -- "$server_ip" 2>/dev/null <<'BASH'
+set -Eeuo pipefail
+server_ip="$1"
+[[ "${POSTGRES_USER:-}" == "bodycast" && -n "${POSTGRES_PASSWORD:-}" ]] || exit 1
+[[ "$POSTGRES_PASSWORD" != *$'\n'* && "$POSTGRES_PASSWORD" != *$'\r'* ]] || exit 1
+umask 077
+passfile="$(mktemp /tmp/bodycast-checkout-diagnostic.XXXXXX)"
+trap 'rm -f -- "$passfile"' EXIT
+chmod 600 "$passfile"
+escaped_password="${POSTGRES_PASSWORD//\\/\\\\}"
+escaped_password="${escaped_password//:/\\:}"
+printf '%s:%s:%s:%s:%s\n' "$server_ip" 5432 bodycast "$POSTGRES_USER" "$escaped_password" > "$passfile"
+query="$(cat <<'SQL'
+WITH current_events AS (
+  SELECT e."id",
+    bool_or(w."supersededByWorkoutId" IS NOT NULL) AS has_superseded_workout,
+    bool_or(w."supersededByWorkoutId" IS NULL) AS has_current_workout,
+    bool_or(lower(btrim(w."type")) = 'stair climbing') AS has_stair_climbing_workout,
+    bool_or(lower(btrim(w."type")) = 'traditional strength training') AS has_strength_training_workout
+  FROM "ActiveEnergyEventAlias" AS a
+  JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
+  JOIN "Workout" AS w ON w."id" = a."workoutId"
+  WHERE a."profileId" = 1
+    AND a."sourceType" IN ('workout', 'strength-session')
+    AND a."workoutId" IS NOT NULL
+    AND w."hiddenFromHistory" = false
+    AND e."isStale" = false
+    AND e."supersededByEventId" IS NULL
+    AND e."currentSource" IS NOT NULL
+    AND e."currentSource" <> 'unavailable'
+    AND e."currentKcal" IS NOT NULL
+    AND e."currentKcal" >= 0
+    AND e."currentKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')
+    AND e."currentResolutionFingerprint" ~ '^[a-f0-9]{64}$'
+  GROUP BY e."id"
+)
+SELECT count(*),
+  count(*) FILTER (WHERE has_superseded_workout),
+  count(*) FILTER (WHERE has_current_workout),
+  count(*) FILTER (WHERE has_superseded_workout AND has_current_workout),
+  count(*) FILTER (WHERE has_stair_climbing_workout),
+  count(*) FILTER (WHERE has_strength_training_workout)
+FROM current_events
+SQL
+)"
+PGPASSFILE="$passfile" \
+PGAPPNAME=bodycast-production-checkout-diagnostic \
+PGCONNECT_TIMEOUT=5 \
+PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
+  psql --no-psqlrc --quiet --tuples-only --no-align --field-separator='|' --no-password \
+    --set=ON_ERROR_STOP=1 --host "$server_ip" --username="$POSTGRES_USER" --dbname=bodycast \
+    --command "BEGIN READ ONLY; $query; ROLLBACK"
+BASH
+)" || return 1
+  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
+  printf '%s\n' "$inventory"
+}
+
 git_ro() {
   GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.untrackedCache=false "$@"
 }
@@ -225,6 +287,7 @@ emit git_index_owner_matches_effective_user "$(bool "$([[ "$INDEX_UID" == "$EUID
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   emit docker_daemon_available yes
+  production_db_ready=false
   caddy_named_inventory="unknown"
   if caddy_names="$(docker ps -a --filter "name=caddy" --format '{{.Names}}' 2>/dev/null)"; then
     caddy_named_inventory="none"
@@ -277,6 +340,9 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit "${key}_health" "$container_health"
     emit "${key}_restart_policy" "$restart_policy"
     emit "${key}_release_sha" "$release_sha"
+    if [[ "$container" == "bodycast-db-prod" && "$container_state" == "running" && "$container_health" == "healthy" ]]; then
+      production_db_ready=true
+    fi
   done
   deploy_rollback_image="bodycast-app:deploy-rollback"
   if deploy_rollback_rows="$(docker image ls --no-trunc --format '{{.ID}}' "$deploy_rollback_image" 2>/dev/null)"; then
@@ -300,6 +366,24 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_state unknown
     emit deploy_rollback_pin_image_id unavailable
   fi
+  if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training <<< "$energy_inventory"
+    emit energy_diagnostic_inventory_status available
+    emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
+    emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
+    emit energy_diagnostic_events_with_current_workout_alias "$energy_with_current"
+    emit energy_diagnostic_events_with_both_workout_alias_kinds "$energy_with_both_alias_kinds"
+    emit energy_diagnostic_events_with_stair_climbing_workout_type "$energy_stair_climbing"
+    emit energy_diagnostic_events_with_strength_training_workout_type "$energy_strength_training"
+  else
+    emit energy_diagnostic_inventory_status unavailable
+    emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
+    emit energy_diagnostic_events_with_superseded_workout_alias unavailable
+    emit energy_diagnostic_events_with_current_workout_alias unavailable
+    emit energy_diagnostic_events_with_both_workout_alias_kinds unavailable
+    emit energy_diagnostic_events_with_stair_climbing_workout_type unavailable
+    emit energy_diagnostic_events_with_strength_training_workout_type unavailable
+  fi
 else
   emit docker_daemon_available no
   emit bodycast_app_prod_found unknown
@@ -308,6 +392,13 @@ else
   emit caddy_named_container_inventory unknown
   emit deploy_rollback_pin_state unknown
   emit deploy_rollback_pin_image_id unavailable
+  emit energy_diagnostic_inventory_status unavailable
+  emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
+  emit energy_diagnostic_events_with_superseded_workout_alias unavailable
+  emit energy_diagnostic_events_with_current_workout_alias unavailable
+  emit energy_diagnostic_events_with_both_workout_alias_kinds unavailable
+  emit energy_diagnostic_events_with_stair_climbing_workout_type unavailable
+  emit energy_diagnostic_events_with_strength_training_workout_type unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

@@ -33,9 +33,15 @@ docker run --detach --network "$network" --name "$container" \
 container_created=1
 expected_image_id="$(docker image inspect --format '{{.Id}}' "$image")"
 
+server_ip="$(docker inspect --format '{{ with index .NetworkSettings.Networks "bodycast-backend-prod" }}{{.IPAddress}}{{end}}' "$container")"
+[[ "$server_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "Disposable PostgreSQL did not receive the expected Docker network address." >&2
+  exit 1
+}
+
 ready=0
 for _ in {1..60}; do
-  if docker exec "$container" pg_isready --quiet --username=bodycast --dbname=bodycast; then
+  if docker exec "$container" pg_isready --quiet --host "$server_ip" --username=bodycast --dbname=bodycast; then
     ready=1
     break
   fi
@@ -46,12 +52,6 @@ if (( ! ready )); then
   exit 1
 fi
 
-server_ip="$(docker inspect --format '{{ with index .NetworkSettings.Networks "bodycast-backend-prod" }}{{.IPAddress}}{{end}}' "$container")"
-[[ "$server_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-  echo "Disposable PostgreSQL did not receive the expected Docker network address." >&2
-  exit 1
-}
-
 if docker exec "$container" psql --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
   --host "$server_ip" --username=bodycast --dbname=bodycast --command 'SELECT 1' \
   >"$scratch/missing-password.log" 2>&1; then
@@ -60,6 +60,7 @@ if docker exec "$container" psql --no-psqlrc --quiet --tuples-only --no-align --
 fi
 if ! grep -Fq 'fe_sendauth: no password supplied' "$scratch/missing-password.log"; then
   echo "The original TCP command failed for a reason other than the reported missing-password error." >&2
+  cat "$scratch/missing-password.log" >&2
   exit 1
 fi
 

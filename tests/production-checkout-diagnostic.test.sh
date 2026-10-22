@@ -70,9 +70,13 @@ if [[ "$1" == exec ]]; then
   grep -Fq '"accountingTimeZone"' "$DOCKER_EXEC_INPUT" || exit 88
   grep -Fq "to_char(" "$DOCKER_EXEC_INPUT" || exit 87
   grep -Fq 'TIMESTAMPTZ '\''2026-10-21 00:00:00+00'\''' "$DOCKER_EXEC_INPUT" || exit 86
+  grep -Fq '"status" = '\''COMPLETED'\''' "$DOCKER_EXEC_INPUT" || exit 84
+  grep -Fq '"entryMode" = '\''LIVE'\''' "$DOCKER_EXEC_INPUT" || exit 83
+  grep -Fq '"matchedWorkoutId" IS NULL' "$DOCKER_EXEC_INPUT" || exit 82
+  grep -Fq 'WHERE target_session_matches = 1' "$DOCKER_EXEC_INPUT" || exit 81
   if grep -Fq '"matchStatus" = '\''UNMATCHED'\''' "$DOCKER_EXEC_INPUT"; then exit 85; fi
   if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|5|2}"
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|5|2}"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -163,7 +167,7 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
-    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|5|2}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|5|2}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
@@ -208,6 +212,11 @@ assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_training_wor
 assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_workout_alias_source_type 6
 assert_field "$CLEAN_REPORT" energy_diagnostic_events_with_strength_session_alias_source_type 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_distinct_workout_ids_with_available_energy 6
+assert_field "$CLEAN_REPORT" energy_diagnostic_strength_session_utc_window_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_strength_session_utc_window_missing_timezone 0
+assert_field "$CLEAN_REPORT" energy_diagnostic_strength_session_target_local_minute_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_strength_session_completed_target_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_strength_session_live_target_matches 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_target_strength_session_scope_matches 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_canonical_events_before_target_strength_local_date 5
 assert_field "$CLEAN_REPORT" energy_diagnostic_canonical_events_on_or_after_target_strength_local_date 2

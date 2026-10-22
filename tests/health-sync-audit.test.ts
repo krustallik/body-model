@@ -1,11 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { create, deleteMany } = vi.hoisted(() => ({
-  create: vi.fn().mockResolvedValue({ id: 1 }),
-  deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
-}));
+const { create, queryRaw, transaction } = vi.hoisted(() => {
+  const queryRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    void strings;
+    void values;
+    return [];
+  });
+  return {
+    create: vi.fn().mockResolvedValue({ id: 1 }),
+    queryRaw,
+    transaction: vi.fn(async (
+      work: (tx: { $queryRaw: typeof queryRaw }) => Promise<unknown>,
+      options: unknown,
+    ) => {
+      void options;
+      return work({ $queryRaw: queryRaw });
+    }),
+  };
+});
 
-vi.mock("@/lib/db/prisma", () => ({ prisma: { healthSyncAudit: { create, deleteMany } } }));
+vi.mock("@/lib/db/prisma", () => ({ prisma: { $transaction: transaction, healthSyncAudit: { create } } }));
 
 import { pruneExpiredHealthSyncAudits, recordHealthSyncAudit } from "@/modules/health/health-sync-audit";
 
@@ -30,14 +44,18 @@ describe("health sync audit retention", () => {
         receivedAt,
       },
     });
-    expect(deleteMany).not.toHaveBeenCalled();
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 
-  it("removes audits older than 30 days during periodic maintenance", async () => {
+  it("runs the 30-day retention cutoff in a bounded periodic-cleanup transaction", async () => {
     const referenceDate = new Date("2026-09-19T12:00:00.000Z");
     await expect(pruneExpiredHealthSyncAudits(referenceDate)).resolves.toBe(true);
-    expect(deleteMany).toHaveBeenCalledWith({
-      where: { receivedAt: { lt: new Date("2026-08-20T12:00:00.000Z") } },
-    });
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(queryRaw.mock.calls[0]?.[0].join(" ")).toContain('DELETE FROM public."HealthSyncAudit"');
+    expect(queryRaw.mock.calls[0]?.[1]).toEqual(new Date("2026-08-20T12:00:00.000Z"));
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
+      maxWait: 10_000,
+      timeout: 120_000,
+    }));
   });
 });

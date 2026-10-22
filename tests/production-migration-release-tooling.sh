@@ -164,6 +164,8 @@ cp "$ROOT/scripts/production-route-primitives.sh" "$FIXTURE_ROOT/scripts/product
 cp "$ROOT/scripts/production-v4-recovered-release.sh" "$FIXTURE_ROOT/scripts/production-v4-recovered-release.sh"
 cp "$DEPLOY" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$FIXTURE_ROOT/scripts/production-release-marker.sh"
+cp "$ROOT/scripts/production-db-identity.sh" "$FIXTURE_ROOT/scripts/production-db-identity.sh"
+cp "$ROOT/scripts/production-deploy-attestation.sh" "$FIXTURE_ROOT/scripts/production-deploy-attestation.sh"
 cp "$ROOT/scripts/production-schema-deploy-handoff.mjs" "$FIXTURE_ROOT/scripts/production-schema-deploy-handoff.mjs"
 cp "$ROOT/scripts/production-app-capabilities.mjs" "$FIXTURE_ROOT/scripts/production-app-capabilities.mjs"
 cp "$ROOT/scripts/production-app-capabilities.json" "$FIXTURE_ROOT/scripts/production-app-capabilities.json"

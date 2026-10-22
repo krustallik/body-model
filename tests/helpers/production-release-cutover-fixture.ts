@@ -154,6 +154,10 @@ if [[ "$1" == "inspect" && "$2" == "--format" && "$4" == "bodycast-db-prod" ]]; 
   case "$3" in
     "{{.Id}}") printf '%s\n' "$PRODUCTION_DB_CONTAINER_ID"; exit 0 ;;
     "{{.Image}}") printf '%s\n' "$PRODUCTION_DB_IMAGE_ID"; exit 0 ;;
+    *'{{.Id}}|{{.Name}}|{{with index .NetworkSettings.Networks'*)
+      printf '%s|/bodycast-db-prod|172.20.0.2\n' "$PRODUCTION_DB_CONTAINER_ID"
+      exit 0
+      ;;
     *".IPAddress"*) printf '%s\n' "172.20.0.2"; exit 0 ;;
   esac
 fi

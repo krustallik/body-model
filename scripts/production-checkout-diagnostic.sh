@@ -63,12 +63,9 @@ escaped_password="${POSTGRES_PASSWORD//\\/\\\\}"
 escaped_password="${escaped_password//:/\\:}"
 printf '%s:%s:%s:%s:%s\n' "$server_ip" 5432 bodycast "$POSTGRES_USER" "$escaped_password" > "$passfile"
 query="$(cat <<'SQL'
-WITH current_events AS (
-  SELECT e."id",
-    bool_or(w."supersededByWorkoutId" IS NOT NULL) AS has_superseded_workout,
-    bool_or(w."supersededByWorkoutId" IS NULL) AS has_current_workout,
-    bool_or(lower(btrim(w."type")) = 'stair climbing') AS has_stair_climbing_workout,
-    bool_or(lower(btrim(w."type")) = 'traditional strength training') AS has_strength_training_workout
+WITH eligible_aliases AS (
+  SELECT e."id" AS event_id, a."sourceType", w."id" AS workout_id,
+    w."supersededByWorkoutId", w."type"
   FROM "ActiveEnergyEventAlias" AS a
   JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
   JOIN "Workout" AS w ON w."id" = a."workoutId"
@@ -84,14 +81,26 @@ WITH current_events AS (
     AND e."currentKcal" >= 0
     AND e."currentKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')
     AND e."currentResolutionFingerprint" ~ '^[a-f0-9]{64}$'
-  GROUP BY e."id"
+), current_events AS (
+  SELECT event_id,
+    bool_or("supersededByWorkoutId" IS NOT NULL) AS has_superseded_workout,
+    bool_or("supersededByWorkoutId" IS NULL) AS has_current_workout,
+    bool_or(lower(btrim("type")) = 'stair climbing') AS has_stair_climbing_workout,
+    bool_or(lower(btrim("type")) = 'traditional strength training') AS has_strength_training_workout,
+    bool_or("sourceType" = 'workout') AS has_workout_source_alias,
+    bool_or("sourceType" = 'strength-session') AS has_strength_session_source_alias
+  FROM eligible_aliases
+  GROUP BY event_id
 )
 SELECT count(*),
   count(*) FILTER (WHERE has_superseded_workout),
   count(*) FILTER (WHERE has_current_workout),
   count(*) FILTER (WHERE has_superseded_workout AND has_current_workout),
   count(*) FILTER (WHERE has_stair_climbing_workout),
-  count(*) FILTER (WHERE has_strength_training_workout)
+  count(*) FILTER (WHERE has_strength_training_workout),
+  count(*) FILTER (WHERE has_workout_source_alias),
+  count(*) FILTER (WHERE has_strength_session_source_alias),
+  (SELECT count(DISTINCT workout_id) FROM eligible_aliases)
 FROM current_events
 SQL
 )"
@@ -104,7 +113,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
-  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$ ]] || return 1
   printf '%s\n' "$inventory"
 }
 
@@ -367,7 +376,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
-    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training <<< "$energy_inventory"
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
     emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
@@ -375,6 +384,9 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_both_workout_alias_kinds "$energy_with_both_alias_kinds"
     emit energy_diagnostic_events_with_stair_climbing_workout_type "$energy_stair_climbing"
     emit energy_diagnostic_events_with_strength_training_workout_type "$energy_strength_training"
+    emit energy_diagnostic_events_with_workout_alias_source_type "$energy_workout_source"
+    emit energy_diagnostic_events_with_strength_session_alias_source_type "$energy_strength_session_source"
+    emit energy_diagnostic_distinct_workout_ids_with_available_energy "$energy_workout_ids"
   else
     emit energy_diagnostic_inventory_status unavailable
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
@@ -383,6 +395,9 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_events_with_both_workout_alias_kinds unavailable
     emit energy_diagnostic_events_with_stair_climbing_workout_type unavailable
     emit energy_diagnostic_events_with_strength_training_workout_type unavailable
+    emit energy_diagnostic_events_with_workout_alias_source_type unavailable
+    emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
+    emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
   fi
 else
   emit docker_daemon_available no
@@ -399,6 +414,9 @@ else
   emit energy_diagnostic_events_with_both_workout_alias_kinds unavailable
   emit energy_diagnostic_events_with_stair_climbing_workout_type unavailable
   emit energy_diagnostic_events_with_strength_training_workout_type unavailable
+  emit energy_diagnostic_events_with_workout_alias_source_type unavailable
+  emit energy_diagnostic_events_with_strength_session_alias_source_type unavailable
+  emit energy_diagnostic_distinct_workout_ids_with_available_energy unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

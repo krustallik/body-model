@@ -54,7 +54,8 @@ bodycast_assert_prisma_database_identity_matches() {
   local expected_container_identity="${1:-}" expected_endpoint actual_output actual_identity expected_endpoint_identity
   expected_endpoint_identity="$(bodycast_production_db_endpoint_from_identity "$expected_container_identity")" || return 1
   actual_output="$(docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/docker-compose.prod.yml" \
-    --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-prisma-database-identity.mjs)" || return 1
+    --profile tools run --rm --no-deps -e "BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=$expected_endpoint_identity" \
+    --entrypoint node migrate /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --assert-prisma-database-identity)" || return 1
   actual_identity="$(printf '%s\n' "$actual_output" | sed -n 's/^BODYCAST_PRISMA_DB_IDENTITY=//p')"
   [[ "$actual_identity" == "$expected_endpoint_identity" ]] || {
     echo "Prisma DATABASE_URL does not resolve to the exact bodycast-db-prod cluster/database endpoint." >&2

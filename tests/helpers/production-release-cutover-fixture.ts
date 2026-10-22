@@ -272,7 +272,7 @@ if [[ "$1" == "compose" ]]; then
     event "forbidden-db-start"
     exit 80
   fi
-  if [[ "$joined" == *"production-prisma-database-identity.mjs"* ]]; then
+  if [[ "$joined" == *"--assert-prisma-database-identity"* ]]; then
     event "prisma-db-identity"
     printf '%s\n' "BODYCAST_PRISMA_DB_IDENTITY=$PRODUCTION_DB_ENDPOINT_IDENTITY"
     exit 0

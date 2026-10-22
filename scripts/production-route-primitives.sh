@@ -179,8 +179,10 @@ bodycast_probe_public_maintenance() {
 }
 
 bodycast_probe_public_candidate_observational() {
-  local headers body status endpoint diagnostic_id
-  for endpoint in /api/health /api/readiness; do
+  local headers body status diagnostic_id endpoint
+  local api_endpoints=(/api/health)
+  if [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]]; then api_endpoints+=(/api/readiness); fi
+  for endpoint in "${api_endpoints[@]}"; do
     headers="$(mktemp)"
     body="$(mktemp)"
     if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
@@ -192,6 +194,20 @@ bodycast_probe_public_candidate_observational() {
     fi
     rm -f -- "$headers" "$body"
   done
+
+  # These P1 acceptance checks are specific to the migration-free app-only
+  # release. Ordinary serving continues to use the existing public health gate.
+  [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]] || return 0
+  headers="$(mktemp)"
+  body="$(mktemp)"
+  if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
+    --dump-header "$headers" --output "$body" --write-out '%{http_code}' "https://${APP_HOST}/api/readiness")" \
+      || [[ "$status" != "200" ]] || ! grep -Fq '"status":"ok"' "$body"; then
+    rm -f -- "$headers" "$body"
+    echo "Public candidate API probe failed for /api/readiness." >&2
+    return 1
+  fi
+  rm -f -- "$headers" "$body"
 
   headers="$(mktemp)"
   body="$(mktemp)"

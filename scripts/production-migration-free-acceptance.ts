@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { ACTIVE_ENERGY_SELECTION_POLICY_V1 } from "@/model/activity/canonical-activity-policy-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";

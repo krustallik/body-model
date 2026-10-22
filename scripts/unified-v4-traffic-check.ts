@@ -2,8 +2,6 @@ import { createInterface } from "node:readline";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
-import { inventoryV4RecoveryRawSourcesV1 } from "./production-v4-recovery-evidence";
-import { evaluateMigrationFreeEnergyAcceptanceV1 } from "./production-migration-free-acceptance";
 
 function profileIdArg(): number {
   const index = process.argv.indexOf("--profile-id");
@@ -15,6 +13,7 @@ function profileIdArg(): number {
 const profileId = profileIdArg();
 const holdCurrentnessFence = process.argv.includes("--hold-currentness-fence");
 const preTrainingMigration = process.argv.includes("--pre-training-migration");
+const assertPrismaDatabaseIdentity = process.argv.includes("--assert-prisma-database-identity");
 const captureRawInputFingerprint = process.argv.includes("--capture-raw-input-fingerprint");
 const waitTrainingRefreshCurrent = process.argv.includes("--wait-training-refresh-current");
 const expectedRawInputFingerprintIndex = process.argv.indexOf("--expected-raw-input-fingerprint");
@@ -26,6 +25,10 @@ const expectedHealthSyncAuditFingerprint = expectedHealthSyncAuditFingerprintInd
 const expectedPrismaDatabaseIdentity = process.env.BODYCAST_EXPECTED_PRISMA_DB_IDENTITY ?? null;
 if (captureRawInputFingerprint && (holdCurrentnessFence || preTrainingMigration || profileId !== 1)) {
   throw new Error("Raw-input fingerprint capture is restricted to standalone production profile 1 evidence.");
+}
+if (assertPrismaDatabaseIdentity
+  && (holdCurrentnessFence || captureRawInputFingerprint || waitTrainingRefreshCurrent || preTrainingMigration || profileId !== 1)) {
+  throw new Error("Prisma database identity assertion is restricted to standalone production profile 1 evidence.");
 }
 if (waitTrainingRefreshCurrent
   && (holdCurrentnessFence || captureRawInputFingerprint || preTrainingMigration || profileId !== 1)) {
@@ -42,7 +45,7 @@ if (expectedHealthSyncAuditFingerprintIndex >= 0
 if ((expectedRawInputFingerprintIndex >= 0) !== (expectedHealthSyncAuditFingerprintIndex >= 0)) {
   throw new Error("Migration-free raw integrity requires both source and HealthSyncAudit fingerprints.");
 }
-if ((captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null)
+if ((assertPrismaDatabaseIdentity || captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null)
   && !expectedPrismaDatabaseIdentity) {
   throw new Error("Migration-free production checks require the exact Prisma database identity captured from bodycast-db-prod.");
 }
@@ -81,14 +84,16 @@ async function readPrismaDatabaseIdentity(client: typeof prisma): Promise<string
 }
 
 async function assertPrismaDatabaseIdentityV1(client: typeof prisma) {
-  if (!expectedPrismaDatabaseIdentity) return;
+  if (!expectedPrismaDatabaseIdentity) throw new Error("The expected Prisma database identity is required.");
   const actual = await readPrismaDatabaseIdentity(client);
   if (actual !== expectedPrismaDatabaseIdentity) {
     throw new Error("Migration-free serving is blocked: the Prisma DATABASE_URL target differs from bodycast-db-prod.");
   }
+  return actual;
 }
 
 async function assertMigrationFreeEnergyAcceptanceV1(client: typeof prisma) {
+  const { evaluateMigrationFreeEnergyAcceptanceV1 } = await import("./production-migration-free-acceptance");
   const workoutAliases = await client.activeEnergyEventAlias.findMany({
     where: { profileId, sourceType: { in: ["workout", "strength-session"] } },
     select: {
@@ -144,6 +149,14 @@ async function waitForRouteCommit(timeoutMs: number): Promise<string> {
 }
 
 const verify = async () => {
+  if (assertPrismaDatabaseIdentity) {
+    const identity = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      return assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 15_000 });
+    process.stdout.write(`BODYCAST_PRISMA_DB_IDENTITY=${identity}\n`);
+    return;
+  }
   if (waitTrainingRefreshCurrent) {
     await assertPrismaDatabaseIdentityV1(prisma);
     const startedAt = Date.now();
@@ -175,6 +188,7 @@ const verify = async () => {
     throw new Error("Timed out waiting for the app's standard durable Training refresh worker; no queue or source rows were changed.");
   }
   if (captureRawInputFingerprint) {
+    const { inventoryV4RecoveryRawSourcesV1 } = await import("./production-v4-recovery-evidence");
     const evidence = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET TRANSACTION READ ONLY`;
       await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
@@ -212,6 +226,8 @@ const verify = async () => {
   const result = await prisma.$transaction(async (tx) => {
     if (expectedRawInputFingerprint !== null) await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
     const readiness = await verifyUnifiedV4ReadyForTraffic({ profileId, client: tx });
+    // The existing readiness helper treats an absent queue row as no pending
+    // work. This release gate requires the durable row and exact generation equality.
     const trainingRefresh = await tx.trainingRefreshJob.findUnique({
       where: { profileId },
       select: { requestedGeneration: true, completedGeneration: true },
@@ -227,6 +243,7 @@ const verify = async () => {
     let rawSourceFingerprint: string | null = null;
     let healthSyncAuditFingerprint: string | null = null;
     if (expectedRawInputFingerprint !== null) {
+      const { inventoryV4RecoveryRawSourcesV1 } = await import("./production-v4-recovery-evidence");
       const rawEvidence = await inventoryV4RecoveryRawSourcesV1(tx as unknown as typeof prisma);
       rawSourceFingerprint = rawEvidence.sourceFingerprint;
       healthSyncAuditFingerprint = rawEvidence.healthSyncAuditFingerprint;

@@ -136,9 +136,6 @@ describe("serving-route commit boundary", () => {
     const routeCommit = events.indexOf("live-route-mutation:serving");
     const reload = events.indexOf("caddy-reload:serving");
     const healthProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/health");
-    const readinessProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/readiness");
-    const uiProbe = events.indexOf("public-probe:200:https://bodycast.example.test/settings/profile");
-    const historyProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
     const fenceCommit = events.indexOf("unified-v4-fence-committed");
     expect(fenceReady).toBeGreaterThanOrEqual(0);
     expect(fenceReady).toBeLessThan(finalMainFetch);
@@ -147,11 +144,9 @@ describe("serving-route commit boundary", () => {
     expect(finalMaintenanceProbe).toBeLessThan(routeCommit);
     expect(routeCommit).toBeLessThan(reload);
     expect(reload).toBeLessThan(healthProbe);
-    expect(healthProbe).toBeLessThan(readinessProbe);
-    expect(readinessProbe).toBeLessThan(uiProbe);
-    expect(uiProbe).toBeLessThan(historyProbe);
-    expect(historyProbe).toBeLessThan(fenceCommit);
-    expect(result.stdout).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=33 strength=visible");
+    expect(healthProbe).toBeLessThan(fenceCommit);
+    expect(events).not.toContain("public-probe:200:https://bodycast.example.test/api/readiness");
+    expect(events).not.toContain("public-probe:200:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("migration-context-pin");
   }, 30_000);
 
@@ -178,18 +173,27 @@ describe("serving-route commit boundary", () => {
     const refreshWait = events.indexOf("training-refresh-current");
     const fenceReady = events.indexOf("unified-v4-fence-ready");
     const schemaPreflight = events.lastIndexOf("schema-preflight-no-deps");
+    const prismaIdentityChecks = events.flatMap((event, index) => event === "prisma-db-identity" ? [index] : []);
     const routeCommit = events.indexOf("live-route-mutation:serving");
     const fenceCommit = events.indexOf("unified-v4-fence-committed");
     expect(schemaPreflight).toBeGreaterThanOrEqual(0);
+    expect(prismaIdentityChecks.length).toBeGreaterThanOrEqual(2);
+    expect(prismaIdentityChecks.at(-1)).toBeGreaterThan(schemaPreflight);
+    expect(prismaIdentityChecks.at(-1)).toBeLessThan(refreshWait);
     expect(refreshWait).toBeGreaterThan(schemaPreflight);
     expect(refreshWait).toBeLessThan(fenceReady);
     expect(fenceReady).toBeGreaterThan(schemaPreflight);
     expect(fenceReady).toBeLessThan(routeCommit);
     expect(routeCommit).toBeLessThan(fenceCommit);
+    expect(events).toContain("public-probe:200:https://bodycast.example.test/api/readiness");
+    expect(events).toContain("public-probe:200:https://bodycast.example.test/settings/profile");
+    expect(events).toContain("public-probe:200:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
+    expect(events).toContain("public-probe:200:https://bodycast.example.test/api/v1/workouts/1/stepper-diagnostic");
+    expect(result.stdout).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=33 strength=visible");
     expect(existsSync(markerPath)).toBe(false);
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("prisma migrate deploy");
     const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
-    expect(dockerLog.match(/-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=/g)).toHaveLength(2);
+    expect(dockerLog).toContain("--assert-prisma-database-identity");
     expect(dockerLog).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=bodycast|16384|7419276301947620311|bodycast|17.5|172.20.0.2|5432');
   }, 30_000);
 

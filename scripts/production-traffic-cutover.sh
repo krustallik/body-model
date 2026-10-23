@@ -668,8 +668,9 @@ restore_training_maintenance_after_fence_failure() {
 serve_training_release() {
   local expected_release_sha="$1" migration_free_serving="${2:-false}" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
-  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id require_absent_marker=false route_marker_sha
+  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha
   stepper_diagnostic_workout_id=""
+  target_strength_session_id=""
   local recovered_v4_release=false recovery_marker_path recovery_marker_digest
 
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
@@ -810,6 +811,18 @@ serve_training_release() {
         }
         continue
       fi
+      if [[ "$fence_line" == BODYCAST_TARGET_STRENGTH_SESSION_ID\ * ]]; then
+        target_strength_session_id="${fence_line#BODYCAST_TARGET_STRENGTH_SESSION_ID }"
+        [[ "$target_strength_session_id" =~ ^[1-9][0-9]*$ ]] || {
+          printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+          exec {fence_input_fd}>&-
+          if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+          exec {fence_output_fd}<&-
+          echo "Held currentness fence returned an invalid Strength session target." >&2
+          return 1
+        }
+        continue
+      fi
       if [[ "$fence_line" == BODYCAST_UNIFIED_V4_FENCE_READY\ * ]]; then
         fence_route_budget_ms="${fence_line#BODYCAST_UNIFIED_V4_FENCE_READY }"
         [[ "$fence_route_budget_ms" =~ ^[0-9]+$ && "$fence_route_budget_ms" -ge 120000 ]] || {
@@ -845,6 +858,15 @@ serve_training_release() {
     exec {fence_output_fd}<&-
     rm -f -- "$staged_route"
     echo "Migration-free serving is blocked because the held fence did not select a Stepper diagnostic target." >&2
+    return 1
+  fi
+  if [[ "$migration_free_serving" == "true" && ! "$target_strength_session_id" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    exec {fence_input_fd}>&-
+    if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
+    exec {fence_output_fd}<&-
+    rm -f -- "$staged_route"
+    echo "Migration-free serving is blocked because the held fence did not select the accepted Strength session." >&2
     return 1
   fi
 
@@ -902,6 +924,7 @@ serve_training_release() {
       return 1
     fi
   elif ! BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID="$stepper_diagnostic_workout_id" \
+      BODYCAST_TARGET_STRENGTH_SESSION_ID="$target_strength_session_id" \
       publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true "$require_absent_marker"; then
     printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
     exec {fence_input_fd}>&-

@@ -133,7 +133,7 @@ function selectedStrengthCandidateIsCurrent(
 export function evaluateMigrationFreeEnergyAcceptanceV1(input: {
   workoutAliases: readonly MigrationFreeWorkoutAliasV1[];
   strengthSessions: readonly MigrationFreeStrengthSessionV1[];
-}): { currentWorkoutResolutions: number; currentStepperResolutions: number; strengthSessionCurrent: true; diagnosticWorkoutId: number } {
+}): { currentWorkoutResolutions: number; currentStepperResolutions: number; strengthSessionCurrent: true; diagnosticWorkoutId: number; targetStrengthSessionId: number } {
   const currentWorkoutEvents = new Map<number, MigrationFreeEnergyEventV1>();
   const currentStepperByWorkoutId = new Map<number, MigrationFreeEnergyEventV1>();
   const stepperWorkoutIds = new Set<number>();
@@ -225,5 +225,6 @@ export function evaluateMigrationFreeEnergyAcceptanceV1(input: {
     currentStepperResolutions: currentStepperByWorkoutId.size,
     strengthSessionCurrent: true,
     diagnosticWorkoutId,
+    targetStrengthSessionId: targetSession.id,
   };
 }

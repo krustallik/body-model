@@ -179,7 +179,7 @@ bodycast_probe_public_maintenance() {
 }
 
 bodycast_probe_public_candidate_observational() {
-  local headers body status diagnostic_id endpoint
+  local headers body status diagnostic_id endpoint target_strength_session_id
   local api_endpoints=(/api/health)
   if [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]]; then api_endpoints+=(/api/readiness); fi
   for endpoint in "${api_endpoints[@]}"; do
@@ -222,34 +222,34 @@ bodycast_probe_public_candidate_observational() {
 
   headers="$(mktemp)"
   body="$(mktemp)"
+  target_strength_session_id="${BODYCAST_TARGET_STRENGTH_SESSION_ID:-}"
+  [[ "$target_strength_session_id" =~ ^[1-9][0-9]*$ ]] || {
+    rm -f -- "$headers" "$body"
+    echo "Migration-free candidate probe has no accepted Strength session target." >&2
+    return 1
+  }
   if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 20 \
     --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
     "https://${APP_HOST}/api/v1/days?to=2026-10-22&limit=100&offset=0")" \
       || [[ "$status" != "200" ]] \
-      || ! node --input-type=module - "$body" <<'NODE'
+      || ! BODYCAST_TARGET_STRENGTH_SESSION_ID="$target_strength_session_id" node --input-type=module - "$body" <<'NODE'
 import { readFileSync } from "node:fs";
 const response = JSON.parse(readFileSync(process.argv[2], "utf8"));
 if (!Array.isArray(response?.trainingDays)) throw new Error("History API omitted Training facts.");
 const events = response.trainingDays.flatMap((day) => Array.isArray(day?.events) ? day.events : []);
 const available = (event) => Number.isFinite(event?.activeEnergyKcal)
   && event.activeEnergyKcal >= 0 && event.energySource !== "unavailable";
-const workoutEnergy = events.filter((event) => available(event)
-  && (event.source === "workout" || event.source === "matched"));
-const minuteInBodyCastTime = (value) => {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Bratislava", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(date);
-  const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${fields.year}-${fields.month}-${fields.day}T${fields.hour}:${fields.minute}`;
-};
-const strength = events.find((event) => available(event)
-  && minuteInBodyCastTime(event.occurrenceAt) === "2026-10-22T14:40"
+const targetStrengthSessionId = Number(process.env.BODYCAST_TARGET_STRENGTH_SESSION_ID);
+if (!Number.isSafeInteger(targetStrengthSessionId) || targetStrengthSessionId < 1) {
+  throw new Error("History API probe has no valid accepted Strength session target.");
+}
+const targetStrength = events.find((event) => event.diarySessionId === targetStrengthSessionId
   && (event.source === "diary" || event.source === "matched")
-  && ["shadow-diary-estimate", "bodycast-strength-estimate"].includes(event.energySource));
-if (workoutEnergy.length < 33 || !strength) {
+  && available(event) && event.energySource === "bodycast-strength-estimate");
+const workoutEnergy = events.filter((event) => available(event)
+  && (event.source === "workout" || event.source === "matched")
+  && event.diarySessionId !== targetStrengthSessionId);
+if (workoutEnergy.length !== 33 || !targetStrength) {
   throw new Error("History API does not expose the current historical Training energy and target Strength kcal.");
 }
 process.stdout.write(`BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=${workoutEnergy.length} strength=visible\n`);

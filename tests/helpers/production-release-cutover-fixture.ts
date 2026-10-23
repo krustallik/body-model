@@ -355,6 +355,7 @@ if [[ "$joined" == *" run --rm --no-deps "* && "$joined" == *"--entrypoint node 
       if [[ "\${FAIL_TRAINING_V4_CHECK:-0}" == "1" ]]; then event "unified-v4-fence-rejected"; exit 42; fi
       if [[ "$joined" == *"--expected-raw-input-fingerprint"* ]]; then
         printf '%s\n' 'BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID 1'
+        printf '%s\n' 'BODYCAST_TARGET_STRENGTH_SESSION_ID 900'
       fi
       event "unified-v4-fence-ready"
       printf '%s\n' 'BODYCAST_UNIFIED_V4_FENCE_READY 160000'
@@ -710,8 +711,10 @@ elif [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
       [[ -z "$history_events" ]] || history_events+=','
       history_events+="{\"eventId\":\"workout-$event_id\",\"source\":\"workout\",\"type\":\"Running\",\"occurrenceAt\":\"2026-10-21T12:00:00.000Z\",\"activeEnergyKcal\":100,\"energySource\":\"garmin-active-kcal\"}"
     done
-    history_events+=',{"eventId":"strength-900","source":"diary","type":"Traditional Strength Training","occurrenceAt":"2026-10-22T12:40:00.000Z","activeEnergyKcal":245.5,"energySource":"shadow-diary-estimate"}'
-    response_body="{\"trainingDays\":[{\"date\":\"2026-10-21\",\"events\":[$history_events]}]}"
+    strength_session_id=900
+    if [[ "\${FAIL_CANDIDATE_STRENGTH_SESSION_MATCH:-0}" == "1" ]]; then strength_session_id=901; fi
+    strength_event="{\"eventId\":\"workout-34\",\"source\":\"matched\",\"type\":\"Traditional Strength Training\",\"occurrenceAt\":\"2026-10-22T12:30:00.000Z\",\"activeEnergyKcal\":245.5,\"energySource\":\"bodycast-strength-estimate\",\"diarySessionId\":$strength_session_id}"
+    response_body="{\"trainingDays\":[{\"date\":\"2026-10-21\",\"events\":[$history_events]},{\"date\":\"2026-10-22\",\"events\":[$strength_event]}]}"
   fi
   if [[ "$url" == */api/v1/workouts/*/stepper-diagnostic ]]; then
     response_body='{"diagnostic":{"activeEnergyResolution":{},"programEnergy":{}}}'

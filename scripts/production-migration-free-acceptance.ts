@@ -152,44 +152,68 @@ export function evaluateMigrationFreeEnergyAcceptanceV1(input: {
     }
   }
 
-  if (currentWorkoutEvents.size !== 33) {
-    throw new Error(`Migration-free serving is blocked: ${currentWorkoutEvents.size}/33 historical Workout energy resolutions are current and available.`);
-  }
   if (stepperWorkoutIds.size !== 12 || currentStepperByWorkoutId.size !== 12) {
     throw new Error(`Migration-free serving is blocked: ${currentStepperByWorkoutId.size}/12 historical Stepper resolutions are current and available.`);
   }
 
   const targetSessions = input.strengthSessions.filter((session) => {
-    const instant = session.effectiveAccountingAt ?? session.webStartedAt;
-    return instant !== null && session.accountingTimeZone !== null
-      && localMinute(instant, session.accountingTimeZone) === "2026-10-22T14:40";
+    return session.webStartedAt !== null && session.accountingTimeZone !== null
+      && localMinute(session.webStartedAt, session.accountingTimeZone) === "2026-10-22T14:40";
   });
   if (targetSessions.length !== 1) {
-    throw new Error(`Migration-free serving is blocked: expected one unmatched LIVE Strength session at local 2026-10-22 14:40, found ${targetSessions.length}.`);
+    throw new Error(`Migration-free serving is blocked: expected one LIVE Strength session started at local 2026-10-22 14:40, found ${targetSessions.length}.`);
   }
 
   const targetSession = targetSessions[0]!;
   const intervalStart = targetSession.webStartedAt ?? targetSession.effectiveAccountingAt;
   const completedSetCount = targetSession.exercises.flatMap((exercise) => exercise.sets)
     .filter((set) => set.completedAt !== null).length;
+  const isUnmatched = targetSession.matchStatus === "UNMATCHED" && targetSession.matchedWorkoutId === null;
+  const isMatched = targetSession.matchStatus === "MATCHED" && targetSession.matchedWorkoutId !== null;
   if (targetSession.status !== "COMPLETED" || targetSession.entryMode !== "LIVE"
-    || targetSession.matchStatus !== "UNMATCHED" || targetSession.matchedWorkoutId !== null
+    || (!isUnmatched && !isMatched)
     || !targetSession.accountingTimeZone || targetSession.accountingInputRevision < 1
     || targetSession.currentSnapshotRevision === null || targetSession.currentSnapshotRevision < 1
     || !intervalStart || !targetSession.webEndedAt || targetSession.webEndedAt <= intervalStart
     || completedSetCount < 1) {
-    throw new Error("Migration-free serving is blocked: the specified Strength session lacks its expected unmatched LIVE accounting snapshot, interval, or completed sets.");
+    throw new Error("Migration-free serving is blocked: the specified Strength session lacks its expected LIVE accounting snapshot, interval, or completed sets.");
   }
 
-  const strengthAlias = input.workoutAliases.find((alias) => alias.sourceType === "strength-session"
+  const strengthAliases = input.workoutAliases.filter((alias) => alias.sourceType === "strength-session"
     && alias.sourceId === String(targetSession.id));
+  const strengthAlias = strengthAliases.length === 1 ? strengthAliases[0] : undefined;
   const strengthEvent = strengthAlias?.event;
   const currentSnapshotRevision = targetSession.currentSnapshotRevision;
-  if (!strengthEvent || strengthEvent.logicalEventKey !== `strength-session:${targetSession.id}`
+  const matchedWorkoutAliases = isMatched
+    ? input.workoutAliases.filter((alias) => alias.sourceType === "workout"
+      && alias.sourceId === String(targetSession.matchedWorkoutId)
+      && alias.workoutId === targetSession.matchedWorkoutId)
+    : [];
+  const matchedWorkoutAlias = matchedWorkoutAliases.length === 1 ? matchedWorkoutAliases[0] : undefined;
+  const expectedLogicalEventKey = isMatched
+    ? `workout:${targetSession.matchedWorkoutId}`
+    : `strength-session:${targetSession.id}`;
+  if (!strengthEvent || strengthEvent.logicalEventKey !== expectedLogicalEventKey
     || strengthEvent.eventKind !== "strength" || !isAvailableCurrentEvent(strengthEvent)
+    || (strengthAlias?.workoutId !== null)
+    || (isMatched && (strengthAlias?.workout !== null
+      || matchedWorkoutAlias?.workout === null || matchedWorkoutAlias?.workout?.hiddenFromHistory
+      || (matchedWorkoutAlias?.workout !== null && matchedWorkoutAlias?.workout !== undefined
+        && canonicalizeWorkoutType(matchedWorkoutAlias.workout.type).classification !== "traditional-strength-training")
+      || matchedWorkoutAlias?.event.id !== strengthEvent.id))
     || currentSnapshotRevision === null
     || !selectedStrengthCandidateIsCurrent(strengthEvent, targetSession.id, currentSnapshotRevision)) {
     throw new Error("Migration-free serving is blocked: the specified Strength session lacks the current BodyCast candidate and verified Health mass provenance.");
+  }
+
+  // A matched Strength session and its Workout are two aliases for one canonical
+  // event. Keep that event out of the historical Workout total, which is
+  // accepted separately from the target Strength resolution.
+  const targetStrengthWorkoutEventId = isMatched ? strengthEvent.id : null;
+  const historicalWorkoutResolutions = currentWorkoutEvents.size
+    - (targetStrengthWorkoutEventId !== null && currentWorkoutEvents.has(targetStrengthWorkoutEventId) ? 1 : 0);
+  if (historicalWorkoutResolutions !== 33) {
+    throw new Error(`Migration-free serving is blocked: ${historicalWorkoutResolutions}/33 historical Workout energy resolutions are current and available.`);
   }
 
   const diagnosticWorkoutId = [...currentStepperByWorkoutId.keys()].sort((left, right) => left - right)[0];
@@ -197,7 +221,7 @@ export function evaluateMigrationFreeEnergyAcceptanceV1(input: {
     throw new Error("Migration-free serving is blocked: no current Stepper workout is available for the diagnostic route probe.");
   }
   return {
-    currentWorkoutResolutions: currentWorkoutEvents.size,
+    currentWorkoutResolutions: historicalWorkoutResolutions,
     currentStepperResolutions: currentStepperByWorkoutId.size,
     strengthSessionCurrent: true,
     diagnosticWorkoutId,

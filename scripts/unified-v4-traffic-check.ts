@@ -127,11 +127,8 @@ async function assertMigrationFreeEnergyAcceptanceV1(client: typeof prisma) {
   });
   const targetSessions = await client.strengthDiarySession.findMany({
     where: {
-      profileId, status: "COMPLETED", entryMode: "LIVE", matchedWorkoutId: null,
-      OR: [
-        { effectiveAccountingAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") } },
-        { effectiveAccountingAt: null, webStartedAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") } },
-      ],
+      profileId, status: "COMPLETED", entryMode: "LIVE",
+      webStartedAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") },
     },
     select: {
       id: true, status: true, entryMode: true, effectiveAccountingAt: true, webStartedAt: true, webEndedAt: true,

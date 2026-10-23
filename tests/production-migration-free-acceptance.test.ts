@@ -37,8 +37,9 @@ function currentEvent(id: number, eventKind = "other"): MigrationFreeEnergyEvent
   };
 }
 
-function strengthAlias(): { alias: MigrationFreeWorkoutAliasV1; session: MigrationFreeStrengthSessionV1 } {
+function strengthAlias(matchedWorkoutId: number | null = null): { alias: MigrationFreeWorkoutAliasV1; session: MigrationFreeStrengthSessionV1 } {
   const sessionId = 900;
+  const logicalEventKey = matchedWorkoutId === null ? `strength-session:${sessionId}` : `workout:${matchedWorkoutId}`;
   const sourceFingerprint = "a".repeat(64);
   const massResolutionIdentity = "b".repeat(64);
   const candidateProvenance = {
@@ -65,12 +66,12 @@ function strengthAlias(): { alias: MigrationFreeWorkoutAliasV1; session: Migrati
   const valueKcal = 245.5;
   const event: MigrationFreeEnergyEventV1 = {
     id: 9000,
-    logicalEventKey: `strength-session:${sessionId}`,
+    logicalEventKey,
     eventKind: "strength",
     isStale: false,
     supersededByEventId: null,
     currentResolutionFingerprint: fingerprint({
-      logicalEventKey: `strength-session:${sessionId}`,
+      logicalEventKey,
       source: "bodycast-strength-estimate",
       valueKcal,
       provenance: selectedProvenance,
@@ -91,9 +92,9 @@ function strengthAlias(): { alias: MigrationFreeWorkoutAliasV1; session: Migrati
     id: sessionId,
     status: "COMPLETED",
     entryMode: "LIVE",
-    matchStatus: "UNMATCHED",
-    matchedWorkoutId: null,
-    effectiveAccountingAt: new Date("2026-10-22T12:40:00.000Z"),
+    matchStatus: matchedWorkoutId === null ? "UNMATCHED" : "MATCHED",
+    matchedWorkoutId,
+    effectiveAccountingAt: new Date("2026-10-22T12:41:00.000Z"),
     webStartedAt: new Date("2026-10-22T12:40:00.000Z"),
     webEndedAt: new Date("2026-10-22T13:25:00.000Z"),
     accountingTimeZone: "Europe/Bratislava",
@@ -102,12 +103,18 @@ function strengthAlias(): { alias: MigrationFreeWorkoutAliasV1; session: Migrati
     exercises: [{ sets: [{ completedAt: new Date("2026-10-22T12:50:00.000Z") }] }],
   };
   return {
-    alias: { sourceType: "strength-session", sourceId: String(sessionId), workoutId: null, workout: null, event },
+    alias: {
+      sourceType: "strength-session",
+      sourceId: String(sessionId),
+      workoutId: null,
+      workout: null,
+      event,
+    },
     session,
   };
 }
 
-function validAcceptanceInput() {
+function validAcceptanceInput(options: { matchedStrengthWorkoutId?: number } = {}) {
   const workoutAliases: MigrationFreeWorkoutAliasV1[] = Array.from({ length: 33 }, (_, index) => {
     const id = index + 1;
     const stepper = id <= 12;
@@ -119,7 +126,17 @@ function validAcceptanceInput() {
       event: currentEvent(id, stepper ? "stepper" : "other"),
     };
   });
-  const strength = strengthAlias();
+  const matchedStrengthWorkoutId = options.matchedStrengthWorkoutId ?? null;
+  const strength = strengthAlias(matchedStrengthWorkoutId);
+  if (matchedStrengthWorkoutId !== null) {
+    workoutAliases.push({
+      sourceType: "workout",
+      sourceId: String(matchedStrengthWorkoutId),
+      workoutId: matchedStrengthWorkoutId,
+      workout: { type: "Traditional Strength Training", hiddenFromHistory: false },
+      event: strength.alias.event,
+    });
+  }
   workoutAliases.push(strength.alias);
   return { workoutAliases, strengthSessions: [strength.session] };
 }
@@ -137,8 +154,34 @@ describe("migration-free production energy acceptance", () => {
   it("identifies the Strength session by its stored timezone and exact local minute", () => {
     const input = validAcceptanceInput();
     input.strengthSessions[0]!.effectiveAccountingAt = new Date("2026-10-22T12:41:00.000Z");
+    expect(evaluateMigrationFreeEnergyAcceptanceV1(input).strengthSessionCurrent).toBe(true);
     input.strengthSessions[0]!.webStartedAt = new Date("2026-10-22T12:41:00.000Z");
-    expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/expected one unmatched LIVE Strength session/);
+    expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/expected one LIVE Strength session started/);
+  });
+
+  it("counts a matched Strength Workout once as the target session, not as a historical Workout", () => {
+    const input = validAcceptanceInput({ matchedStrengthWorkoutId: 34 });
+    expect(input.workoutAliases.filter((alias) => alias.sourceType === "workout")).toHaveLength(34);
+    expect(evaluateMigrationFreeEnergyAcceptanceV1(input)).toEqual({
+      currentWorkoutResolutions: 33,
+      currentStepperResolutions: 12,
+      strengthSessionCurrent: true,
+      diagnosticWorkoutId: 1,
+    });
+  });
+
+  it("requires the matched Strength and Workout aliases to identify one canonical event", () => {
+    const input = validAcceptanceInput({ matchedStrengthWorkoutId: 34 });
+    input.workoutAliases.find((alias) => alias.sourceType === "workout" && alias.sourceId === "34")!.event = currentEvent(34, "strength");
+    expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/current BodyCast candidate/);
+  });
+
+  it("keeps the matched Strength session alias unlinked to the Workout row", () => {
+    const input = validAcceptanceInput({ matchedStrengthWorkoutId: 34 });
+    const strength = input.workoutAliases.find((alias) => alias.sourceType === "strength-session")!;
+    strength.workoutId = 34;
+    strength.workout = { type: "Traditional Strength Training", hiddenFromHistory: false };
+    expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/current BodyCast candidate/);
   });
 
   it("does not allow a nearby session to replace the exact target session", () => {
@@ -176,7 +219,7 @@ describe("migration-free production energy acceptance", () => {
   it("rejects a stale Stepper event even when eleven other Stepper events remain current", () => {
     const input = validAcceptanceInput();
     input.workoutAliases[0]!.event.isStale = true;
-    expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/32\/33 historical Workout/);
+    expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/11\/12 historical Stepper/);
   });
 
   it("requires exactly the accepted historical Workout inventory", () => {

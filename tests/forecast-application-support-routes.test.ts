@@ -22,11 +22,15 @@ vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryService
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
   rebuildUnifiedExperimentalPhysiologyStateV1: unifiedState.rebuild,
 }));
-vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
-  PhysiologyV7PersistenceRepository: class {
-    readDay = v7Persistence.readDay;
-  },
-}));
+vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/model-episodes/physiology-v7-persistence.repository")>();
+  return {
+    ...actual,
+    PhysiologyV7PersistenceRepository: class {
+      readDay = v7Persistence.readDay;
+    },
+  };
+});
 vi.mock("@/modules/training/training-refresh-queue", () => trainingRefresh);
 
 import { GET } from "@/app/api/forecast/context/route";

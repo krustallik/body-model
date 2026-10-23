@@ -255,6 +255,7 @@ const verify = async () => {
       ? null : await assertMigrationFreeEnergyAcceptanceV1(tx as unknown as typeof prisma);
     if (p1EnergyAcceptance !== null) {
       process.stdout.write(`BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID ${p1EnergyAcceptance.diagnosticWorkoutId}\n`);
+      process.stdout.write(`BODYCAST_TARGET_STRENGTH_SESSION_ID ${p1EnergyAcceptance.targetStrengthSessionId}\n`);
     }
     let rawSourceFingerprint: string | null = null;
     let healthSyncAuditFingerprint: string | null = null;

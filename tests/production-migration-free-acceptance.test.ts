@@ -148,6 +148,7 @@ describe("migration-free production energy acceptance", () => {
       currentStepperResolutions: 12,
       strengthSessionCurrent: true,
       diagnosticWorkoutId: 1,
+      targetStrengthSessionId: 900,
     });
   });
 
@@ -167,6 +168,7 @@ describe("migration-free production energy acceptance", () => {
       currentStepperResolutions: 12,
       strengthSessionCurrent: true,
       diagnosticWorkoutId: 1,
+      targetStrengthSessionId: 900,
     });
   });
 

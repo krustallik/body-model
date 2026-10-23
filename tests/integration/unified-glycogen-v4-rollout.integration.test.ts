@@ -449,9 +449,26 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       create: { profileId, requestedGeneration: 2, completedGeneration: 1 },
       update: { requestedGeneration: 2, completedGeneration: 1 } });
     await prisma.physiologyV7Lifecycle.update({ where: { profileId }, data: { unifiedPublishedGeneration: null } });
-    const child = spawn(process.execPath, [path.join(migratorArtifactRoot, "scripts", "unified-v4-traffic-check.mjs"),
+    // The production identity gate intentionally accepts only database/role
+    // bodycast. Stub that one boundary in this child; all queue/lifecycle reads
+    // still use the guarded loopback *_test database above.
+    const identityFixture = path.join(migratorArtifactRoot, "identity-fixture.cjs");
+    await writeFile(identityFixture, `
+      const { PrismaClient } = require("@prisma/client");
+      const read = PrismaClient.prototype.$queryRaw;
+      PrismaClient.prototype.$queryRaw = function(query, ...values) {
+        if (String(query[0]).includes("current_database() AS database")) return Promise.resolve([{
+          database: "bodycast", databaseOid: "1", clusterSystemIdentifier: "1", role: "bodycast",
+          serverVersion: "17.11", serverAddress: "127.0.0.1", serverPort: 5432,
+        }]);
+        return read.call(this, query, ...values);
+      };
+    `);
+    const child = spawn(process.execPath, ["--require", identityFixture,
+      path.join(migratorArtifactRoot, "scripts", "unified-v4-traffic-check.mjs"),
       "--profile-id", String(profileId), "--wait-training-refresh-current"], {
-      cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl }, stdio: ["ignore", "pipe", "pipe"],
+      cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl,
+        BODYCAST_EXPECTED_PRISMA_DB_IDENTITY: "bodycast|1|1|bodycast|17.11|127.0.0.1|5432" }, stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";

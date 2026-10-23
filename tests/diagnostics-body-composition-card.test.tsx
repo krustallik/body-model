@@ -149,10 +149,7 @@ function diagnosticsDto(): DiagnosticsDto {
 
 describe("DiagnosticsClient body-composition card", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      json: async () => diagnosticsDto(),
-    })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(diagnosticsDto())));
   });
 
   afterEach(() => {
@@ -175,6 +172,18 @@ describe("DiagnosticsClient body-composition card", () => {
     expect(screen.getByText("3053 kcal")).toBeTruthy();
   });
 
+  it("recovers pending diagnostics automatically without posting a recalculation", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ refreshPending: true }))
+      .mockResolvedValueOnce(Response.json(diagnosticsDto()));
+    vi.stubGlobal("fetch", fetch);
+    render(<DiagnosticsClient />);
+    expect(await screen.findByText("Модель оновлюється. Перевіряємо готовність…")).toBeTruthy();
+    expect(await screen.findByText("89.4 kg", {}, { timeout: 5000 })).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  }, 6000);
+
   it("explains modeled expenditure periods, completion status, and omits the misleading today estimate", async () => {
     render(<DiagnosticsClient />);
     expect(await screen.findByText("Енерговитрати останнього змодельованого дня")).toBeTruthy();
@@ -196,7 +205,7 @@ describe("DiagnosticsClient body-composition card", () => {
       ...day,
       expenditureKcalPerDay: null,
     }));
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => dto })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(dto)));
 
     const { container } = render(<DiagnosticsClient />);
     expect(await screen.findByText("Сім календарних днів перед останнім змодельованим днем")).toBeTruthy();
@@ -209,7 +218,7 @@ describe("DiagnosticsClient body-composition card", () => {
   it("keeps the seven-day calendar visible when the optional experimental summary is absent", async () => {
     const dto = diagnosticsDto();
     delete dto.experimentalEnergySummary;
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => dto })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(dto)));
 
     const { container } = render(<DiagnosticsClient />);
     expect(await screen.findByText("Сім календарних днів перед останнім змодельованим днем")).toBeTruthy();
@@ -236,7 +245,7 @@ describe("DiagnosticsClient body-composition card", () => {
     stale.dataContinuity.completeDayCount = 4;
     stale.currentState.status = "unavailable";
     stale.currentState.predictedWeightKg = null;
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => stale })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(stale)));
 
     render(<DiagnosticsClient />);
     expect(await screen.findByText("Є пораховані дні, але поточна оцінка потребує оновлення")).toBeTruthy();
@@ -250,7 +259,7 @@ describe("DiagnosticsClient body-composition card", () => {
     empty.dataContinuity.completeDayCount = 0;
     empty.currentState.status = "unavailable";
     empty.currentState.predictedWeightKg = null;
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => empty })));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(empty)));
 
     render(<DiagnosticsClient />);
     expect(await screen.findByText("Порахованих днів ще немає")).toBeTruthy();

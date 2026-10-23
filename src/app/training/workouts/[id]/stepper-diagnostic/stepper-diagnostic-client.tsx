@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchCurrentModelRead, ModelRefreshPendingError } from "@/lib/model-refresh-read";
+
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
@@ -7,7 +9,7 @@ import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import type { StepperWorkoutDiagnosticV7 } from "@/modules/profile/stepper-workout-diagnostic";
 import { useI18n } from "@/i18n/i18n-provider";
-import { formatSelectedActiveEnergyText, formatTrainingKcal } from "../../../training-labels";
+import { formatTrainingKcal } from "../../../training-labels";
 import styles from "./stepper-diagnostic.module.css";
 
 type DiagnosticResponse = { diagnostic?: StepperWorkoutDiagnosticV7; error?: string };
@@ -124,10 +126,21 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshPending, setRefreshPending] = useState(false);
+  const [readAttempt, setReadAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
-    void fetch(`/api/v1/workouts/${encodeURIComponent(workoutId)}/stepper-diagnostic`, { cache: "no-store" })
+    const controller = new AbortController();
+    void Promise.resolve().then(() => {
+    if (!active) return;
+    setLoading(true);
+    setError(null);
+    setRefreshPending(false);
+    setDiagnostic(null);
+    void fetchCurrentModelRead(`/api/v1/workouts/${encodeURIComponent(workoutId)}/stepper-diagnostic`, {
+      signal: controller.signal,
+      onPending: () => { if (active) setRefreshPending(true); },
+    })
       .then(async (response) => {
         const body = await response.json() as DiagnosticResponse;
         if (!response.ok || !body.diagnostic) throw new Error(body.error ?? "internal_error");
@@ -141,12 +154,11 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
         if (!active) return;
         setDiagnostic(null);
         const code = reason instanceof Error ? reason.message : "internal_error";
-        const pending = code === "training_refresh_pending" || code === "model_refresh_pending";
+        const pending = reason instanceof ModelRefreshPendingError
+          || code === "training_refresh_pending" || code === "model_refresh_pending";
         setRefreshPending(pending);
         if (pending) {
-          setError(formatSelectedActiveEnergyText({
-            status: "pending", kcal: null, source: "unavailable", fullCoverage: false, uk,
-          }));
+          setError(uk ? "Розрахунок ще оновлюється. Можна повторити перевірку." : "The calculation is still updating. You can check again.");
           return;
         }
         setError(code === "not_found" ? (uk ? "Тренування не знайдено." : "Workout not found.")
@@ -154,8 +166,9 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
             : (uk ? "Не вдалося завантажити діагностику." : "Could not load diagnostics."));
       })
       .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [uk, workoutId]);
+    });
+    return () => { active = false; controller.abort(); };
+  }, [uk, workoutId, readAttempt]);
 
   const steps = diagnostic?.bracketedSteps;
   const intervalEvidence = hasIntervalEvidence(steps) ? steps : null;
@@ -178,8 +191,9 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
         </div>
       </header>
 
-      {loading && <p className={styles.loading} role="status">{uk ? "Завантаження діагностики…" : "Loading diagnostics…"}</p>}
+      {loading && <p className={styles.loading} role="status">{refreshPending ? (uk ? "Оновлення розрахунку. Перевіряємо готовність…" : "Calculation updating. Checking readiness…") : (uk ? "Завантаження діагностики…" : "Loading diagnostics…")}</p>}
       {error && <p className={refreshPending ? styles.loading : styles.error} role={refreshPending ? "status" : "alert"}>{error}</p>}
+      {error && !loading && <button type="button" onClick={() => setReadAttempt((value) => value + 1)}>{uk ? "Повторити перевірку" : "Check again"}</button>}
 
       {diagnostic && (
         <div className={styles.stack}>

@@ -52,7 +52,7 @@ function completeDiagnostic(sampleCount = 2) {
   })!;
 }
 
-const response = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+const response = (body: unknown, status = 200) => Response.json(body, { status });
 
 beforeEach(() => {
   vi.stubGlobal("crypto", {
@@ -79,6 +79,17 @@ afterEach(() => {
 });
 
 describe("StepperDiagnosticClient", () => {
+  it("automatically recovers from a publication 503 without reload or mutations", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response({ error: "model_refresh_pending" }, 503))
+      .mockResolvedValueOnce(response({ diagnostic: completeDiagnostic() }));
+    vi.stubGlobal("fetch", fetch);
+    render(<StepperDiagnosticClient workoutId="61" />);
+    expect(await screen.findByText(/Оновлення розрахунку. Перевіряємо/)).toBeTruthy();
+    expect(await screen.findByText("Степер", {}, { timeout: 5000 })).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([, init]) => init.method === undefined)).toBe(true);
+  }, 6000);
+
   it("presents the complete observed diagnostic contract and history navigation", async () => {
     const diagnostic = completeDiagnostic();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));

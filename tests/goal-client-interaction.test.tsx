@@ -184,6 +184,23 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("GoalClient interaction", () => {
+  it("waits for a pending generation then automatically restores the goal form", async () => {
+    let reads = 0;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBeUndefined();
+      if (String(input).includes("/api/forecast/context")) {
+        return jsonResponse(++reads === 1
+          ? { error: "model_refresh_pending" }
+          : { status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }, reads === 1 ? 503 : 200);
+      }
+      return jsonResponse({ profile: { timezone: "Europe/Bratislava" } });
+    });
+    vi.stubGlobal("fetch", fetch);
+    render(<GoalClient />);
+    await waitFor(() => expect(reads).toBe(2), { timeout: 5000 });
+    expect(await screen.findByLabelText(/Target weight/)).toBeTruthy();
+  }, 6000);
+
   beforeEach(() => {
     mockI18n.locale = "en";
     localStorage.clear();

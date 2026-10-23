@@ -101,6 +101,28 @@ function completedSession(): StrengthSessionDto {
 }
 
 describe("completed session historical set clocks and energy", () => {
+  it("recovers selected energy automatically using read-only GETs", async () => {
+    const session = completedSession();
+    const pending = { ...session, selectedActiveEnergy: { status: "pending", kcal: null, source: "unavailable", fullCoverage: false } };
+    let reads = 0;
+    const fetch = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/match-candidates")) return Response.json({ candidates: [] });
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url.includes("readOnly=true")) return Response.json({ session: ++reads === 1 ? pending : {
+        ...session, selectedActiveEnergy: { ...session.selectedActiveEnergy, status: "current" },
+      } });
+      expect(init?.method).toBeUndefined();
+      return Response.json({ session: pending });
+    });
+    vi.stubGlobal("fetch", fetch);
+    render(<SessionClient sessionId={11} />);
+    expect(await screen.findByText("Оновлення розрахунку")).toBeTruthy();
+    expect(await screen.findByText("270 активних ккал · Оцінка сили BodyCast", {}, { timeout: 5000 })).toBeTruthy();
+    expect(reads).toBe(2);
+    expect(fetch.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  }, 6000);
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();

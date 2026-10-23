@@ -93,6 +93,12 @@ const setCtx = (id: string, setId: string) => ({
 });
 
 describe("/api/v1/training/sessions", () => {
+  it("routes background energy reads through the read-only service contract", async () => {
+    trainingService.getSession.mockResolvedValue(session);
+    const result = await DETAIL(new Request(`${base}/42?readOnly=true`), sessionCtx("42"));
+    expect(result.status).toBe(200);
+    expect(trainingService.getSession).toHaveBeenCalledWith(42, 1, { readOnly: true });
+  });
   beforeEach(() => {
     Object.values(trainingService).forEach((mock) => mock.mockReset());
   });

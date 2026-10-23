@@ -156,6 +156,7 @@ export function buildDiagnosticsDto(input: {
   const initializationConfidence = episode.initializationStatus ?? "insufficient";
   return {
     episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: status.latestModeledDate, updatedAt: episode.updatedAt },
+    refreshPending: status.productionCurrent === false && status.productionDirtyFromDate != null,
     ...(evidence.experimentalEnergySummary !== undefined ? { experimentalEnergySummary: evidence.experimentalEnergySummary } : {}),
     energyHistory: evidence.energyHistory ?? { latestModeledDay: null, previousCompletedDays: [] },
     currentState: {

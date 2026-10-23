@@ -6,14 +6,16 @@ import { trainingService } from "@/modules/training/training.service";
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const parsed = SessionIdParamsSchema.safeParse(await params);
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const session = await trainingService.getSession(parsed.data.id);
+    const session = new URL(request.url).searchParams.get("readOnly") === "true"
+      ? await trainingService.getSession(parsed.data.id, 1, { readOnly: true })
+      : await trainingService.getSession(parsed.data.id);
     return session
       ? Response.json({ session })
       : Response.json({ error: "not_found" }, { status: 404 });

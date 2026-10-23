@@ -9,7 +9,7 @@ import {
   recordExperimentalStepperActiveEnergyShadowsForLocalDate,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,
 } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
-import { recordExperimentalStrengthShadowsForWeightDate } from "@/modules/training/training.service";
+import { recordExperimentalStrengthShadowsForWeightDates } from "@/modules/training/training.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
@@ -269,7 +269,9 @@ export async function syncHealthData(
     });
   }
 
-  if (trainingRefreshPending) {
+  }
+
+  if (repository === healthSyncRepository && trainingRefreshPending) {
     // Training's durable generation owns strength Active Energy and the full
     // downstream suffix rebuild. Letting Health write this shared candidate
     // while the Training lease is pending would either violate that fence or
@@ -279,20 +281,21 @@ export async function syncHealthData(
       stage: "strength-active-energy-shadow-refresh",
       reason: "training-refresh-pending",
     });
-  } else {
+  } else if (repository === healthSyncRepository) {
     try {
-      await stageTimer.run("strength-active-energy-shadow", () => recordExperimentalStrengthShadowsForWeightDate({
-        date: date.date,
-        refreshHistoricalAsOfFallback: date.weightSourceChanged === true,
-      }));
+      await stageTimer.run("strength-active-energy-shadow", () =>
+        recordExperimentalStrengthShadowsForWeightDates({ dates: chronologicalDates }));
     } catch (error) {
-      markRequiredFailure(date.date);
+      for (const date of chronologicalDates) markRequiredFailure(date.date);
       logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
         stage: "strength-active-energy-shadow-refresh",
         ...errorDiagnosticFields(error),
       });
     }
   }
+
+  for (const date of chronologicalDates) {
+  if (repository !== healthSyncRepository) continue;
 
   try {
     // Shadow-only MS100 stepper glycogen demand; never feeds TDEE/forecast.
@@ -417,6 +420,7 @@ export async function syncHealthData(
           healthPublicationFence = await healthPublicationLifecycle.readUnifiedPublicationFence(1);
           if (healthPublicationFence === null) throw new Error("Health publication lifecycle is unavailable.");
           const published = await stageTimer.run("active-energy-publication", () => publishActiveEnergyChangesV1({
+            reuseCurrentProduction: true,
             ...(options.publicationNow === undefined ? {} : { now: options.publicationNow }),
             onLifecycleFenceChanged: (fence) => { healthPublicationFence = fence; },
           }));

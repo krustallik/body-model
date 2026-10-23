@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchCurrentModelRead, modelReadIsPending, ModelRefreshPendingError } from "@/lib/model-refresh-read";
+
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
@@ -238,9 +240,14 @@ export function DiagnosticsClient() {
   const [recalculating, setRecalculating] = useState(false);
   const [actionComplete, setActionComplete] = useState<RecalculationPublicationStatus | null>(null);
   const actionRef = useRef(false);
+  const actionControllerRef = useRef<AbortController | null>(null);
+  const [readAttempt, setReadAttempt] = useState(0);
+  const [refreshPending, setRefreshPending] = useState(false);
 
   const loadDiagnostics = useCallback(async (signal?: AbortSignal) => {
-    const response = await fetch("/api/diagnostics", { cache: "no-store", signal });
+    const response = await fetchCurrentModelRead("/api/diagnostics", {
+      signal, onPending: () => setRefreshPending(true),
+    });
     if (!response.ok) {
       const failure = new Error(response.status === 404
         ? (uk ? "Немає активної моделі." : "No active model.")
@@ -254,7 +261,7 @@ export function DiagnosticsClient() {
   useEffect(() => {
     const controller = new AbortController();
     loadDiagnostics(controller.signal)
-      .then(setData)
+      .then((next) => { if (!controller.signal.aborted) { setData(next); setError(null); setRefreshPending(false); } })
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
         const failure = cause as DiagnosticsRequestError;
@@ -262,14 +269,18 @@ export function DiagnosticsClient() {
           setData(EMPTY_DIAGNOSTICS);
           setNoActiveModel(true);
         }
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(cause instanceof ModelRefreshPendingError
+          ? (uk ? "Розрахунок ще триває. Можна повторити перевірку." : "The calculation is still updating. You can check again.")
+          : cause instanceof Error ? cause.message : String(cause));
       });
-    return () => controller.abort();
-  }, [loadDiagnostics]);
+    return () => { controller.abort(); actionControllerRef.current?.abort(); };
+  }, [loadDiagnostics, readAttempt, uk]);
 
   async function runModelAction(action: "initialize" | "recalculate") {
     if (actionRef.current) return;
     actionRef.current = true;
+    const controller = new AbortController();
+    actionControllerRef.current = controller;
     setRecalculating(true);
     setError(null);
     setActionComplete(null);
@@ -278,9 +289,19 @@ export function DiagnosticsClient() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action }),
+        signal: controller.signal,
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({})) as { reason?: string; message?: string };
+        if (modelReadIsPending(body)) {
+          setRefreshPending(true);
+          const next = await loadDiagnostics(controller.signal);
+          if (controller.signal.aborted) return;
+          setData(next);
+          setRefreshPending(false);
+          setNoActiveModel(false);
+          return;
+        }
         throw new Error(action === "initialize"
           ? initializationFailureMessage(body.reason ?? body.message, locale)
           : (uk ? "Не вдалося перерахувати модель." : "Could not recalculate the model."));
@@ -289,16 +310,22 @@ export function DiagnosticsClient() {
       const publicationStatus: RecalculationPublicationStatus = result?.modelPublicationStatus === "current"
         ? "current"
         : result?.modelPublicationStatus === "stale" ? "stale" : "unknown";
-      setData(await loadDiagnostics());
+      const next = await loadDiagnostics(controller.signal);
+      if (controller.signal.aborted) return;
+      setData(next);
+      setRefreshPending(false);
       setNoActiveModel(false);
       setActionComplete(publicationStatus);
     } catch (cause: unknown) {
+      if (controller.signal.aborted) return;
       const failure = cause as DiagnosticsRequestError;
       if (failure.name === "NoActiveModelDiagnosticsError") {
         setData(EMPTY_DIAGNOSTICS);
         setNoActiveModel(true);
       }
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(cause instanceof ModelRefreshPendingError
+        ? (uk ? "Розрахунок ще триває. Можна повторити перевірку." : "The calculation is still updating. You can check again.")
+        : cause instanceof Error ? cause.message : String(cause));
     } finally {
       actionRef.current = false;
       setRecalculating(false);
@@ -325,12 +352,15 @@ export function DiagnosticsClient() {
     <header className={styles.hero}>
       <div><p className={styles.eyebrow}>{uk ? "Діагностика · не оцінка здоров’я" : "Diagnostics · not a health score"}</p><h1>{uk ? "Що модель знає — і чого не знає." : "What the model knows—and what it does not."}</h1><p>{uk ? "Тут кілька окремих перевірок: дані, підлаштування під вас, пропуски й прогноз. Одного спільного бала немає." : "There are several separate checks: data, tuning to you, gaps, and forecast. There is no single overall score."}</p></div>
     </header>
-    {!data && !error && <section className={styles.loading} aria-live="polite">{uk ? "Завантажуємо стан моделі…" : "Loading model status…"}</section>}
-    {error && <section className={styles.error} role="status"><strong>{noActiveModel ? (uk ? "Модель ще не створена" : "Model not created yet") : (uk ? "Діагностика недоступна" : "Diagnostics unavailable")}</strong><span>{error}</span><div className={styles.actions}><button type="button" disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button><Link href="/dashboard">{uk ? "Перейти до огляду" : "Go to dashboard"}</Link><Link href="/history">{uk ? "Додати дані" : "Add data"}</Link></div></section>}
+    {!data && !error && <section className={styles.loading} aria-live="polite">{refreshPending ? (uk ? "Модель оновлюється. Перевіряємо готовність…" : "Model updating. Checking readiness…") : (uk ? "Завантажуємо стан моделі…" : "Loading model status…")}</section>}
+    {error && <section className={styles.error} role="status"><strong>{refreshPending ? (uk ? "Модель оновлюється" : "Model updating") : noActiveModel ? (uk ? "Модель ще не створена" : "Model not created yet") : (uk ? "Діагностика недоступна" : "Diagnostics unavailable")}</strong><span>{error}</span><div className={styles.actions}>
+      {!noActiveModel && <button type="button" disabled={recalculating} onClick={() => { setError(null); setReadAttempt((value) => value + 1); }}>{uk ? "Повторити перевірку" : "Check again"}</button>}
+      <button type="button" disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button><Link href="/dashboard">{uk ? "Перейти до огляду" : "Go to dashboard"}</Link><Link href="/history">{uk ? "Додати дані" : "Add data"}</Link></div></section>}
     {data && <>
+      {refreshPending && !error && <p role="status" aria-live="polite">{uk ? "Модель оновлюється. Перевіряємо готовність…" : "Model updating. Checking readiness…"}</p>}
       <section className={styles.recalculateBanner} aria-label={actionLabel}>
         <div><strong>{diagnosticsRecalculateTitle({ noActiveModel, needsRecalculation, daysModeled: data.dataContinuity.modeledDayCount }, locale)}<HelpTip>{uk ? "Кнопка бере записи з таблиці «Історія», заново рахує фізіологічну модель, зберігає результат і за потреби сама оцінює стан після пропуску для Діагностики, Прогнозу та Цілі. Самі записи здоров’я вона не змінює." : "This reads Health History, recalculates the physiology model, saves results, and when needed estimates state after a data gap for Diagnostics, Forecast, and Goal. It does not edit health records."}</HelpTip></strong><span>{noActiveModel ? noActiveCopy.detail : recalculateCopy.hint}</span>{error && noActiveModel && <span>{error}</span>}</div>
-        <button type="button" className={needsRecalculation || noActiveModel ? styles.recalculatePrimary : styles.recalculateSecondary} disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button>
+        <button type="button" className={needsRecalculation || noActiveModel ? styles.recalculatePrimary : styles.recalculateSecondary} disabled={recalculating || refreshPending} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button>
       </section>
       {recalculating ? (
         <section className={styles.actionProgress} role="status" aria-live="polite" aria-busy="true">
@@ -430,7 +460,7 @@ export function DiagnosticsClient() {
           <div className={styles.readinessTitle}><h2>{data.forecastReadiness.allowed ? (uk ? "Можна перевірити сценарій" : "You can explore a scenario") : (uk ? "Спершу потрібен надійний старт" : "A reliable starting point is needed first")}</h2><span className={styles.statusPill} data-level={data.forecastReadiness.level}>{levelLabel(data.forecastReadiness.level, uk)}</span></div>
           <p>{data.forecastReadiness.allowed ? (uk ? "Прогноз доступний, але його діапазон описує сценарій, а не гарантію." : "Forecasting is available, but its range describes a scenario, not a guarantee.") : noActiveModel ? noActiveCopy.detail : (uk ? "Перевірте пропуски або дочекайтеся нових зважувань. Якщо історія вже має нові дні — перерахуйте модель." : "Review the gaps or wait for new weigh-ins. If newer days are already in history, recalculate the model.")}</p>
           {!data.forecastReadiness.allowed && data.forecastReadiness.reasons.length > 0 && <ul className={styles.reasonList}>{data.forecastReadiness.reasons.map((reason) => <li key={reason}>{forecastReasonLabel(reason, uk)}</li>)}</ul>}
-          <div className={styles.actions}><button type="button" disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div>
+          <div className={styles.actions}><button type="button" disabled={recalculating || refreshPending} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div>
         </article>
       </section>
 

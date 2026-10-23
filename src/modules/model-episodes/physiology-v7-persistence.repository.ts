@@ -40,6 +40,13 @@ export type ActiveEnergyConvergenceOwnerToken = {
   ownerToken: string;
 };
 
+export class ActiveEnergyConvergenceBusyError extends Error {
+  constructor() {
+    super("Active Energy convergence already has a live owner");
+    this.name = "ActiveEnergyConvergenceBusyError";
+  }
+}
+
 function isPrismaClient(client: DbClient): client is PrismaClient {
   return "$transaction" in client;
 }
@@ -387,10 +394,13 @@ export class PhysiologyV7PersistenceRepository {
           "ownerToken" = EXCLUDED."ownerToken",
           "ownerLeaseUntil" = clock_timestamp() + INTERVAL '120 seconds',
           "updatedAt" = clock_timestamp()
+        WHERE "UnifiedPublicationBlock"."ownerToken" IS NULL
+          OR "UnifiedPublicationBlock"."ownerLeaseUntil" IS NULL
+          OR "UnifiedPublicationBlock"."ownerLeaseUntil" <= clock_timestamp()
         RETURNING "revision", "fromDate"
       `;
       const block = rows[0];
-      if (!block) throw new Error("Active Energy convergence fence was not persisted");
+      if (!block) throw new ActiveEnergyConvergenceBusyError();
       await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
       return { ...block, ownerToken };
     });
@@ -413,6 +423,18 @@ export class PhysiologyV7PersistenceRepository {
         AND "ownerLeaseUntil" > clock_timestamp()
     `);
     if (renewed !== 1) throw new Error("Active Energy convergence owner lease was lost");
+  }
+
+  /** Withdraw this finished attempt without clearing its publication fence. */
+  async expireActiveEnergyConvergence(profileId: number, owner: ActiveEnergyConvergenceOwnerToken): Promise<void> {
+    // Token CAS is sufficient for withdrawal: no source/derived publication is
+    // possible here, even if the worker's queue generation was superseded.
+    await this.client.$executeRaw`
+      UPDATE "UnifiedPublicationBlock" SET "ownerLeaseUntil" = clock_timestamp(), "updatedAt" = clock_timestamp()
+      WHERE "profileId" = ${profileId} AND "source" = 'active_energy' AND "sourceKey" = 'convergence'
+        AND "revision" = ${owner.revision} AND "ownerToken" = ${owner.ownerToken}
+        AND "fromDate" = ${owner.fromDate}
+    `;
   }
 
   async assertActiveEnergyConvergenceOwner(

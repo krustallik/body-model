@@ -25,11 +25,14 @@ const input = {
 
 function fixture(options: { overlap?: boolean; existing?: boolean } = {}) {
   const transaction = {
+    $executeRaw: vi.fn().mockResolvedValue(1),
+    physiologyV7Lifecycle: { findUnique: vi.fn().mockResolvedValue(null) },
     workInterval: {
       findFirst: vi.fn().mockResolvedValue(options.overlap ? { id: 99 } : null),
       findUnique: vi.fn().mockResolvedValue(options.existing === false ? null : record),
       create: vi.fn().mockResolvedValue(record),
       update: vi.fn().mockImplementation(({ data }) => Promise.resolve({ ...record, ...data })),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
   };
   const client = {
@@ -94,7 +97,8 @@ describe("work interval repository", () => {
   it("returns null for nonexistent update and reports delete result", async () => {
     const missing = fixture({ existing: false });
     await expect(missing.repository.update(9, { category: "manualLight" })).resolves.toBeNull();
-    await expect(missing.repository.delete(9)).resolves.toBe(true);
+    await expect(missing.repository.delete(9)).resolves.toBe(false);
+    await expect(fixture().repository.delete(1)).resolves.toBe(true);
   });
 
   it.each(["P2004", "P2010"])("maps database exclusion error %s to overlap", async (code) => {
@@ -107,6 +111,7 @@ describe("work interval repository", () => {
 
   it("maps an update exclusion violation to overlap", async () => {
     const transaction = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
       workInterval: {
         findUnique: vi.fn().mockResolvedValue(record),
         findFirst: vi.fn().mockResolvedValue(null),
@@ -122,6 +127,7 @@ describe("work interval repository", () => {
 
   it("propagates an unrelated update failure", async () => {
     const transaction = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
       workInterval: {
         findUnique: vi.fn().mockResolvedValue(record),
         findFirst: vi.fn().mockResolvedValue(null),

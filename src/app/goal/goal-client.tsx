@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchCurrentModelRead, ModelRefreshPendingError } from "@/lib/model-refresh-read";
+
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
@@ -120,6 +122,7 @@ export function GoalClient() {
     error?: string;
   } | null>(null);
   const [contextLoadAttempt, setContextLoadAttempt] = useState(0);
+  const [refreshPending, setRefreshPending] = useState(false);
   const [solving, setSolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
@@ -138,7 +141,9 @@ export function GoalClient() {
   useEffect(() => {
     const controller = new AbortController();
     const requestKey = contextLoadKey;
-    void fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+    void fetchCurrentModelRead("/api/forecast/context", {
+      signal: controller.signal, onPending: () => setRefreshPending(true),
+    }).then(async (response) => {
       if (controller.signal.aborted) return;
       if (!response.ok) {
         if (response.status === 404) {
@@ -155,6 +160,7 @@ export function GoalClient() {
       }
       const contextResponse = await response.json() as Context;
       if (controller.signal.aborted) return;
+      setRefreshPending(false);
       const initializedInputRevision = inputRevisionRef.current;
       calculationSubmittedRef.current = false;
       const next: Context = {
@@ -231,7 +237,9 @@ export function GoalClient() {
       if (!controller.signal.aborted) setContextLoad({
         key: requestKey,
         status: "error",
-        error: reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.",
+        error: reason instanceof ModelRefreshPendingError
+          ? (uk ? "Розрахунок ще триває. Можна повторити перевірку." : "The calculation is still updating. You can check again.")
+          : reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.",
       });
     });
     return () => { controller.abort(); controllerRef.current?.abort(); };
@@ -321,9 +329,9 @@ export function GoalClient() {
     <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Планувальник цілі" : "Goal planner"}</span></Link><AppNav active="goal" /></div>
     <header className={styles.hero}><div><p className={styles.eyebrow}>{uk ? "Сценарій · не припис" : "Scenario · not a prescription"}</p><h1>{uk ? "Перевірте шлях до цілі" : "Explore a path to your goal"}</h1><p>{uk ? "Порівняйте бажану вагу з розрахованою траєкторією, імовірністю та межами прогнозу." : "Compare your target weight with the modeled trajectory, attainment estimate, and forecast limits."}</p></div><div className={styles.statePill}><span className={solving ? styles.pulse : undefined} />{solving ? (uk ? "Розраховуємо…" : "Solving…") : (uk ? "Гіпотетичний план" : "Hypothetical plan")}</div></header>
 
-    {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
+    {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{refreshPending ? (uk ? "Модель оновлюється. Перевіряємо готовність…" : "Model updating. Checking readiness…") : (uk ? "Завантажуємо поточний стан моделі" : "Loading current model state")}</strong></section>}
     {!loadingContext && noActiveEpisode && <section className={styles.errorCard} role="status"><strong>{uk ? "Активної моделі ще немає" : "No active model yet"}</strong><p>{uk ? "Щоб побудувати ціль, спочатку додайте історичні дані та розрахуйте модель." : "Add history and calculate a model before planning a goal."}</p><p><Link href="/history">{uk ? "Відкрити історію" : "Open History"}</Link> · <Link href="/forecast">{uk ? "Відкрити Forecast і розрахувати модель" : "Open Forecast and calculate a model"}</Link></p></section>}
-    {!loadingContext && contextLoadError && <section className={styles.errorCard} role="alert"><strong>{uk ? "Стан моделі не завантажено" : "Model state did not load"}</strong><p>{contextLoadError}</p><button type="button" onClick={() => setContextLoadAttempt((attempt) => attempt + 1)}>{uk ? "Спробувати ще раз" : "Try again"}</button></section>}
+    {!loadingContext && contextLoadError && <section className={styles.errorCard} role={refreshPending ? "status" : "alert"}><strong>{refreshPending ? (uk ? "Модель оновлюється" : "Model updating") : (uk ? "Стан моделі не завантажено" : "Model state did not load")}</strong><p>{contextLoadError}</p><button type="button" onClick={() => setContextLoadAttempt((attempt) => attempt + 1)}>{uk ? "Спробувати ще раз" : "Try again"}</button></section>}
     {!loadingContext && contextReady && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
     {!loadingContext && contextReady && initialized && canPlan && latestModeledDate && <div className={`${styles.workspace} ${result ? styles.hasResult : ""}`}>
       <section className={styles.formColumn} aria-labelledby="goal-plan-heading">

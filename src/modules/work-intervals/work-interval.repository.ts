@@ -1,6 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { WorkIntervalOverlapError } from "./work-interval.errors";
 import {
   PersistedWorkIntervalSchema,
@@ -88,6 +90,14 @@ function isExclusionViolation(error: unknown): boolean {
     && (error.code === "P2004" || error.code === "P2010");
 }
 
+async function invalidateWorkSources(transaction: Prisma.TransactionClient, dates: string[]): Promise<void> {
+  // loadSources includes two calendar days of occupational context. Preserve
+  // that boundary even when the interval and model use different timezones.
+  if (await transaction.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 }, select: { profileId: true } })) {
+    await new PhysiologyV7PersistenceRepository(transaction).invalidate(1, addCalendarDays([...dates].sort()[0]!, -2));
+  }
+}
+
 export class WorkIntervalRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -104,8 +114,11 @@ export class WorkIntervalRepository {
     const data = resolved(input);
     try {
       const record = await this.client.$transaction(async (transaction) => {
+        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
         await assertNoOverlap(transaction, data.startAt, data.endAt);
-        return transaction.workInterval.create({ data, select: workIntervalSelect });
+        const created = await transaction.workInterval.create({ data, select: workIntervalSelect });
+        await invalidateWorkSources(transaction, [data.date]);
+        return created;
       });
       return toDto(record);
     } catch (error) {
@@ -117,6 +130,7 @@ export class WorkIntervalRepository {
   async update(id: number, patch: UpdateWorkIntervalInput): Promise<WorkIntervalDto | null> {
     try {
       const record = await this.client.$transaction(async (transaction) => {
+        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
         const current = await transaction.workInterval.findUnique({
           where: { id }, select: workIntervalSelect,
         });
@@ -132,7 +146,9 @@ export class WorkIntervalRepository {
         });
         const data = resolved(merged);
         await assertNoOverlap(transaction, data.startAt, data.endAt, id);
-        return transaction.workInterval.update({ where: { id }, data, select: workIntervalSelect });
+        const updated = await transaction.workInterval.update({ where: { id }, data, select: workIntervalSelect });
+        await invalidateWorkSources(transaction, [current.date, data.date]);
+        return updated;
       });
       return record ? toDto(record) : null;
     } catch (error) {
@@ -142,7 +158,14 @@ export class WorkIntervalRepository {
   }
 
   async delete(id: number): Promise<boolean> {
-    return (await this.client.workInterval.deleteMany({ where: { id } })).count > 0;
+    return this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+      const current = await transaction.workInterval.findUnique({ where: { id }, select: { date: true } });
+      if (!current) return false;
+      const deleted = (await transaction.workInterval.deleteMany({ where: { id } })).count > 0;
+      if (deleted) await invalidateWorkSources(transaction, [current.date]);
+      return deleted;
+    });
   }
 }
 

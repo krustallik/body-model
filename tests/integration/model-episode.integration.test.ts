@@ -25,7 +25,7 @@ import {
   verifyAndPublishUnifiedV3Postflight,
 } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
-import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { ActiveEnergyConvergenceBusyError, PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
@@ -33,11 +33,14 @@ import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { calculateHistoricalBodyweightAsOfV1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
 import { trainingRepository } from "@/modules/training/training.repository";
-import { trainingService } from "@/modules/training/training.service";
+import { trainingService, recordExperimentalStrengthShadowsForWeightDates } from "@/modules/training/training.service";
+import * as activeEnergyPublication from "@/modules/activity/active-energy-publication";
+import { WorkIntervalRepository } from "@/modules/work-intervals/work-interval.repository";
 import { processNextTrainingRefreshJob } from "@/modules/training/training-refresh-worker";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
+import { runWithHealthSyncRefreshWorkerLease } from "@/modules/health/health-sync-worker-context";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -303,31 +306,93 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false, recoveryRequired: true });
     expect((await getModelHistory({ episodeId, from: episodeStart, to: finalDate, limit: 200, offset: 0 })).days).toEqual([]);
 
-    let enterSecond!: () => void;
-    let releaseSecond!: () => void;
-    const secondAtBoundary = new Promise<void>((resolve) => { enterSecond = resolve; });
-    const holdSecond = new Promise<void>((resolve) => { releaseSecond = resolve; });
-    const secondReplay = recalculateModelEpisode({
-      episodeId,
-      now,
-      afterProductionPassBeforeCandidateRefresh: async () => {
-        enterSecond();
-        await holdSecond;
-      },
-    });
     try {
-      await secondAtBoundary;
+      await expect(recalculateModelEpisode({ episodeId, now }))
+        .rejects.toBeInstanceOf(ActiveEnergyConvergenceBusyError);
       expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
-      releaseSecond();
-      await secondReplay;
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
     } finally {
-      releaseSecond();
       releaseFirst();
     }
-    await expect(firstReplay).rejects.toThrow("Active Energy convergence owner lease was lost");
+    await firstReplay;
     expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
   }, 60_000);
+
+  it("publishes owned production after a heartbeat between candidate persistence and the final lease lock", async () => {
+    const before = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } });
+    const leaseToken = "00000000-0000-4000-8000-000000000098";
+    const data = { requestedGeneration: 90001, completedGeneration: 90000, leaseToken,
+      leaseUntil: new Date(Date.now() + 300000) };
+    await prisma.healthSyncRefreshJob.upsert({ where: { profileId: 1 }, create: { profileId: 1, ...data }, update: data });
+    const persist = ModelEpisodeRepository.prototype.persistCalculation;
+    let heartbeats = 0;
+    const spy = vi.spyOn(ModelEpisodeRepository.prototype, "persistCalculation").mockImplementation(async function (this: ModelEpisodeRepository, ...args) {
+      await persist.apply(this, args);
+      await prisma.healthSyncRefreshJob.update({ where: { profileId: 1 }, data: {
+        leaseUntil: new Date(Date.now() + 310000),
+      } });
+      heartbeats += 1;
+    });
+    try {
+      await runWithHealthSyncRefreshWorkerLease({ profileId: 1, requestedGeneration: 90001, leaseToken },
+        () => recalculateModelEpisode({ episodeId, now }));
+      expect(heartbeats).toBeGreaterThan(0);
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      expect(await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } }))
+        .toMatchObject({ requestedGeneration: 90001, completedGeneration: 90000, leaseToken });
+    } finally {
+      spy.mockRestore();
+      if (before) await prisma.healthSyncRefreshJob.update({ where: { profileId: 1 }, data: before });
+      else await prisma.healthSyncRefreshJob.delete({ where: { profileId: 1 } });
+    }
+  }, 60000);
+
+  it("rolls back owned production candidates when a source generation changes before final publication", async () => {
+    const persist = ModelEpisodeRepository.prototype.persistCalculation;
+    const spy = vi.spyOn(ModelEpisodeRepository.prototype, "persistCalculation").mockImplementation(async function (this: ModelEpisodeRepository, ...args) {
+      await persist.apply(this, args);
+      await prisma.$transaction(async (tx) => {
+        // A source writer updates raw inputs and invalidation atomically.
+        await tx.dailyHealthData.update({ where: { date: finalDate }, data: { caloriesKcal: 2401 } });
+        await new PhysiologyV7PersistenceRepository(tx).invalidate(1, finalDate);
+      });
+    });
+    try {
+      await expect(recalculateModelEpisode({ episodeId, now }))
+        .rejects.toThrow("v7 durable sources changed during rebuild");
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
+      expect(await prisma.dailyHealthData.findUnique({ where: { date: finalDate } }))
+        .toMatchObject({ caloriesKcal: 2401 });
+    } finally {
+      spy.mockRestore();
+    }
+  }, 60000);
+
+  it("fences concurrent occupational CRUD, preserves the edit, and recovers CURRENT", async () => {
+    const work = new WorkIntervalRepository(prisma);
+    const created = await work.create({ date: finalDate, startTime: "08:00", endTime: "09:00",
+      timezone: "Europe/Bratislava", category: "standingLight", breakMinutes: 0 });
+    const persist = ModelEpisodeRepository.prototype.persistCalculation;
+    const spy = vi.spyOn(ModelEpisodeRepository.prototype, "persistCalculation").mockImplementationOnce(async function (this: ModelEpisodeRepository, ...args) {
+      await persist.apply(this, args);
+      await work.update(created.id, { category: "manualModerate" });
+    });
+    try {
+      await expect(recalculateModelEpisode({ episodeId, now })).rejects.toThrow("v7 durable sources changed during rebuild");
+      expect(await prisma.workInterval.findUnique({ where: { id: created.id } })).toMatchObject({ category: "manualModerate" });
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
+      spy.mockRestore();
+      await recalculateModelEpisode({ episodeId, now });
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      const generation = (await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).invalidationGeneration;
+      await work.delete(created.id);
+      expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).invalidationGeneration).toBeGreaterThan(generation);
+      await recalculateModelEpisode({ episodeId, now });
+      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+    } finally {
+      spy.mockRestore();
+      await prisma.workInterval.deleteMany({ where: { id: created.id } });
+    }
+  }, 60000);
 
   it("refreshes historical model-estimated bodyweight references beyond seven days after a raw weight correction", async () => {
     await prepareCurrentForecastV2(now);
@@ -408,6 +473,28 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       });
       expect(after!.activeEnergyMassReference!.snapshotRevision).toBeGreaterThan(beforeSnapshotRevision);
       expect(after!.activeEnergyMassReference!.reference.valueKg).not.toBe(beforeBodyweightKg);
+      const canonicalBeforeBatch = await prisma.activeEnergyCanonicalEvent.findMany({
+        where: { profileId: 1 }, orderBy: { id: "asc" },
+        select: { id: true, currentSource: true, currentKcal: true, resolutionRevision: true },
+      });
+      const replay = vi.spyOn(activeEnergyPublication, "recalculateActiveEnergyChangesV1");
+      try {
+        // Overlapping weight dates must select this session once and share one
+        // production replay. Repeating the batch must preserve canonical kcal.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          replay.mockClear();
+          await recordExperimentalStrengthShadowsForWeightDates({ dates: [
+            { date: addCalendarDays(episodeStart, 8) },
+            { date: addCalendarDays(episodeStart, 9) },
+          ] });
+          expect(replay).toHaveBeenCalledTimes(1);
+          expect(await prisma.activeEnergyCanonicalEvent.findMany({
+            where: { profileId: 1 }, orderBy: { id: "asc" },
+            select: { id: true, currentSource: true, currentKcal: true, resolutionRevision: true },
+          })).toEqual(canonicalBeforeBatch);
+        }
+      } finally { replay.mockRestore(); }
+      await activeEnergyPublication.publishActiveEnergyChangesV1({ now, reuseCurrentProduction: true });
       expect(await prisma.strengthSet.findMany({
         where: { sessionExercise: { sessionId: session.id } },
         orderBy: [{ setNumber: "asc" }, { id: "asc" }],
@@ -424,7 +511,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       if (sessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       await prisma.trainingProgram.deleteMany({ where: { id: program.id } });
     }
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "model_episode_test_failure" ON "DailyModelState"');

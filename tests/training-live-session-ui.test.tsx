@@ -211,6 +211,30 @@ function setViewportWidth(width: number) {
 const originalViewportWidth = window.innerWidth;
 
 describe("Live training session mobile UI", () => {
+  it("preserves an unsaved set draft when a read-only energy refresh completes", async () => {
+    const session = buildSession({ selectedActiveEnergy: { status: "pending", kcal: null, source: "unavailable", fullCoverage: false } });
+    const energy = deferred<Response>();
+    const fetch = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      expect(init?.method).toBeUndefined();
+      if (url.includes("readOnly=true")) return energy.promise;
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      return Response.json({ session });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const user = userEvent.setup();
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(activePane().getByLabelText("Вага, кг"), "31");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    energy.resolve(Response.json({ session: { ...session, selectedActiveEnergy: {
+      status: "current", kcal: 191.32, source: "bodycast-strength-estimate", fullCoverage: true,
+    } } }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).includes("readOnly=true"))).toBe(true));
+    expect((activePane().getByLabelText("Вага, кг") as HTMLInputElement).value).toBe("31");
+    expect((activePane().getByLabelText("Повтори") as HTMLInputElement).value).toBe("12");
+  });
+
   beforeEach(() => {
     vi.stubGlobal("crypto", webcrypto);
   });

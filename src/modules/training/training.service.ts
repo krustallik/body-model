@@ -317,6 +317,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   accountingRefreshHealthDate?: string;
   deferUnifiedPublication?: boolean;
   clearTrainingFenceAfterDependencyRefresh?: boolean;
+  productionAlreadyRebuilt?: boolean;
 }): Promise<TrainingShadowRefreshResultV1> {
   const lifecycle = new PhysiologyV7PersistenceRepository();
   const refresh = await withTrainingPublicationStage("strength-active-energy-shadow", () =>
@@ -332,9 +333,11 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   const session = refresh.session;
   if (session === null) throw new Error("training source disappeared before dependent-shadow refresh");
   const initialBlockToken = refresh.publicationBlockToken;
-  const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
-    recalculateActiveEnergyChangesV1());
-  if (production === null) throw new Error("production model is unavailable after completed training source update");
+  if (!input.productionAlreadyRebuilt) {
+    const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
+      recalculateActiveEnergyChangesV1());
+    if (production === null) throw new Error("production model is unavailable after completed training source update");
+  }
   const relativeMuscleEventAt = session.matchedWorkout?.startAt
     ?? session.effectiveAccountingAt
     ?? session.webStartedAt
@@ -441,6 +444,43 @@ export async function recordExperimentalStrengthShadowsForWeightDate(input: {
         ? { accountingRefreshHealthDate: input.date } : {}),
       deferUnifiedPublication: true,
       clearTrainingFenceAfterDependencyRefresh: true,
+    });
+  }
+}
+
+/** Materialize every affected candidate before one shared Health batch replay. */
+export async function recordExperimentalStrengthShadowsForWeightDates(input: {
+  dates: readonly { date: string; weightSourceChanged?: boolean }[];
+  profileId?: number;
+}): Promise<void> {
+  const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  const sessions = new Map<number, { refreshAccounting: boolean; healthDate: string }>();
+  for (const date of input.dates) {
+    const ids = await listExperimentalStrengthEnergySessionsForWeightDate({
+      date: date.date, profileId, refreshHistoricalAsOfFallback: date.weightSourceChanged === true,
+    });
+    for (const id of ids) {
+      if (!sessions.has(id) || date.weightSourceChanged === true) {
+        sessions.set(id, { refreshAccounting: date.weightSourceChanged === true, healthDate: date.date });
+      }
+    }
+  }
+  if (sessions.size === 0) return;
+  for (const [sessionId, options] of sessions) {
+    await recordExperimentalStrengthEnergyShadowBySessionId({
+      sessionId, profileId, refreshAccounting: options.refreshAccounting,
+      ...(options.refreshAccounting ? { accountingRefreshDeadlineMode: "health-fast" as const,
+        accountingRefreshHealthDate: options.healthDate } : {}),
+    });
+  }
+  const production = await recalculateActiveEnergyChangesV1();
+  if (production === null) throw new Error("production model is unavailable after Health batch candidate refresh");
+  for (const sessionId of sessions.keys()) {
+    // Revalidate each source and its exact publication token against the
+    // rebuilt mass/RMR before refreshing downstream demand and clearing it.
+    await recordExperimentalStrengthShadowsBySessionId({
+      sessionId, profileId, productionAlreadyRebuilt: true,
+      deferUnifiedPublication: true, clearTrainingFenceAfterDependencyRefresh: true,
     });
   }
 }
@@ -793,8 +833,8 @@ export class TrainingService {
     return this.repo.getActiveSession(profileId);
   }
 
-  async getSession(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
-    await this.finalizeInactiveSessions(profileId);
+  async getSession(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID, options: { readOnly?: boolean } = {}) {
+    if (!options.readOnly) await this.finalizeInactiveSessions(profileId);
     return this.repo.getSession(sessionId, profileId);
   }
 

@@ -13,6 +13,7 @@ import { tryAcquireOperation } from "@/lib/operation-gate";
 import { latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
 import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
 import { prisma } from "@/lib/db/prisma";
+import { ActiveEnergyConvergenceBusyError } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +70,9 @@ export async function POST(request: Request): Promise<Response> {
     await ensurePersistedModelDays(now);
     return Response.json(await forecastModelEpisode({ ...parsed.data, ...(now ? { now } : {}) }));
   } catch (error) {
+    if (error instanceof ActiveEnergyConvergenceBusyError) {
+      return Response.json({ error: "model_refresh_pending" }, { status: 503, headers: { "Retry-After": "3" } });
+    }
     if (error instanceof NoActiveModelEpisodeError) {
       return Response.json({ error: "no_active_episode" }, { status: 404 });
     }

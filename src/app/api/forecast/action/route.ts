@@ -15,6 +15,7 @@ import { recoverModelEpisode } from "@/modules/model-recovery/model-recovery.ser
 import { forecastQaNow } from "../qa-now";
 import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
+import { ActiveEnergyConvergenceBusyError } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 export const dynamic = "force-dynamic";
 
@@ -97,6 +98,9 @@ export async function POST(request: Request): Promise<Response> {
     }
     return Response.json(await recalculateThenRecover(now));
   } catch (error) {
+    if (error instanceof ActiveEnergyConvergenceBusyError) {
+      return Response.json({ error: "model_refresh_pending" }, { status: 503, headers: { "Retry-After": "3" } });
+    }
     if (error instanceof NoActiveModelEpisodeError) return Response.json({ error: "no_active_episode" }, { status: 404 });
     if (error instanceof ModelEpisodeNotFoundError) return Response.json({ error: "episode_not_found" }, { status: 404 });
     if (error instanceof ModelRecoveryEvidenceError) {

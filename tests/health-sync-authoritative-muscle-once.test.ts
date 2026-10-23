@@ -6,7 +6,7 @@ const {
   rebuildAuthoritativeRelativeMuscleTrajectory,
   recordExperimentalStepperActiveEnergyShadowsForLocalDate,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,
-  recordExperimentalStrengthShadowsForWeightDate,
+  recordExperimentalStrengthShadowsForWeightDates,
   persistStepperReconciliationV1,
   recordExperimentalStepperGlycogenDemandShadowsForLocalDate,
   recordExperimentalGlycogenStateShadow,
@@ -25,7 +25,7 @@ const {
     rebuildAuthoritativeRelativeMuscleTrajectory: vi.fn().mockResolvedValue(undefined),
     recordExperimentalStepperActiveEnergyShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
     recordExperimentalStepperActiveEnergyShadowsForMassWindow: vi.fn().mockResolvedValue(undefined),
-    recordExperimentalStrengthShadowsForWeightDate: vi.fn().mockResolvedValue(undefined),
+    recordExperimentalStrengthShadowsForWeightDates: vi.fn().mockResolvedValue(undefined),
     persistStepperReconciliationV1: vi.fn().mockResolvedValue({ groupIds: [], displayedSteps: null, potentialDuplication: false }),
     recordExperimentalStepperGlycogenDemandShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
     recordExperimentalGlycogenStateShadow: vi.fn().mockResolvedValue(undefined),
@@ -38,7 +38,7 @@ const {
 
 vi.mock("@/modules/training/training.service", () => ({
   trainingService: { afterHealthSyncMatch },
-  recordExperimentalStrengthShadowsForWeightDate,
+  recordExperimentalStrengthShadowsForWeightDates,
 }));
 vi.mock("@/modules/health/health.repository", () => ({ healthSyncRepository }));
 vi.mock("@/lib/db/prisma", () => ({
@@ -110,6 +110,12 @@ describe("health sync authoritative muscle suffix rebuild", () => {
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledTimes(1);
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ date: "2026-09-21" });
     expect(publishActiveEnergyChangesV1).toHaveBeenCalledTimes(1);
+    expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledTimes(1);
+    expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledWith({ dates: [
+      { date: "2026-09-21", action: "created" },
+      { date: "2026-09-22", action: "created" },
+      { date: "2026-09-23", action: "created" },
+    ] });
     expect(publicationLifecycle.readUnifiedPublicationBlockToken).toHaveBeenCalledTimes(3);
     expect(publicationLifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledTimes(3);
     expect(afterHealthSyncMatch).toHaveBeenCalledTimes(3);

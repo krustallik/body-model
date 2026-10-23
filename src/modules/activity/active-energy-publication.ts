@@ -19,6 +19,7 @@ export type ActiveEnergyPublicationStatusV1 = "current" | "stale" | "not-run";
 
 /** Rebuild production Active Energy without publishing the dependent Unified snapshot. */
 export async function recalculateActiveEnergyChangesV1(input: {
+  reuseCurrentProduction?: boolean;
   now?: Date;
   requireDependentStages?: boolean;
   onLifecycleFenceChanged?: (fence: ProductionPublicationFenceV1) => void | Promise<void>;
@@ -30,6 +31,10 @@ export async function recalculateActiveEnergyChangesV1(input: {
   } catch (error) {
     if (error instanceof NoActiveModelEpisodeError) return null;
     throw error;
+  }
+  if (input.reuseCurrentProduction && status.productionCurrent && status.latestModeledDate !== null) {
+    return { episodeId: status.episodeId, episodeStartDate: status.episodeStartDate,
+      latestModeledDate: status.latestModeledDate, effectiveReplayFromDate: status.episodeStartDate };
   }
   const production = await recalculateModelEpisode({
     episodeId: status.episodeId,
@@ -50,6 +55,7 @@ export async function recalculateActiveEnergyChangesV1(input: {
 
 /** Publish canonical Active Energy changes through production and Unified readers in order. */
 export async function publishActiveEnergyChangesV1(input: {
+  reuseCurrentProduction?: boolean;
   now?: Date;
   onLifecycleFenceChanged?: (fence: ProductionPublicationFenceV1) => void | Promise<void>;
 } = {}): Promise<boolean> {

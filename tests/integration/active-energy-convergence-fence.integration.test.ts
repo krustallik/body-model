@@ -1,8 +1,9 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 import { persistActiveEnergyCanonicalResolutionV1 } from "@/model/activity/active-energy-canonical.repository";
-import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { ActiveEnergyConvergenceBusyError, PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { runWithHealthSyncRefreshWorkerLease } from "@/modules/health/health-sync-worker-context";
 import { reconcileOrphanActiveEnergyConvergenceBlocks } from "@/modules/training/training-refresh-worker";
 
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
@@ -39,6 +40,10 @@ describe("Active Energy convergence publication fence on isolated PostgreSQL", (
       where: { profileId_source_sourceKey: { profileId, source: "active_energy", sourceKey } },
       select: { revision: true, fromDate: true },
     });
+  });
+
+  beforeEach(async () => {
+    await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId, source: "active_energy", sourceKey } });
   });
 
   afterAll(async () => {
@@ -117,6 +122,12 @@ describe("Active Energy convergence publication fence on isolated PostgreSQL", (
   it("rejects a stale convergence owner before production publication", async () => {
     const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
     const oldOwner = await lifecycle.beginActiveEnergyConvergence({ profileId, fromDate: dirtyDate });
+    await expect(lifecycle.beginActiveEnergyConvergence({ profileId, fromDate: dirtyDate }))
+      .rejects.toBeInstanceOf(ActiveEnergyConvergenceBusyError);
+    await prisma.unifiedPublicationBlock.update({
+      where: { profileId_source_sourceKey: { profileId, source: "active_energy", sourceKey } },
+      data: { ownerLeaseUntil: new Date(Date.now() - 1000) },
+    });
     const currentOwner = await lifecycle.beginActiveEnergyConvergence({ profileId, fromDate: dirtyDate });
     expect(currentOwner.revision).toBeGreaterThan(oldOwner.revision);
     await expect(lifecycle.assertActiveEnergyConvergenceOwner(profileId, oldOwner))
@@ -131,6 +142,53 @@ describe("Active Energy convergence publication fence on isolated PostgreSQL", (
         convergenceOwner: oldOwner,
       });
     })).rejects.toThrow("Active Energy convergence owner lease was lost");
+  });
+
+  it("admits one concurrent owner, renews it, and safely recovers after withdrawal", async () => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(prisma);
+    const attempts = await Promise.allSettled(Array.from({ length: 3 }, () =>
+      lifecycle.beginActiveEnergyConvergence({ profileId, fromDate: dirtyDate })));
+    const winners = attempts.filter((item) => item.status === "fulfilled");
+    expect(winners).toHaveLength(1);
+    for (const item of attempts) if (item.status === "rejected") expect(item.reason).toBeInstanceOf(ActiveEnergyConvergenceBusyError);
+    const owner = winners[0]!.value;
+    await prisma.unifiedPublicationBlock.update({
+      where: { profileId_source_sourceKey: { profileId, source: "active_energy", sourceKey } },
+      data: { ownerLeaseUntil: new Date(Date.now() + 10000) },
+    });
+    await lifecycle.renewActiveEnergyConvergence({ profileId, owner });
+    const renewed = await prisma.unifiedPublicationBlock.findUniqueOrThrow({
+      where: { profileId_source_sourceKey: { profileId, source: "active_energy", sourceKey } },
+    });
+    expect(renewed.ownerLeaseUntil!.getTime()).toBeGreaterThan(Date.now() + 100000);
+    await lifecycle.expireActiveEnergyConvergence(profileId, owner);
+    const successor = await lifecycle.beginActiveEnergyConvergence({ profileId, fromDate: dirtyDate });
+    await lifecycle.expireActiveEnergyConvergence(profileId, owner);
+    await lifecycle.assertActiveEnergyConvergenceOwner(profileId, successor);
+    await expect(lifecycle.renewActiveEnergyConvergence({ profileId, owner })).rejects.toThrow("owner lease was lost");
+  });
+
+  it("reproduces SQLSTATE 40001 when a Serializable snapshot late-locks its heartbeat-mutated Health job", async () => {
+    const before = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId } });
+    const leaseToken = "00000000-0000-4000-8000-000000000099";
+    const data = { requestedGeneration: 90001, completedGeneration: 90000, leaseToken,
+      leaseUntil: new Date(Date.now() + 300000) };
+    await prisma.healthSyncRefreshJob.upsert({ where: { profileId }, create: { profileId, ...data }, update: data });
+    try {
+      await expect(runWithHealthSyncRefreshWorkerLease({ profileId, requestedGeneration: 90001, leaseToken }, () =>
+        prisma.$transaction(async (tx) => {
+          await tx.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+          // A separate connection is exactly how the worker heartbeat writes.
+          await prisma.healthSyncRefreshJob.update({ where: { profileId }, data: {
+            leaseUntil: new Date(Date.now() + 310000),
+          } });
+          await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      )).rejects.toMatchObject({ code: "P2010", meta: { code: "40001" } });
+    } finally {
+      if (before) await prisma.healthSyncRefreshJob.update({ where: { profileId }, data: before });
+      else await prisma.healthSyncRefreshJob.delete({ where: { profileId } });
+    }
   });
 
   it("keeps PostgreSQL canonical resolution stable when a losing input fingerprint changes", async () => {

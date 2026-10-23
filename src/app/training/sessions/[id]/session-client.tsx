@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchCurrentModelRead, ModelRefreshPendingError } from "@/lib/model-refresh-read";
+
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -159,6 +161,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [refreshingAccounting, setRefreshingAccounting] = useState(false);
   const [accountingError, setAccountingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [energyReadAttempt, setEnergyReadAttempt] = useState(0);
+  const [energyReadError, setEnergyReadError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [exercisePickerOpen, setExercisePickerOpen] = useState(false);
   const [exercisePickerError, setExercisePickerError] = useState<string | null>(null);
@@ -178,12 +182,12 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const exercisePickerCancelRef = useRef<HTMLButtonElement | null>(null);
   const restoreExercisePickerFocusRef = useRef(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (readOnly = false) => {
     if (saveInFlightRef.current) return;
     const requestId = ++detailRequestIdRef.current;
     setError(null);
     try {
-      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" });
+      const response = await fetchWithTrainingTimeout(`/api/v1/training/sessions/${sessionId}${readOnly ? "?readOnly=true" : ""}`, { cache: "no-store" });
       if (!response.ok) {
         if (requestId !== detailRequestIdRef.current || saveInFlightRef.current) return;
         const apiError = await readApiError(response, uk);
@@ -221,6 +225,46 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       cancelled = true;
     };
   }, [load]);
+
+  const energyPending = session?.selectedActiveEnergy?.status === "pending";
+  const sessionRevision = session?.revision;
+  const matchedWorkoutId = session?.matchedWorkoutId;
+  useEffect(() => {
+    if (!energyPending || busy) return;
+    const controller = new AbortController();
+    void fetchCurrentModelRead(`/api/v1/training/sessions/${sessionId}?readOnly=true`, {
+      signal: controller.signal,
+      onPending: () => setEnergyReadError(null),
+      isPending: (body) => (body as { session?: StrengthSessionDto } | null)?.session?.selectedActiveEnergy?.status === "pending",
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("energy_read_failed");
+      const body = await response.json() as { session: StrengthSessionDto };
+      if (controller.signal.aborted || saveInFlightRef.current) return;
+      setEnergyReadError(null);
+      if (body.session.revision !== sessionRevision || body.session.matchedWorkoutId !== matchedWorkoutId) {
+        setEnergyReadError(uk ? "Дані сесії змінилися. Оновіть її читання." : "Session data changed. Refresh the session.");
+        return;
+      }
+      setSession((current) => {
+        if (!current || current.revision !== body.session.revision
+            || current.matchedWorkoutId !== body.session.matchedWorkoutId) return current;
+        // Only merge derived energy and accounting. Drafts, exercises and selection
+        // are not overwritten by this background read.
+        return { ...current, selectedActiveEnergy: body.session.selectedActiveEnergy,
+          activeEnergyMassReference: body.session.activeEnergyMassReference,
+          materializationState: body.session.materializationState,
+          loadAccountingV1: body.session.loadAccountingV1,
+          loadAccountingBreakdown: body.session.loadAccountingBreakdown,
+          ordinaryTonnageKg: body.session.ordinaryTonnageKg };
+      });
+    }).catch((reason: unknown) => {
+      if (controller.signal.aborted) return;
+      setEnergyReadError(reason instanceof ModelRefreshPendingError
+        ? (uk ? "Розрахунок ще триває." : "The calculation is still updating.")
+        : (uk ? "Не вдалося оновити енергію." : "Could not refresh energy."));
+    });
+    return () => controller.abort();
+  }, [sessionId, energyPending, energyReadAttempt, sessionRevision, matchedWorkoutId, busy, uk]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1723,6 +1767,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                         fullCoverage: session.selectedActiveEnergy.fullCoverage,
                         uk,
                       })}
+                    {energyReadError && <span role="status"> {energyReadError} <button type="button" onClick={() => { void load(true).then(() => setEnergyReadAttempt((value) => value + 1)); }}>{uk ? "Повторити перевірку" : "Check again"}</button></span>}
                   </dd>
                 </div>
               </dl>

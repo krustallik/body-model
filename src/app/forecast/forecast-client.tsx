@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchCurrentModelRead, ModelRefreshPendingError } from "@/lib/model-refresh-read";
+
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
@@ -230,6 +232,13 @@ export function ForecastClient() {
     setScenarioEvidenceMissing(false);
     try {
       const payload = await withMinimumVisibleLoading((async () => {
+        // Wait using GET while a durable writer owns publication. Never
+        // compete with it by repeatedly POSTing another recalculation.
+        await fetchCurrentModelRead(`/api/forecast/context?locale=${locale}`, {
+          signal: controller.signal,
+          onPending: () => setError(uk ? "Модель оновлюється. Перевіряємо готовність…" : "Model updating. Checking readiness…"),
+        });
+        if (isCurrentForecastRequest(requestRef.current, requestId)) setError(null);
         // Forecast may persist DailyModelState first; load context afterward so diagnostics stay in sync.
         const forecastResponse = await fetchForecastResponse(
           buildForecastRequest(selectedMode, selectedHorizon, selectedPlan),
@@ -282,7 +291,9 @@ export function ForecastClient() {
         setErrorCode(issue.code);
         if (issue.donorDayCount !== undefined) setKnownDonorDayCount(issue.donorDayCount);
       }
-      setError(runError instanceof Error ? runError.message : uk ? "Не вдалося побудувати прогноз" : "Could not run forecast");
+      setError(runError instanceof ModelRefreshPendingError
+        ? (uk ? "Розрахунок ще триває. Повторіть перевірку готовності." : "The calculation is still updating. Check readiness again.")
+        : runError instanceof Error ? runError.message : uk ? "Не вдалося побудувати прогноз" : "Could not run forecast");
       return null;
     } finally {
       if (isCurrentForecastRequest(requestRef.current, requestId)) setLoading(false);

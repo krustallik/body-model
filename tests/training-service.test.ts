@@ -594,6 +594,19 @@ describe("TrainingService programs", () => {
 });
 
 describe("TrainingService snapshot immutability", () => {
+  it("reads pending energy without finalizing inactive sessions or writing raw inputs", async () => {
+    const db = buildDb();
+    const repo = new TrainingRepository(db as never);
+    const service = new TrainingService(db as never, repo);
+    const finalize = vi.spyOn(service as unknown as { finalizeInactiveSessions: () => Promise<void> }, "finalizeInactiveSessions");
+    const read = vi.spyOn(repo, "getSession").mockResolvedValue(null);
+    await service.getSession(50, 1, { readOnly: true });
+    expect(read).toHaveBeenCalledWith(50, 1);
+    expect(finalize).not.toHaveBeenCalled();
+    expect(db.strengthDiarySession.update).not.toHaveBeenCalled();
+    expect(db.strengthSet.update).not.toHaveBeenCalled();
+  });
+
   it("keeps session snapshot after program version bump", async () => {
     const db = buildDb();
     const service = new TrainingService(db as never, new TrainingRepository(db as never));

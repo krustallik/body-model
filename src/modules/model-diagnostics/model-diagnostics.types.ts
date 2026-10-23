@@ -11,6 +11,7 @@ export type DiagnosticGate = {
 };
 
 export type DiagnosticsDto = {
+  refreshPending?: boolean;
   episode: { id: number; modelVersion: string; timezone: string; startDate: string; latestModeledDate: string | null; updatedAt: string };
   currentState: {
     level: DiagnosticLevel;

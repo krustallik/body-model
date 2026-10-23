@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { assertHealthSyncAuditRetentionTransitionV1 } from "@/modules/health/health-sync-audit-retention-integrity";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
+import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 
 function profileIdArg(): number {
   const index = process.argv.indexOf("--profile-id");
@@ -185,18 +186,27 @@ const verify = async () => {
         },
       });
       if (!job) throw new Error("Training refresh convergence is blocked because its durable queue row is missing.");
-      const state = JSON.stringify(job);
+      const health = await prisma.healthSyncRefreshJob.findUnique({
+        where: { profileId },
+        select: { requestedGeneration: true, completedGeneration: true, attemptCount: true, lastErrorType: true },
+      });
+      const lifecycle = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+      const unifiedCurrent = isUnifiedGenerationCurrentV1(lifecycle)
+        && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch;
+      const state = JSON.stringify({ ...job, health, unifiedCurrent });
       if (state !== lastObservedState) {
         process.stdout.write(`BODYCAST_TRAINING_REFRESH_PROGRESS ${state}\n`);
         lastObservedState = state;
       }
-      if (job.requestedGeneration === job.completedGeneration) {
+      if (job.requestedGeneration === job.completedGeneration
+          && (health === null || health.requestedGeneration === health.completedGeneration)
+          && unifiedCurrent) {
         process.stdout.write(`BODYCAST_TRAINING_REFRESH_CURRENT ${state}\n`);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
-    throw new Error("Timed out waiting for the app's standard durable Training refresh worker; no queue or source rows were changed.");
+    throw new Error("Timed out waiting for standard Health/Training refresh and Unified currentness; no queue or source rows were changed.");
   }
   if (captureRawInputFingerprint) {
     const { inventoryV4RecoveryRawSourcesV1 } = await import("./production-v4-recovery-evidence");

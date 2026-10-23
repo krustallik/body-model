@@ -438,6 +438,55 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
     })).updatedAt.toISOString()).toBe(updatedAt);
   });
 
+  it("waits for Health and Unified even when Training was already current", async () => {
+    const previousTraining = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
+    const previousHealth = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId } });
+    const previousLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    await prisma.trainingRefreshJob.upsert({ where: { profileId },
+      create: { profileId, requestedGeneration: 4, completedGeneration: 4 },
+      update: { requestedGeneration: 4, completedGeneration: 4 } });
+    await prisma.healthSyncRefreshJob.upsert({ where: { profileId },
+      create: { profileId, requestedGeneration: 2, completedGeneration: 1 },
+      update: { requestedGeneration: 2, completedGeneration: 1 } });
+    await prisma.physiologyV7Lifecycle.update({ where: { profileId }, data: { unifiedPublishedGeneration: null } });
+    const child = spawn(process.execPath, [path.join(migratorArtifactRoot, "scripts", "unified-v4-traffic-check.mjs"),
+      "--profile-id", String(profileId), "--wait-training-refresh-current"], {
+      cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+    const waitForOutput = async (text: string) => {
+      const deadline = Date.now() + 12000;
+      while (!stdout.includes(text) && Date.now() < deadline && child.exitCode === null) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(stdout, stderr).toContain(text);
+    };
+    try {
+      await waitForOutput('"completedGeneration":1');
+      expect(stdout).not.toContain("BODYCAST_TRAINING_REFRESH_CURRENT");
+      await prisma.healthSyncRefreshJob.update({ where: { profileId }, data: { completedGeneration: 2 } });
+      await waitForOutput('"completedGeneration":2');
+      expect(stdout).not.toContain("BODYCAST_TRAINING_REFRESH_CURRENT");
+      await prisma.physiologyV7Lifecycle.update({ where: { profileId }, data: {
+        unifiedPublishedGeneration: previousLifecycle.unifiedPublishedGeneration,
+      } });
+      await waitForOutput("BODYCAST_TRAINING_REFRESH_CURRENT");
+      expect(await exited, stderr).toBe(0);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await exited;
+      if (previousTraining) await prisma.trainingRefreshJob.update({ where: { profileId }, data: previousTraining });
+      else await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+      if (previousHealth) await prisma.healthSyncRefreshJob.update({ where: { profileId }, data: previousHealth });
+      else await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId } });
+      await prisma.physiologyV7Lifecycle.update({ where: { profileId }, data: previousLifecycle });
+    }
+  }, 30000);
+
   it("holds the PostgreSQL V4 currentness fence until the SSH route acknowledgment", async () => {
     const previousJob = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
     const job = await prisma.trainingRefreshJob.upsert({

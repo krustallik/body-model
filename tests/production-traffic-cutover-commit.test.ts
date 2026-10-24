@@ -202,7 +202,7 @@ describe("serving-route commit boundary", () => {
     expect(events).toContain("unified-v4-raw-fingerprint-assertion");
     expect(events).toContain("unified-v4-fence-committed");
     expect(events).toContain("schema-preflight-no-deps");
-    const refreshWait = events.indexOf("training-refresh-current");
+    const refreshWait = events.indexOf("training-refresh-generations-current");
     const fenceReady = events.indexOf("unified-v4-fence-ready");
     const schemaPreflight = events.lastIndexOf("schema-preflight-no-deps");
     const prismaIdentityChecks = events.flatMap((event, index) => event === "prisma-db-identity" ? [index] : []);
@@ -250,7 +250,7 @@ describe("serving-route commit boundary", () => {
     expect(result.stderr).toContain("History API does not expose the current historical Training energy and target Strength kcal.");
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("keeps migration-free serving in maintenance when the durable Training refresh does not converge", () => {
+  it.skipIf(!bashAvailable)("keeps migration-free serving in maintenance when Training refresh generations do not converge", () => {
     const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
     rmSync(markerPath, { force: true });
     const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
@@ -269,7 +269,7 @@ describe("serving-route commit boundary", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
-    expect(events).toContain("training-refresh-current-timeout");
+    expect(events).toContain("training-refresh-generations-timeout");
     expect(events).not.toContain("unified-v4-fence-start");
     expect(events).not.toContain("live-route-mutation:serving");
   }, 30_000);

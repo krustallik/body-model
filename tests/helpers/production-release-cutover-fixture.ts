@@ -340,13 +340,13 @@ if [[ "$joined" == *" run --rm --no-deps "* && "$joined" == *"--entrypoint node 
       if [[ "\${FAIL_V4_ACTIVATION:-0}" == "1" ]]; then exit 44; fi
       exit 0
     fi
-    if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--wait-training-refresh-current"* ]]; then
-      event "training-refresh-current-wait"
+    if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--wait-training-refresh-generations"* ]]; then
+      event "training-refresh-generations-wait"
       if [[ "\${FAIL_TRAINING_REFRESH_WAIT:-0}" == "1" ]]; then
-        event "training-refresh-current-timeout"
+        event "training-refresh-generations-timeout"
         exit 42
       fi
-      event "training-refresh-current"
+      event "training-refresh-generations-current"
       exit 0
     fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--hold-currentness-fence"* ]]; then

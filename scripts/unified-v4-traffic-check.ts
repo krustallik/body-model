@@ -27,6 +27,7 @@ const preTrainingMigration = process.argv.includes("--pre-training-migration");
 const assertPrismaDatabaseIdentity = process.argv.includes("--assert-prisma-database-identity");
 const captureRawInputFingerprint = process.argv.includes("--capture-raw-input-fingerprint");
 const waitTrainingRefreshCurrent = process.argv.includes("--wait-training-refresh-current");
+const waitTrainingRefreshGenerations = process.argv.includes("--wait-training-refresh-generations");
 const ownerAuthorizedActiveEnergyConvergence = process.argv.includes("--owner-authorized-active-energy-convergence");
 const expectedRawInputFingerprintIndex = process.argv.indexOf("--expected-raw-input-fingerprint");
 const expectedRawInputFingerprint = expectedRawInputFingerprintIndex < 0
@@ -50,21 +51,25 @@ const expectedHealthSyncAuditPruneEvents = parseJsonEvidence(
 const expectedPrismaDatabaseIdentity = process.env.BODYCAST_EXPECTED_PRISMA_DB_IDENTITY ?? null;
 if (ownerAuthorizedActiveEnergyConvergence
   && (profileId !== 1 || holdCurrentnessFence || preTrainingMigration || assertPrismaDatabaseIdentity
-    || captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null
+    || captureRawInputFingerprint || waitTrainingRefreshCurrent || waitTrainingRefreshGenerations || expectedRawInputFingerprint !== null
     || expectedHealthSyncAuditRetentionBaselineText !== null || expectedHealthSyncAuditPruneEventsText !== null
     || !expectedPrismaDatabaseIdentity)) {
   throw new Error("Owner-authorized Active Energy convergence is restricted to a standalone migration-free profile 1 refresh with an exact Prisma database identity.");
+}
+if (waitTrainingRefreshCurrent && waitTrainingRefreshGenerations) {
+  throw new Error("Choose either the strict currentness wait or the generation-only Training/Health wait.");
 }
 if (captureRawInputFingerprint && (holdCurrentnessFence || preTrainingMigration || profileId !== 1)) {
   throw new Error("Raw-input fingerprint capture is restricted to standalone production profile 1 evidence.");
 }
 if (assertPrismaDatabaseIdentity
-  && (holdCurrentnessFence || captureRawInputFingerprint || waitTrainingRefreshCurrent || preTrainingMigration || profileId !== 1)) {
+  && (holdCurrentnessFence || captureRawInputFingerprint || waitTrainingRefreshCurrent
+    || waitTrainingRefreshGenerations || preTrainingMigration || profileId !== 1)) {
   throw new Error("Prisma database identity assertion is restricted to standalone production profile 1 evidence.");
 }
-if (waitTrainingRefreshCurrent
+if ((waitTrainingRefreshCurrent || waitTrainingRefreshGenerations)
   && (holdCurrentnessFence || captureRawInputFingerprint || preTrainingMigration || profileId !== 1)) {
-  throw new Error("Training refresh convergence wait is restricted to standalone production profile 1 evidence.");
+  throw new Error("Training refresh generation wait is restricted to standalone production profile 1 evidence.");
 }
 if (expectedRawInputFingerprintIndex >= 0
   && (!holdCurrentnessFence || !/^[a-f0-9]{64}$/.test(expectedRawInputFingerprint ?? ""))) {
@@ -77,7 +82,8 @@ if ((expectedHealthSyncAuditRetentionBaselineText !== null || expectedHealthSync
 if ((expectedRawInputFingerprintIndex >= 0) !== (expectedHealthSyncAuditRetentionBaselineText !== null)) {
   throw new Error("Migration-free raw integrity requires both the strict source fingerprint and HealthSyncAudit retention baseline.");
 }
-if ((assertPrismaDatabaseIdentity || captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null)
+if ((assertPrismaDatabaseIdentity || captureRawInputFingerprint || waitTrainingRefreshCurrent
+  || waitTrainingRefreshGenerations || expectedRawInputFingerprint !== null)
   && !expectedPrismaDatabaseIdentity) {
   throw new Error("Migration-free production checks require the exact Prisma database identity captured from bodycast-db-prod.");
 }
@@ -337,11 +343,12 @@ const verify = async () => {
     process.stdout.write(`BODYCAST_PRISMA_DB_IDENTITY=${identity}\n`);
     return;
   }
-  if (waitTrainingRefreshCurrent) {
+  if (waitTrainingRefreshCurrent || waitTrainingRefreshGenerations) {
     await assertPrismaDatabaseIdentityV1(prisma);
     const startedAt = Date.now();
     const timeoutMs = 20 * 60_000;
     let lastObservedState = "";
+    let lastOutputAt = startedAt;
     while (Date.now() - startedAt < timeoutMs) {
       const job = await prisma.trainingRefreshJob.findUnique({
         where: { profileId },
@@ -365,16 +372,23 @@ const verify = async () => {
       if (state !== lastObservedState) {
         process.stdout.write(`BODYCAST_TRAINING_REFRESH_PROGRESS ${state}\n`);
         lastObservedState = state;
+        lastOutputAt = Date.now();
       }
-      if (job.requestedGeneration === job.completedGeneration
-          && (health === null || health.requestedGeneration === health.completedGeneration)
-          && unifiedCurrent) {
-        process.stdout.write(`BODYCAST_TRAINING_REFRESH_CURRENT ${state}\n`);
+      const generationsCurrent = job.requestedGeneration === job.completedGeneration
+        && (health === null || health.requestedGeneration === health.completedGeneration);
+      if (generationsCurrent && (!waitTrainingRefreshCurrent || unifiedCurrent)) {
+        process.stdout.write(`${waitTrainingRefreshCurrent ? "BODYCAST_TRAINING_REFRESH_CURRENT" : "BODYCAST_TRAINING_REFRESH_GENERATIONS_CURRENT"} ${state}\n`);
         return;
+      }
+      if (Date.now() - lastOutputAt >= 30_000) {
+        process.stdout.write(`BODYCAST_TRAINING_REFRESH_WAITING ${state}\n`);
+        lastOutputAt = Date.now();
       }
       await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
-    throw new Error("Timed out waiting for standard Health/Training refresh and Unified currentness; no queue or source rows were changed.");
+    throw new Error(waitTrainingRefreshCurrent
+      ? "Timed out waiting for standard Health/Training refresh and Unified currentness; no queue or source rows were changed."
+      : "Timed out waiting for standard Health/Training refresh generations; no queue or source rows were changed.");
   }
   if (captureRawInputFingerprint) {
     const { inventoryV4RecoveryRawSourcesV1 } = await import("./production-v4-recovery-evidence");

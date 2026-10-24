@@ -446,8 +446,8 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       create: { profileId, requestedGeneration: 4, completedGeneration: 4 },
       update: { requestedGeneration: 4, completedGeneration: 4 } });
     await prisma.healthSyncRefreshJob.upsert({ where: { profileId },
-      create: { profileId, requestedGeneration: 2, completedGeneration: 1 },
-      update: { requestedGeneration: 2, completedGeneration: 1 } });
+      create: { profileId, requestedGeneration: 2, completedGeneration: 2 },
+      update: { requestedGeneration: 2, completedGeneration: 2 } });
     await prisma.physiologyV7Lifecycle.update({ where: { profileId }, data: { unifiedPublishedGeneration: null } });
     // The production identity gate intentionally accepts only database/role
     // bodycast. Stub that one boundary in this child; all queue/lifecycle reads
@@ -483,6 +483,27 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       expect(stdout, stderr).toContain(text);
     };
     try {
+      const generationChild = spawn(process.execPath, ["--require", identityFixture,
+        path.join(migratorArtifactRoot, "scripts", "unified-v4-traffic-check.mjs"),
+        "--profile-id", String(profileId), "--wait-training-refresh-generations"], {
+        cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl,
+          BODYCAST_EXPECTED_PRISMA_DB_IDENTITY: "bodycast|1|1|bodycast|17.11|127.0.0.1|5432" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let generationStdout = "";
+      let generationStderr = "";
+      generationChild.stdout.on("data", (chunk) => { generationStdout += String(chunk); });
+      generationChild.stderr.on("data", (chunk) => { generationStderr += String(chunk); });
+      const generationExited = new Promise<number | null>((resolve, reject) => {
+        generationChild.once("error", reject);
+        generationChild.once("exit", resolve);
+      });
+      const generationTimeout = setTimeout(() => generationChild.kill("SIGKILL"), 10_000);
+      const generationExitCode = await generationExited;
+      clearTimeout(generationTimeout);
+      expect(generationExitCode, generationStderr).toBe(0);
+      expect(generationStdout).toContain("BODYCAST_TRAINING_REFRESH_GENERATIONS_CURRENT");
+      expect(generationStdout).toContain('"unifiedCurrent":false');
+      await prisma.healthSyncRefreshJob.update({ where: { profileId }, data: { completedGeneration: 1 } });
       await waitForOutput('"completedGeneration":1');
       expect(stdout).not.toContain("BODYCAST_TRAINING_REFRESH_CURRENT");
       await prisma.healthSyncRefreshJob.update({ where: { profileId }, data: { completedGeneration: 2 } });

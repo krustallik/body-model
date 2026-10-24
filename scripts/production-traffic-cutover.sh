@@ -766,7 +766,7 @@ serve_training_release() {
     bodycast_assert_prisma_database_identity_matches "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
     if ! timeout 20m docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
       -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
-      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --wait-training-refresh-current; then
+      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --wait-training-refresh-generations; then
       echo "The durable Training refresh did not converge during its bounded wait; traffic remains in maintenance." >&2
       return 1
     fi

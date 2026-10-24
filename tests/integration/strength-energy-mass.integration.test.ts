@@ -1,10 +1,11 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { recordExperimentalStrengthEnergyShadow, recordExperimentalStrengthEnergyShadowBySessionId } from "@/modules/training/experimental-strength-energy-shadow.service";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { STRENGTH_ENERGY_MASS_RESOLUTION_V1 } from "@/modules/training/session-mass-reference";
 import { StaleStrengthEnergySourceError } from "@/modules/training/training.errors";
 
@@ -101,7 +102,7 @@ describe("independent Strength energy mass on isolated PostgreSQL", () => {
   });
 
   it("creates unmatched LIVE canonical kcal with a BODYWEIGHT exercise lacking rows, preserving accounting and raw inputs", async () => {
-    const observation = await sample();
+    const observation = await sample(81.12345678901234);
     const row = await session();
     const accountingBefore = await accountingRows(row.id);
     const sourcesBefore = await sourceRows(row.id);
@@ -118,9 +119,29 @@ describe("independent Strength energy mass on isolated PostgreSQL", () => {
       energyMassResolutionMethodVersion: STRENGTH_ENERGY_MASS_RESOLUTION_V1,
     });
     const firstShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: row.id } });
+    const persistedResult = firstShadow.result as Record<string, unknown>;
+    const estimatorResult = Object.fromEntries([
+      "contractVersion", "provenance", "supportedDomain", "availability", "estimatedActiveKcal",
+      "lowerBoundKcal", "upperBoundKcal", "unavailableReason", "features", "reasons",
+      "recoveryEnergy", "garminReferenceKcal",
+    ].map((key) => [key, persistedResult[key]]));
+    expect(firstShadow.sourceFingerprint).toBe(stableSha256(
+      `${stableSha256(estimatorResult)}|${String(persistedResult.inputFingerprint)}`,
+    ));
     const sources = await new ModelEpisodeRepository(prisma).loadSources(date, date);
     expect(sources.webOnlyStrengthSessions?.find(({ sessionId }) => sessionId === row.id)?.bodyCastEstimateFresh).toBe(true);
+    await prisma.experimentalStrengthEnergyShadow.update({
+      where: { sessionId: row.id },
+      data: { result: {
+        ...persistedResult,
+        activeEnergyResolution: { availability: "unavailable", estimatedActiveKcal: null, source: null, provenance: null },
+      } as Prisma.InputJsonValue },
+    });
+    expect(await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: row.id } }))
+      .toMatchObject({ sourceFingerprint: firstShadow.sourceFingerprint });
     await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: row.id, profileId: 1 });
+    expect(await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: row.id } }))
+      .toMatchObject({ sourceFingerprint: firstShadow.sourceFingerprint, result: firstShadow.result });
     const repeated = await eventFor(row.id);
     expect(repeated.id).toBe(first.id);
     expect(repeated.resolutionRevision).toBe(first.resolutionRevision);

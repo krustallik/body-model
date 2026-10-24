@@ -8,6 +8,7 @@ import { MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1 } from "@/modules/model-episod
 import { persistActiveEnergyCanonicalResolutionV1, type ActiveEnergyCandidateV1 } from "@/model/activity/active-energy-canonical.repository";
 import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
+import { stepperJsonPersistenceProjectionV1 as prismaJsonPersistenceProjectionV1 } from "@/model/activity/stepper-historical-mass-v1";
 import type { StrengthSessionDto } from "./training.types";
 import { TrainingRepository } from "./training.repository";
 import { resolveStrengthEnergyMassReferenceV1, STRENGTH_ENERGY_MASS_RESOLUTION_V1 } from "./session-mass-reference";
@@ -82,11 +83,11 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       && Number.isFinite(energyMass.reference.valueKg) && energyMass.reference.valueKg > 0
     ? energyMass.reference.valueKg
     : null;
-  const result = estimateExperimentalStrengthActiveEnergyV1({
+  const result = prismaJsonPersistenceProjectionV1(estimateExperimentalStrengthActiveEnergyV1({
     session: input.session,
     bodyMassKg,
     heartRateBpms,
-  });
+  }));
   const occurrenceAt = new Date(input.session.matchedWorkout?.startAt
     ?? input.session.effectiveAccountingAt ?? input.session.webStartedAt ?? input.session.createdAt);
   const episodeRows = await prisma.modelEpisode.findMany({
@@ -157,7 +158,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     estimatorVersion: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
     estimatorInputs,
   });
-  const persistedResult = {
+  const persistedResult = prismaJsonPersistenceProjectionV1({
     ...result,
     activeEnergyResolution,
     sessionRevision: input.session.revision,
@@ -169,7 +170,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     energyMassResolutionMethodVersion: energyMass?.massResolutionIdentity !== stage02Mass?.massResolutionIdentity
       ? STRENGTH_ENERGY_MASS_RESOLUTION_V1 : null,
     energyMassResolutionIdentity: energyMass?.massResolutionIdentity ?? null,
-  };
+  });
   const sourceFingerprint = stableSha256(`${experimentalStrengthActiveEnergyV1Fingerprint(result)}|${inputFingerprint}`);
   const previous = await prisma.experimentalStrengthEnergyShadow.findUnique({
     where: { sessionId: input.session.id },
@@ -306,10 +307,11 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     }
     if (!(await validateSource(tx))) throw new StaleStrengthEnergySourceError();
     const existingShadow = await tx.experimentalStrengthEnergyShadow.findUnique({
-      where: { sessionId: input.session.id }, select: { sourceFingerprint: true, modelRevision: true },
+      where: { sessionId: input.session.id }, select: { sourceFingerprint: true, modelRevision: true, result: true },
     });
     const shadowChanged = existingShadow?.sourceFingerprint !== sourceFingerprint
-      || existingShadow.modelRevision !== EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION;
+      || existingShadow.modelRevision !== EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION
+      || stableSha256(existingShadow.result) !== stableSha256(persistedResult);
     if (shadowChanged) await tx.experimentalStrengthEnergyShadow.upsert({
       where: { sessionId: input.session.id },
       create: { sessionId: input.session.id, profileId: input.profileId, sourceFingerprint, modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION, features: result.features, result: persistedResult as unknown as Prisma.InputJsonValue },

@@ -538,6 +538,86 @@ function isCurrentWorkoutSourceBound(
   return false;
 }
 
+/** Safe, value-free explanation for the confirmed direct Workout 56 shadow path. */
+function stepperAcceptanceDiagnostic(
+  event: MigrationFreeEnergyEventV1,
+  context: WorkoutSourceBindingContext,
+): string {
+  try {
+    const selected = isRecord(event.currentProvenance) ? event.currentProvenance : null;
+    const identity = typeof selected?.sourceIdentity === "string" ? selected.sourceIdentity : "";
+    const direct = /^stepper-shadow:(\d+)$/.exec(identity);
+    if (!direct) return "diagnostic=unsupported-source-identity";
+    const workoutId = Number(direct[1]);
+    const shadowRecord = Number.isSafeInteger(workoutId)
+      ? context.stepperShadowsByWorkoutId.get(workoutId) : undefined;
+    let shadowReason = "missing";
+    if (shadowRecord) {
+      if (shadowRecord.modelRevision !== EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION) shadowReason = "revision";
+      else if (!isRecord(shadowRecord.result)) shadowReason = "result-shape";
+      else if (typeof shadowRecord.result.inputFingerprint !== "string"
+        || !/^[a-f0-9]{64}$/.test(shadowRecord.result.inputFingerprint)) shadowReason = "input-fingerprint";
+      else if (!isRecord(shadowRecord.result.massReference)) shadowReason = "mass-reference";
+      else if (shadowRecord.result.contractVersion !== EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION) shadowReason = "contract";
+      else if (!stepperShadowEvidence(shadowRecord)) shadowReason = "source-fingerprint";
+      else shadowReason = "valid";
+    }
+    const shadow = stepperShadowEvidence(shadowRecord);
+    const workout = context.workoutsById.get(workoutId);
+    const massMatches = shadow && workout
+      ? stepperMassMatchesRawInputs(shadow, workout, event, context.massObservations,
+        context.modelEpisodes, context.modelStates, context.stepperLifecycle)
+      : false;
+    const candidate = event.candidates.find((row) => row.source === event.currentSource
+      && row.sourceIdentity === identity && row.sourceFingerprint === selected?.sourceFingerprint);
+    const expectedEvidence = shadow ? {
+      revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
+      massReference: stableStepperMassProvenanceV1(shadow.massReference),
+    } : null;
+
+    // Mirror the existing winner calculation to expose whether another bound
+    // candidate outranks the persisted selection; this does not affect gating.
+    const deduplicated = new Map<string, MigrationFreeEnergyCandidateV1>();
+    for (const row of [...event.candidates, ...currentProducerCandidates(event, context)]) {
+      if (row.availability !== "available" || row.valueKcal === null
+        || !Number.isFinite(row.valueKcal) || row.valueKcal < 0) continue;
+      deduplicated.set(`${row.source}\u0000${row.sourceIdentity}\u0000${row.sourceFingerprint}`, row);
+    }
+    const boundCandidates = [...deduplicated.values()].filter((row) => {
+      const candidateEvent = eventForCandidate(event, row);
+      return candidateEvent !== null && isCurrentWorkoutSourceBound(candidateEvent, context);
+    });
+    const winner = boundCandidates.sort((left, right) => activeEnergyCandidatePriority(event.eventKind, left.source)
+      - activeEnergyCandidatePriority(event.eventKind, right.source)
+      || left.sourceIdentity.localeCompare(right.sourceIdentity))[0];
+    const yesNo = (value: boolean) => value ? "yes" : "no";
+    return [
+      `selected_event_available=${yesNo(isAvailableCurrentEvent(event))}`,
+      `selected_candidate_provenance_matches=${yesNo(candidate !== undefined && isRecord(selected?.evidence)
+        && isRecord(candidate.provenance) && stableJson(candidate.provenance) === stableJson(selected.evidence))}`,
+      `shadow=${shadowReason}`,
+      `event_model_context_matches=${yesNo(Boolean(workout && event.modelDate && event.modelTimeZone
+        && (() => { const resolved = episodeTimeContextForInstantV1(context.modelEpisodes, workout.startAt);
+          return resolved.date === event.modelDate && resolved.timeZone === event.modelTimeZone; })()))}`,
+      `mass_matches_raw_inputs=${yesNo(massMatches)}`,
+      `selected_fingerprint_matches_shadow=${yesNo(Boolean(shadow && shadow.sourceFingerprint === selected?.sourceFingerprint))}`,
+      `selected_evidence_matches_shadow=${yesNo(Boolean(expectedEvidence && isRecord(selected?.evidence)
+        && stableJson(selected.evidence) === stableJson(expectedEvidence)))}`,
+      `candidate_evidence_matches_shadow=${yesNo(Boolean(candidate && expectedEvidence && isRecord(candidate.provenance)
+        && stableJson(candidate.provenance) === stableJson(expectedEvidence)))}`,
+      `shadow_available=${yesNo(shadow?.result.availability === "available")}`,
+      `shadow_kcal_matches=${yesNo(Boolean(shadow && shadow.result.estimatedActiveKcal === event.currentKcal))}`,
+      `source_binding=${yesNo(isCurrentWorkoutSourceBound(event, context))}`,
+      `highest_priority=${yesNo(isHighestPriorityCurrentCandidate(event, context))}`,
+      `stepper_provenance=${yesNo(isCurrentStepperProvenance(event, context.workoutIds))}`,
+      `priority_winner=${winner ? `${winner.source}/${winner.sourceIdentity}` : "none"}`,
+    ].join(";");
+  } catch {
+    // Diagnostics must never replace or weaken the acceptance gate itself.
+    return "diagnostic=unavailable";
+  }
+}
+
 function currentProducerCandidates(
   event: MigrationFreeEnergyEventV1,
   context: WorkoutSourceBindingContext,
@@ -824,6 +904,7 @@ export function evaluateMigrationFreeEnergyAcceptanceV1(input: {
   modelEpisodes: readonly MigrationFreeModelEpisodeV1[];
   modelStates: readonly MigrationFreeDailyModelStateV1[];
   stepperLifecycle: MigrationFreeStepperLifecycleV1 | null;
+  explainWorkoutId?: number;
 }): { historicalWorkoutResolutions: number; currentWorkoutResolutions: number; historicalStepperResolutions: number; currentStepperResolutions: number; strengthSessionCurrent: true; diagnosticWorkoutId: number; targetStrengthSessionId: number } {
   // Keep the accepted source cohort stable while allowing later syncs to add
   // activities with either recent or historical occurrence timestamps.
@@ -935,7 +1016,11 @@ export function evaluateMigrationFreeEnergyAcceptanceV1(input: {
       && (expectedKind !== "stepper" || !hasAvailableStepperShadow(eventWorkoutIds, stepperShadowsByWorkoutId))
       && currentProducerCandidates(event, sourceContext).length === 0;
     if (event.eventKind !== expectedKind || (!available && !postCutoffUnavailable)) {
-      throw new Error(`Migration-free serving is blocked: Workout ${workout.id} lacks one current canonical resolution with matching identity, kind, and provenance.`);
+      const selectedIdentity = isRecord(event.currentProvenance) ? event.currentProvenance.sourceIdentity : null;
+      const diagnostic = expectedKind === "stepper" && workout.id === (input.explainWorkoutId ?? 56)
+        && selectedIdentity === `stepper-shadow:${workout.id}`
+        ? ` Acceptance evidence: ${stepperAcceptanceDiagnostic(event, sourceContext)}.` : "";
+      throw new Error(`Migration-free serving is blocked: Workout ${workout.id} lacks one current canonical resolution with matching identity, kind, and provenance.${diagnostic}`);
     }
     if (postCutoffUnavailable && !available) continue;
     currentWorkoutEventIds.add(event.id);

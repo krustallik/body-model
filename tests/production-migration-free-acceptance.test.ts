@@ -825,6 +825,15 @@ describe("migration-free production energy acceptance", () => {
     expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/Workout 13 lacks one current canonical resolution/);
   });
 
+  it("explains a Stepper acceptance failure without exposing source values", () => {
+    const input = validAcceptanceInput();
+    const event = input.workoutAliases.find((row) => row.sourceType === "workout" && row.sourceId === "1")!.event;
+    event.candidates[0]!.provenance = { revision: "mismatched-fixture" };
+
+    expect(() => evaluateMigrationFreeEnergyAcceptanceV1({ ...input, explainWorkoutId: 1 }))
+      .toThrow(/Acceptance evidence: .*selected_candidate_provenance_matches=no/);
+  });
+
   it("rejects an unsupported selected source on a generic Workout event", () => {
     const input = validAcceptanceInput();
     const event = input.workoutAliases.find((row) => row.sourceType === "workout" && row.sourceId === "13")!.event;

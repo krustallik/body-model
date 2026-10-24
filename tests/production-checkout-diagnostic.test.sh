@@ -81,7 +81,7 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'WHERE target_session_matches = 1' "$DOCKER_EXEC_INPUT" || exit 81
   if grep -Fq '"matchStatus" = '\''UNMATCHED'\''' "$DOCKER_EXEC_INPUT"; then exit 85; fi
   if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|0|0|2}"
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1}"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -172,7 +172,7 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
-    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|0|0|2}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
@@ -236,9 +236,11 @@ assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_identity_matches 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_current_resolution 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_resolution_revision_matches 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_candidate_matches 1
-assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_raw_energy_inputs 0
-assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_available_candidates 0
-assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_source_code 2
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_raw_energy_inputs 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_available_candidates 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_source_code 3
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_workout_classification_code 2
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_identity_code 1
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes
@@ -271,6 +273,7 @@ assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_inventory_sta
 assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_available_events_with_visible_workout_alias unavailable
 assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_workout_56_visible unavailable
 assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_workout_56_selected_source_code unavailable
+assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_workout_56_selected_identity_code unavailable
 
 PIN_ABSENT_REPORT="$(DOCKER_IMAGE_LIST_OUTPUT= run_inspector "$TEST_REPO")"
 assert_field "$PIN_ABSENT_REPORT" deploy_rollback_pin_state absent

@@ -652,7 +652,7 @@ esac
     expect(v4Tables).toContain("HealthSyncAudit");
     expect(evidence).toContain('if (table === "HealthSyncAudit") healthSyncAuditFingerprint = tableFingerprint;');
     expect(evidence).toContain('else digest.update(`${table}\\0${tableFingerprint}\\0`);');
-    expect(evidence).toContain("bodycast-v4-recovery-raw-sources-v3");
+    expect(evidence).toContain("bodycast-v4-recovery-raw-sources-v4");
     const fullHistoryTables = fullHistory.split("export const FULL_HISTORY_RAW_INPUT_TABLES = [")[1]?.split("] as const")[0] ?? "";
     expect(fullHistoryTables).toContain("HealthSyncAudit");
   });

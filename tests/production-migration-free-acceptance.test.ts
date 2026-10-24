@@ -20,6 +20,7 @@ import {
 } from "../src/model/activity/experimental-stepper-active-energy-v1";
 import {
   stepperActiveEnergyCandidateFingerprintV1,
+  stepperActiveEnergyInputFingerprintV1,
   STEPPER_HISTORICAL_MASS_POLICY_V1,
   type StepperObservedMassInputV1,
 } from "../src/model/activity/stepper-historical-mass-v1";
@@ -38,8 +39,9 @@ function makeStepperShadow(
   valueKcal: number | null,
   massReference: Record<string, unknown>,
   availability: "available" | "unavailable" = "available",
+  inputFingerprintOverride?: string,
 ): MigrationFreeStepperShadowV1 {
-  const inputFingerprint = fingerprint(`stepper-fixture-input:${workoutId}`);
+  const inputFingerprint = inputFingerprintOverride ?? fingerprint(`stepper-fixture-input:${workoutId}`);
   const estimatorResult = {
     contractVersion: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
     provenance: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_PROVENANCE,
@@ -863,6 +865,95 @@ describe("migration-free production energy acceptance", () => {
     event.resolutions[0]!.provenance = structuredClone(selected);
 
     expect(() => evaluateMigrationFreeEnergyAcceptanceV1(input)).toThrow(/Workout 1 lacks one current canonical resolution/);
+  });
+
+  it("accepts Workout 56 when model mass is unchanged but its publication generation advanced", () => {
+    const input = validAcceptanceInput();
+    const alias = input.workoutAliases.find((row) => row.sourceType === "workout" && row.sourceId === "1")!;
+    const workout = input.workouts.find((row) => row.id === 1)!;
+    const event = alias.event;
+    const stableMassReference = {
+      status: "model-estimated",
+      sourceType: "predecessor-model",
+      sourceId: "daily-model-state:7001",
+      valueKg: 80,
+      sourceTimestamp: "2026-10-25T07:00:00.000Z",
+      sourceDate: "2026-10-25",
+      normalizedLocalDate: "2026-10-25",
+      dayDistance: 1,
+      policyVersion: STEPPER_HISTORICAL_MASS_POLICY_V1,
+      modelSourceKind: "predecessor-model",
+      modelEpisodeId: 700,
+      modelVersion: "fixture-v1",
+      modelStateUpdatedAt: "2026-10-25T07:00:00.000Z",
+    };
+
+    alias.sourceId = "56";
+    alias.workoutId = 56;
+    workout.id = 56;
+    event.logicalEventKey = "workout:56";
+    event.modelDate = "2026-10-26";
+    workout.startAt = new Date("2026-10-26T10:00:00.000Z");
+    const selected = event.currentProvenance as Record<string, unknown>;
+    selected.sourceIdentity = "stepper-shadow:56";
+    (selected.evidence as Record<string, unknown>).massReference = stableMassReference;
+    event.candidates[0]!.sourceIdentity = "stepper-shadow:56";
+    event.candidates[0]!.provenance = structuredClone(selected.evidence);
+    const inputFingerprint = stepperActiveEnergyInputFingerprintV1({
+      workout: {
+        id: 56,
+        type: workout.type,
+        sourceIdentity: workout.sourceIdentity,
+        startAt: workout.startAt.toISOString(),
+        updatedAt: workout.updatedAt.toISOString(),
+        activeEnergyKcal: workout.activeEnergyKcal,
+        manualActiveEnergyKcal: workout.manualActiveEnergyKcal,
+        manualStepCount: workout.manualStepCount,
+      },
+      modelContext: { modelDate: event.modelDate, modelTimeZone: event.modelTimeZone, episodeId: 700, modelVersion: "fixture-v1" },
+      massProvenance: stableMassReference,
+    });
+    const shadow = makeStepperShadow(56, event.currentKcal!, {
+      ...stableMassReference,
+      modelGeneration: 8,
+    }, "available", inputFingerprint);
+    input.stepperShadows = input.stepperShadows.filter((row) => row.workoutId !== 1);
+    input.stepperShadows.push(shadow);
+    selected.sourceFingerprint = shadow.sourceFingerprint;
+    event.candidates[0]!.sourceFingerprint = shadow.sourceFingerprint;
+    input.modelEpisodes = [{
+      id: 700,
+      timezone: "Europe/Bratislava",
+      modelVersion: "fixture-v1",
+      startDate: "2026-10-25",
+      latestModeledDate: "2026-10-26",
+      initialFilteredWeightKg: 80,
+      updatedAt: new Date("2026-10-25T07:00:00.000Z"),
+      createdAt: new Date("2026-10-25T07:00:00.000Z"),
+      active: true,
+    }];
+    input.modelStates = [{
+      id: 7001,
+      episodeId: 700,
+      date: "2026-10-25",
+      status: "complete",
+      endWeightKg: 80,
+      filteredWeightKg: 80,
+      modelVersion: "fixture-v1",
+      createdAt: new Date("2026-10-25T07:00:00.000Z"),
+    }];
+    input.stepperLifecycle = {
+      invalidationGeneration: 9,
+      productionPublishedGeneration: 9,
+      productionStaleFromDate: null,
+    };
+    refreshResolutionFingerprint(event);
+
+    expect(evaluateMigrationFreeEnergyAcceptanceV1(input)).toMatchObject({
+      historicalWorkoutResolutions: 33,
+      historicalStepperResolutions: 12,
+      currentStepperResolutions: 12,
+    });
   });
 
   it("rejects Strength mass provenance changed in event, candidate, and revision while retaining the old digest", () => {

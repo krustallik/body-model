@@ -324,7 +324,8 @@ function stepperMassMatchesRawInputs(
     observations,
     modelEstimate,
   });
-  return stableJson(resolved.provenance) === stableJson(shadow.massReference);
+  return stableJson(stableStepperMassProvenanceV1(resolved.provenance))
+    === stableJson(stableStepperMassProvenanceV1(shadow.massReference));
 }
 
 function strengthShadowEvidence(shadow: MigrationFreeStrengthShadowV1 | undefined): {

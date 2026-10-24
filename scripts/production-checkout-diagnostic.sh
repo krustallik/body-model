@@ -207,7 +207,14 @@ SELECT count(*),
   (SELECT count(*) FROM target_workout_56_events AS e
     JOIN "ActiveEnergyCandidate" AS c ON c."eventId" = e."id"
     WHERE c."availability" = 'available' AND c."valueKcal" IS NOT NULL
-      AND c."valueKcal" >= 0 AND c."valueKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity'))
+      AND c."valueKcal" >= 0 AND c."valueKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')),
+  (SELECT COALESCE(max(CASE e."currentSource"
+      WHEN 'manual-kcal' THEN 1 WHEN 'device-kcal' THEN 2
+      WHEN 'bodycast-stepper-mechanical' THEN 3
+      WHEN 'bodycast-strength-estimate' THEN 4
+      WHEN 'bodycast-strength-met-fallback' THEN 5
+      WHEN 'unavailable' THEN 0 ELSE 6 END), -1)
+    FROM target_workout_56_events AS e)
 FROM current_events
 SQL
 )"
@@ -220,7 +227,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
-  [[ "$inventory" =~ ^([0-9]+\|){29}[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^([0-9]+\|){30}[0-9]+$ ]] || return 1
   printf '%s\n' "$inventory"
 }
 
@@ -483,7 +490,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
-    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_completed_matches energy_target_live_matches energy_target_unmatched_candidates energy_target_local_minute_matches energy_target_effective_local_minute_matches energy_target_web_started_local_minute_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date energy_w56_visible energy_w56_aliases energy_w56_events energy_w56_kind_matches energy_w56_identity_matches energy_w56_current energy_w56_resolution_revision_matches energy_w56_selected_candidate_matches energy_w56_raw_energy_inputs energy_w56_available_candidates <<< "$energy_inventory"
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_completed_matches energy_target_live_matches energy_target_unmatched_candidates energy_target_local_minute_matches energy_target_effective_local_minute_matches energy_target_web_started_local_minute_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date energy_w56_visible energy_w56_aliases energy_w56_events energy_w56_kind_matches energy_w56_identity_matches energy_w56_current energy_w56_resolution_revision_matches energy_w56_selected_candidate_matches energy_w56_raw_energy_inputs energy_w56_available_candidates energy_w56_selected_source_code <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
     emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
@@ -515,6 +522,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_selected_candidate_matches "$energy_w56_selected_candidate_matches"
     emit energy_diagnostic_workout_56_raw_energy_inputs "$energy_w56_raw_energy_inputs"
     emit energy_diagnostic_workout_56_available_candidates "$energy_w56_available_candidates"
+    emit energy_diagnostic_workout_56_selected_source_code "$energy_w56_selected_source_code"
   else
     emit energy_diagnostic_inventory_status unavailable
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
@@ -547,6 +555,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_selected_candidate_matches unavailable
     emit energy_diagnostic_workout_56_raw_energy_inputs unavailable
     emit energy_diagnostic_workout_56_available_candidates unavailable
+    emit energy_diagnostic_workout_56_selected_source_code unavailable
   fi
 else
   emit docker_daemon_available no
@@ -587,6 +596,7 @@ else
   emit energy_diagnostic_workout_56_selected_candidate_matches unavailable
   emit energy_diagnostic_workout_56_raw_energy_inputs unavailable
   emit energy_diagnostic_workout_56_available_candidates unavailable
+  emit energy_diagnostic_workout_56_selected_source_code unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

@@ -2536,9 +2536,14 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(lifecycle.invalidationGeneration).toBeGreaterThan(30);
       expect(lifecycle.staleFromDate !== null && lifecycle.staleFromDate <= "2099-01-01").toBe(true);
       expect(lifecycle.productionStaleFromDate !== null && lifecycle.productionStaleFromDate <= "2099-01-01").toBe(true);
-      expect(await db.activeEnergyCanonicalEvent.count({
-        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] }, isStale: false },
-      })).toBe(0);
+      expect(await db.activeEnergyCanonicalEvent.findMany({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] } },
+        orderBy: { logicalEventKey: "asc" },
+        select: { logicalEventKey: true, isStale: true },
+      })).toEqual([
+        { logicalEventKey: `${eventKeyPrefix}:new`, isStale: false },
+        { logicalEventKey: `${eventKeyPrefix}:old`, isStale: true },
+      ]);
 
       const accounting = await service.materializeSessionAccounting(session.id, profileId);
       const beforeTimezoneChange = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });

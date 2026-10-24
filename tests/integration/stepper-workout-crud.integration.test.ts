@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
@@ -15,6 +15,33 @@ const stepperWorkouts = new StepperWorkoutRepository(prisma);
 const healthSync = new PrismaHealthSyncRepository(prisma);
 const dates = ["2042-03-15", "2042-03-16"];
 const fixtureStepperSourceKeys = new Set<string>();
+let priorTrainingRefreshState: {
+  queue: Awaited<ReturnType<typeof prisma.trainingRefreshJob.findUnique>>;
+  sourceChanges: Awaited<ReturnType<typeof prisma.trainingSourceChange.findMany>>;
+} | null = null;
+
+async function readTrainingRefreshState() {
+  const [queue, sourceChanges] = await Promise.all([
+    prisma.trainingRefreshJob.findUnique({ where: { profileId: 1 } }),
+    prisma.trainingSourceChange.findMany({ where: { profileId: 1 } }),
+  ]);
+  return { queue, sourceChanges };
+}
+
+async function restoreTrainingRefreshState(state: NonNullable<typeof priorTrainingRefreshState>) {
+  await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1 } });
+  await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+  if (state.sourceChanges.length > 0) {
+    await prisma.trainingSourceChange.createMany({ data: state.sourceChanges.map((row) => ({
+      ...row,
+      oldSourceIdentity: row.oldSourceIdentity === null ? Prisma.DbNull : row.oldSourceIdentity as Prisma.InputJsonValue,
+      newSourceIdentity: row.newSourceIdentity === null ? Prisma.DbNull : row.newSourceIdentity as Prisma.InputJsonValue,
+      oldEventInstants: row.oldEventInstants === null ? Prisma.DbNull : row.oldEventInstants as Prisma.InputJsonValue,
+      newEventInstants: row.newEventInstants === null ? Prisma.DbNull : row.newEventInstants as Prisma.InputJsonValue,
+    })) });
+  }
+  if (state.queue) await prisma.trainingRefreshJob.create({ data: state.queue });
+}
 
 async function clean() {
   await clearUnifiedPublicationBlockFixtures(prisma, [
@@ -31,8 +58,18 @@ const syncMeta = (receivedAt: string) => ({
 });
 
 describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => {
-  beforeAll(clean);
-  afterAll(async () => { await clean(); await prisma.$disconnect(); });
+  beforeAll(async () => {
+    priorTrainingRefreshState = await readTrainingRefreshState();
+    await clean();
+  });
+  afterAll(async () => {
+    try {
+      await clean();
+    } finally {
+      if (priorTrainingRefreshState !== null) await restoreTrainingRefreshState(priorTrainingRefreshState);
+      await prisma.$disconnect();
+    }
+  });
 
   it("creates manual workouts and preserves edited or deleted Health workouts across sync", async () => {
     const input: StepperWorkoutInput = { startAt: "2042-03-15T08:00:00.000Z", durationMinutes: 20 };

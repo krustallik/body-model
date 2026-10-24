@@ -770,6 +770,12 @@ serve_training_release() {
       echo "The durable Training refresh did not converge during its bounded wait; traffic remains in maintenance." >&2
       return 1
     fi
+    if ! timeout 25m docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
+      -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" --entrypoint node migrate \
+      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --owner-authorized-active-energy-convergence; then
+      echo "Owner-authorized Active Energy convergence did not complete; traffic remains in maintenance." >&2
+      return 1
+    fi
   fi
   if [[ "$recovered_v4_release" == "true" ]]; then
     bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"

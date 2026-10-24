@@ -10,6 +10,7 @@ const preflightSh = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), 
 const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
 const migrateGuard = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
 const cutoverSh = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+const trafficCheck = readFileSync(resolve("scripts/unified-v4-traffic-check.ts"), "utf8");
 const routePrimitivesSh = readFileSync(resolve("scripts/production-route-primitives.sh"), "utf8");
 const routePathSh = readFileSync(resolve("scripts/production-route-path.sh"), "utf8");
 const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.sh"), "utf8");
@@ -225,6 +226,17 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain("BODYCAST_HEALTH_SYNC_AUDIT_PRUNE_V1");
     expect(deploySh).not.toContain("--hold-currentness-fence");
     expect(deploySh).toContain('bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving');
+    const trainingCurrentWaitAt = cutoverSh.indexOf("--wait-training-refresh-current");
+    const activeEnergyConvergenceAt = cutoverSh.indexOf("--owner-authorized-active-energy-convergence");
+    const currentnessFenceAt = cutoverSh.indexOf("--hold-currentness-fence --expected-raw-input-fingerprint");
+    expect(cutoverSh).toContain('if [[ "$migration_free_serving" == "true" ]]; then');
+    expect(cutoverSh).toContain("Owner-authorized Active Energy convergence did not complete; traffic remains in maintenance.");
+    expect(trafficCheck).toContain("--owner-authorized-active-energy-convergence");
+    expect(trafficCheck).toContain("exact Prisma database identity");
+    expect(trafficCheck).toContain("recalculateModelEpisode({ requireDependentStages: true })");
+    expect(trainingCurrentWaitAt).toBeGreaterThan(-1);
+    expect(activeEnergyConvergenceAt).toBeGreaterThan(trainingCurrentWaitAt);
+    expect(currentnessFenceAt).toBeGreaterThan(activeEnergyConvergenceAt);
     expect(cutoverSh).toContain("--hold-currentness-fence --expected-raw-input-fingerprint");
     expect(cutoverSh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");
     expect(cutoverSh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS");

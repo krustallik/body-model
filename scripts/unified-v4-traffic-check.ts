@@ -26,6 +26,7 @@ const preTrainingMigration = process.argv.includes("--pre-training-migration");
 const assertPrismaDatabaseIdentity = process.argv.includes("--assert-prisma-database-identity");
 const captureRawInputFingerprint = process.argv.includes("--capture-raw-input-fingerprint");
 const waitTrainingRefreshCurrent = process.argv.includes("--wait-training-refresh-current");
+const ownerAuthorizedActiveEnergyConvergence = process.argv.includes("--owner-authorized-active-energy-convergence");
 const expectedRawInputFingerprintIndex = process.argv.indexOf("--expected-raw-input-fingerprint");
 const expectedRawInputFingerprint = expectedRawInputFingerprintIndex < 0
   ? null : process.argv[expectedRawInputFingerprintIndex + 1] ?? null;
@@ -46,6 +47,13 @@ const expectedHealthSyncAuditPruneEvents = parseJsonEvidence(
   "Expected HealthSyncAudit cleanup events", expectedHealthSyncAuditPruneEventsText,
 );
 const expectedPrismaDatabaseIdentity = process.env.BODYCAST_EXPECTED_PRISMA_DB_IDENTITY ?? null;
+if (ownerAuthorizedActiveEnergyConvergence
+  && (profileId !== 1 || holdCurrentnessFence || preTrainingMigration || assertPrismaDatabaseIdentity
+    || captureRawInputFingerprint || waitTrainingRefreshCurrent || expectedRawInputFingerprint !== null
+    || expectedHealthSyncAuditRetentionBaselineText !== null || expectedHealthSyncAuditPruneEventsText !== null
+    || !expectedPrismaDatabaseIdentity)) {
+  throw new Error("Owner-authorized Active Energy convergence is restricted to a standalone migration-free profile 1 refresh with an exact Prisma database identity.");
+}
 if (captureRawInputFingerprint && (holdCurrentnessFence || preTrainingMigration || profileId !== 1)) {
   throw new Error("Raw-input fingerprint capture is restricted to standalone production profile 1 evidence.");
 }
@@ -304,6 +312,16 @@ async function waitForRouteCommit(timeoutMs: number): Promise<string> {
 }
 
 const verify = async () => {
+  if (ownerAuthorizedActiveEnergyConvergence) {
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 15_000 });
+    const { recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
+    await recalculateModelEpisode({ requireDependentStages: true });
+    process.stdout.write("BODYCAST_ACTIVE_ENERGY_CONVERGENCE_COMPLETE\n");
+    return;
+  }
   if (assertPrismaDatabaseIdentity) {
     const identity = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET TRANSACTION READ ONLY`;

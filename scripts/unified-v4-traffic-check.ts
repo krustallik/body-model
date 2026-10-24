@@ -318,7 +318,12 @@ const verify = async () => {
       await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 15_000 });
     const { recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
-    await recalculateModelEpisode({ requireDependentStages: true });
+    const recalculation = await recalculateModelEpisode({ requireDependentStages: true });
+    const { rebuildUnifiedExperimentalPhysiologyStateV1 } = await import("@/modules/model-episodes/unified-experimental-physiology-state.service");
+    await rebuildUnifiedExperimentalPhysiologyStateV1({
+      profileId: 1,
+      fromDate: recalculation.effectiveReplayFromDate,
+    });
     process.stdout.write("BODYCAST_ACTIVE_ENERGY_CONVERGENCE_COMPLETE\n");
     return;
   }

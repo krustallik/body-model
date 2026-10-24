@@ -234,6 +234,10 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(trafficCheck).toContain("--owner-authorized-active-energy-convergence");
     expect(trafficCheck).toContain("exact Prisma database identity");
     expect(trafficCheck).toContain("recalculateModelEpisode({ requireDependentStages: true })");
+    expect(trafficCheck).toContain("rebuildUnifiedExperimentalPhysiologyStateV1({");
+    expect(trafficCheck).toContain("fromDate: recalculation.effectiveReplayFromDate");
+    expect(trafficCheck.indexOf("recalculateModelEpisode({ requireDependentStages: true })"))
+      .toBeLessThan(trafficCheck.indexOf("rebuildUnifiedExperimentalPhysiologyStateV1({"));
     expect(trainingCurrentWaitAt).toBeGreaterThan(-1);
     expect(activeEnergyConvergenceAt).toBeGreaterThan(trainingCurrentWaitAt);
     expect(currentnessFenceAt).toBeGreaterThan(activeEnergyConvergenceAt);

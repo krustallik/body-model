@@ -65,6 +65,20 @@ describe("active production release entrypoints", () => {
     expect(inspector).not.toMatch(/(^|\n)\s*(?:caddy|prisma)\s/m);
   });
 
+  it("binds Workout 56 shadow diagnostics to its unique direct alias when reconciliation adds another event", () => {
+    const inspector = readFileSync(resolve("scripts/production-checkout-diagnostic.sh"), "utf8");
+    const otherReconciliationEvent = { sourceType: "stepper-reconciliation", sourceId: "group:56", inputFingerprint: "other-event" };
+    const workoutEvent = { sourceType: "workout", sourceId: "56", inputFingerprint: "workout-event" };
+    const events = [otherReconciliationEvent, workoutEvent];
+    const directAlias = events.filter((event) => event.sourceType === "workout" && event.sourceId === "56");
+
+    expect(directAlias).toEqual([workoutEvent]);
+    expect(inspector).toContain("target_workout_56_canonical_event AS (");
+    expect(inspector).toContain("a.\"sourceType\" = 'workout' AND a.\"sourceId\" = '56'");
+    expect(inspector).toContain("target_workout_56_canonical_event AS e");
+    expect(inspector).not.toContain("FROM target_workout_56_events AS e LIMIT 1");
+  });
+
   it("routes the Training ledger manifest through only the standard owner-gated migration path", () => {
     const migration = readFileSync(resolve(workflowDir, "production-migrate.yml"), "utf8");
     const preflight = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");

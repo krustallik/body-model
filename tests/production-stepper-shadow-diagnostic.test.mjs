@@ -49,6 +49,11 @@ function validRow(resultExtension = {}) {
   return {
     modelRevision: STEPPER_SHADOW_REVISION,
     sourceFingerprint: stableSha256(`${stableSha256(estimatorResult)}|${result.inputFingerprint}`),
+    canonicalEventInputFingerprint: result.inputFingerprint,
+    reconciliationStatus: "none",
+    reconciliationRepresentativeIsWorkout56: true,
+    reconciliationRepresentativeVisible: true,
+    reconciliationRepresentativeShadowExists: true,
     result,
   };
 }
@@ -60,6 +65,7 @@ describe("production Workout 56 shadow diagnostic sanitizer", () => {
     const output = sanitizeCheckoutDiagnosticOutput(`diagnostic_status=complete\n${diagnosticLine(row)}\n`);
 
     expect(output).toContain("energy_diagnostic_workout_56_shadow_source_fingerprint_matches_persisted_payload=yes");
+    expect(output).toContain("energy_diagnostic_workout_56_shadow_input_fingerprint_matches_canonical_event=yes");
     expect(output).toContain("energy_diagnostic_workout_56_shadow_failure_reason=valid");
     expect(output).not.toContain("shadow_payload_b64");
     for (const value of privateValues) expect(output).not.toContain(value);
@@ -72,6 +78,17 @@ describe("production Workout 56 shadow diagnostic sanitizer", () => {
 
     expect(output).toContain("energy_diagnostic_workout_56_shadow_source_fingerprint_matches_persisted_payload=no");
     expect(output).toContain("energy_diagnostic_workout_56_shadow_failure_reason=source-fingerprint-payload-mismatch");
+  });
+
+  it("distinguishes a shadow input fingerprint that no longer matches the canonical event", () => {
+    const row = validRow();
+    row.canonicalEventInputFingerprint = "b".repeat(64);
+    row.sourceFingerprint = stableSha256(`${stableSha256(Object.fromEntries(Object.entries(row.result)
+      .filter(([key]) => key !== "massReference" && key !== "inputFingerprint")))}|${row.canonicalEventInputFingerprint}`);
+    const output = sanitizeCheckoutDiagnosticOutput(diagnosticLine(row));
+
+    expect(output).toContain("energy_diagnostic_workout_56_shadow_input_fingerprint_matches_canonical_event=no");
+    expect(output).toContain("energy_diagnostic_workout_56_shadow_source_fingerprint_matches_payload_with_canonical_input=yes");
   });
 
   it("classifies malformed mass provenance instead of reporting a valid shadow", () => {

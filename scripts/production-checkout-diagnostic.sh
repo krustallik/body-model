@@ -143,11 +143,48 @@ WITH eligible_aliases AS (
       WHEN lower(btrim(w."type")) = 'stair climbing' THEN 'stepper' ELSE 'other' END AS expected_kind
   FROM "Workout" AS w
   WHERE w."id" = 56
+), target_workout_56_reconciliation AS (
+  SELECT c."id" AS candidate_id, c."groupId", c."manualWorkoutId", c."garminWorkoutId",
+    g."status", g."provisionalWorkoutId"
+  FROM "StepperReconciliationCandidate" AS c
+  JOIN "StepperReconciliationGroup" AS g ON g."id" = c."groupId"
+  WHERE (c."manualWorkoutId" = 56 OR c."garminWorkoutId" = 56)
+    AND g."status" IN ('pending', 'ambiguous', 'confirmed')
+  ORDER BY c."groupId", c."id"
+  LIMIT 1
+), target_workout_56_reconciliation_pairs AS (
+  SELECT c."manualWorkoutId", c."garminWorkoutId", c."candidateStatus"
+  FROM "StepperReconciliationCandidate" AS c
+  JOIN target_workout_56_reconciliation AS r ON r."groupId" = c."groupId"
+  WHERE r."status" = 'ambiguous'
+    OR (r."status" = 'confirmed' AND c."candidateStatus" = 'confirmed')
+    OR (r."status" = 'pending' AND c."candidateStatus" = 'pending')
+), target_workout_56_reconciliation_member_ids AS (
+  SELECT "manualWorkoutId" AS "id" FROM target_workout_56_reconciliation_pairs
+  UNION
+  SELECT "garminWorkoutId" AS "id" FROM target_workout_56_reconciliation_pairs
+), target_workout_56_representative AS (
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM target_workout_56_reconciliation) THEN 56
+    WHEN (SELECT "status" FROM target_workout_56_reconciliation) = 'confirmed' THEN COALESCE(
+      (SELECT "garminWorkoutId" FROM target_workout_56_reconciliation_pairs
+        WHERE "candidateStatus" = 'confirmed' ORDER BY "manualWorkoutId", "garminWorkoutId" LIMIT 1),
+      (SELECT "garminWorkoutId" FROM target_workout_56_reconciliation), 56)
+    WHEN (SELECT "status" FROM target_workout_56_reconciliation) = 'pending' THEN COALESCE(
+      (SELECT "provisionalWorkoutId" FROM target_workout_56_reconciliation),
+      (SELECT "manualWorkoutId" FROM target_workout_56_reconciliation), 56)
+    ELSE COALESCE((SELECT min("id") FROM target_workout_56_reconciliation_member_ids), 56)
+  END AS "id"
 ), target_workout_56_events AS (
   SELECT DISTINCT e.*
   FROM target_workout_56 AS w
   JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"
   JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
+), target_workout_56_canonical_event AS (
+  SELECT e."inputFingerprint"
+  FROM "ActiveEnergyEventAlias" AS a
+  JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
+  WHERE a."profileId" = 1 AND a."sourceType" = 'workout' AND a."sourceId" = '56'
 )
 SELECT count(*),
   count(*) FILTER (WHERE has_superseded_workout),
@@ -230,7 +267,14 @@ SELECT count(*),
   COALESCE((SELECT replace(replace(encode(convert_to(jsonb_build_object(
       'modelRevision', s."modelRevision",
       'sourceFingerprint', s."sourceFingerprint",
-      'result', s."result"
+      'result', s."result",
+      'canonicalEventInputFingerprint', (SELECT e."inputFingerprint" FROM target_workout_56_canonical_event AS e),
+      'reconciliationStatus', COALESCE((SELECT r."status" FROM target_workout_56_reconciliation AS r), 'none'),
+      'reconciliationRepresentativeIsWorkout56', ((SELECT "id" FROM target_workout_56_representative) = 56),
+      'reconciliationRepresentativeVisible', EXISTS (SELECT 1 FROM "Workout" AS w
+        JOIN target_workout_56_representative AS r ON r."id" = w."id" WHERE NOT w."hiddenFromHistory"),
+      'reconciliationRepresentativeShadowExists', EXISTS (SELECT 1 FROM "ExperimentalStepperActiveEnergyShadow" AS target
+        JOIN target_workout_56_representative AS r ON r."id" = target."workoutId" AND target."profileId" = 1)
     )::text, 'UTF8'), 'base64'), E'\n', ''), E'\r', '')
     FROM "ExperimentalStepperActiveEnergyShadow" AS s
     WHERE s."profileId" = 1 AND s."workoutId" = 56), 'none')

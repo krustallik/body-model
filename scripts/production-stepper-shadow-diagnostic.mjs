@@ -64,8 +64,11 @@ export function summarizeStepperShadowDiagnostic(row) {
   const resultIsRecord = isRecord(result);
   const resultKeys = resultIsRecord ? Object.keys(result) : [];
   const inputFingerprint = resultIsRecord ? result.inputFingerprint : null;
+  const canonicalEventInputFingerprint = row.canonicalEventInputFingerprint;
   const massReference = resultIsRecord ? result.massReference : null;
   const inputFingerprintValid = typeof inputFingerprint === "string" && /^[a-f0-9]{64}$/.test(inputFingerprint);
+  const canonicalEventInputFingerprintValid = typeof canonicalEventInputFingerprint === "string"
+    && /^[a-f0-9]{64}$/.test(canonicalEventInputFingerprint);
   const sourceFingerprintValid = typeof row.sourceFingerprint === "string" && /^[a-f0-9]{64}$/.test(row.sourceFingerprint);
   const estimatorPayload = resultIsRecord
     ? Object.fromEntries(Object.entries(result).filter(([key]) => !PERSISTENCE_ONLY_FIELDS.has(key)))
@@ -78,6 +81,9 @@ export function summarizeStepperShadowDiagnostic(row) {
     : null;
   const sourceFingerprintMatchesVerifierPayload = inputFingerprintValid && sourceFingerprintValid
     ? row.sourceFingerprint === stableSha256(`${stableSha256(verifierEstimatorPayload)}|${inputFingerprint}`)
+    : false;
+  const sourceFingerprintMatchesPayloadWithCanonicalInput = canonicalEventInputFingerprintValid && sourceFingerprintValid
+    ? row.sourceFingerprint === stableSha256(`${stableSha256(estimatorPayload)}|${canonicalEventInputFingerprint}`)
     : false;
   const modelRevisionMatches = row.modelRevision === STEPPER_SHADOW_REVISION;
   const contractVersionMatches = resultIsRecord && result.contractVersion === STEPPER_SHADOW_REVISION;
@@ -141,10 +147,12 @@ export function summarizeStepperShadowDiagnostic(row) {
     `energy_diagnostic_workout_56_shadow_result_is_object=${yesNo(resultIsRecord)}`,
     `energy_diagnostic_workout_56_shadow_contract_version_matches=${yesNo(contractVersionMatches)}`,
     `energy_diagnostic_workout_56_shadow_input_fingerprint_valid=${yesNo(inputFingerprintValid)}`,
+    `energy_diagnostic_workout_56_shadow_input_fingerprint_matches_canonical_event=${yesNo(inputFingerprintValid && canonicalEventInputFingerprintValid && inputFingerprint === canonicalEventInputFingerprint)}`,
     `energy_diagnostic_workout_56_shadow_mass_reference_is_object=${yesNo(shadowMassReferenceIsRecord)}`,
     `energy_diagnostic_workout_56_shadow_source_fingerprint_valid=${yesNo(sourceFingerprintValid)}`,
     `energy_diagnostic_workout_56_shadow_source_fingerprint_matches_persisted_payload=${yesNo(sourceFingerprintMatchesPayload)}`,
     `energy_diagnostic_workout_56_shadow_source_fingerprint_matches_verifier_reconstruction=${yesNo(sourceFingerprintMatchesVerifierPayload)}`,
+    `energy_diagnostic_workout_56_shadow_source_fingerprint_matches_payload_with_canonical_input=${yesNo(sourceFingerprintMatchesPayloadWithCanonicalInput)}`,
     `energy_diagnostic_workout_56_shadow_persisted_result_key_count=${resultKeys.length}`,
     `energy_diagnostic_workout_56_shadow_estimator_result_key_count=${estimatorKeys.length}`,
     `energy_diagnostic_workout_56_shadow_missing_estimator_keys=${safeKeyList(missingEstimatorFields)}`,
@@ -154,6 +162,10 @@ export function summarizeStepperShadowDiagnostic(row) {
     `energy_diagnostic_workout_56_shadow_mass_policy_matches=${yesNo(massPolicyMatches)}`,
     `energy_diagnostic_workout_56_shadow_mass_source_shape_valid=${yesNo(massSourceShapeValid)}`,
     `energy_diagnostic_workout_56_shadow_mass_model_shape_valid=${yesNo(massModelShapeValid)}`,
+    `energy_diagnostic_workout_56_reconciliation_status=${["pending", "ambiguous", "confirmed", "none"].includes(row.reconciliationStatus) ? row.reconciliationStatus : "unknown"}`,
+    `energy_diagnostic_workout_56_reconciliation_representative_is_workout_56=${yesNo(row.reconciliationRepresentativeIsWorkout56 === true)}`,
+    `energy_diagnostic_workout_56_reconciliation_representative_visible=${yesNo(row.reconciliationRepresentativeVisible === true)}`,
+    `energy_diagnostic_workout_56_reconciliation_representative_shadow_exists=${yesNo(row.reconciliationRepresentativeShadowExists === true)}`,
     `energy_diagnostic_workout_56_shadow_failure_reason=${failureReason}`,
   ];
 }

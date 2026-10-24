@@ -94,7 +94,7 @@ jobs:
             echo ""
             echo "- exact current-main SHA: `$MAIN_TIP`"
             echo "- current-main CI: $CI_URL"
-            echo "- production scope: read-only checkout/container identity and health, restricted aggregate energy inventory, Workout 56 shadow schema/fingerprint consistency flags, fixed rollback-image pin inspection, and public maintenance/API/UI probes; raw shadow payload is held only in a mode-600 temporary capture and sanitized before logs; no database writes, Docker lifecycle/configuration changes, checkout, fetch, Caddy, or traffic operations"
+            echo "- production scope: read-only checkout/container identity and health, restricted aggregate energy inventory, Workout 56 shadow/canonical-input fingerprint and reconciliation-writer-target flags, fixed rollback-image pin inspection, and public maintenance/API/UI probes; raw shadow payload is held only in a mode-600 temporary capture and sanitized before logs; no database writes, Docker lifecycle/configuration changes, checkout, fetch, Caddy, or traffic operations"
           } >> "$GITHUB_STEP_SUMMARY"
 
   diagnose:

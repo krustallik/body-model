@@ -30,9 +30,8 @@ import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@
 import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
-import {
-  experimentalStepperActiveEnergyV1Fingerprint,
-} from "@/model/activity/experimental-stepper-active-energy-v1";
+import * as stepperActiveEnergyEstimator from "@/model/activity/experimental-stepper-active-energy-v1";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { stepperActiveEnergyCandidateFingerprintV1 } from "@/model/activity/stepper-historical-mass-v1";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
@@ -1361,7 +1360,15 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       })),
     });
 
-    await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId: 1 });
+    const fingerprintSpy = vi.spyOn(stepperActiveEnergyEstimator, "experimentalStepperActiveEnergyV1Fingerprint");
+    let producerResult: Record<string, unknown> | null = null;
+    try {
+      await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId: 1 });
+      producerResult = fingerprintSpy.mock.calls[0]?.[0] as Record<string, unknown> | undefined ?? null;
+      expect(fingerprintSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fingerprintSpy.mockRestore();
+    }
     const originalShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({
       where: { workoutId: workout.id },
     });
@@ -1376,12 +1383,52 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(originalKcal).toBeGreaterThan(0);
     const estimatorResult = Object.fromEntries(Object.entries(originalResult)
       .filter(([key]) => key !== "massReference" && key !== "inputFingerprint"));
-    expect(originalShadow.sourceFingerprint).toBe(stepperActiveEnergyCandidateFingerprintV1(
-      experimentalStepperActiveEnergyV1Fingerprint(
-        estimatorResult as Parameters<typeof experimentalStepperActiveEnergyV1Fingerprint>[0],
+    const persistedSourceFingerprint = stepperActiveEnergyCandidateFingerprintV1(
+      stepperActiveEnergyEstimator.experimentalStepperActiveEnergyV1Fingerprint(
+        estimatorResult as Parameters<typeof stepperActiveEnergyEstimator.experimentalStepperActiveEnergyV1Fingerprint>[0],
       ),
       originalResult.inputFingerprint,
-    ));
+    );
+    const producerEstimatorResult = producerResult ?? {};
+    const fieldFingerprint = (value: Record<string, unknown>, key: string) => {
+      if (!Object.hasOwn(value, key)) return "missing";
+      if (value[key] === undefined) return "undefined";
+      return stableSha256(value[key]);
+    };
+    const changedFields = [...new Set([...Object.keys(producerEstimatorResult), ...Object.keys(estimatorResult)])]
+      .sort()
+      .filter((key) => fieldFingerprint(producerEstimatorResult, key) !== fieldFingerprint(estimatorResult, key))
+      .map((key) => ({
+        key,
+        producerType: !Object.hasOwn(producerEstimatorResult, key) ? "missing"
+          : producerEstimatorResult[key] === undefined ? "undefined"
+            : producerEstimatorResult[key] === null ? "null" : typeof producerEstimatorResult[key],
+        persistedType: !Object.hasOwn(estimatorResult, key) ? "missing"
+          : estimatorResult[key] === undefined ? "undefined"
+            : estimatorResult[key] === null ? "null" : typeof estimatorResult[key],
+        producerValueFingerprint: fieldFingerprint(producerEstimatorResult, key),
+        persistedValueFingerprint: fieldFingerprint(estimatorResult, key),
+      }));
+    const fingerprintDiagnostic = JSON.stringify({
+      producerCaptured: producerResult !== null,
+      producerKeys: Object.keys(producerEstimatorResult).sort(),
+      persistedKeys: Object.keys(estimatorResult).sort(),
+      changedFields,
+      producerResultFingerprint: producerResult === null
+        ? null
+        : stepperActiveEnergyEstimator.experimentalStepperActiveEnergyV1Fingerprint(
+          producerResult as Parameters<typeof stepperActiveEnergyEstimator.experimentalStepperActiveEnergyV1Fingerprint>[0],
+        ),
+      producerSourceFingerprint: producerResult === null ? null : stepperActiveEnergyCandidateFingerprintV1(
+        stepperActiveEnergyEstimator.experimentalStepperActiveEnergyV1Fingerprint(
+          producerResult as Parameters<typeof stepperActiveEnergyEstimator.experimentalStepperActiveEnergyV1Fingerprint>[0],
+        ),
+        originalResult.inputFingerprint,
+      ),
+      persistedSourceFingerprint,
+      storedSourceFingerprint: originalShadow.sourceFingerprint,
+    });
+    expect(originalShadow.sourceFingerprint, fingerprintDiagnostic).toBe(persistedSourceFingerprint);
 
     await prisma.experimentalStepperActiveEnergyShadow.update({
       where: { workoutId: workout.id },

@@ -236,6 +236,7 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(trafficCheck).toContain("recalculateModelEpisode({ requireDependentStages: true })");
     expect(trafficCheck).toContain("rebuildUnifiedExperimentalPhysiologyStateV1({");
     expect(trafficCheck).toContain("fromDate: recalculation.effectiveReplayFromDate");
+    expect(trafficCheck).toContain("targetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION");
     expect(trafficCheck.indexOf("recalculateModelEpisode({ requireDependentStages: true })"))
       .toBeLessThan(trafficCheck.indexOf("rebuildUnifiedExperimentalPhysiologyStateV1({"));
     expect(trainingCurrentWaitAt).toBeGreaterThan(-1);

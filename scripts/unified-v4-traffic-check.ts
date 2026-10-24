@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { assertHealthSyncAuditRetentionTransitionV1 } from "@/modules/health/health-sync-audit-retention-integrity";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "@/modules/training/bodyweight-reference-v2";
 import { resolveStrengthEnergyMassReferenceV1, STRENGTH_ENERGY_MASS_RESOLUTION_V1 } from "@/modules/training/session-mass-reference";
@@ -323,6 +324,7 @@ const verify = async () => {
     await rebuildUnifiedExperimentalPhysiologyStateV1({
       profileId: 1,
       fromDate: recalculation.effectiveReplayFromDate,
+      targetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
     });
     process.stdout.write("BODYCAST_ACTIVE_ENERGY_CONVERGENCE_COMPLETE\n");
     return;

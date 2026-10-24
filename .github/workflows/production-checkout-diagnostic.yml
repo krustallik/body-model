@@ -94,7 +94,7 @@ jobs:
             echo ""
             echo "- exact current-main SHA: `$MAIN_TIP`"
             echo "- current-main CI: $CI_URL"
-            echo "- production scope: read-only checkout/container identity and health, restricted diagnostic-only aggregate energy inventory (not acceptance evidence; no row-level values), fixed rollback-image pin inspection, and public maintenance/API/UI probes; no database writes, Docker lifecycle/configuration changes, checkout, fetch, Caddy, or traffic operations"
+            echo "- production scope: read-only checkout/container identity and health, restricted aggregate energy inventory, Workout 56 shadow schema/fingerprint consistency flags, fixed rollback-image pin inspection, and public maintenance/API/UI probes; raw shadow payload is held only in a mode-600 temporary capture and sanitized before logs; no database writes, Docker lifecycle/configuration changes, checkout, fetch, Caddy, or traffic operations"
           } >> "$GITHUB_STEP_SUMMARY"
 
   diagnose:
@@ -184,6 +184,11 @@ jobs:
           }
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          DIAGNOSTIC_OUTPUT="$RUNNER_TEMP/bodycast-checkout-diagnostic-output"
+          umask 077
+          : > "$DIAGNOSTIC_OUTPUT"
+          chmod 600 "$DIAGNOSTIC_OUTPUT"
+          trap 'rm -f -- "$DIAGNOSTIC_OUTPUT"' EXIT
           {
             printf 'DEPLOY_PATH_B64=%s\n' "$DEPLOY_PATH_B64"
             printf 'APP_HOST_B64=%s\n' "$APP_HOST_B64"
@@ -192,7 +197,8 @@ jobs:
             -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/known_hosts" \
-            -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" 'bash -s'
+            -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" 'bash -s' > "$DIAGNOSTIC_OUTPUT"
+          node scripts/production-stepper-shadow-diagnostic.mjs "$DIAGNOSTIC_OUTPUT"
 
       - name: Remove temporary SSH credentials
         if: always()

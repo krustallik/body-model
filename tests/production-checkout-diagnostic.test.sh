@@ -81,7 +81,11 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'WHERE target_session_matches = 1' "$DOCKER_EXEC_INPUT" || exit 81
   if grep -Fq '"matchStatus" = '\''UNMATCHED'\''' "$DOCKER_EXEC_INPUT"; then exit 85; fi
   if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1}"
+  grep -Fq 'ExperimentalStepperActiveEnergyShadow' "$DOCKER_EXEC_INPUT" || exit 75
+  grep -Fq "'sourceFingerprint'" "$DOCKER_EXEC_INPUT" || exit 74
+  grep -Fq "'modelRevision'" "$DOCKER_EXEC_INPUT" || exit 73
+  grep -Fq "'result'" "$DOCKER_EXEC_INPUT" || exit 72
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -172,7 +176,7 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
-    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \

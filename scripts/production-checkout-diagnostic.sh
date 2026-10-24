@@ -47,7 +47,7 @@ safe_path_sample() {
 }
 
 read_only_energy_diagnostic_inventory() {
-  local server_ip inventory
+  local server_ip inventory shadow_payload_b64
   server_ip="$(docker inspect --format '{{ with index .NetworkSettings.Networks "bodycast-backend-prod" }}{{.IPAddress}}{{end}}' bodycast-db-prod 2>/dev/null)" || return 1
   [[ "$server_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
   inventory="$(docker exec --interactive bodycast-db-prod bash -s -- "$server_ip" 2>/dev/null <<'BASH'
@@ -226,7 +226,14 @@ SELECT count(*),
       WHEN e."currentProvenance"->>'sourceIdentity' = 'workout:56:manual' THEN 6
       WHEN e."currentProvenance"->>'sourceIdentity' = 'workout:56:device' THEN 7
       ELSE 8 END), 0)
-    FROM target_workout_56_events AS e)
+    FROM target_workout_56_events AS e),
+  COALESCE((SELECT replace(replace(encode(convert_to(jsonb_build_object(
+      'modelRevision', s."modelRevision",
+      'sourceFingerprint', s."sourceFingerprint",
+      'result', s."result"
+    )::text, 'UTF8'), 'base64'), E'\n', ''), E'\r', '')
+    FROM "ExperimentalStepperActiveEnergyShadow" AS s
+    WHERE s."profileId" = 1 AND s."workoutId" = 56), 'none')
 FROM current_events
 SQL
 )"
@@ -239,8 +246,11 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
+  shadow_payload_b64="${inventory##*|}"
+  inventory="${inventory%|*}"
   [[ "$inventory" =~ ^([0-9]+\|){32}[0-9]+$ ]] || return 1
-  printf '%s\n' "$inventory"
+  [[ "$shadow_payload_b64" == none || "$shadow_payload_b64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 1
+  printf '%s\n%s\n' "$inventory" "$shadow_payload_b64"
 }
 
 git_ro() {
@@ -502,6 +512,8 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
+    energy_shadow_payload_b64="${energy_inventory##*$'\n'}"
+    energy_inventory="${energy_inventory%%$'\n'*}"
     IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_completed_matches energy_target_live_matches energy_target_unmatched_candidates energy_target_local_minute_matches energy_target_effective_local_minute_matches energy_target_web_started_local_minute_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date energy_w56_visible energy_w56_aliases energy_w56_events energy_w56_kind_matches energy_w56_identity_matches energy_w56_current energy_w56_resolution_revision_matches energy_w56_selected_candidate_matches energy_w56_raw_energy_inputs energy_w56_available_candidates energy_w56_selected_source_code energy_w56_workout_classification_code energy_w56_selected_identity_code <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
@@ -537,6 +549,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_selected_source_code "$energy_w56_selected_source_code"
     emit energy_diagnostic_workout_56_workout_classification_code "$energy_w56_workout_classification_code"
     emit energy_diagnostic_workout_56_selected_identity_code "$energy_w56_selected_identity_code"
+    emit energy_diagnostic_workout_56_shadow_payload_b64 "$energy_shadow_payload_b64"
   else
     emit energy_diagnostic_inventory_status unavailable
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
@@ -572,6 +585,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_selected_source_code unavailable
     emit energy_diagnostic_workout_56_workout_classification_code unavailable
     emit energy_diagnostic_workout_56_selected_identity_code unavailable
+    emit energy_diagnostic_workout_56_shadow_payload_b64 unavailable
   fi
 else
   emit docker_daemon_available no
@@ -615,6 +629,7 @@ else
   emit energy_diagnostic_workout_56_selected_source_code unavailable
   emit energy_diagnostic_workout_56_workout_classification_code unavailable
   emit energy_diagnostic_workout_56_selected_identity_code unavailable
+  emit energy_diagnostic_workout_56_shadow_payload_b64 unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

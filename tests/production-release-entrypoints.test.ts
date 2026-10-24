@@ -44,6 +44,9 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("StrictHostKeyChecking=yes");
     expect(workflow).toContain("Inspect checkout metadata read-only");
+    expect(workflow).toContain("bodycast-checkout-diagnostic-output");
+    expect(workflow).toContain("production-stepper-shadow-diagnostic.mjs");
+    expect(workflow).toContain('> "$DIAGNOSTIC_OUTPUT"');
     expect(inspector).toContain("GIT_OPTIONAL_LOCKS=0");
     expect(inspector).toContain("status --porcelain=v1 --untracked-files=all");
     expect(inspector).toContain("rev-parse --show-toplevel");
@@ -53,6 +56,8 @@ describe("active production release entrypoints", () => {
     expect(inspector).not.toMatch(/\bdocker\s+(?:compose|start|stop|restart|rm|run|update|kill)\b/);
     expect(inspector.match(/\bdocker\s+exec\b/g)).toHaveLength(1);
     expect(inspector).toContain('docker exec --interactive bodycast-db-prod bash -s -- "$server_ip"');
+    expect(inspector).toContain('FROM "ExperimentalStepperActiveEnergyShadow" AS s');
+    expect(inspector).toContain("energy_diagnostic_workout_56_shadow_payload_b64");
     expect(inspector).toContain("PGOPTIONS='-c default_transaction_read_only=on");
     expect(inspector).toContain('BEGIN READ ONLY;');
     expect(inspector.match(/^\s*psql\b/gm)).toHaveLength(1);

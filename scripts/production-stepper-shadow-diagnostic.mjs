@@ -60,6 +60,7 @@ export function summarizeStepperShadowDiagnostic(row) {
     ];
   }
 
+  const shadowPresent = row.shadowPresent !== false;
   const result = row.result;
   const resultIsRecord = isRecord(result);
   const resultKeys = resultIsRecord ? Object.keys(result) : [];
@@ -132,7 +133,8 @@ export function summarizeStepperShadowDiagnostic(row) {
   const massReferenceShapeValid = massValueValid && massPolicyMatches && massSourceShapeValid && massModelShapeValid;
 
   let failureReason = "valid";
-  if (!modelRevisionMatches) failureReason = "revision";
+  if (!shadowPresent) failureReason = "missing";
+  else if (!modelRevisionMatches) failureReason = "revision";
   else if (!resultIsRecord) failureReason = "result-shape";
   else if (!inputFingerprintValid) failureReason = "input-fingerprint";
   else if (!shadowMassReferenceIsRecord) failureReason = "mass-reference";
@@ -141,8 +143,28 @@ export function summarizeStepperShadowDiagnostic(row) {
   else if (!sourceFingerprintMatchesPayload) failureReason = "source-fingerprint-payload-mismatch";
   else if (!sourceFingerprintMatchesVerifierPayload) failureReason = "source-fingerprint-verifier-reconstruction-mismatch";
 
+  const workout72 = isRecord(row.targetWorkout72) ? row.targetWorkout72 : null;
+  const workout72Lines = workout72 ? [
+    `energy_diagnostic_workout_72_visible=${yesNo(workout72.visible === true)}`,
+    `energy_diagnostic_workout_72_expected_kind=${["strength", "stepper", "other"].includes(workout72.expectedKind) ? workout72.expectedKind : "unknown"}`,
+    `energy_diagnostic_workout_72_created_on_or_after_cutoff=${yesNo(workout72.createdOnOrAfterAcceptanceCutoff === true)}`,
+    `energy_diagnostic_workout_72_raw_energy_non_null=${yesNo(workout72.rawEnergyNonNull === true)}`,
+    `energy_diagnostic_workout_72_workout_alias_count=${Number.isSafeInteger(workout72.workoutAliasCount) ? workout72.workoutAliasCount : "unknown"}`,
+    `energy_diagnostic_workout_72_canonical_event_count=${Number.isSafeInteger(workout72.canonicalEventCount) ? workout72.canonicalEventCount : "unknown"}`,
+    `energy_diagnostic_workout_72_event_kind_match_count=${Number.isSafeInteger(workout72.eventKindMatchCount) ? workout72.eventKindMatchCount : "unknown"}`,
+    `energy_diagnostic_workout_72_logical_identity_match_count=${Number.isSafeInteger(workout72.logicalIdentityMatchCount) ? workout72.logicalIdentityMatchCount : "unknown"}`,
+    `energy_diagnostic_workout_72_current_valid_count=${Number.isSafeInteger(workout72.currentValidCount) ? workout72.currentValidCount : "unknown"}`,
+    `energy_diagnostic_workout_72_resolution_revision_match_count=${Number.isSafeInteger(workout72.resolutionRevisionMatchCount) ? workout72.resolutionRevisionMatchCount : "unknown"}`,
+    `energy_diagnostic_workout_72_selected_candidate_match_count=${Number.isSafeInteger(workout72.selectedCandidateMatchCount) ? workout72.selectedCandidateMatchCount : "unknown"}`,
+    `energy_diagnostic_workout_72_selected_candidate_evidence_match_count=${Number.isSafeInteger(workout72.selectedCandidateEvidenceMatchCount) ? workout72.selectedCandidateEvidenceMatchCount : "unknown"}`,
+    `energy_diagnostic_workout_72_available_candidate_count=${Number.isSafeInteger(workout72.availableCandidateCount) ? workout72.availableCandidateCount : "unknown"}`,
+    `energy_diagnostic_workout_72_selected_source_code_first_event=${Number.isSafeInteger(workout72.selectedSourceCodeFirstEvent) ? workout72.selectedSourceCodeFirstEvent : "unknown"}`,
+    `energy_diagnostic_workout_72_selected_identity_code_first_event=${Number.isSafeInteger(workout72.selectedIdentityCodeFirstEvent) ? workout72.selectedIdentityCodeFirstEvent : "unknown"}`,
+    `energy_diagnostic_workout_72_stepper_shadow_present=${yesNo(workout72.stepperShadowPresent === true)}`,
+  ] : [];
+
   return [
-    "energy_diagnostic_workout_56_shadow_present=yes",
+    `energy_diagnostic_workout_56_shadow_present=${yesNo(shadowPresent)}`,
     `energy_diagnostic_workout_56_shadow_model_revision_matches=${yesNo(modelRevisionMatches)}`,
     `energy_diagnostic_workout_56_shadow_result_is_object=${yesNo(resultIsRecord)}`,
     `energy_diagnostic_workout_56_shadow_contract_version_matches=${yesNo(contractVersionMatches)}`,
@@ -167,6 +189,7 @@ export function summarizeStepperShadowDiagnostic(row) {
     `energy_diagnostic_workout_56_reconciliation_representative_visible=${yesNo(row.reconciliationRepresentativeVisible === true)}`,
     `energy_diagnostic_workout_56_reconciliation_representative_shadow_exists=${yesNo(row.reconciliationRepresentativeShadowExists === true)}`,
     `energy_diagnostic_workout_56_shadow_failure_reason=${failureReason}`,
+    ...workout72Lines,
   ];
 }
 

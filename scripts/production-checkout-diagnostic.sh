@@ -180,6 +180,19 @@ WITH eligible_aliases AS (
   FROM target_workout_56 AS w
   JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"
   JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
+), target_workout_72 AS (
+  SELECT w."id", w."type", w."hiddenFromHistory", w."createdAt", w."activeEnergyKcal",
+    w."manualActiveEnergyKcal",
+    CASE WHEN lower(btrim(w."type")) = 'traditional strength training' THEN 'strength'
+      WHEN lower(btrim(w."type")) = 'stair climbing' THEN 'stepper' ELSE 'other' END AS expected_kind
+  FROM "Workout" AS w
+  WHERE w."id" = 72
+), target_workout_72_events AS (
+  SELECT DISTINCT e.*
+  FROM target_workout_72 AS w
+  JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"
+    AND a."sourceType" = 'workout'
+  JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
 ), target_workout_56_canonical_event AS (
   SELECT e."inputFingerprint"
   FROM "ActiveEnergyEventAlias" AS a
@@ -274,10 +287,72 @@ SELECT count(*),
       'reconciliationRepresentativeVisible', EXISTS (SELECT 1 FROM "Workout" AS w
         JOIN target_workout_56_representative AS r ON r."id" = w."id" WHERE NOT w."hiddenFromHistory"),
       'reconciliationRepresentativeShadowExists', EXISTS (SELECT 1 FROM "ExperimentalStepperActiveEnergyShadow" AS target
-        JOIN target_workout_56_representative AS r ON r."id" = target."workoutId" AND target."profileId" = 1)
+        JOIN target_workout_56_representative AS r ON r."id" = target."workoutId" AND target."profileId" = 1),
+      'shadowPresent', s."workoutId" IS NOT NULL,
+      'targetWorkout72', COALESCE((SELECT jsonb_build_object(
+        'visible', NOT w."hiddenFromHistory",
+        'expectedKind', w.expected_kind,
+        'createdOnOrAfterAcceptanceCutoff', w."createdAt" >= TIMESTAMPTZ '2026-10-22 00:00:00+00',
+        'rawEnergyNonNull', w."activeEnergyKcal" IS NOT NULL OR w."manualActiveEnergyKcal" IS NOT NULL,
+        'workoutAliasCount', (SELECT count(*) FROM "ActiveEnergyEventAlias" AS a
+          WHERE a."profileId" = 1 AND a."sourceType" = 'workout' AND a."workoutId" = w."id"),
+        'canonicalEventCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e),
+        'eventKindMatchCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e WHERE e."eventKind" = w.expected_kind),
+        'logicalIdentityMatchCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e
+          WHERE e."logicalEventKey" = 'workout:72'
+            OR (w.expected_kind = 'stepper' AND e."logicalEventKey" LIKE 'stepper-reconciliation:%')),
+        'currentValidCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e
+          WHERE NOT e."isStale" AND e."supersededByEventId" IS NULL
+            AND e."currentSource" IS NOT NULL AND e."currentSource" <> 'unavailable'
+            AND e."currentKcal" IS NOT NULL AND e."currentKcal" >= 0
+            AND e."currentKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')
+            AND e."currentResolutionFingerprint" ~ '^[a-f0-9]{64}$'),
+        'resolutionRevisionMatchCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e
+          JOIN "ActiveEnergyResolutionRevision" AS r ON r."eventId" = e."id"
+            AND r."revision" = e."resolutionRevision"
+            AND r."resolutionFingerprint" = e."currentResolutionFingerprint"
+            AND r."source" = e."currentSource"
+            AND r."valueKcal" IS NOT DISTINCT FROM e."currentKcal"
+            AND r."provenance" = e."currentProvenance"),
+        'selectedCandidateMatchCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e
+          JOIN "ActiveEnergyCandidate" AS c ON c."eventId" = e."id"
+            AND c."source" = e."currentSource"
+            AND c."sourceIdentity" = e."currentProvenance"->>'sourceIdentity'
+            AND c."sourceFingerprint" = e."currentProvenance"->>'sourceFingerprint'
+            AND c."availability" = 'available'
+            AND c."valueKcal" IS NOT DISTINCT FROM e."currentKcal"),
+        'selectedCandidateEvidenceMatchCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e
+          JOIN "ActiveEnergyCandidate" AS c ON c."eventId" = e."id"
+            AND c."source" = e."currentSource"
+            AND c."sourceIdentity" = e."currentProvenance"->>'sourceIdentity'
+            AND c."sourceFingerprint" = e."currentProvenance"->>'sourceFingerprint'
+            AND c."availability" = 'available'
+            AND c."valueKcal" IS NOT DISTINCT FROM e."currentKcal"
+            AND c."provenance" = e."currentProvenance"->'evidence'),
+        'availableCandidateCount', (SELECT count(*) FROM target_workout_72_events AS e
+          JOIN "ActiveEnergyCandidate" AS c ON c."eventId" = e."id"
+          WHERE c."availability" = 'available' AND c."valueKcal" IS NOT NULL
+            AND c."valueKcal" >= 0 AND c."valueKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')),
+        'selectedSourceCodeFirstEvent', (SELECT CASE e."currentSource"
+          WHEN 'manual-kcal' THEN 1 WHEN 'device-kcal' THEN 2
+          WHEN 'bodycast-stepper-mechanical' THEN 3 WHEN 'bodycast-strength-estimate' THEN 4
+          WHEN 'bodycast-strength-met-fallback' THEN 5 WHEN 'unavailable' THEN 0 ELSE 6 END
+          FROM target_workout_72_events AS e ORDER BY e."id" LIMIT 1),
+        'selectedIdentityCodeFirstEvent', (SELECT CASE
+          WHEN e."currentProvenance"->>'sourceIdentity' = 'stepper-shadow:72' THEN 1
+          WHEN e."currentProvenance"->>'sourceIdentity' LIKE 'stepper-shadow:%' THEN 2
+          WHEN e."currentProvenance"->>'sourceIdentity' LIKE 'stepper-manual-steps:%' THEN 3
+          WHEN e."currentProvenance"->>'sourceIdentity' LIKE 'strength-session:%' THEN 4
+          WHEN e."currentProvenance"->>'sourceIdentity' = 'workout:72:manual' THEN 5
+          WHEN e."currentProvenance"->>'sourceIdentity' = 'workout:72:device' THEN 6
+          ELSE 7 END FROM target_workout_72_events AS e ORDER BY e."id" LIMIT 1),
+        'stepperShadowPresent', EXISTS (SELECT 1 FROM "ExperimentalStepperActiveEnergyShadow" AS s
+          WHERE s."profileId" = 1 AND s."workoutId" = w."id")
+      )), jsonb_build_object('visible', false, 'expectedKind', 'missing'))
     )::text, 'UTF8'), 'base64'), E'\n', ''), E'\r', '')
-    FROM "ExperimentalStepperActiveEnergyShadow" AS s
-    WHERE s."profileId" = 1 AND s."workoutId" = 56), 'none')
+    FROM (SELECT 1) AS diagnostic_anchor
+    LEFT JOIN "ExperimentalStepperActiveEnergyShadow" AS s
+      ON s."profileId" = 1 AND s."workoutId" = 56), 'none')
 FROM current_events
 SQL
 )"

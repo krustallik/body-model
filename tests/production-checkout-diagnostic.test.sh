@@ -67,6 +67,8 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'sourceType' "$DOCKER_EXEC_INPUT" || exit 91
   grep -Fq 'count(DISTINCT workout_id)' "$DOCKER_EXEC_INPUT" || exit 90
   grep -Fq 'WHERE w."id" = 56' "$DOCKER_EXEC_INPUT" || exit 78
+  grep -Fq 'WHERE w."id" = 72' "$DOCKER_EXEC_INPUT" || exit 70
+  grep -Fq "'targetWorkout72'" "$DOCKER_EXEC_INPUT" || exit 69
   grep -Fq '"ActiveEnergyResolutionRevision"' "$DOCKER_EXEC_INPUT" || exit 77
   grep -Fq '"ActiveEnergyCandidate"' "$DOCKER_EXEC_INPUT" || exit 76
   grep -Fq '"StrengthDiarySession"' "$DOCKER_EXEC_INPUT" || exit 89

@@ -71,6 +71,50 @@ describe("production Workout 56 shadow diagnostic sanitizer", () => {
     for (const value of privateValues) expect(output).not.toContain(value);
   });
 
+  it("reports sanitized Workout 72 acceptance evidence in the same diagnostic payload", () => {
+    const row = validRow();
+    row.targetWorkout72 = {
+        visible: true,
+        expectedKind: "strength",
+        createdOnOrAfterAcceptanceCutoff: false,
+        rawEnergyNonNull: true,
+        workoutAliasCount: 1,
+        canonicalEventCount: 1,
+        eventKindMatchCount: 1,
+        logicalIdentityMatchCount: 1,
+        currentValidCount: 1,
+        resolutionRevisionMatchCount: 1,
+        selectedCandidateMatchCount: 0,
+        selectedCandidateEvidenceMatchCount: 0,
+        availableCandidateCount: 1,
+        selectedSourceCodeFirstEvent: 4,
+        selectedIdentityCodeFirstEvent: 4,
+        stepperShadowPresent: false,
+        privateValue: "must-not-be-printed",
+      };
+    const output = sanitizeCheckoutDiagnosticOutput(diagnosticLine(row));
+
+    expect(output).toContain("energy_diagnostic_workout_72_expected_kind=strength");
+    expect(output).toContain("energy_diagnostic_workout_72_selected_candidate_match_count=0");
+    expect(output).toContain("energy_diagnostic_workout_72_selected_candidate_evidence_match_count=0");
+    expect(output).toContain("energy_diagnostic_workout_72_selected_source_code_first_event=4");
+    expect(output).not.toContain("must-not-be-printed");
+  });
+
+  it("keeps Workout 72 evidence when the Workout 56 shadow is absent", () => {
+    const row = validRow();
+    row.shadowPresent = false;
+    row.result = null;
+    row.sourceFingerprint = null;
+    row.targetWorkout72 = { visible: true, expectedKind: "stepper", canonicalEventCount: 1 };
+    const output = sanitizeCheckoutDiagnosticOutput(diagnosticLine(row));
+
+    expect(output).toContain("energy_diagnostic_workout_56_shadow_present=no");
+    expect(output).toContain("energy_diagnostic_workout_56_shadow_failure_reason=missing");
+    expect(output).toContain("energy_diagnostic_workout_72_expected_kind=stepper");
+    expect(output).toContain("energy_diagnostic_workout_72_canonical_event_count=1");
+  });
+
   it("identifies a payload changed after its source fingerprint was written", () => {
     const row = validRow();
     row.result.estimatedActiveKcal += 1;

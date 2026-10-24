@@ -53,7 +53,6 @@ const rawFingerprintTables = [
   "TrainingProgramVersion", "ProgramExercise", "StrengthDiarySession",
   "StrengthDiaryProgramChange", "StrengthSessionExercise", "StrengthSet",
   "WorkInterval", "StepperReconciliationGroup", "StepperReconciliationCandidate",
-  "StrengthSessionAccountingSnapshot", "StrengthSessionAccountingOperation",
 ];
 
 function canonicalJson(value) {
@@ -210,14 +209,24 @@ if (rejected !== input.expectedRejection) process.exitCode = 17;`;
 }
 
 async function legacyUnpagedRawFingerprint() {
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v4\0");
   for (const table of rawFingerprintTables) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
-      : "to_jsonb(source_row)";
+      : table === "StrengthDiarySession"
+        ? `(to_jsonb(source_row) - ARRAY['currentSnapshotRevision', 'updatedAt', 'effectiveAccountingAt', 'accountingTimeZone', 'accountingTimeZoneProvenance']::text[])
+           || jsonb_build_object(
+             'effectiveAccountingAt', COALESCE(source_row."effectiveAccountingAt", matched_workout."startAt", source_row."webStartedAt", source_row."createdAt"),
+             'accountingTimeZone', COALESCE(source_row."accountingTimeZone", 'Europe/Bratislava'),
+             'accountingTimeZoneProvenance', COALESCE(source_row."accountingTimeZoneProvenance", 'legacy-default')
+           )`
+        : "to_jsonb(source_row)";
+    const sourceJoins = table === "StrengthDiarySession"
+      ? `LEFT JOIN public."Workout" AS matched_workout ON matched_workout."id" = source_row."matchedWorkoutId"`
+      : "";
     const rows = await prisma.$queryRawUnsafe(
       `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
-       FROM public."${table}" AS source_row ORDER BY source_row.id`,
+       FROM public."${table}" AS source_row ${sourceJoins} ORDER BY source_row.id`,
     );
     const tableDigest = createHash("sha256").update(`${table}\0${rows.length}\0`);
     for (const row of rows) {

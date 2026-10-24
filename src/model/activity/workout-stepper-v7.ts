@@ -98,6 +98,38 @@ function effectiveSnapshot(snapshot: HealthSyncStepSnapshotV7): EffectiveHealthS
     : { snapshotId: snapshot.id, timestamp: snapshot.syncedAt, timestampBasis: "synced-at", stepCount: snapshot.steps };
 }
 
+export function selectedHealthSyncStepSnapshotBracketV7(input: {
+  startAt: string;
+  endAt: string;
+  snapshots: readonly HealthSyncStepSnapshotV7[];
+}): { before: EffectiveHealthSyncStepSnapshotV7 | null; after: EffectiveHealthSyncStepSnapshotV7 | null } {
+  const startMs = timestampMs(input.startAt);
+  const endMs = timestampMs(input.endAt);
+  const snapshots = input.snapshots
+    .map((snapshot, sourceIndex) => ({ snapshot: effectiveSnapshot(snapshot), sourceIndex }))
+    .map(({ snapshot, sourceIndex }) => ({ ...snapshot, sourceIndex, timeMs: timestampMs(snapshot.timestamp) }));
+  const before = snapshots
+    .filter((snapshot) => snapshot.timeMs <= startMs)
+    .sort((left, right) => right.timeMs - left.timeMs || right.sourceIndex - left.sourceIndex)[0] ?? null;
+  const after = snapshots
+    .filter((snapshot) => snapshot.timeMs >= endMs)
+    .sort((left, right) => left.timeMs - right.timeMs || left.sourceIndex - right.sourceIndex)[0] ?? null;
+  return {
+    before: before === null ? null : {
+      snapshotId: before.snapshotId,
+      timestamp: before.timestamp,
+      timestampBasis: before.timestampBasis,
+      stepCount: before.stepCount,
+    },
+    after: after === null ? null : {
+      snapshotId: after.snapshotId,
+      timestamp: after.timestamp,
+      timestampBasis: after.timestampBasis,
+      stepCount: after.stepCount,
+    },
+  };
+}
+
 /**
  * Attributes only the counter change bracketed by workout boundaries. It keeps
  * edge gaps explicit because the delta may include non-stepper walking there.
@@ -199,26 +231,18 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
     };
   }
 
-  const snapshots = input.snapshots
-    .map((snapshot, sourceIndex) => ({ snapshot: effectiveSnapshot(snapshot), sourceIndex }))
-    .map(({ snapshot, sourceIndex }) => ({ ...snapshot, sourceIndex, timeMs: timestampMs(snapshot.timestamp) }));
-  const before = snapshots
-    .filter((snapshot) => snapshot.timeMs <= startMs)
-    .sort((left, right) => right.timeMs - left.timeMs || right.sourceIndex - left.sourceIndex)[0] ?? null;
-  const after = snapshots
-    .filter((snapshot) => snapshot.timeMs >= endMs)
-    .sort((left, right) => left.timeMs - right.timeMs || left.sourceIndex - right.sourceIndex)[0] ?? null;
-  const beforeEvidence = before === null ? null : {
-    snapshotId: before.snapshotId,
-    timestamp: before.timestamp,
-    timestampBasis: before.timestampBasis,
-    stepCount: before.stepCount,
+  const { before: beforeEvidence, after: afterEvidence } = selectedHealthSyncStepSnapshotBracketV7({
+    startAt: workoutEnergy.startAt,
+    endAt: workoutEnergy.endAt,
+    snapshots: input.snapshots,
+  });
+  const before = beforeEvidence === null ? null : {
+    ...beforeEvidence,
+    timeMs: timestampMs(beforeEvidence.timestamp),
   };
-  const afterEvidence = after === null ? null : {
-    snapshotId: after.snapshotId,
-    timestamp: after.timestamp,
-    timestampBasis: after.timestampBasis,
-    stepCount: after.stepCount,
+  const after = afterEvidence === null ? null : {
+    ...afterEvidence,
+    timeMs: timestampMs(afterEvidence.timestamp),
   };
   const preGapSeconds = before === null ? null : (startMs - before.timeMs) / 1_000;
   const postGapSeconds = after === null ? null : (after.timeMs - endMs) / 1_000;

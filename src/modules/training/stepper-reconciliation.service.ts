@@ -20,6 +20,7 @@ type QueryClient = PrismaClient | Prisma.TransactionClient;
 
 export type PersistedReconciliationV1 = {
   groupIds: number[];
+  affectedWorkoutIds: number[];
   displayedSteps: number | null;
   potentialDuplication: boolean;
 };
@@ -55,6 +56,7 @@ async function invalidateReconciliationGroupEnergyInTransactionV1(
     profileId: group.profileId,
     workoutIds,
     affectedInstants: workouts.flatMap((workout) => [workout.startAt, workout.endAt]),
+    staleMatchingAliasesOnly: true,
   });
 }
 
@@ -295,28 +297,37 @@ async function writeWindow(client: QueryClient, input: {
       candidates: { select: { manualWorkoutId: true, garminWorkoutId: true, candidateStatus: true, manualCoverage: true, garminCoverage: true, stepEvidenceStatus: true } },
     },
   });
-  const signature = (groups: typeof beforeGroups) => JSON.stringify(groups.map((group) => ({
+  const groupSignatures = (groups: typeof beforeGroups) => new Map(groups.map((group) => [group.id, JSON.stringify({
     ...group,
     candidates: [...group.candidates].sort((left, right) => left.manualWorkoutId - right.manualWorkoutId || left.garminWorkoutId - right.garminWorkoutId),
-  })).sort((left, right) => left.id - right.id));
-  if (signature(beforeGroups) !== signature(afterGroups) && !isClient(client)) {
-    const memberIds = new Set<number>(rows.map((row) => row.id));
-    for (const group of [...beforeGroups, ...afterGroups]) for (const candidate of group.candidates) {
-      memberIds.add(candidate.manualWorkoutId);
-      memberIds.add(candidate.garminWorkoutId);
+  })]));
+  const beforeSignatures = groupSignatures(beforeGroups);
+  const afterSignatures = groupSignatures(afterGroups);
+  const changedGroupIds = new Set([...new Set([...beforeSignatures.keys(), ...afterSignatures.keys()])]
+    .filter((id) => beforeSignatures.get(id) !== afterSignatures.get(id)));
+  const affectedWorkoutIds = new Set<number>();
+  for (const group of [...beforeGroups, ...afterGroups]) {
+    if (!changedGroupIds.has(group.id)) continue;
+    for (const candidate of group.candidates) {
+      affectedWorkoutIds.add(candidate.manualWorkoutId);
+      affectedWorkoutIds.add(candidate.garminWorkoutId);
     }
-    const members = memberIds.size === 0 ? [] : await client.workout.findMany({
-      where: { id: { in: [...memberIds] } }, select: { id: true, startAt: true, endAt: true },
+  }
+  if (affectedWorkoutIds.size > 0 && !isClient(client)) {
+    const members = await client.workout.findMany({
+      where: { id: { in: [...affectedWorkoutIds] } }, select: { id: true, startAt: true, endAt: true },
     });
     await invalidateWorkoutEnergyInTransactionV1({
       tx: client,
       profileId,
-      workoutIds: [...memberIds],
+      workoutIds: [...affectedWorkoutIds],
       affectedInstants: members.flatMap((row) => [row.startAt, row.endAt]),
+      staleMatchingAliasesOnly: true,
     });
   }
   return {
     groupIds,
+    affectedWorkoutIds: [...affectedWorkoutIds].sort((left, right) => left - right),
     displayedSteps: evaluated.displayedSteps,
     potentialDuplication: evaluated.potentialDuplication,
   };

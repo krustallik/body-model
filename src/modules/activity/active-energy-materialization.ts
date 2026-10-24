@@ -7,10 +7,23 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { stepperMassCandidateDependsOnReplayV1 } from "@/model/activity/stepper-historical-mass-v1";
 import { isProductionGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import type { ActiveEnergyConvergenceOwnerToken } from "@/modules/model-episodes/physiology-v7-persistence.repository";
-import { recordExperimentalStrengthEnergyShadowBySessionId } from "@/modules/training/experimental-strength-energy-shadow.service";
+import { TrainingRepository } from "@/modules/training/training.repository";
+import {
+  historicalBodyweightSourceChangeMayAffectSessionV1,
+  recordExperimentalStrengthEnergyShadow,
+  recordExperimentalStrengthEnergyShadowBySessionId,
+} from "@/modules/training/experimental-strength-energy-shadow.service";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+
+export type ActiveEnergyModelChangedDayV1 = {
+  episodeId: number;
+  date: string;
+  strengthRmrChanged: boolean;
+  modelMassChanged: boolean;
+};
 
 export type ActiveEnergyResolutionSnapshotV1 = {
   id: number;
@@ -18,6 +31,12 @@ export type ActiveEnergyResolutionSnapshotV1 = {
   isStale: boolean;
   currentResolutionFingerprint: string | null;
   resolutionRevision: number;
+};
+
+/** Exact source rows already captured by a durable caller; omitted means full recovery materialization. */
+export type ActiveEnergyCandidateScopeV1 = {
+  strengthSessionIds: readonly number[];
+  workoutIds: readonly number[];
 };
 
 async function readResolutionSnapshot(profileId: number): Promise<ActiveEnergyResolutionSnapshotV1[]> {
@@ -75,6 +94,7 @@ export async function invalidateActiveEnergyResolutionDatesV1(
 export async function materializeActiveEnergyCandidatesV1(
   profileId = 1,
   options: {
+    candidateScope?: ActiveEnergyCandidateScopeV1;
     activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
     onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
     onCandidateProcessed?: () => void | Promise<void>;
@@ -83,17 +103,26 @@ export async function materializeActiveEnergyCandidatesV1(
   stepperWorkoutIds: number[];
   strengthSessionIds: number[];
   strengthWorkoutIds: number[];
+  convergenceCandidateCount: number;
   changedDates: string[];
 }> {
   const before = await readResolutionSnapshot(profileId);
+  const candidateScope = options.candidateScope;
   const [sessions, workouts] = await Promise.all([
     prisma.strengthDiarySession.findMany({
-      where: { profileId, status: "COMPLETED" },
+      where: {
+        profileId,
+        status: "COMPLETED",
+        ...(candidateScope === undefined ? {} : { id: { in: [...new Set(candidateScope.strengthSessionIds)] } }),
+      },
       select: { id: true },
       orderBy: { id: "asc" },
     }),
     prisma.workout.findMany({
-      where: { hiddenFromHistory: false },
+      where: {
+        hiddenFromHistory: false,
+        ...(candidateScope === undefined ? {} : { id: { in: [...new Set(candidateScope.workoutIds)] } }),
+      },
       select: { id: true, type: true, matchedDiarySession: { select: { id: true } } },
       orderBy: { id: "asc" },
     }),
@@ -131,6 +160,9 @@ export async function materializeActiveEnergyCandidatesV1(
     stepperWorkoutIds,
     strengthSessionIds: sessions.map(({ id }) => id),
     strengthWorkoutIds,
+    // Existing canonical events bound the convergence cycle count. Include
+    // newly scoped rows that do not yet have a canonical event (bootstrap).
+    convergenceCandidateCount: before.length + sessions.length + strengthWorkoutIds.length + stepperWorkoutIds.length,
     changedDates: changedResolutionDatesV1(before, await readResolutionSnapshot(profileId)),
   };
 }
@@ -186,8 +218,7 @@ async function recordUnmatchedStrengthWorkoutV1(input: {
     episode: episode ? [episode.id, episode.modelVersion, episode.startDate, episode.timezone] : null,
     modelDate: context.date,
     modelDay: modelDay ? [modelDay.id, modelDay.status, modelDay.modelVersion,
-      modelDay.dynamicRmrKcalPerDay, massKg, modelDay.updatedAt.toISOString()] : null,
-    productionGeneration: productionCurrent ? lifecycle?.invalidationGeneration : null,
+      modelDay.dynamicRmrKcalPerDay, massKg] : null,
   };
   const inputFingerprint = stableSha256(JSON.stringify(fingerprintInputs));
   const candidates: ActiveEnergyCandidateV1[] = [
@@ -269,6 +300,12 @@ export async function refreshCandidatesAfterProductionV1(
   replayFromDate: string,
   options: {
     activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
+    /** Exact V7 days whose energy-relevant outputs changed; omitted means conservative full suffix recovery. */
+    modelChangedDays?: readonly ActiveEnergyModelChangedDayV1[];
+    /** Latest-modeled-date is part of matched Strength source binding. */
+    strengthHorizonChangedEpisodeId?: number;
+    /** True only when the replay consumed a dirty source generation, which can change as-of mass fallbacks. */
+    sourceReplayChanged?: boolean;
     onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
     onCandidateProcessed?: () => void | Promise<void>;
   } = {},
@@ -277,7 +314,7 @@ export async function refreshCandidatesAfterProductionV1(
   const [episodes, sessions, workouts] = await Promise.all([
     prisma.modelEpisode.findMany({
       where: { profileId },
-      select: { startDate: true, timezone: true, active: true },
+      select: { id: true, startDate: true, timezone: true, active: true },
       orderBy: [{ startDate: "asc" }, { id: "asc" }],
     }),
     prisma.strengthDiarySession.findMany({
@@ -288,6 +325,7 @@ export async function refreshCandidatesAfterProductionV1(
         webStartedAt: true,
         createdAt: true,
         matchedWorkout: { select: { startAt: true } },
+        currentAccountingSnapshot: { select: { payload: true } },
       },
       orderBy: { id: "asc" },
     }),
@@ -303,13 +341,46 @@ export async function refreshCandidatesAfterProductionV1(
       orderBy: { id: "asc" },
     }),
   ]);
+  const exactChangedDays = options.modelChangedDays === undefined
+    ? null
+    : new Map(options.modelChangedDays.map((day) => [`${day.episodeId}:${day.date}`, day]));
+  const changedDatesByEpisode = new Map<number, string[]>();
+  for (const changedDay of options.modelChangedDays ?? []) {
+    if (!changedDay.modelMassChanged) continue;
+    const dates = changedDatesByEpisode.get(changedDay.episodeId) ?? [];
+    dates.push(changedDay.date);
+    changedDatesByEpisode.set(changedDay.episodeId, dates);
+  }
+  const trainingRepository = new TrainingRepository(prisma);
   for (const session of sessions) {
     const eventInstant = session.matchedWorkout?.startAt
       ?? session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
-    const modelDate = episodeTimeContextForInstantV1(episodes, eventInstant).date;
-    if (modelDate < replayFromDate) continue;
-    await recordExperimentalStrengthEnergyShadowBySessionId({
-      sessionId: session.id,
+    const eventContext = episodeTimeContextForInstantV1(episodes, eventInstant);
+    const modelDate = eventContext.date;
+    if (exactChangedDays === null) {
+      if (modelDate < replayFromDate) continue;
+    } else {
+      const episode = eventContext.episode;
+      if (episode === null) continue;
+      const exactModelDayChanged = exactChangedDays.get(`${episode.id}:${modelDate}`)?.strengthRmrChanged === true;
+      const episodeHorizonChanged = options.strengthHorizonChangedEpisodeId === episode.id;
+      const snapshot = objectValue(session.currentAccountingSnapshot?.payload);
+      const massReference = objectValue(snapshot?.massReference);
+      const hasIndependentMass = massReference?.status === "observed" || massReference?.status === "nearest-observed";
+      const historicalMassChanged = !hasIndependentMass
+        && [...new Set([...(options.sourceReplayChanged ? [replayFromDate] : []), ...(changedDatesByEpisode.get(episode.id) ?? [])])].some((changedDate) => (
+          historicalBodyweightSourceChangeMayAffectSessionV1({
+            weightDate: changedDate,
+            sessionLocalDate: modelDate,
+            episodeStartDate: episode.startDate,
+          })
+        ));
+      if (!episodeHorizonChanged && !exactModelDayChanged && !historicalMassChanged) continue;
+    }
+    const sessionInput = await trainingRepository.getSession(session.id, profileId);
+    if (sessionInput === null) continue;
+    await recordExperimentalStrengthEnergyShadow({
+      session: sessionInput,
       profileId,
       ...(options.activeEnergyConvergenceOwner === undefined ? {} : { activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner }),
       ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
@@ -318,9 +389,19 @@ export async function refreshCandidatesAfterProductionV1(
   }
   for (const workout of workouts) {
     const classification = canonicalizeWorkoutType(workout.type).classification;
-    const modelDate = episodeTimeContextForInstantV1(episodes, workout.startAt).date;
-    if (classification === "traditional-strength-training" && workout.matchedDiarySession === null
-        && modelDate >= replayFromDate) {
+    const eventContext = episodeTimeContextForInstantV1(episodes, workout.startAt);
+    const modelDate = eventContext.date;
+    if (classification === "traditional-strength-training" && workout.matchedDiarySession === null) {
+      if (exactChangedDays === null) {
+        if (modelDate < replayFromDate) continue;
+      } else {
+        const episode = eventContext.episode;
+        const changedModelDay = episode === null ? undefined : exactChangedDays.get(`${episode.id}:${modelDate}`);
+        if (episode === null
+            || (changedModelDay?.strengthRmrChanged !== true && changedModelDay?.modelMassChanged !== true)) continue;
+      }
+      // Rebind only when this workout's model day changed. Global generation
+      // and row timestamps remain transactional CAS checks, not value inputs.
       await recordUnmatchedStrengthWorkoutV1({ workoutId: workout.id, profileId, activeEnergyConvergenceOwner: options.activeEnergyConvergenceOwner });
       await options.onCandidateProcessed?.();
       continue;
@@ -328,13 +409,19 @@ export async function refreshCandidatesAfterProductionV1(
     if (classification !== "stair-climbing") continue;
     const shadow = objectValue(workout.experimentalStepperActiveEnergyShadow?.result);
     const massReference = objectValue(shadow?.massReference);
-    if (!stepperMassCandidateDependsOnReplayV1({
-      workoutDate: modelDate,
-      replayFromDate,
-      massStatus: massReference?.status === "observed" || massReference?.status === "model-estimated"
-        ? massReference.status
-        : "unavailable",
-    })) continue;
+    const massStatus = massReference?.status === "observed" || massReference?.status === "model-estimated"
+      ? massReference.status
+      : "unavailable";
+    if (exactChangedDays === null) {
+      if (!stepperMassCandidateDependsOnReplayV1({ workoutDate: modelDate, replayFromDate, massStatus })) continue;
+    } else {
+      const episode = eventContext.episode;
+      if (episode === null || massStatus === "observed") continue;
+      const sourceModelDate = massReference?.modelSourceKind === "episode-initial"
+        ? modelDate
+        : addCalendarDays(modelDate, -1);
+      if (exactChangedDays.get(`${episode.id}:${sourceModelDate}`)?.modelMassChanged !== true) continue;
+    }
     await recordExperimentalStepperActiveEnergyShadow({
       workoutId: workout.id,
       profileId,

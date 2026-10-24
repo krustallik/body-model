@@ -74,7 +74,9 @@ describe("Stepper reconciliation write routes", () => {
       workoutIds: [31, 44],
       profileId: 1,
     });
-    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith();
+    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({
+      activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [31, 44] },
+    });
   });
 
   it("reports a stale model publication after a persisted confirmation", async () => {
@@ -114,7 +116,7 @@ describe("Stepper reconciliation write routes", () => {
       workoutIds: [31, 44],
       profileId: 1,
     });
-    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith();
+    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({});
   });
 
   it("maps an already-confirmed domain conflict and does not publish or activate", async () => {
@@ -183,7 +185,9 @@ describe("Stepper reconciliation write routes", () => {
       workoutIds: [31, 44, 45],
       profileId: 1,
     });
-    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith();
+    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({
+      activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [31, 44, 45] },
+    });
   });
 
   it("reports stale publication after a persisted reconciliation rejection", async () => {

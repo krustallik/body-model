@@ -26,7 +26,10 @@ export async function POST(request: Request): Promise<Response> {
       workoutIds: [...new Set(members.flatMap((pair) => [pair.manualWorkoutId, pair.garminWorkoutId]))],
       profileId: 1,
     });
-    const published = await publishActiveEnergyChangesV1();
+    const published = await publishActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+      strengthSessionIds: [],
+      workoutIds: [...new Set(members.flatMap((pair) => [pair.manualWorkoutId, pair.garminWorkoutId]))],
+    } });
     return Response.json({ ok: true, modelPublicationStatus: published ? "current" : "stale" });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });

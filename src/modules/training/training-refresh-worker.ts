@@ -522,6 +522,14 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
     ...job.affectedSessionIds,
     ...job.sourceChanges.flatMap((change) => change.affectedSessionIds),
   ]);
+  const affectedWorkoutIds = uniqueIntegers(job.sourceChanges.flatMap((change) => change.affectedWorkoutIds));
+  const hasScopedEvidence = job.sourceChanges.length > 0
+    || job.affectedSessionIds.length > 0
+    || affectedWorkoutIds.length > 0;
+  const candidateScope = hasScopedEvidence && job.sourceChanges.every((change) =>
+    change.affectedSessionIds.length > 0 || change.affectedWorkoutIds.length > 0)
+    ? { strengthSessionIds: affectedSessionIds, workoutIds: affectedWorkoutIds }
+    : undefined;
   const publicationBlockSourceKeys = [...new Set(job.sourceChanges.flatMap((change) => change.publicationBlockSourceKeys))].sort();
   const stepperChanges = job.sourceChanges.filter((change) => change.operationKind.startsWith("stepper_workout_"));
   const stepperPublicationBlockSourceKeys = [...new Set(stepperChanges.flatMap((change) => change.publicationBlockSourceKeys))].sort();
@@ -549,6 +557,7 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
   await markTrainingRefreshProgress(job, "active-energy-production-convergence", hooks);
   const production = await recalculateActiveEnergyChangesV1({
     requireDependentStages: true,
+    ...(candidateScope === undefined ? {} : { activeEnergyCandidateScope: candidateScope }),
     onLifecycleFenceChanged: async () => {
       await markTrainingRefreshProgress(job, "active-energy-production-convergence");
     },

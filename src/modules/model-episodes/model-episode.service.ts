@@ -38,6 +38,8 @@ import {
   invalidateActiveEnergyResolutionDatesV1,
   materializeActiveEnergyCandidatesV1,
   refreshCandidatesAfterProductionV1,
+  type ActiveEnergyCandidateScopeV1,
+  type ActiveEnergyModelChangedDayV1,
 } from "@/modules/activity/active-energy-materialization";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
@@ -298,6 +300,9 @@ function unchangedActiveEpisodeResult(
     // An unchanged active episode has no replay; use its persisted start as
     // the conservative boundary for post-replay candidate dependencies.
     effectiveReplayFromDate: episode.startDate,
+    activeEnergyModelChangedDays: [] as ActiveEnergyModelChangedDayV1[],
+    strengthHorizonChangedEpisodeId: null as number | null,
+    sourceReplayChanged: false,
     current,
   };
 }
@@ -564,12 +569,43 @@ async function recalculateModelEpisodeProduction(
       if (!currentStatus) throw new NoActiveModelEpisodeError();
       return unchangedActiveEpisodeResult(episode, currentStatus);
     }
+    const energyReplayFromDate = calculation.replayMode === "suffix"
+      ? resume?.fromDate ?? episode.startDate
+      : episode.startDate;
+    const priorEnergyRows = await transaction.dailyModelState.findMany({
+      where: { episodeId: episode.id, date: { gte: energyReplayFromDate } },
+      select: { date: true, status: true, modelVersion: true, dynamicRmrKcalPerDay: true, endWeightKg: true, filteredWeightKg: true },
+    });
+    const priorEnergyByDate = new Map(priorEnergyRows.map((row) => [row.date, row]));
     await repository.persistCalculation(
       episode.id,
       calculation,
       episode.modelVersion,
       calculation.replayMode === "suffix" ? resume?.fromDate : undefined,
     );
+    // Compare the rows that candidate writers will actually read after commit,
+    // avoiding false dependencies from pre-persistence floating-point noise.
+    const persistedEnergyRows = await transaction.dailyModelState.findMany({
+      where: { episodeId: episode.id, date: { gte: energyReplayFromDate } },
+      select: { date: true, status: true, modelVersion: true, dynamicRmrKcalPerDay: true, endWeightKg: true, filteredWeightKg: true },
+    });
+    const persistedEnergyByDate = new Map(persistedEnergyRows.map((row) => [row.date, row]));
+    const activeEnergyModelChangedDays: ActiveEnergyModelChangedDayV1[] = [
+      ...persistedEnergyRows.flatMap((row) => {
+        const prior = priorEnergyByDate.get(row.date);
+        const statusOrVersionChanged = !prior || prior.status !== row.status || prior.modelVersion !== row.modelVersion;
+        const strengthRmrChanged = statusOrVersionChanged
+          || prior?.dynamicRmrKcalPerDay !== row.dynamicRmrKcalPerDay;
+        const modelMassChanged = statusOrVersionChanged
+          || (prior?.filteredWeightKg ?? prior?.endWeightKg ?? null)
+            !== (row.filteredWeightKg ?? row.endWeightKg ?? null);
+        return strengthRmrChanged || modelMassChanged
+          ? [{ episodeId: episode.id, date: row.date, strengthRmrChanged, modelMassChanged }]
+          : [];
+      }),
+      ...priorEnergyRows.filter(({ date }) => !persistedEnergyByDate.has(date))
+        .map(({ date }) => ({ episodeId: episode.id, date, strengthRmrChanged: true, modelMassChanged: true })),
+    ];
     // Recalculation follows all source mutations; stale conservatively until an
     // identical source/config/seed recovery resets the fingerprinted upsert.
     await repository.markRecoveryRunsStale(episode.id);
@@ -630,6 +666,11 @@ async function recalculateModelEpisodeProduction(
       effectiveReplayFromDate: calculation.replayMode === "suffix"
         ? resume?.fromDate ?? episode.startDate
         : episode.startDate,
+      activeEnergyModelChangedDays,
+      strengthHorizonChangedEpisodeId: episode.latestModeledDate !== calculation.latestModeledDate
+        ? episode.id
+        : null,
+      sourceReplayChanged: dirtyFromDate !== null,
       current: null,
     };
   }, {
@@ -686,6 +727,7 @@ export async function recalculateModelEpisode(
     episodeId?: number;
     now?: Date;
     requireDependentStages?: boolean;
+    activeEnergyCandidateScope?: ActiveEnergyCandidateScopeV1;
     onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
     onCandidateProcessed?: () => void | Promise<void>;
     /** Deterministic integration seam after a committed production pass. */
@@ -723,6 +765,7 @@ export async function recalculateModelEpisode(
   try {
     await publishLifecycleFence();
     const materialized = await materializeActiveEnergyCandidatesV1(profileId, {
+      ...(input.activeEnergyCandidateScope === undefined ? {} : { candidateScope: input.activeEnergyCandidateScope }),
       activeEnergyConvergenceOwner: convergenceBlock,
       onLifecycleFenceChanged: input.onLifecycleFenceChanged,
       onCandidateProcessed: async () => {
@@ -732,9 +775,7 @@ export async function recalculateModelEpisode(
     });
     await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates, convergenceBlock);
     await publishLifecycleFence();
-    const eligibleRefreshes = materialized.stepperWorkoutIds.length
-      + materialized.strengthSessionIds.length + materialized.strengthWorkoutIds.length;
-    const maxRefreshPasses = Math.max(2, eligibleRefreshes + 2);
+    const maxRefreshPasses = Math.max(2, materialized.convergenceCandidateCount + 2);
     const effectiveReplayFromDates: string[] = [];
     for (let pass = 0; pass < maxRefreshPasses; pass += 1) {
       if (renewalFailure !== undefined) throw renewalFailure;
@@ -753,6 +794,10 @@ export async function recalculateModelEpisode(
       await lifecycleRepository.renewActiveEnergyConvergence({ profileId, owner: convergenceBlock });
       const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate, {
         activeEnergyConvergenceOwner: convergenceBlock,
+        modelChangedDays: production.activeEnergyModelChangedDays,
+        ...(production.strengthHorizonChangedEpisodeId === null
+          ? {} : { strengthHorizonChangedEpisodeId: production.strengthHorizonChangedEpisodeId }),
+        sourceReplayChanged: production.sourceReplayChanged,
         onLifecycleFenceChanged: input.onLifecycleFenceChanged,
         onCandidateProcessed: async () => {
           await lifecycleRepository.renewActiveEnergyConvergence({ profileId, owner: convergenceBlock });

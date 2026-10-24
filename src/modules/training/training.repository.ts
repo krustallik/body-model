@@ -107,6 +107,7 @@ async function blockCompletedStrengthUnifiedInTransaction(
     affectedExerciseIds?: readonly number[];
     affectedSetIds?: readonly number[];
     publicationBlockSourceKeys?: readonly string[];
+    affectedWorkoutIds?: readonly number[];
     oldSourceIdentity?: Prisma.InputJsonValue;
     newSourceIdentity?: Prisma.InputJsonValue;
     oldEventInstants?: Prisma.InputJsonValue;
@@ -179,6 +180,10 @@ async function blockCompletedStrengthUnifiedInTransaction(
       operationKind: evidence.operationKind
         ?? (sourceKey ? "training_child_delete" : "training_source_change"),
       affectedSessionIds: [session.id],
+      affectedWorkoutIds: [...new Set([
+        ...(session.matchedWorkoutId === null ? [] : [session.matchedWorkoutId]),
+        ...(evidence.affectedWorkoutIds ?? []),
+      ])],
       affectedExerciseIds: [...affectedExerciseIds],
       affectedSetIds: [...affectedSetIds],
       publicationBlockSourceKeys: [sourceKey ?? String(session.id)],
@@ -237,6 +242,7 @@ async function invalidateStrengthSessionActiveEnergyInTransaction(
       ...(session.matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(session.matchedWorkoutId) }]),
     ],
     affectedInstants: [eventInstant, session.matchedWorkout?.endAt],
+    staleMatchingAliasesOnly: true,
   });
   if (sourceChange && evidence?.recordSourceChange !== false) {
     await enqueueTrainingSourceChangeInTransaction(tx, sourceChange);
@@ -1441,6 +1447,7 @@ export class TrainingRepository {
             session.matchedWorkout?.startAt ?? oldEffectiveAt,
             session.matchedWorkout?.endAt,
           ],
+          staleMatchingAliasesOnly: true,
         });
         const episodes = await tx.modelEpisode.findMany({
           where: { profileId },
@@ -2245,11 +2252,31 @@ export class TrainingRepository {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       const lockedSession = await tx.strengthDiarySession.findFirst({
         where: { id: input.sessionId, profileId: DEFAULT_TRAINING_PROFILE_ID },
-        select: { accountingInputRevision: true },
+        select: { accountingInputRevision: true, revision: true },
       });
       if (!lockedSession || lockedSession.accountingInputRevision !== input.expectedAccountingInputRevision) {
         throw new TrainingConcurrentMutationError();
       }
+      const currentExercise = await tx.strengthSessionExercise.findFirst({
+        where: { id: input.exerciseId, sessionId: input.sessionId },
+        select: {
+          plannedSets: true,
+          resistanceType: true,
+          sortOrder: true,
+          sets: { select: { weightKg: true, bandNominalResistanceKg: true } },
+        },
+      });
+      const clearsExistingLoad = currentExercise !== null && (
+        input.clearWeightKg && currentExercise.sets.some((set) => set.weightKg !== null)
+        || input.clearBandNominalResistanceKg && currentExercise.sets.some((set) => set.bandNominalResistanceKg !== null)
+      );
+      const sourceChanged = currentExercise !== null && (
+        input.plannedSets !== undefined && input.plannedSets !== currentExercise.plannedSets
+        || input.resistanceType !== undefined && input.resistanceType !== currentExercise.resistanceType
+        || clearsExistingLoad
+        || input.order !== undefined && input.order !== currentExercise.sortOrder
+      );
+      if (currentExercise !== null && !sourceChanged) return lockedSession.revision;
       if (input.plannedSets !== undefined || input.resistanceType !== undefined) {
         await tx.strengthSessionExercise.update({
           where: { id: input.exerciseId },
@@ -2344,6 +2371,18 @@ export class TrainingRepository {
   }): Promise<number> {
     return this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      const [currentSession, exercises] = await Promise.all([
+        tx.strengthDiarySession.findUnique({ where: { id: input.sessionId }, select: { revision: true } }),
+        tx.strengthSessionExercise.findMany({
+          where: { sessionId: input.sessionId },
+          orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+          select: { id: true },
+        }),
+      ]);
+      if (currentSession && exercises.length === input.orderedExerciseIds.length
+          && exercises.every((exercise, index) => exercise.id === input.orderedExerciseIds[index])) {
+        return currentSession.revision;
+      }
       await parkExerciseOrder(tx, input.orderedExerciseIds);
       await writeExerciseOrder(tx, input.orderedExerciseIds);
       const session = await tx.strengthDiarySession.update({
@@ -2592,19 +2631,32 @@ export class TrainingRepository {
           id: input.setId,
           sessionExercise: { sessionId: input.sessionId, session: { profileId } },
         },
-        select: {
-          id: true, reps: true, weightKg: true, bandNominalResistanceKg: true,
-          completedAt: true, loadAccountingOverride: true, sessionExercise: { select: { sessionId: true } },
-        },
+        select: { ...setSelect, sessionExercise: { select: { sessionId: true } } },
       });
       if (!existing) return null;
+      const nextComment = input.comment === undefined
+        ? existing.comment
+        : input.comment?.trim() ? input.comment.trim() : null;
+      const unchanged = (input.reps === undefined || input.reps === existing.reps)
+        && (input.weightKg === undefined || input.weightKg === existing.weightKg?.toNumber()
+          || input.weightKg === null && existing.weightKg === null)
+        && (input.bandNominalResistanceKg === undefined
+          || input.bandNominalResistanceKg === existing.bandNominalResistanceKg?.toNumber()
+          || input.bandNominalResistanceKg === null && existing.bandNominalResistanceKg === null)
+        && (input.rir === undefined || input.rir === existing.rir)
+        && (input.comment === undefined || nextComment === existing.comment)
+        && (input.completedAt === undefined
+          || (input.completedAt?.getTime() ?? null) === (existing.completedAt?.getTime() ?? null))
+        && (input.loadAccountingOverride === undefined
+          || stableSha256(input.loadAccountingOverride) === stableSha256(existing.loadAccountingOverride));
+      if (unchanged) return toSetDto(existing);
       const accountingChanged = (input.reps !== undefined && input.reps !== existing.reps)
         || (input.weightKg !== undefined && input.weightKg !== existing.weightKg?.toNumber() && !(input.weightKg === null && existing.weightKg === null))
         || (input.bandNominalResistanceKg !== undefined
           && input.bandNominalResistanceKg !== existing.bandNominalResistanceKg?.toNumber()
           && !(input.bandNominalResistanceKg === null && existing.bandNominalResistanceKg === null))
         || (input.loadAccountingOverride !== undefined
-          && JSON.stringify(input.loadAccountingOverride) !== JSON.stringify(existing.loadAccountingOverride));
+          && stableSha256(input.loadAccountingOverride) !== stableSha256(existing.loadAccountingOverride));
       const activeEnergyChanged = input.completedAt !== undefined
         && (input.completedAt?.getTime() ?? null) !== (existing.completedAt?.getTime() ?? null);
       const row = await tx.strengthSet.update({
@@ -2628,7 +2680,9 @@ export class TrainingRepository {
       });
       if (accountingChanged) await bumpAccountingInputRevision(tx, existing.sessionExercise.sessionId);
       else if (activeEnergyChanged) await invalidateStrengthSessionActiveEnergyInTransaction(tx, existing.sessionExercise.sessionId);
-      else await invalidateCompletedStrengthUnifiedInTransaction(tx, existing.sessionExercise.sessionId);
+      else if (input.rir !== undefined && input.rir !== existing.rir) {
+        await invalidateCompletedStrengthUnifiedInTransaction(tx, existing.sessionExercise.sessionId);
+      }
       return toSetDto(row);
     });
   }
@@ -2832,6 +2886,7 @@ export class TrainingRepository {
             ...(session.matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(session.matchedWorkoutId) }]),
           ],
           affectedInstants: [oldEventAt, session.matchedWorkout?.endAt],
+          staleMatchingAliasesOnly: true,
         });
       }
       await tx.strengthDiarySession.update({
@@ -2944,6 +2999,7 @@ export class TrainingRepository {
             ...(matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(matchedWorkoutId) }]),
           ],
           affectedInstants: [session.matchedWorkout?.startAt ?? session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt, session.matchedWorkout?.endAt],
+          staleMatchingAliasesOnly: true,
         });
       }
       await tx.strengthDiarySession.delete({ where: { id: sessionId } });
@@ -3047,6 +3103,7 @@ export class TrainingRepository {
             workout?.startAt ?? nextEffectiveAt,
             workout?.endAt,
           ],
+          staleMatchingAliasesOnly: true,
         });
         if (session.status === SESSION_STATUS.COMPLETED) {
           const episodes = await tx.modelEpisode.findMany({
@@ -3078,6 +3135,7 @@ export class TrainingRepository {
           } satisfies Prisma.InputJsonObject;
           await blockCompletedStrengthUnifiedInTransaction(tx, session.id, undefined, {
             operationKind: "training_match_relocated",
+            affectedWorkoutIds: workoutIds,
             oldSourceIdentity,
             newSourceIdentity,
             oldEventInstants: [oldEventAt.toISOString()],

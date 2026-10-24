@@ -75,21 +75,30 @@ const dailyMetricSelect = {
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
 
 type DailyMetricShadowReplayer = {
-  replayFrom(date: string, options?: { weightSourceChanged?: boolean }): Promise<ActiveEnergyPublicationStatusV1>;
+  replayFrom(date: string, options?: {
+    weightSourceChanged?: boolean;
+    affectedWorkoutIds?: readonly number[];
+  }): Promise<ActiveEnergyPublicationStatusV1>;
 };
 
 export async function replayProductionDailyMetricShadowsV1(
   date: string,
   lifecycle = new PhysiologyV7PersistenceRepository(),
-  options: { weightSourceChanged?: boolean } = {},
+  options: { weightSourceChanged?: boolean; affectedWorkoutIds?: readonly number[] } = {},
 ): Promise<ActiveEnergyPublicationStatusV1> {
   const blockToken = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "day", sourceKey: date });
+  let affectedSessionIds: number[] = [];
+  const affectedWorkoutIds = new Set(options.affectedWorkoutIds ?? []);
   try {
-    await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates: [date] });
-    await recordExperimentalStrengthShadowsForWeightDate({
-      date,
-      refreshHistoricalAsOfFallback: options.weightSourceChanged === true,
-    });
+    if (options.weightSourceChanged === true) {
+      for (const workoutId of await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates: [date] })) {
+        affectedWorkoutIds.add(workoutId);
+      }
+      affectedSessionIds = await recordExperimentalStrengthShadowsForWeightDate({
+        date,
+        refreshHistoricalAsOfFallback: true,
+      });
+    }
     await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date });
     await recordExperimentalGlycogenStateShadow({ date });
     await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: date });
@@ -129,7 +138,13 @@ export async function replayProductionDailyMetricShadowsV1(
     throw error;
   }
   try {
-    if (await publishActiveEnergyChangesV1()) return "current";
+    const hasCompleteCandidateScope = options.affectedWorkoutIds !== undefined;
+    if (await publishActiveEnergyChangesV1({
+      ...(hasCompleteCandidateScope ? { activeEnergyCandidateScope: {
+        strengthSessionIds: affectedSessionIds,
+        workoutIds: [...affectedWorkoutIds].sort((left, right) => left - right),
+      } } : {}),
+    })) return "current";
   } catch (error) {
     let anotherBlockRemains: boolean | null = null;
     try {
@@ -216,8 +231,28 @@ function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workout
   return [...unique.values()];
 }
 
+function sameEditableWorkoutInputs(
+  existing: { type: string; startAt: Date; endAt: Date; durationMinutes: number | null; activeEnergyKcal: number | null },
+  submitted: { type: string; startAt: Date; endAt: Date; durationMinutes: number; activeEnergyKcal: number | null },
+): boolean {
+  return existing.type === submitted.type
+    && existing.startAt.getTime() === submitted.startAt.getTime()
+    && existing.endAt.getTime() === submitted.endAt.getTime()
+    && existing.durationMinutes === submitted.durationMinutes
+    && existing.activeEnergyKcal === submitted.activeEnergyKcal;
+}
+
 function decimalToNumber(value: Prisma.Decimal | null): number | null {
   return value === null ? null : value.toNumber();
+}
+
+function sameStoredMetricValue(current: unknown, next: unknown): boolean {
+  if (next === undefined) return true;
+  if (current === null || current === undefined || next === null) return current === next;
+  if (typeof current === "number") return current === next;
+  return typeof current === "object" && current !== null
+    && "equals" in current && typeof current.equals === "function"
+    && current.equals(next);
 }
 
 function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }> | undefined) {
@@ -320,7 +355,7 @@ export class DailyMetricRepository {
 
   private async replayAndReadPublicationStatus(
     date: string,
-    options: { weightSourceChanged?: boolean } = {},
+    options: { weightSourceChanged?: boolean; affectedWorkoutIds?: readonly number[] } = {},
   ): Promise<ActiveEnergyPublicationStatusV1> {
     if (this.shadowReplayer === null) return "not-run";
     try {
@@ -487,6 +522,7 @@ export class DailyMetricRepository {
           workoutIds: created.workouts.map((workout) => workout.id),
           affectedInstants: created.workouts.flatMap((workout) => [workout.startAt, workout.endAt]),
           affectedModelDates: [created.date],
+          staleMatchingAliasesOnly: true,
         });
         if (created.weightKg !== null) {
           await invalidateStepperMassDependenciesInTransactionV1({
@@ -497,6 +533,7 @@ export class DailyMetricRepository {
       });
       const modelPublicationStatus = await this.replayAndReadPublicationStatus(record.date, {
         weightSourceChanged: record.weightKg !== null,
+        affectedWorkoutIds: record.workouts.map(({ id }) => id),
       });
       return { ...(await this.dtoForRecord(record)), modelPublicationStatus };
     } catch (error) {
@@ -508,22 +545,24 @@ export class DailyMetricRepository {
   async update(date: string, input: UpdateDailyMetricInput): Promise<DailyMetricDto | null> {
     try {
       const { workouts, ...metrics } = input;
-      let weightSourceChanged = false;
-      const record = await this.client.$transaction(async (tx) => {
+      const outcome = await this.client.$transaction(async (tx) => {
         const lifecycle = new PhysiologyV7PersistenceRepository(tx);
         await lifecycle.lockProfile(1);
         const before = await tx.dailyHealthData.findUniqueOrThrow({
           where: { date },
-          select: { id: true, weightKg: true, workoutFeedObserved: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, externalId: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, sourceIdentity: true, syncProtected: true, matchedDiarySession: { select: { id: true } } } } },
+          select: { id: true, weightKg: true, bodyFatPercent: true, caloriesKcal: true, proteinG: true, fatG: true, carbsG: true, steps: true, activeEnergyKcal: true, averageWalkingSpeedKmh: true, walkingDistanceKm: true, strengthTrainingMinutes: true, workoutFeedObserved: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, externalId: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, sourceIdentity: true, syncProtected: true, matchedDiarySession: { select: { id: true } } } } },
         });
-        await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "day", sourceKey: date });
-        const updated = await tx.dailyHealthData.update({
-          where: { date },
-          data: {
-            ...prepareDailyMeasurementsForWrite(metrics),
-          },
-          select: dailyMetricSelect,
-        });
+        const metricData = prepareDailyMeasurementsForWrite(metrics);
+        const changedMetricData = { ...metricData };
+        for (const field of Object.keys(changedMetricData) as Array<keyof typeof changedMetricData>) {
+          if (sameStoredMetricValue(before[field], changedMetricData[field])) delete changedMetricData[field];
+        }
+        let workoutSourceChanged = false;
+        const affectedWorkoutIds = new Set<number>();
+        const affectedWorkoutRows: Array<{ id: number; startAt: Date; endAt: Date }> = [];
+        const workoutUpdates: Array<{ id: number; data: ReturnType<typeof workoutCreateData>[number] & { sourceIdentity: string } }> = [];
+        const workoutCreates: Array<ReturnType<typeof workoutCreateData>[number]> = [];
+        let removedManualIds: number[] = [];
         if (workouts !== undefined) {
           const isHistoryManaged = (workout: typeof before.workouts[number]) => (
             !workout.matchedDiarySession && (
@@ -546,7 +585,12 @@ export class DailyMetricRepository {
               const existing = existingManual.find((candidate) => candidate.id === submittedId);
               if (!existing) throw new Error("workout edit id is not a manual workout for this day");
               if (protectedFingerprints.has(fingerprint)) throw new DuplicateWorkoutError();
-              await tx.workout.update({ where: { id: submittedId }, data: { ...fields, sourceIdentity: existing.sourceIdentity } });
+              if (!sameEditableWorkoutInputs(existing, fields)) {
+                workoutUpdates.push({ id: existing.id, data: { ...fields, sourceIdentity: existing.sourceIdentity } });
+                affectedWorkoutIds.add(existing.id);
+                affectedWorkoutRows.push({ id: existing.id, startAt: existing.startAt, endAt: existing.endAt });
+                affectedWorkoutRows.push({ id: existing.id, startAt: fields.startAt, endAt: fields.endAt });
+              }
               retainedManualIds.add(submittedId);
               continue;
             }
@@ -555,50 +599,97 @@ export class DailyMetricRepository {
                 || workoutFingerprint({ type: candidate.type, startAt: candidate.startAt, endAt: candidate.endAt }) === fingerprint));
             if (matchingManual) {
               if (protectedFingerprints.has(fingerprint)) throw new DuplicateWorkoutError();
-              await tx.workout.update({ where: { id: matchingManual.id }, data: { ...fields, sourceIdentity: matchingManual.sourceIdentity } });
+              if (!sameEditableWorkoutInputs(matchingManual, fields)) {
+                workoutUpdates.push({ id: matchingManual.id, data: { ...fields, sourceIdentity: matchingManual.sourceIdentity } });
+                affectedWorkoutIds.add(matchingManual.id);
+                affectedWorkoutRows.push({ id: matchingManual.id, startAt: matchingManual.startAt, endAt: matchingManual.endAt });
+                affectedWorkoutRows.push({ id: matchingManual.id, startAt: fields.startAt, endAt: fields.endAt });
+              }
               retainedManualIds.add(matchingManual.id);
               continue;
             }
             // Older clients submitted every displayed workout. Preserve the synced row
             // and do not clone it into a manual row when its exact identity is present.
             if (protectedFingerprints.has(fingerprint)) continue;
-            await tx.workout.create({ data: { ...fields, dailyHealthDataId: before.id } });
+            workoutCreates.push(fields);
           }
-          const removedManualIds = existingManual.filter((workout) => !retainedManualIds.has(workout.id)).map(({ id }) => id);
+          removedManualIds = existingManual.filter((workout) => !retainedManualIds.has(workout.id)).map(({ id }) => id);
           if (removedManualIds.length > 0) {
-            await tx.workout.deleteMany({ where: { id: { in: removedManualIds }, hiddenFromHistory: false } });
+            const removed = existingManual.filter(({ id }) => removedManualIds.includes(id));
+            for (const workout of removed) {
+              affectedWorkoutIds.add(workout.id);
+              affectedWorkoutRows.push({ id: workout.id, startAt: workout.startAt, endAt: workout.endAt });
+            }
           }
-          await tx.dailyHealthData.update({
-            where: { id: before.id },
-            data: { strengthTrainingMinutes: null, activeEnergyKcal: null },
+          workoutSourceChanged = workoutUpdates.length > 0 || workoutCreates.length > 0 || removedManualIds.length > 0;
+        }
+        const hasMetricChanges = Object.keys(changedMetricData).length > 0;
+        if (!hasMetricChanges && !workoutSourceChanged) {
+          const hasPendingPublication = (await lifecycle.readUnifiedPublicationBlockToken({
+            profileId: 1, source: "day", sourceKey: date,
+          })) !== null;
+          return {
+            record: await tx.dailyHealthData.findUniqueOrThrow({ where: { id: before.id }, select: dailyMetricSelect }),
+            shouldReplay: hasPendingPublication,
+            weightSourceChanged: hasPendingPublication,
+            // The durable fence does not retain affected IDs, so retry with
+            // the existing full candidate fallback when a prior replay failed.
+            affectedWorkoutIds: hasPendingPublication ? undefined : [] as number[],
+          };
+        }
+
+        await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "day", sourceKey: date });
+        for (const update of workoutUpdates) {
+          await tx.workout.update({ where: { id: update.id }, data: update.data });
+        }
+        for (const data of workoutCreates) {
+          const created = await tx.workout.create({
+            data: { ...data, dailyHealthDataId: before.id },
+            select: { id: true },
+          });
+          affectedWorkoutIds.add(created.id);
+          affectedWorkoutRows.push({ id: created.id, startAt: data.startAt, endAt: data.endAt });
+        }
+        if (removedManualIds.length > 0) {
+          await tx.workout.deleteMany({ where: { id: { in: removedManualIds }, hiddenFromHistory: false } });
+        }
+        const updated = await tx.dailyHealthData.update({
+          where: { id: before.id },
+          data: {
+            ...changedMetricData,
+            ...(workoutSourceChanged ? { strengthTrainingMinutes: null, activeEnergyKcal: null } : {}),
+          },
+          select: dailyMetricSelect,
+        });
+        const weightSourceChanged = !sameStoredMetricValue(before.weightKg, updated.weightKg);
+        if (workoutSourceChanged) {
+          await invalidateWorkoutEnergyInTransactionV1({
+            tx, profileId: 1,
+            workoutIds: [...affectedWorkoutIds],
+            affectedInstants: affectedWorkoutRows.flatMap((workout) => [workout.startAt, workout.endAt]),
+            affectedModelDates: [date],
+            staleMatchingAliasesOnly: true,
           });
         }
-        weightSourceChanged = before.weightKg !== updated.weightKg;
-        const afterWorkouts = await tx.workout.findMany({
-          where: { dailyHealthDataId: before.id, hiddenFromHistory: false },
-          select: { id: true, startAt: true, endAt: true },
-        });
-        const affected = [...before.workouts, ...afterWorkouts];
-        await invalidateWorkoutEnergyInTransactionV1({
-          tx, profileId: 1,
-          workoutIds: affected.map((workout) => workout.id),
-          affectedInstants: affected.flatMap((workout) => [workout.startAt, workout.endAt]),
-          affectedModelDates: [date],
-        });
         if (weightSourceChanged) {
           await invalidateStepperMassDependenciesInTransactionV1({
             tx, profileId: 1, measurementDates: [date],
           });
         }
-        return workouts === undefined
+        const record = workouts === undefined
           ? updated
-          : tx.dailyHealthData.findUniqueOrThrow({
+          : await tx.dailyHealthData.findUniqueOrThrow({
             where: { id: before.id },
             select: dailyMetricSelect,
           });
+        return { record, shouldReplay: true, weightSourceChanged, affectedWorkoutIds: [...affectedWorkoutIds] };
       });
-      const modelPublicationStatus = await this.replayAndReadPublicationStatus(date, { weightSourceChanged });
-      return { ...(await this.dtoForRecord(record)), modelPublicationStatus };
+      if (!outcome.shouldReplay) return this.dtoForRecord(outcome.record);
+      const modelPublicationStatus = await this.replayAndReadPublicationStatus(date, {
+        weightSourceChanged: outcome.weightSourceChanged,
+        affectedWorkoutIds: outcome.affectedWorkoutIds,
+      });
+      return { ...(await this.dtoForRecord(outcome.record)), modelPublicationStatus };
     } catch (error) {
       if (isPrismaError(error, "P2025")) return null;
       throw error;
@@ -620,7 +711,7 @@ export class DailyMetricRepository {
         // A prior DELETE may have committed the raw removal and failed during
         // derived refresh. Retrying the same idempotent DELETE repairs that
         // durable block without recreating the source row.
-        return { deleted: token !== null, needsPublication: token !== null, weightSourceChanged: false };
+        return { deleted: token !== null, needsPublication: token !== null, weightSourceChanged: false, affectedWorkoutIds: undefined };
       }
       const weightSampleCount = await transaction.healthMetricSample.count({
         where: { date, metric: "weight-kg", source: "apple-health-shortcut" },
@@ -631,6 +722,7 @@ export class DailyMetricRepository {
         workoutIds: day.workouts.map((workout) => workout.id),
         affectedInstants: day.workouts.flatMap((workout) => [workout.startAt, workout.endAt]),
         affectedModelDates: [date],
+        staleMatchingAliasesOnly: true,
       });
       if (day.weightKg !== null) {
         await invalidateStepperMassDependenciesInTransactionV1({
@@ -643,6 +735,7 @@ export class DailyMetricRepository {
         deleted: true,
         needsPublication: true,
         weightSourceChanged: day.weightKg !== null || weightSampleCount > 0,
+        affectedWorkoutIds: day.workouts.map(({ id }) => id),
       };
     });
     if (!outcome.needsPublication) return { deleted: false };
@@ -650,6 +743,7 @@ export class DailyMetricRepository {
       deleted: true,
       modelPublicationStatus: await this.replayAndReadPublicationStatus(date, {
         weightSourceChanged: outcome.weightSourceChanged,
+        ...(outcome.affectedWorkoutIds === undefined ? {} : { affectedWorkoutIds: outcome.affectedWorkoutIds }),
       }),
     };
   }

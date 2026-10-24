@@ -7,6 +7,8 @@ import { planDayWorkoutReconciliation } from "@/modules/health/reconcile-day-wor
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX, workoutFingerprint } from "@/modules/health/workout-source-identity";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { selectedHealthSyncStepSnapshotBracketV7 } from "@/model/activity/workout-stepper-v7";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { logEvent } from "@/lib/logger";
@@ -87,7 +89,7 @@ async function persistActivityIntervals(
   transaction: Prisma.TransactionClient,
   day: HealthDayInput,
   timezone: string,
-): Promise<void> {
+): Promise<number[]> {
   const seriesByMetric: Array<{
     metric: ActivityMetric;
     series: { starts: string[]; ends: string[]; values: number[] } | undefined;
@@ -96,6 +98,7 @@ async function persistActivityIntervals(
     { metric: "walking-distance-km", series: day.walkingDistanceIntervals },
   ];
 
+  const changedStepIntervals: Array<{ startAt: Date; endAt: Date }> = [];
   for (const { metric, series } of seriesByMetric) {
     if (series === undefined) continue;
     // A latest-N Shortcut dump can land in multiple generated daily records.
@@ -103,9 +106,28 @@ async function persistActivityIntervals(
     // an empty subset must never clear that day's historical total.
     const rows = activityRows(metric, series, timezone).filter((row) => row.date === day.date);
     if (rows.length === 0) continue;
-    await transaction.healthActivityInterval.deleteMany({ where: { date: day.date, metric } });
-    if (rows.length > 0) {
-      await transaction.healthActivityInterval.createMany({ data: rows, skipDuplicates: true });
+    const existing = await transaction.healthActivityInterval.findMany({
+      where: { date: day.date, metric },
+      select: { startAt: true, endAt: true, value: true, sourceFingerprint: true },
+      orderBy: [{ startAt: "asc" }, { endAt: "asc" }, { id: "asc" }],
+    });
+    const sortFingerprint = (rows: string[][]) => rows.sort((left, right) => left.join("|").localeCompare(right.join("|")));
+    const existingFingerprint = sortFingerprint(existing.map((row) => [
+      row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString(), row.sourceFingerprint,
+    ]));
+    const nextFingerprint = sortFingerprint(rows.map((row) => [
+      row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString(), row.sourceFingerprint,
+    ]));
+    const intervalsUnchanged = JSON.stringify(existingFingerprint) === JSON.stringify(nextFingerprint);
+    if (!intervalsUnchanged && metric === "steps") {
+      changedStepIntervals.push(...existing.map(({ startAt, endAt }) => ({ startAt, endAt })));
+      changedStepIntervals.push(...rows.map(({ startAt, endAt }) => ({ startAt, endAt })));
+    }
+    if (!intervalsUnchanged) {
+      await transaction.healthActivityInterval.deleteMany({ where: { date: day.date, metric } });
+      if (rows.length > 0) {
+        await transaction.healthActivityInterval.createMany({ data: rows, skipDuplicates: true });
+      }
     }
     const aggregated = await transaction.healthActivityInterval.aggregate({
       where: { date: day.date, metric },
@@ -119,6 +141,21 @@ async function persistActivityIntervals(
         : { walkingDistanceKm: total ?? 0 },
     });
   }
+  if (changedStepIntervals.length === 0) return [];
+  const starts = changedStepIntervals.map(({ startAt }) => startAt.getTime());
+  const ends = changedStepIntervals.map(({ endAt }) => endAt.getTime());
+  const workouts = await transaction.workout.findMany({
+    where: {
+      hiddenFromHistory: false,
+      type: { equals: "Stair Climbing", mode: "insensitive" },
+      startAt: { lt: new Date(Math.max(...ends)) },
+      endAt: { gt: new Date(Math.min(...starts)) },
+    },
+    select: { id: true, startAt: true, endAt: true },
+  });
+  return workouts.filter((workout) => changedStepIntervals.some((interval) => (
+    interval.startAt < workout.endAt && interval.endAt > workout.startAt
+  ))).map(({ id }) => id).sort((left, right) => left - right);
 }
 
 async function persistMetricSamples(
@@ -181,7 +218,7 @@ async function reconcileDayWorkouts(
   transaction: Prisma.TransactionClient,
   dailyHealthDataId: number,
   incoming: readonly WorkoutInput[],
-): Promise<void> {
+): Promise<number[]> {
   const existing = await transaction.workout.findMany({
     where: { dailyHealthDataId },
     select: {
@@ -219,6 +256,12 @@ async function reconcileDayWorkouts(
     })),
     reconciledIncoming,
   );
+  const affectedWorkoutIds = new Set<number>();
+  const unmatchedStrengthChanges: Array<{
+    workoutId: number;
+    previous: typeof existing[number] | null;
+    next: typeof plan.creates[number];
+  }> = [];
 
   for (const update of plan.updates) {
     const previousWorkout = existing.find((row) => row.id === update.id);
@@ -231,6 +274,11 @@ async function reconcileDayWorkouts(
       || previousWorkout.durationMinutes !== update.fields.durationMinutes
       || (previousWorkout.energyKcal === null ? null : Number(previousWorkout.energyKcal)) !== update.fields.energyKcal
       || (previousWorkout.activeEnergyKcal === null ? null : Number(previousWorkout.activeEnergyKcal)) !== update.fields.activeEnergyKcal;
+    // Prisma advances @updatedAt even for an identical update. That timestamp
+    // participates in the source fingerprint, so a repeated Health payload
+    // must not write the Workout row or trigger its linked side effects.
+    if (!workoutInputsChanged) continue;
+    affectedWorkoutIds.add(update.id);
     await transaction.workout.update({
       where: { id: update.id },
       data: {
@@ -293,6 +341,7 @@ async function reconcileDayWorkouts(
           profileId: linked.profileId,
           operationKind: "health-linked-workout-reconciled",
           affectedSessionIds: [linked.id],
+          affectedWorkoutIds: [update.id],
           oldSourceIdentity: {
             kind: "health-workout",
             workoutId: update.id,
@@ -322,12 +371,16 @@ async function reconcileDayWorkouts(
           deadlineMode: "health-fast",
         });
       }
+    } else if (workoutInputsChanged
+        && previousWorkout?.matchedDiarySession === null
+        && canonicalizeWorkoutType(update.fields.type).classification === "traditional-strength-training") {
+      unmatchedStrengthChanges.push({ workoutId: update.id, previous: previousWorkout ?? null, next: update.fields });
     }
   }
 
   // Use the composite unique identity for creates so concurrent retries
   // converge on one Workout row instead of racing through createMany().
-  await Promise.all(plan.creates.map((fields) => transaction.workout.upsert({
+  const createdWorkouts = await Promise.all(plan.creates.map((fields) => transaction.workout.upsert({
     where: {
       dailyHealthDataId_sourceIdentity: {
         dailyHealthDataId,
@@ -354,9 +407,61 @@ async function reconcileDayWorkouts(
       energyKcal: fields.energyKcal,
       activeEnergyKcal: fields.activeEnergyKcal,
     },
+    select: { id: true },
   })));
+  for (const [index, workout] of createdWorkouts.entries()) {
+    affectedWorkoutIds.add(workout.id);
+    const fields = plan.creates[index]!;
+    if (canonicalizeWorkoutType(fields.type).classification === "traditional-strength-training") {
+      unmatchedStrengthChanges.push({ workoutId: workout.id, previous: null, next: fields });
+    }
+  }
+
+  if (unmatchedStrengthChanges.length > 0) {
+    const episodes = await transaction.modelEpisode.findMany({
+      where: { profileId: 1 },
+      orderBy: [{ startDate: "asc" }, { id: "asc" }],
+      select: { id: true, startDate: true, timezone: true, active: true },
+    });
+    const oldRows = unmatchedStrengthChanges.flatMap(({ workoutId, previous }) => previous ? [{
+      workoutId,
+      sourceIdentity: previous.sourceIdentity,
+      externalId: previous.externalId,
+      type: previous.type,
+      startAt: previous.startAt.toISOString(),
+      endAt: previous.endAt.toISOString(),
+      durationMinutes: previous.durationMinutes,
+      energyKcal: previous.energyKcal === null ? null : Number(previous.energyKcal),
+      activeEnergyKcal: previous.activeEnergyKcal === null ? null : Number(previous.activeEnergyKcal),
+    }] : []);
+    const newRows = unmatchedStrengthChanges.map(({ workoutId, next }) => ({
+      workoutId,
+      sourceIdentity: next.sourceIdentity,
+      externalId: next.externalId,
+      type: next.type,
+      startAt: next.startAt.toISOString(),
+      endAt: next.endAt.toISOString(),
+      durationMinutes: next.durationMinutes,
+      energyKcal: next.energyKcal,
+      activeEnergyKcal: next.activeEnergyKcal,
+    }));
+    await enqueueTrainingSourceChangeInTransaction(transaction, {
+      profileId: 1,
+      operationKind: "health-unmatched-strength-workout-reconciled",
+      affectedSessionIds: [],
+      affectedWorkoutIds: unmatchedStrengthChanges.map(({ workoutId }) => workoutId),
+      oldSourceIdentity: { kind: "health-workout", rows: oldRows },
+      newSourceIdentity: { kind: "health-workout", rows: newRows },
+      oldEventInstants: oldRows.flatMap(({ startAt, endAt }) => [startAt, endAt]),
+      newEventInstants: newRows.flatMap(({ startAt, endAt }) => [startAt, endAt]),
+      oldModelDates: oldRows.map(({ startAt }) => episodeTimeContextForInstantV1(episodes, new Date(startAt)).date),
+      newModelDates: newRows.map(({ startAt }) => episodeTimeContextForInstantV1(episodes, new Date(startAt)).date),
+      deadlineMode: "health-fast",
+    });
+  }
 
   if (plan.deletes.length > 0) {
+    for (const workoutId of plan.deletes) affectedWorkoutIds.add(workoutId);
     const linkedSessions = await transaction.strengthDiarySession.findMany({
       where: { matchedWorkoutId: { in: plan.deletes }, status: "COMPLETED" },
       select: { id: true, profileId: true },
@@ -368,6 +473,7 @@ async function reconcileDayWorkouts(
       where: { id: { in: plan.deletes } },
     });
   }
+  return [...affectedWorkoutIds].sort((left, right) => left - right);
 }
 
 export class PrismaHealthSyncRepository implements HealthSyncRepository {
@@ -390,6 +496,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     // Latest state, immutable snapshot, and workout reconciliation are one atomic sync.
     const transactionStartedAt = performance.now();
     let result!: SyncDateResult;
+    let affectedWorkoutIds: number[] = [];
     try {
       result = await this.client.$transaction(async (transaction) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
@@ -458,8 +565,16 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         where: { dailyHealthDataId: daily.id },
         select: { id: true, startAt: true, endAt: true },
       }) : [];
+      const snapshotsBefore = await transaction.healthSyncSnapshot.findMany({
+        orderBy: [{ date: "asc" }, { id: "asc" }],
+        select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true },
+      });
+      const stepperWorkouts = await transaction.workout.findMany({
+        where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
+        select: { id: true, startAt: true, endAt: true },
+      });
 
-      await transaction.healthSyncSnapshot.create({
+      const createdSnapshot = await transaction.healthSyncSnapshot.create({
         data: {
           dailyHealthDataId: daily.id,
           date: day.date,
@@ -479,7 +594,49 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           strengthTrainingMinutes: day.strengthTrainingMinutes ?? null,
           rawPayload: jsonValue(rawDay),
         },
+        select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true },
       });
+      const snapshotsAfter = [...snapshotsBefore, createdSnapshot]
+        .sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
+        .map((snapshot) => ({
+          id: snapshot.id,
+          receivedAt: snapshot.receivedAt.toISOString(),
+          syncedAt: snapshot.syncedAt?.toISOString() ?? null,
+          steps: snapshot.steps,
+        }));
+      const snapshotsBeforeForSelection = snapshotsBefore.map((snapshot) => ({
+        id: snapshot.id,
+        receivedAt: snapshot.receivedAt.toISOString(),
+        syncedAt: snapshot.syncedAt?.toISOString() ?? null,
+        steps: snapshot.steps,
+      }));
+      const snapshotBracketChangedWorkouts = stepperWorkouts.filter((workout) => {
+        const previous = selectedHealthSyncStepSnapshotBracketV7({
+          startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), snapshots: snapshotsBeforeForSelection,
+        });
+        const next = selectedHealthSyncStepSnapshotBracketV7({
+          startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), snapshots: snapshotsAfter,
+        });
+        return previous.before?.snapshotId !== next.before?.snapshotId
+          || previous.after?.snapshotId !== next.after?.snapshotId;
+      });
+      const stepIntervalsForChangedBrackets = snapshotBracketChangedWorkouts.length > 0
+        ? await transaction.healthActivityInterval.findMany({
+          where: {
+            metric: "steps",
+            OR: snapshotBracketChangedWorkouts.map((workout) => ({
+              startAt: { lt: workout.endAt },
+              endAt: { gt: workout.startAt },
+            })),
+          },
+          select: { startAt: true, endAt: true },
+        })
+        : [];
+      const snapshotDependentStepperIds = snapshotBracketChangedWorkouts
+        .filter((workout) => !stepIntervalsForChangedBrackets.some((interval) => (
+          interval.startAt < workout.endAt && interval.endAt > workout.startAt
+        )))
+        .map(({ id }) => id);
 
       await persistMetricSamples(transaction, daily.id, day.date, metricSamples);
 
@@ -496,7 +653,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       ];
       const dailyWeightChanged = existing?.weightKg !== daily.weightKg;
 
-      await persistActivityIntervals(transaction, day, metadata.timezone);
+      const intervalDependentStepperIds = await persistActivityIntervals(transaction, day, metadata.timezone);
 
       // Reconciliation deletes workouts absent from the incoming feed, so it is
       // safe only when this calendar date was explicitly observed. Missing or
@@ -507,19 +664,29 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           day.date,
           metadata.timezone,
         );
-        await reconcileDayWorkouts(transaction, daily.id, workouts);
+        affectedWorkoutIds = await reconcileDayWorkouts(transaction, daily.id, workouts);
       }
+      affectedWorkoutIds = [...new Set([
+        ...affectedWorkoutIds,
+        ...snapshotDependentStepperIds,
+        ...intervalDependentStepperIds,
+      ])]
+        .sort((left, right) => left - right);
       const workoutsAfter = workoutFeedObserved ? await transaction.workout.findMany({
         where: { dailyHealthDataId: daily.id },
         select: { id: true, startAt: true, endAt: true },
       }) : [];
-      const affectedIds = [...new Set([...workoutsBefore, ...workoutsAfter].map((row) => row.id))];
+      const affectedIds = affectedWorkoutIds;
+      const affectedIdSet = new Set(affectedIds);
+      const affectedRows = [...workoutsBefore, ...workoutsAfter, ...stepperWorkouts]
+        .filter((row) => affectedIdSet.has(row.id));
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction,
         profileId: 1,
         workoutIds: affectedIds,
-        affectedInstants: [...workoutsBefore, ...workoutsAfter].flatMap((row) => [row.startAt, row.endAt]),
+        affectedInstants: affectedRows.flatMap((row) => [row.startAt, row.endAt]),
         affectedModelDates: [day.date],
+        staleMatchingAliasesOnly: true,
       });
       const weightSourceChanged = dailyWeightChanged || changedWeightRows.length > 0;
       if (weightSourceChanged) {
@@ -609,6 +776,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         date: day.date,
         action: existing ? "updated" : "created",
         ...(weightSourceChanged ? { weightSourceChanged: true } : {}),
+        ...(affectedWorkoutIds.length > 0 ? { affectedWorkoutIds } : {}),
       };
       });
     } finally {

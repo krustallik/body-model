@@ -24,17 +24,22 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const result = await recalculateModelEpisode(parsed.data);
-    if (!result.recoveryRequired) return Response.json(result);
+    const {
+      activeEnergyModelChangedDays: _activeEnergyModelChangedDays,
+      sourceReplayChanged: _sourceReplayChanged,
+      ...responseResult
+    } = result;
+    if (!result.recoveryRequired) return Response.json(responseResult);
     try {
       const recovery = await recoverModelEpisode({
         seed: DEFAULT_RECOVERY_SEED,
         episodeId: result.episodeId,
       });
-      return Response.json({ ...result, recovery });
+      return Response.json({ ...responseResult, recovery });
     } catch (error) {
       if (error instanceof ModelRecoveryEvidenceError) {
         return Response.json({
-          ...result,
+          ...responseResult,
           recovery: {
             status: "insufficient_recovery_evidence",
             message: error.message,

@@ -244,7 +244,10 @@ async function recordExperimentalStrengthShadows(input: {
   // Keep production current before rebuilding dependent shadows, but defer
   // Unified publication until this full shadow chain has completed.
   const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
-    recalculateActiveEnergyChangesV1());
+    recalculateActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+      strengthSessionIds: [currentSession.id],
+      workoutIds: currentSession.matchedWorkoutId === null ? [] : [currentSession.matchedWorkoutId],
+    } }));
   if (production === null) {
     throw new Error("production model is unavailable after completed training source update");
   }
@@ -335,7 +338,10 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   const initialBlockToken = refresh.publicationBlockToken;
   if (!input.productionAlreadyRebuilt) {
     const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
-      recalculateActiveEnergyChangesV1());
+      recalculateActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+        strengthSessionIds: [input.sessionId],
+        workoutIds: session.matchedWorkoutId === null ? [] : [session.matchedWorkoutId],
+      } }));
     if (production === null) throw new Error("production model is unavailable after completed training source update");
   }
   const relativeMuscleEventAt = session.matchedWorkout?.startAt
@@ -424,35 +430,18 @@ export async function recordExperimentalStrengthShadowsForWeightDate(input: {
   date: string;
   profileId?: number;
   refreshHistoricalAsOfFallback?: boolean;
-}): Promise<void> {
-  const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
-  const sessionIds = await listExperimentalStrengthEnergySessionsForWeightDate({
-    date: input.date,
-    profileId,
-    ...(input.refreshHistoricalAsOfFallback === undefined
-      ? {} : { refreshHistoricalAsOfFallback: input.refreshHistoricalAsOfFallback }),
+}): Promise<number[]> {
+  return recordExperimentalStrengthShadowsForWeightDates({
+    dates: [{ date: input.date, weightSourceChanged: input.refreshHistoricalAsOfFallback === true }],
+    profileId: input.profileId,
   });
-  for (const sessionId of sessionIds) {
-    await recordExperimentalStrengthShadowsBySessionId({
-      sessionId,
-      profileId,
-      ...(input.refreshHistoricalAsOfFallback === undefined
-        ? {} : { refreshAccounting: input.refreshHistoricalAsOfFallback }),
-      ...(input.refreshHistoricalAsOfFallback === true
-        ? { accountingRefreshDeadlineMode: "health-fast" as const } : {}),
-      ...(input.refreshHistoricalAsOfFallback === true
-        ? { accountingRefreshHealthDate: input.date } : {}),
-      deferUnifiedPublication: true,
-      clearTrainingFenceAfterDependencyRefresh: true,
-    });
-  }
 }
 
 /** Materialize every affected candidate before one shared Health batch replay. */
 export async function recordExperimentalStrengthShadowsForWeightDates(input: {
   dates: readonly { date: string; weightSourceChanged?: boolean }[];
   profileId?: number;
-}): Promise<void> {
+}): Promise<number[]> {
   const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
   const sessions = new Map<number, { refreshAccounting: boolean; healthDate: string }>();
   for (const date of input.dates) {
@@ -465,15 +454,22 @@ export async function recordExperimentalStrengthShadowsForWeightDates(input: {
       }
     }
   }
-  if (sessions.size === 0) return;
+  if (sessions.size === 0) return [];
+  const affectedWorkoutIds = new Set<number>();
   for (const [sessionId, options] of sessions) {
-    await recordExperimentalStrengthEnergyShadowBySessionId({
+    const refreshed = await recordExperimentalStrengthEnergyShadowBySessionId({
       sessionId, profileId, refreshAccounting: options.refreshAccounting,
       ...(options.refreshAccounting ? { accountingRefreshDeadlineMode: "health-fast" as const,
         accountingRefreshHealthDate: options.healthDate } : {}),
     });
+    if (refreshed.session?.matchedWorkoutId !== null && refreshed.session?.matchedWorkoutId !== undefined) {
+      affectedWorkoutIds.add(refreshed.session.matchedWorkoutId);
+    }
   }
-  const production = await recalculateActiveEnergyChangesV1();
+  const production = await recalculateActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+    strengthSessionIds: [...sessions.keys()],
+    workoutIds: [...affectedWorkoutIds],
+  } });
   if (production === null) throw new Error("production model is unavailable after Health batch candidate refresh");
   for (const sessionId of sessions.keys()) {
     // Revalidate each source and its exact publication token against the
@@ -483,6 +479,7 @@ export async function recordExperimentalStrengthShadowsForWeightDates(input: {
       deferUnifiedPublication: true, clearTrainingFenceAfterDependencyRefresh: true,
     });
   }
+  return [...sessions.keys()];
 }
 
 function isStrengthWorkout(type: string): boolean {

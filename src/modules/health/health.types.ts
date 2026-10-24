@@ -21,6 +21,8 @@ export interface SyncDateResult {
   action: SyncAction;
   /** Whether this sync changed a raw weight source on the date. */
   weightSourceChanged?: boolean;
+  /** Exact Workout rows whose source fields changed in this sync. */
+  affectedWorkoutIds?: number[];
 }
 
 export interface HealthRetentionPruneResult {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
 import {
   canonicalizeWorkoutStepperEvidenceV7,
+  selectedHealthSyncStepSnapshotBracketV7,
   workoutStepperEvidenceDiagnosticV7,
 } from "@/model/activity/workout-stepper-v7";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
@@ -32,6 +33,42 @@ function evidence(snapshots: readonly ReturnType<typeof snapshot>[], input: Part
 }
 
 describe("WorkoutStepperEvidenceV7", () => {
+  it("changes only the Stepper brackets that select a newly added Health snapshot", () => {
+    const existing = [
+      snapshot("2026-09-17T15:00:00.000Z", 100),
+      snapshot("2026-09-17T18:00:00.000Z", 400),
+    ];
+    const added = snapshot("2026-09-17T16:00:00.000Z", 250);
+    const input = {
+      startAt: "2026-09-17T16:15:00.000Z",
+      endAt: "2026-09-17T16:45:00.000Z",
+    };
+    const before = selectedHealthSyncStepSnapshotBracketV7({ ...input, snapshots: existing });
+    const after = selectedHealthSyncStepSnapshotBracketV7({ ...input, snapshots: [...existing, added] });
+    const priorWorkout = {
+      startAt: "2026-09-17T15:15:00.000Z",
+      endAt: "2026-09-17T15:30:00.000Z",
+    };
+    const priorBefore = selectedHealthSyncStepSnapshotBracketV7({ ...priorWorkout, snapshots: existing });
+    const priorAfter = selectedHealthSyncStepSnapshotBracketV7({ ...priorWorkout, snapshots: [...existing, added] });
+    const unrelated = selectedHealthSyncStepSnapshotBracketV7({
+      startAt: "2026-09-17T19:00:00.000Z",
+      endAt: "2026-09-17T19:30:00.000Z",
+      snapshots: existing,
+    });
+    const unrelatedAfter = selectedHealthSyncStepSnapshotBracketV7({
+      startAt: "2026-09-17T19:00:00.000Z",
+      endAt: "2026-09-17T19:30:00.000Z",
+      snapshots: [...existing, added],
+    });
+
+    expect(before.before?.snapshotId).not.toBe(after.before?.snapshotId);
+    expect(before.after?.snapshotId).toBe(after.after?.snapshotId);
+    expect(priorBefore.after?.snapshotId).not.toBe(priorAfter.after?.snapshotId);
+    expect(priorBefore.before?.snapshotId).toBe(priorAfter.before?.snapshotId);
+    expect(unrelated).toEqual(unrelatedAfter);
+  });
+
   it("selects the nearest snapshots, preserves timing gaps, and does not mutate sources", () => {
     const snapshots = [
       snapshot("2026-09-17T15:50:00.000Z", 900),

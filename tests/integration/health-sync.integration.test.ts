@@ -405,6 +405,77 @@ describe("Apple Health sync with PostgreSQL", () => {
     }
   });
 
+  it("scopes a Health snapshot insertion to a Stepper on a different date when its selected bracket changes", async () => {
+    const incomingDate = "2045-04-09";
+    const workoutDate = "2045-04-10";
+    const priorDate = "2045-04-08";
+    const sourceIdentity = `active-energy-snapshot-bracket-${randomUUID()}`;
+    const intervalSourceIdentity = `active-energy-snapshot-bracket-interval-${randomUUID()}`;
+    const healthState = await saveHealthState();
+    let workoutId: number | null = null;
+    let intervalWorkoutId: number | null = null;
+    try {
+      const daily = await prisma.dailyHealthData.create({
+        data: { date: workoutDate, steps: 900, rawPayload: { fixture: "snapshot-bracket" } }, select: { id: true },
+      });
+      const workout = await prisma.workout.create({
+        data: {
+          dailyHealthDataId: daily.id,
+          sourceIdentity,
+          type: "Stair Climbing",
+          startAt: new Date("2045-04-10T12:00:00.000Z"),
+          endAt: new Date("2045-04-10T13:00:00.000Z"),
+          durationMinutes: 60,
+        },
+        select: { id: true },
+      });
+      workoutId = workout.id;
+      const intervalWorkout = await prisma.workout.create({
+        data: {
+          dailyHealthDataId: daily.id,
+          sourceIdentity: intervalSourceIdentity,
+          type: "Stair Climbing",
+          startAt: new Date("2045-04-10T11:40:00.000Z"),
+          endAt: new Date("2045-04-10T12:00:00.000Z"),
+          durationMinutes: 60,
+        },
+        select: { id: true },
+      });
+      intervalWorkoutId = intervalWorkout.id;
+      await prisma.healthActivityInterval.create({
+        data: {
+          date: workoutDate,
+          metric: "steps",
+          startAt: new Date("2045-04-10T11:40:00.000Z"),
+          endAt: new Date("2045-04-10T11:50:00.000Z"),
+          value: 600,
+          sourceFingerprint: `active-energy-snapshot-bracket-interval-${randomUUID()}`,
+        },
+      });
+      await prisma.healthSyncSnapshot.createMany({ data: [
+        { date: priorDate, receivedAt: new Date("2045-04-10T10:00:00.000Z"), timezone: "UTC", steps: 100, rawPayload: { fixture: "before" } },
+        { date: priorDate, receivedAt: new Date("2045-04-10T14:00:00.000Z"), timezone: "UTC", steps: 500, rawPayload: { fixture: "after" } },
+      ] });
+
+      const result = await new PrismaHealthSyncRepository(prisma).syncDay(
+        { date: incomingDate, steps: 300 },
+        { date: incomingDate, steps: 300 },
+        { timezone: "UTC", receivedAt: new Date("2045-04-10T11:30:00.000Z"), syncedAt: null },
+      );
+
+      expect(result.affectedWorkoutIds).toContain(workout.id);
+      expect(result.affectedWorkoutIds).toEqual([workout.id]);
+      expect(result.affectedWorkoutIds).not.toContain(intervalWorkout.id);
+    } finally {
+      if (workoutId !== null) await prisma.workout.deleteMany({ where: { id: workoutId } });
+      if (intervalWorkoutId !== null) await prisma.workout.deleteMany({ where: { id: intervalWorkoutId } });
+      await prisma.healthActivityInterval.deleteMany({ where: { date: workoutDate } });
+      await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: [priorDate, incomingDate, workoutDate] } } });
+      await deleteDailyHealthRows(prisma, [incomingDate, workoutDate]);
+      await restoreHealthState(healthState);
+    }
+  });
+
   it("creates partial data, persists raw payload and creates workouts", async () => {
     const day = {
       date: testDates[0],
@@ -488,7 +559,7 @@ describe("Apple Health sync with PostgreSQL", () => {
 
       const oldWorkout = {
         externalId: sourceId,
-        type: "strength_training",
+        type: "Traditional Strength Training",
         startAt: oldStartAt.toISOString(),
         endAt: new Date(oldStartAt.getTime() + 60 * 60_000).toISOString(),
         durationMinutes: 60,
@@ -503,6 +574,32 @@ describe("Apple Health sync with PostgreSQL", () => {
         where: { externalId: sourceId }, select: { id: true },
       });
       workoutId = workout.id;
+      const unmatchedCreate = await prisma.trainingSourceChange.findFirstOrThrow({
+        where: { profileId: 1, operationKind: "health-unmatched-strength-workout-reconciled", affectedWorkoutIds: { has: workout.id } },
+      });
+      expect(unmatchedCreate.affectedSessionIds).toEqual([]);
+      expect(unmatchedCreate.affectedWorkoutIds).toEqual([workout.id]);
+      expect(unmatchedCreate.oldModelDates).toEqual([]);
+      expect(unmatchedCreate.newModelDates).toEqual(["2044-01-06"]);
+
+      const beforeRepeat = await prisma.workout.findUniqueOrThrow({
+        where: { id: workout.id }, select: { updatedAt: true },
+      });
+      const unmatchedChangesBeforeRepeat = await prisma.trainingSourceChange.count({
+        where: { profileId: 1, affectedWorkoutIds: { has: workout.id }, operationKind: "health-unmatched-strength-workout-reconciled" },
+      });
+      await repository.syncDay(
+        { date, workouts: [oldWorkout] },
+        { date, workouts: [oldWorkout] },
+        { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
+      );
+      expect(await prisma.workout.findUniqueOrThrow({
+        where: { id: workout.id }, select: { updatedAt: true },
+      })).toEqual(beforeRepeat);
+      expect(await prisma.trainingSourceChange.count({
+        where: { profileId: 1, affectedWorkoutIds: { has: workout.id }, operationKind: "health-unmatched-strength-workout-reconciled" },
+      })).toBe(unmatchedChangesBeforeRepeat);
+
       const session = await prisma.strengthDiarySession.create({
         data: {
           profileId: 1,
@@ -569,12 +666,23 @@ describe("Apple Health sync with PostgreSQL", () => {
       expect(correctedStoredWorkout.durationMinutes).toBe(45);
       const correctedJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
       expect(correctedJob.requestedGeneration).toBeGreaterThanOrEqual(2);
+
+      const sourceChangeCount = await prisma.trainingSourceChange.count({ where: { profileId: 1 } });
+      await repository.syncDay(
+        { date, workouts: [correctedWorkout] },
+        { date, workouts: [correctedWorkout] },
+        { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
+      );
+      expect(await prisma.trainingSourceChange.count({ where: { profileId: 1 } })).toBe(sourceChangeCount);
     } finally {
       if (sessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (workoutId !== null) await prisma.workout.deleteMany({ where: { id: workoutId } });
       if (episodeId !== null) await prisma.modelEpisode.deleteMany({ where: { id: episodeId } });
       if (sessionId !== null) {
         await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1, affectedSessionIds: { has: sessionId } } });
+      }
+      if (workoutId !== null) {
+        await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1, affectedWorkoutIds: { has: workoutId } } });
       }
       await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
       if (trainingJobBefore) await prisma.trainingRefreshJob.create({ data: trainingJobBefore });
@@ -723,12 +831,14 @@ describe("Apple Health sync with PostgreSQL", () => {
     const date = testDates[5];
     const first = await POST(syncRequest([{
       date,
+      weightKg: 82.4,
       bodyFatPercent: 18.73,
       averageWalkingSpeedKmh: 5.2345,
       walkingDistanceKm: 6.7891,
     }]));
     const second = await POST(syncRequest([{
       date,
+      weightKg: 82.4,
       bodyFatPercent: 18.6,
       averageWalkingSpeedKmh: null,
       walkingDistanceKm: 8.1234,
@@ -742,6 +852,43 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records[0]?.bodyFatPercent?.toString()).toBe("18.6");
     expect(records[0]?.averageWalkingSpeedKmh).toBeNull();
     expect(records[0]?.walkingDistanceKm?.toString()).toBe("8.12");
+    expect(records[0]?.weightKg).toBe(82.4);
+  });
+
+  it("does not mark an unchanged PostgreSQL Decimal weight as a changed source", async () => {
+    const date = "2099-11-21";
+    const lifecycleBefore = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 } });
+    const repository = new PrismaHealthSyncRepository(prisma);
+    const metadata = { timezone: "UTC", receivedAt: new Date("2099-11-21T12:00:00.000Z"), syncedAt: null };
+    try {
+      expect(await prisma.dailyHealthData.findUnique({ where: { date } })).toBeNull();
+      const first = await repository.syncDay({ date, weightKg: 82.4 }, { date, weightKg: 82.4 }, metadata);
+      const repeated = await repository.syncDay({ date, weightKg: 82.4 }, { date, weightKg: 82.4 }, {
+        ...metadata, receivedAt: new Date("2099-11-21T12:01:00.000Z"),
+      });
+
+      expect(first.weightSourceChanged).toBe(true);
+      expect(repeated.weightSourceChanged).toBeUndefined();
+    } finally {
+      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1, source: "health", sourceKey: date } });
+      await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
+      await prisma.healthActivityInterval.deleteMany({ where: { date } });
+      await deleteDailyHealthRows(prisma, date);
+      if (lifecycleBefore) {
+        await prisma.physiologyV7Lifecycle.update({
+          where: { profileId: 1 },
+          data: {
+            unifiedPublicationBlockedFromDate: lifecycleBefore.unifiedPublicationBlockedFromDate,
+            unifiedPublicationBlockedSource: lifecycleBefore.unifiedPublicationBlockedSource,
+            unifiedPublishedGeneration: lifecycleBefore.unifiedPublishedGeneration,
+            unifiedPublishedRolloutEpoch: lifecycleBefore.unifiedPublishedRolloutEpoch,
+            updatedAt: lifecycleBefore.updatedAt,
+          },
+        });
+      } else {
+        await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId: 1 } });
+      }
+    }
   });
 
   it("persists decimal-comma strings as precise numbers while retaining the original raw payload", async () => {

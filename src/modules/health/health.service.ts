@@ -6,8 +6,8 @@ import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { errorDiagnosticFields, errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
 import {
-  recordExperimentalStepperActiveEnergyShadowsForLocalDate,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,
+  recordExperimentalStepperActiveEnergyShadowsForWorkouts,
 } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { recordExperimentalStrengthShadowsForWeightDates } from "@/modules/training/training.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
@@ -170,7 +170,20 @@ export async function syncHealthData(
   // order above, but that date owns exactly one durable publication fence.
   // Reconcile the final persisted state once so a duplicate cannot CAS-clear
   // the same block twice and falsely leave a successful batch stale.
-  const chronologicalDates = [...new Map(dates.map((result) => [result.date, result])).values()]
+  const datesByCalendarDay = new Map<string, (typeof dates)[number]>();
+  for (const result of dates) {
+    const previous = datesByCalendarDay.get(result.date);
+    const affectedWorkoutIds = [...new Set([
+      ...(previous?.affectedWorkoutIds ?? []),
+      ...(result.affectedWorkoutIds ?? []),
+    ])].sort((left, right) => left - right);
+    datesByCalendarDay.set(result.date, {
+      ...result,
+      ...(previous?.weightSourceChanged || result.weightSourceChanged ? { weightSourceChanged: true } : {}),
+      ...(affectedWorkoutIds.length > 0 ? { affectedWorkoutIds } : {}),
+    });
+  }
+  const chronologicalDates = [...datesByCalendarDay.values()]
     .sort((left, right) => left.date.localeCompare(right.date));
   const referenceDate = chronologicalDates[chronologicalDates.length - 1]!;
   const created = dates.filter((result) => result.action === "created").length;
@@ -198,6 +211,8 @@ export async function syncHealthData(
     failedPublicationDates.add(date);
   };
   const stageTimer = createHealthSyncStageTimer(options.assertRefreshLease);
+  const activeEnergySessionIds = new Set<number>();
+  const activeEnergyWorkoutIds = new Set(chronologicalDates.flatMap(({ affectedWorkoutIds }) => affectedWorkoutIds ?? []));
   const healthBlockTokens = new Map<string, { revision: number; fromDate: string } | null>();
   const healthPublicationLifecycle = repository === healthSyncRepository
     ? options.publicationLifecycle ?? new PhysiologyV7PersistenceRepository(prisma)
@@ -217,6 +232,7 @@ export async function syncHealthData(
   let trainingRefreshPending = false;
   for (const date of chronologicalDates) {
   const dateTimezone = options.timezoneByDate?.get(date.date) ?? timezone;
+  const dateActiveEnergyWorkoutIds = new Set(date.affectedWorkoutIds ?? []);
   try {
     const matchPublicationReady = await stageTimer.run("training-match", () =>
       trainingService.afterHealthSyncMatch(date.date, { timezone: dateTimezone }));
@@ -247,8 +263,12 @@ export async function syncHealthData(
   if (repository !== healthSyncRepository) continue;
 
   try {
-    await stageTimer.run("stepper-reconciliation", () =>
+    const reconciliation = await stageTimer.run("stepper-reconciliation", () =>
       persistStepperReconciliationV1(prisma, { from: date.date, to: date.date, timezone: dateTimezone }));
+    for (const workoutId of reconciliation.affectedWorkoutIds) {
+      activeEnergyWorkoutIds.add(workoutId);
+      dateActiveEnergyWorkoutIds.add(workoutId);
+    }
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "stepper_reconciliation_after_sync_failed", {
@@ -258,9 +278,13 @@ export async function syncHealthData(
   }
 
   try {
-    // Resolve the BodyCast/device/manual precedence candidates after source reconciliation.
+    // Source reconciliation already returns exact changed Workout IDs. Health
+    // sync adds only steppers whose selected snapshot bracket or overlapping
+    // step intervals changed, including candidates on neighboring dates.
     await stageTimer.run("stepper-active-energy-shadow", () =>
-      recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: date.date }));
+      recordExperimentalStepperActiveEnergyShadowsForWorkouts({
+        workoutIds: [...dateActiveEnergyWorkoutIds], profileId: 1,
+      }));
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
@@ -282,9 +306,11 @@ export async function syncHealthData(
       reason: "training-refresh-pending",
     });
   } else if (repository === healthSyncRepository) {
+    const weightChangedDates = chronologicalDates.filter(({ weightSourceChanged }) => weightSourceChanged === true);
     try {
-      await stageTimer.run("strength-active-energy-shadow", () =>
-        recordExperimentalStrengthShadowsForWeightDates({ dates: chronologicalDates }));
+      const refreshedSessionIds = weightChangedDates.length === 0 ? [] : await stageTimer.run("strength-active-energy-shadow", () =>
+        recordExperimentalStrengthShadowsForWeightDates({ dates: weightChangedDates }));
+      for (const sessionId of refreshedSessionIds) activeEnergySessionIds.add(sessionId);
     } catch (error) {
       for (const date of chronologicalDates) markRequiredFailure(date.date);
       logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
@@ -367,16 +393,17 @@ export async function syncHealthData(
     let healthBlockRestoreAttempted = false;
     let healthPublicationFence: { invalidationGeneration: number; updatedAt: string } | null = null;
     try {
-      const measurementDates = options.measurementDates ?? request.days
-        .filter((day) => day.weightKg !== undefined && day.weightKg !== null)
-        .map((day) => day.date);
-      const measurementInstants = options.measurementInstants ?? [...(metricSamplesByDate?.values() ?? [])]
-        .flat()
+      const weightChangedDates = chronologicalDates.filter(({ weightSourceChanged }) => weightSourceChanged === true);
+      const measurementDates = options.measurementDates ?? weightChangedDates.map(({ date }) => date);
+      const changedWeightDateSet = new Set(weightChangedDates.map(({ date }) => date));
+      const measurementInstants = options.measurementInstants ?? [...changedWeightDateSet]
+        .flatMap((date) => metricSamplesByDate?.get(date) ?? [])
         .filter((sample) => sample.metric === "weight-kg")
         .map((sample) => new Date(sample.timestamp))
         .filter((instant) => Number.isFinite(instant.getTime()));
-      await stageTimer.run("stepper-mass-window-refresh", () =>
+      const refreshedWorkoutIds = measurementDates.length === 0 && measurementInstants.length === 0 ? [] : await stageTimer.run("stepper-mass-window-refresh", () =>
         recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates, measurementInstants }));
+      for (const workoutId of refreshedWorkoutIds) activeEnergyWorkoutIds.add(workoutId);
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
       logEvent("warn", "experimental_stepper_mass_window_refresh_failed", {
@@ -419,8 +446,18 @@ export async function syncHealthData(
           // stale before this attempt.
           healthPublicationFence = await healthPublicationLifecycle.readUnifiedPublicationFence(1);
           if (healthPublicationFence === null) throw new Error("Health publication lifecycle is unavailable.");
+          // The deferred Health queue persists dates, not affected candidate
+          // IDs. Keep its conservative recovery materialization until that
+          // evidence exists; ordinary sync requests carry exact IDs above.
+          const activeEnergyCandidateScope = options.persistedDates === undefined
+            ? {
+              strengthSessionIds: [...activeEnergySessionIds].sort((left, right) => left - right),
+              workoutIds: [...activeEnergyWorkoutIds].sort((left, right) => left - right),
+            }
+            : undefined;
           const published = await stageTimer.run("active-energy-publication", () => publishActiveEnergyChangesV1({
             reuseCurrentProduction: true,
+            ...(activeEnergyCandidateScope === undefined ? {} : { activeEnergyCandidateScope }),
             ...(options.publicationNow === undefined ? {} : { now: options.publicationNow }),
             onLifecycleFenceChanged: (fence) => { healthPublicationFence = fence; },
           }));

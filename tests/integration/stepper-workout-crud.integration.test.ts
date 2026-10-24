@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
@@ -7,7 +8,9 @@ import type { StepperWorkoutInput } from "@/modules/training/stepper-workout.sch
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
-const prisma = new PrismaClient();
+const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
+process.env.DATABASE_URL = databaseUrl;
+const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const stepperWorkouts = new StepperWorkoutRepository(prisma);
 const healthSync = new PrismaHealthSyncRepository(prisma);
 const dates = ["2042-03-15", "2042-03-16"];
@@ -39,6 +42,19 @@ describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => 
     const row = await prisma.workout.findUniqueOrThrow({ where: { id: created.id } });
     expect(row.sourceIdentity).toMatch(new RegExp(`^${MANUAL_STEPPER_SOURCE_PREFIX}`));
     expect(row.energyKcal).toBeNull();
+
+    const beforeNoOpJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+    const beforeNoOpChanges = await prisma.trainingSourceChange.count({
+      where: { profileId: 1, affectedWorkoutIds: { has: created.id } },
+    });
+    await expect(stepperWorkouts.update(created.id, input)).resolves.toMatchObject({
+      id: created.id, modelPublicationStatus: "not-run",
+    });
+    expect(await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } }))
+      .toMatchObject({ requestedGeneration: beforeNoOpJob.requestedGeneration });
+    expect(await prisma.trainingSourceChange.count({
+      where: { profileId: 1, affectedWorkoutIds: { has: created.id } },
+    })).toBe(beforeNoOpChanges);
 
     await healthSync.syncDay({
       date: dates[0]!,

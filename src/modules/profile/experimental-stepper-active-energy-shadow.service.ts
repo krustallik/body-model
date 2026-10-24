@@ -12,7 +12,10 @@ import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout
 import {
   FIXED_STEPPER_EQUIPMENT_V7,
 } from "@/model/activity/personal-stepper-reference-v7";
-import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
+import {
+  canonicalizeWorkoutStepperEvidenceV7,
+  selectedHealthSyncStepSnapshotBracketV7,
+} from "@/model/activity/workout-stepper-v7";
 import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
@@ -238,7 +241,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     }),
     prisma.dailyHealthData.findMany({
       where: { date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } },
-      select: { date: true, weightKg: true, updatedAt: true },
+      select: { date: true, weightKg: true },
       orderBy: { date: "asc" },
     }),
     loadStepperModelMassContextV1(prisma, { profileId, episode, workoutDate }),
@@ -315,6 +318,10 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       stepCount: interval.value.toNumber(),
     })),
   });
+  const snapshotFingerprint = stepIntervals.length > 0 ? [] : [
+    evidence.bracketedSteps.before,
+    evidence.bracketedSteps.after,
+  ];
   const equipment = FIXED_STEPPER_EQUIPMENT_V7;
   const estimatedResult = estimateExperimentalStepperActiveEnergyV1({
     workout: evidence,
@@ -334,13 +341,19 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       members: groupWorkouts.map((row) => [row.id, row.type, row.sourceIdentity, row.startAt.toISOString(), row.endAt.toISOString(), row.durationMinutes, row.activeEnergyKcal, row.manualActiveEnergyKcal, row.manualStepCount, row.updatedAt.toISOString()]),
     },
     massProvenance: stableStepperMassProvenanceV1(mass.provenance),
-    snapshots: snapshots.map((row) => [row.id, row.receivedAt.toISOString(), row.syncedAt?.toISOString() ?? null, row.steps]),
+    // Only the selected bracket can affect this result. Hashing every Health
+    // snapshot made an unrelated sync invalidate all Stepper fingerprints.
+    snapshots: snapshotFingerprint,
     stepIntervals: stepIntervals.map((row) => [row.id, row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString()]),
     heartRate: heartRateSamples.map((row) => [row.timestamp.toISOString(), row.bpm, row.source]),
     weightSamples: timestampedWeights.map((row) => [row.id, row.timestamp.toISOString(), row.value.toString(), row.createdAt.toISOString()]),
-    dailyWeights: dailyWeights.map((row) => [row.date, row.weightKg, row.updatedAt.toISOString()]),
+    dailyWeights: dailyWeights.map((row) => [row.date, row.weightKg]),
     modelMassContext: {
-      modelState: modelMassContext.modelState ? [modelMassContext.modelState.id, modelMassContext.modelState.date, modelMassContext.modelState.status, modelMassContext.modelState.modelVersion, modelMassContext.modelState.filteredWeightKg, modelMassContext.modelState.endWeightKg] : null,
+      modelState: modelMassContext.modelState ? [
+        modelMassContext.modelState.id, modelMassContext.modelState.date, modelMassContext.modelState.status,
+        modelMassContext.modelState.modelVersion,
+        modelMassContext.modelState.filteredWeightKg ?? modelMassContext.modelState.endWeightKg,
+      ] : null,
       lifecycle: modelMassContext.lifecycle ? [modelMassContext.lifecycle.productionPublishedGeneration !== null, modelMassContext.lifecycle.productionStaleFromDate] : null,
       initialMassKg: episode?.initialFilteredWeightKg ?? null,
     },
@@ -455,7 +468,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         tx.healthActivityInterval.findMany({ where: { metric: "steps", startAt: { lt: workout.endAt }, endAt: { gt: workout.startAt } }, select: { id: true, startAt: true, endAt: true, value: true }, orderBy: [{ startAt: "asc" }, { id: "asc" }] }),
         tx.heartRateSample.findMany({ where: { profileId, timestamp: { gte: workout.startAt, lte: workout.endAt } }, select: { timestamp: true, bpm: true, source: true }, orderBy: { timestamp: "asc" } }),
         tx.healthMetricSample.findMany({ where: { metric: "weight-kg", source: "apple-health-shortcut", timestamp: { gte: observedStart, lt: observedEnd } }, select: { id: true, date: true, timestamp: true, value: true, createdAt: true }, orderBy: [{ timestamp: "asc" }, { id: "asc" }] }),
-        tx.dailyHealthData.findMany({ where: { date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } }, select: { date: true, weightKg: true, updatedAt: true }, orderBy: { date: "asc" } }),
+        tx.dailyHealthData.findMany({ where: { date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } }, select: { date: true, weightKg: true }, orderBy: { date: "asc" } }),
         tx.modelEpisode.findMany({
           where: { profileId },
           select: {
@@ -484,13 +497,29 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         modelContext: { episodeId: currentEpisode?.id ?? null, modelVersion: currentEpisode?.modelVersion ?? null, modelDate: workoutDate, modelTimeZone },
         reconciliation: currentReconciliation,
         massProvenance: stableStepperMassProvenanceV1(mass.provenance),
-        snapshots: currentSnapshots.map((row) => [row.id, row.receivedAt.toISOString(), row.syncedAt?.toISOString() ?? null, row.steps]),
+        snapshots: currentIntervals.length > 0 ? [] : (() => {
+          const bracket = selectedHealthSyncStepSnapshotBracketV7({
+            startAt: workout.startAt.toISOString(),
+            endAt: workout.endAt.toISOString(),
+            snapshots: currentSnapshots.map((row) => ({
+              id: row.id,
+              receivedAt: row.receivedAt.toISOString(),
+              syncedAt: row.syncedAt?.toISOString() ?? null,
+              steps: row.steps,
+            })),
+          });
+          return [bracket.before, bracket.after];
+        })(),
         stepIntervals: currentIntervals.map((row) => [row.id, row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString()]),
         heartRate: currentHr.map((row) => [row.timestamp.toISOString(), row.bpm, row.source]),
         weightSamples: currentTimestampedWeights.map((row) => [row.id, row.timestamp.toISOString(), row.value.toString(), row.createdAt.toISOString()]),
-        dailyWeights: currentDailyWeights.map((row) => [row.date, row.weightKg, row.updatedAt.toISOString()]),
+        dailyWeights: currentDailyWeights.map((row) => [row.date, row.weightKg]),
         modelMassContext: {
-          modelState: currentModelMassContext.modelState ? [currentModelMassContext.modelState.id, currentModelMassContext.modelState.date, currentModelMassContext.modelState.status, currentModelMassContext.modelState.modelVersion, currentModelMassContext.modelState.filteredWeightKg, currentModelMassContext.modelState.endWeightKg] : null,
+          modelState: currentModelMassContext.modelState ? [
+            currentModelMassContext.modelState.id, currentModelMassContext.modelState.date,
+            currentModelMassContext.modelState.status, currentModelMassContext.modelState.modelVersion,
+            currentModelMassContext.modelState.filteredWeightKg ?? currentModelMassContext.modelState.endWeightKg,
+          ] : null,
           lifecycle: currentModelMassContext.lifecycle ? [currentModelMassContext.lifecycle.productionPublishedGeneration !== null, currentModelMassContext.lifecycle.productionStaleFromDate] : null,
           initialMassKg: currentEpisode?.initialFilteredWeightKg ?? null,
         },
@@ -514,7 +543,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
 export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(input: {
   date: string;
   profileId?: number;
-}): Promise<void> {
+}): Promise<number[]> {
   const profileId = input.profileId ?? 1;
   const workouts = await prisma.workout.findMany({
     where: {
@@ -523,10 +552,13 @@ export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(i
     },
     select: { id: true, type: true },
   });
+  const refreshedWorkoutIds: number[] = [];
   for (const workout of workouts) {
     if (canonicalizeWorkoutType(workout.type).classification !== "stair-climbing") continue;
     await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId });
+    refreshedWorkoutIds.push(workout.id);
   }
+  return refreshedWorkoutIds;
 }
 
 export async function recordExperimentalStepperActiveEnergyShadowsForWorkouts(input: {
@@ -543,7 +575,7 @@ export async function recordExperimentalStepperActiveEnergyShadowsForMassWindow(
   measurementDates?: readonly string[];
   measurementInstants?: readonly Date[];
   profileId?: number;
-}): Promise<void> {
+}): Promise<number[]> {
   const profileId = input.profileId ?? 1;
   const episodes = await prisma.modelEpisode.findMany({
     where: { profileId },
@@ -555,11 +587,12 @@ export async function recordExperimentalStepperActiveEnergyShadowsForMassWindow(
   });
   const measurementDates = input.measurementDates ?? [];
   const measurementInstants = input.measurementInstants ?? [];
-  if (measurementDates.length === 0 && measurementInstants.length === 0) return;
+  if (measurementDates.length === 0 && measurementInstants.length === 0) return [];
   const workouts = await prisma.workout.findMany({
     where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
     select: { id: true, startAt: true },
   });
+  const refreshedWorkoutIds: number[] = [];
   for (const workout of workouts) {
     const context = episodeTimeContextForInstantV1(episodes, workout.startAt);
     const workoutDate = context.date;
@@ -573,6 +606,8 @@ export async function recordExperimentalStepperActiveEnergyShadowsForMassWindow(
     });
     if (dateMatch || instantMatch) {
       await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId });
+      refreshedWorkoutIds.push(workout.id);
     }
   }
+  return refreshedWorkoutIds;
 }

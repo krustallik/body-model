@@ -28,6 +28,7 @@ export async function invalidateActiveEnergySourcesInTransactionV1(input: {
   aliases?: readonly SourceAlias[];
   affectedInstants: readonly (Date | null | undefined)[];
   affectedModelDates?: readonly string[];
+  staleMatchingAliasesOnly?: boolean;
 }): Promise<string | null> {
   const instants = input.affectedInstants.filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
   if (instants.length === 0 && (input.affectedModelDates?.length ?? 0) === 0) return null;
@@ -40,7 +41,7 @@ export async function invalidateActiveEnergySourcesInTransactionV1(input: {
   )));
   const staleFromDate = [...dates, ...(input.affectedModelDates ?? [])].sort()[0]!;
   const affectedDates = [...new Set([...dates, ...(input.affectedModelDates ?? [])])];
-  if (affectedDates.length > 0) {
+  if (!input.staleMatchingAliasesOnly && affectedDates.length > 0) {
     await input.tx.activeEnergyCanonicalEvent.updateMany({
       where: { profileId: input.profileId, modelDate: { in: affectedDates } },
       data: { isStale: true },
@@ -69,6 +70,7 @@ export async function invalidateWorkoutEnergyInTransactionV1(input: {
   workoutIds: readonly number[];
   affectedInstants: readonly (Date | null | undefined)[];
   affectedModelDates?: readonly string[];
+  staleMatchingAliasesOnly?: boolean;
 }): Promise<string | null> {
   return invalidateActiveEnergySourcesInTransactionV1({
     tx: input.tx,
@@ -76,6 +78,7 @@ export async function invalidateWorkoutEnergyInTransactionV1(input: {
     aliases: input.workoutIds.map((id) => ({ sourceType: "workout", sourceId: String(id) })),
     affectedInstants: input.affectedInstants,
     affectedModelDates: input.affectedModelDates,
+    staleMatchingAliasesOnly: input.staleMatchingAliasesOnly,
   });
 }
 
@@ -122,5 +125,6 @@ export async function invalidateStepperMassDependenciesInTransactionV1(input: {
     aliases: dependent.map((workout) => ({ sourceType: "workout", sourceId: String(workout.id) })),
     affectedInstants: dependent.flatMap((workout) => [workout.startAt, workout.endAt]),
     affectedModelDates: dependent.map((workout) => workout.modelDate),
+    staleMatchingAliasesOnly: true,
   });
 }

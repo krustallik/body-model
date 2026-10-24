@@ -112,6 +112,32 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
     expect(queuedAfterEdit.requestedGeneration).toBeGreaterThan(queuedAfterFinish.requestedGeneration);
     expect(queuedAfterEdit.dueAt?.getTime()).toBeGreaterThan(pastDueAt.getTime() + 110_000);
 
+    const beforeNoOpSet = await prisma.strengthSet.findUniqueOrThrow({ where: { id: created.id } });
+    const beforeNoOpJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+    const beforeNoOpOperations = await prisma.strengthSessionAccountingOperation.count({ where: { sessionId: session.id } });
+    await training.updateSet(session.id, created.id, { reps: 11, rir: 3, comment: "synthetic edit" }, profileId);
+    const afterNoOpSet = await prisma.strengthSet.findUniqueOrThrow({ where: { id: created.id } });
+    const afterNoOpJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+    expect(afterNoOpSet.updatedAt).toEqual(beforeNoOpSet.updatedAt);
+    expect(afterNoOpJob.requestedGeneration).toBe(beforeNoOpJob.requestedGeneration);
+    expect(await prisma.strengthSessionAccountingOperation.count({ where: { sessionId: session.id } }))
+      .toBe(beforeNoOpOperations);
+
+    const reorderedOverride = { equipmentSetupId: "synthetic", additionalLoadKg: 15 };
+    await training.updateSet(session.id, created.id, {
+      loadAccountingOverride: { additionalLoadKg: 15, equipmentSetupId: "synthetic" },
+    }, profileId);
+    const afterOverrideChange = await prisma.strengthSet.findUniqueOrThrow({ where: { id: created.id } });
+    const afterOverrideChangeJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+    const afterOverrideChangeOperations = await prisma.strengthSessionAccountingOperation.count({ where: { sessionId: session.id } });
+    await training.updateSet(session.id, created.id, { loadAccountingOverride: reorderedOverride }, profileId);
+    const afterReorderedOverride = await prisma.strengthSet.findUniqueOrThrow({ where: { id: created.id } });
+    const afterReorderedOverrideJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
+    expect(afterReorderedOverride.updatedAt).toEqual(afterOverrideChange.updatedAt);
+    expect(afterReorderedOverrideJob.requestedGeneration).toBe(afterOverrideChangeJob.requestedGeneration);
+    expect(await prisma.strengthSessionAccountingOperation.count({ where: { sessionId: session.id } }))
+      .toBe(afterOverrideChangeOperations);
+
     const operationId = randomUUID();
     await prisma.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION public.test_pause_training_operation_insert()

@@ -24,7 +24,12 @@ const DEFAULT_RECOVERY_SEED = 20_260_824;
 
 async function recalculateThenRecover(now?: Date) {
   const result = await recalculateModelEpisode(now ? { now } : {});
-  let response: typeof result & { recovery?: unknown } = result;
+  const {
+    activeEnergyModelChangedDays: _activeEnergyModelChangedDays,
+    sourceReplayChanged: _sourceReplayChanged,
+    ...responseResult
+  } = result;
+  let response: typeof responseResult & { recovery?: unknown } = responseResult;
   if (result.recoveryRequired) {
     try {
       const recovery = await recoverModelEpisode({
@@ -32,11 +37,11 @@ async function recalculateThenRecover(now?: Date) {
         episodeId: result.episodeId,
         ...(now ? { now } : {}),
       });
-      response = { ...result, recovery };
+      response = { ...responseResult, recovery };
     } catch (error) {
       if (error instanceof ModelRecoveryEvidenceError) {
         response = {
-          ...result,
+          ...responseResult,
           recovery: {
             status: "insufficient_recovery_evidence" as const,
             message: error.message,

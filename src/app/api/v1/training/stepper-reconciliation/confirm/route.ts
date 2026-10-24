@@ -39,7 +39,12 @@ export async function POST(request: Request): Promise<Response> {
     await recordExperimentalStepperActiveEnergyShadowsForWorkouts({
       workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId], profileId: 1,
     });
-    const published = await publishActiveEnergyChangesV1();
+    const published = await publishActiveEnergyChangesV1({
+      ...(parsed.data.activateVisibility === true ? {} : { activeEnergyCandidateScope: {
+        strengthSessionIds: [],
+        workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId],
+      } }),
+    });
     return Response.json({
       ok: true,
       activated: parsed.data.activateVisibility === true,

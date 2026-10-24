@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DuplicateDayError } from "@/modules/days/day.errors";
 import { DailyMetricRepository, replayProductionDailyMetricShadowsV1 } from "@/modules/days/day.repository";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import * as activeEnergyInvalidation from "@/modules/activity/active-energy-invalidation";
 import * as activeEnergyPublication from "@/modules/activity/active-energy-publication";
 import * as glycogenStateShadow from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import * as relativeMuscleShadow from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
@@ -107,9 +108,9 @@ describe("DailyMetricRepository", () => {
   it("repairs all daily publication dependencies before publishing Active Energy and Unified", async () => {
     const order: string[] = [];
     vi.mocked(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow)
-      .mockImplementation(async () => { order.push("stepper-energy"); });
+      .mockImplementation(async () => { order.push("stepper-energy"); return []; });
     vi.mocked(strengthTraining.recordExperimentalStrengthShadowsForWeightDate)
-      .mockImplementation(async () => { order.push("strength-energy-and-glycogen-demand"); });
+      .mockImplementation(async () => { order.push("strength-energy-and-glycogen-demand"); return []; });
     vi.mocked(stepperGlycogenShadow.recordExperimentalStepperGlycogenDemandShadowsForLocalDate)
       .mockImplementation(async () => { order.push("stepper-glycogen-demand"); });
     vi.mocked(glycogenStateShadow.recordExperimentalGlycogenStateShadow)
@@ -125,7 +126,9 @@ describe("DailyMetricRepository", () => {
       blockUnifiedPublication: vi.fn(),
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
     } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
-    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle)).resolves.toBe("current");
+    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle, {
+      weightSourceChanged: true, affectedWorkoutIds: [420],
+    })).resolves.toBe("current");
 
     expect(order).toEqual([
       "stepper-energy",
@@ -135,10 +138,57 @@ describe("DailyMetricRepository", () => {
       "relative-muscle",
       "publish",
     ]);
+    expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({
+      activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [420] },
+    });
     expect(lifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledWith({
       profileId: 1, source: "day", sourceKey: "2026-08-22", expectedRevision: 2,
       expectedFromDate: "2026-08-22",
     });
+  });
+
+  it("skips mass-dependent candidate refresh when a day edit did not change weight", async () => {
+    vi.mocked(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow).mockClear();
+    vi.mocked(strengthTraining.recordExperimentalStrengthShadowsForWeightDate).mockClear();
+    vi.mocked(activeEnergyPublication.publishActiveEnergyChangesV1).mockResolvedValue(true);
+    const lifecycle = {
+      readUnifiedPublicationBlockToken: vi.fn().mockResolvedValue({ revision: 3, fromDate: "2026-08-22" }),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+      hasUnifiedPublicationBlocks: vi.fn().mockResolvedValue(false),
+      blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
+
+    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle, { affectedWorkoutIds: [] })).resolves.toBe("current");
+
+    expect(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow).not.toHaveBeenCalled();
+    expect(strengthTraining.recordExperimentalStrengthShadowsForWeightDate).not.toHaveBeenCalled();
+    expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({
+      activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [] },
+    });
+  });
+
+  it("refreshes weight dependencies and uses full candidate fallback for an unknown pending fence", async () => {
+    vi.mocked(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow)
+      .mockClear().mockResolvedValue([420]);
+    vi.mocked(strengthTraining.recordExperimentalStrengthShadowsForWeightDate)
+      .mockClear().mockResolvedValue([430]);
+    vi.mocked(activeEnergyPublication.publishActiveEnergyChangesV1).mockClear().mockResolvedValue(true);
+    const lifecycle = {
+      readUnifiedPublicationBlockToken: vi.fn().mockResolvedValue({ revision: 5, fromDate: "2026-08-21" }),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+      hasUnifiedPublicationBlocks: vi.fn().mockResolvedValue(false),
+      blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
+
+    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle, {
+      weightSourceChanged: true,
+    })).resolves.toBe("current");
+
+    expect(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow)
+      .toHaveBeenCalledWith({ measurementDates: ["2026-08-22"] });
+    expect(strengthTraining.recordExperimentalStrengthShadowsForWeightDate)
+      .toHaveBeenCalledWith({ date: "2026-08-22", refreshHistoricalAsOfFallback: true });
+    expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({});
   });
 
   it("restores the day retry fence when publication fails and shared block state becomes unreadable", async () => {
@@ -425,11 +475,38 @@ describe("DailyMetricRepository", () => {
     const { repository, dailyHealthData, shadowReplayer } = fixture();
     await repository.update(record.date, { weightKg: 88.5, proteinG: null });
     expect(dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { date: record.date },
+      where: { id: 42 },
       data: { weightKg: 88.5, proteinG: null },
     }));
     expect(dailyHealthData.update.mock.calls[0]?.[0].data).not.toHaveProperty("rawPayload");
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, { weightSourceChanged: false });
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+      weightSourceChanged: false, affectedWorkoutIds: [],
+    });
+  });
+
+  it("skips metric writes and publication when submitted Decimal values are unchanged", async () => {
+    const { repository, dailyHealthData, unifiedPublicationBlock, shadowReplayer } = fixture();
+    dailyHealthData.findUniqueOrThrow.mockResolvedValueOnce({
+      ...record,
+      id: 42,
+      weightKg: new Prisma.Decimal("89.4"),
+      bodyFatPercent: new Prisma.Decimal("27.4"),
+      averageWalkingSpeedKmh: new Prisma.Decimal("4.57"),
+      walkingDistanceKm: new Prisma.Decimal("0.01"),
+      strengthTrainingMinutes: new Prisma.Decimal("75"),
+    } as never);
+
+    await repository.update(record.date, {
+      weightKg: 89.4,
+      bodyFatPercent: 27.4,
+      averageWalkingSpeedKmh: 4.57,
+      walkingDistanceKm: 0.01,
+      strengthTrainingMinutes: 75,
+    });
+
+    expect(dailyHealthData.update).not.toHaveBeenCalled();
+    expect(unifiedPublicationBlock.upsert).not.toHaveBeenCalled();
+    expect(shadowReplayer.replayFrom).not.toHaveBeenCalled();
   });
 
   it("reports a committed source write as stale when dependent publication fails", async () => {
@@ -443,7 +520,7 @@ describe("DailyMetricRepository", () => {
   });
 
   it("replaces explicit workouts while clearing legacy daily workout aggregates", async () => {
-    const { repository, dailyHealthData, workout } = fixture();
+    const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
     await repository.update(record.date, {
       workouts: [{
         type: "Strength training",
@@ -458,7 +535,7 @@ describe("DailyMetricRepository", () => {
     expect(dailyHealthData.update.mock.calls[0]?.[0]).not.toMatchObject({
       data: expect.objectContaining({ workouts: expect.anything() }),
     });
-    expect(workout.create).toHaveBeenCalledWith({
+    expect(workout.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         dailyHealthDataId: 42,
         type: "Strength training",
@@ -469,6 +546,101 @@ describe("DailyMetricRepository", () => {
         syncProtected: true,
         sourceIdentity: expect.stringMatching(/^manual:history:/),
       }),
+    }));
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+      weightSourceChanged: false, affectedWorkoutIds: [100],
+    });
+  });
+
+  it("does not rewrite or replay when a submitted manual workout is unchanged", async () => {
+    const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
+    dailyHealthData.findUniqueOrThrow.mockResolvedValueOnce({
+      ...record,
+      id: 42,
+      workouts: [{
+        id: 12,
+        externalId: null,
+        type: "Strength training",
+        startAt: new Date("2026-08-22T10:00:00.000Z"),
+        endAt: new Date("2026-08-22T10:45:00.000Z"),
+        durationMinutes: 45,
+        activeEnergyKcal: 280,
+        sourceIdentity: "manual:history:12",
+        syncProtected: true,
+        matchedDiarySession: null,
+      }],
+    } as never);
+
+    await repository.update(record.date, {
+      workouts: [{
+        id: 12,
+        type: "Strength training",
+        startAt: "2026-08-22T10:00:00.000Z",
+        durationMinutes: 45,
+        activeEnergyKcal: 280,
+      }],
+    });
+
+    expect(workout.update).not.toHaveBeenCalled();
+    expect(workout.create).not.toHaveBeenCalled();
+    expect(workout.deleteMany).not.toHaveBeenCalled();
+    expect(activeEnergyInvalidation.invalidateWorkoutEnergyInTransactionV1).not.toHaveBeenCalled();
+    expect(shadowReplayer.replayFrom).not.toHaveBeenCalled();
+    expect(dailyHealthData.update).not.toHaveBeenCalled();
+  });
+
+  it("retries a no-op update when a prior publication fence remains", async () => {
+    const { repository, dailyHealthData, unifiedPublicationBlock, shadowReplayer } = fixture();
+    unifiedPublicationBlock.findUnique.mockResolvedValue({ revision: 4, fromDate: record.date });
+
+    await repository.update(record.date, { steps: record.steps });
+
+    expect(dailyHealthData.update).not.toHaveBeenCalled();
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+      weightSourceChanged: true,
+      affectedWorkoutIds: undefined,
+    });
+  });
+
+  it("scopes Day workout edits to the changed manual row and preserves synced candidates", async () => {
+    const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
+    dailyHealthData.findUniqueOrThrow.mockResolvedValueOnce({
+      ...record,
+      id: 42,
+      workouts: [
+        {
+          id: 11, externalId: "garmin-11", type: "Strength training",
+          startAt: new Date("2026-08-22T08:00:00.000Z"), endAt: new Date("2026-08-22T08:45:00.000Z"),
+          durationMinutes: 45, activeEnergyKcal: 400, sourceIdentity: "garmin:11", syncProtected: true,
+          matchedDiarySession: null,
+        },
+        {
+          id: 12, externalId: null, type: "Strength training",
+          startAt: new Date("2026-08-22T10:00:00.000Z"), endAt: new Date("2026-08-22T10:45:00.000Z"),
+          durationMinutes: 45, activeEnergyKcal: 280, sourceIdentity: "manual:history:12", syncProtected: true,
+          matchedDiarySession: null,
+        },
+      ],
+    } as never);
+
+    await repository.update(record.date, {
+      workouts: [{
+        id: 12,
+        type: "Strength training",
+        startAt: "2026-08-22T10:00:00.000Z",
+        durationMinutes: 45,
+        activeEnergyKcal: 300,
+      }],
+    });
+
+    expect(workout.update).toHaveBeenCalledTimes(1);
+    expect(workout.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 12 } }));
+    expect(activeEnergyInvalidation.invalidateWorkoutEnergyInTransactionV1).toHaveBeenCalledWith(expect.objectContaining({
+      workoutIds: [12],
+      staleMatchingAliasesOnly: true,
+    }));
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+      weightSourceChanged: false, affectedWorkoutIds: [12],
     });
   });
 
@@ -482,10 +654,17 @@ describe("DailyMetricRepository", () => {
 
   it("deletes workouts explicitly before deleting the day row", async () => {
     const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
+    dailyHealthData.findUnique.mockResolvedValueOnce({
+      ...record,
+      id: 42,
+      workouts: [{ id: 100, startAt: new Date("2026-08-22T10:00:00.000Z"), endAt: new Date("2026-08-22T10:45:00.000Z") }],
+    });
     await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
     expect(workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 42 } });
     expect(dailyHealthData.delete).toHaveBeenCalledWith({ where: { id: 42 } });
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, { weightSourceChanged: true });
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+      weightSourceChanged: true, affectedWorkoutIds: [100],
+    });
   });
 
   it("retries a committed day deletion when its durable publication block remains", async () => {

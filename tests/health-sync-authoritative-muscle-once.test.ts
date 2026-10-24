@@ -4,7 +4,7 @@ const {
   afterHealthSyncMatch,
   healthSyncRepository,
   rebuildAuthoritativeRelativeMuscleTrajectory,
-  recordExperimentalStepperActiveEnergyShadowsForLocalDate,
+  recordExperimentalStepperActiveEnergyShadowsForWorkouts,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,
   recordExperimentalStrengthShadowsForWeightDates,
   persistStepperReconciliationV1,
@@ -23,10 +23,10 @@ const {
     afterHealthSyncMatch: vi.fn().mockResolvedValue(true),
     healthSyncRepository,
     rebuildAuthoritativeRelativeMuscleTrajectory: vi.fn().mockResolvedValue(undefined),
-    recordExperimentalStepperActiveEnergyShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
-    recordExperimentalStepperActiveEnergyShadowsForMassWindow: vi.fn().mockResolvedValue(undefined),
-    recordExperimentalStrengthShadowsForWeightDates: vi.fn().mockResolvedValue(undefined),
-    persistStepperReconciliationV1: vi.fn().mockResolvedValue({ groupIds: [], displayedSteps: null, potentialDuplication: false }),
+    recordExperimentalStepperActiveEnergyShadowsForWorkouts: vi.fn().mockResolvedValue(undefined),
+    recordExperimentalStepperActiveEnergyShadowsForMassWindow: vi.fn().mockResolvedValue([]),
+    recordExperimentalStrengthShadowsForWeightDates: vi.fn().mockResolvedValue([]),
+    persistStepperReconciliationV1: vi.fn().mockResolvedValue({ groupIds: [], affectedWorkoutIds: [], displayedSteps: null, potentialDuplication: false }),
     recordExperimentalStepperGlycogenDemandShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
     recordExperimentalGlycogenStateShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalFfmRetentionShadow: vi.fn().mockResolvedValue(undefined),
@@ -45,7 +45,7 @@ vi.mock("@/lib/db/prisma", () => ({
   prisma: { trainingRefreshJob: { findUnique: async () => null } },
 }));
 vi.mock("@/modules/profile/experimental-stepper-active-energy-shadow.service", () => ({
-  recordExperimentalStepperActiveEnergyShadowsForLocalDate,
+  recordExperimentalStepperActiveEnergyShadowsForWorkouts,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,
 }));
 vi.mock("@/modules/training/stepper-reconciliation.service", () => ({ persistStepperReconciliationV1 }));
@@ -81,9 +81,29 @@ describe("health sync authoritative muscle suffix rebuild", () => {
       action: "created" as const,
     }));
     healthSyncRepository.pruneOlderThan.mockResolvedValue({ deletedDays: 0, deletedSnapshots: 0 });
+    persistStepperReconciliationV1.mockResolvedValue({
+      groupIds: [], affectedWorkoutIds: [], displayedSteps: null, potentialDuplication: false,
+    });
+    recordExperimentalStepperActiveEnergyShadowsForWorkouts.mockResolvedValue(undefined);
+    recordExperimentalStepperActiveEnergyShadowsForMassWindow.mockResolvedValue([]);
+    recordExperimentalStrengthShadowsForWeightDates.mockResolvedValue([]);
   });
 
   it("replays the authoritative muscle suffix once after the chronological batch, not per day", async () => {
+    let syncDayCall = 0;
+    healthSyncRepository.syncDay.mockImplementation(async (day: { date: string }) => ({
+      date: day.date,
+      action: "created" as const,
+      weightSourceChanged: true,
+      ...(syncDayCall === 0 ? { affectedWorkoutIds: [102] } : {}),
+      ...(syncDayCall++ === 2 ? { affectedWorkoutIds: [104] } : {}),
+    }));
+    let reconciliationCall = 0;
+    persistStepperReconciliationV1.mockImplementation(async () => ({
+      groupIds: [], affectedWorkoutIds: reconciliationCall++ === 0 ? [101] : [], displayedSteps: null, potentialDuplication: false,
+    }));
+    recordExperimentalStepperActiveEnergyShadowsForMassWindow.mockResolvedValue([103]);
+    recordExperimentalStrengthShadowsForWeightDates.mockResolvedValue([201, 202]);
     const publicationLifecycle = {
       readUnifiedPublicationBlockToken: vi.fn(async ({ sourceKey }: { sourceKey: string }) => ({ revision: 1, fromDate: sourceKey })),
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
@@ -110,17 +130,58 @@ describe("health sync authoritative muscle suffix rebuild", () => {
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledTimes(1);
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ date: "2026-09-21" });
     expect(publishActiveEnergyChangesV1).toHaveBeenCalledTimes(1);
+    expect(publishActiveEnergyChangesV1).toHaveBeenCalledWith(expect.objectContaining({
+      activeEnergyCandidateScope: { strengthSessionIds: [201, 202], workoutIds: [101, 102, 103, 104] },
+    }));
+    expect(recordExperimentalStepperActiveEnergyShadowsForWorkouts.mock.calls.map(([input]) => input)).toEqual([
+      { workoutIds: [101], profileId: 1 },
+      { workoutIds: [104], profileId: 1 },
+      { workoutIds: [102], profileId: 1 },
+    ]);
     expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledTimes(1);
     expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledWith({ dates: [
-      { date: "2026-09-21", action: "created" },
-      { date: "2026-09-22", action: "created" },
-      { date: "2026-09-23", action: "created" },
+      { date: "2026-09-21", action: "created", weightSourceChanged: true },
+      { date: "2026-09-22", action: "created", weightSourceChanged: true, affectedWorkoutIds: [104] },
+      { date: "2026-09-23", action: "created", weightSourceChanged: true, affectedWorkoutIds: [102] },
     ] });
+    expect(recordExperimentalStepperActiveEnergyShadowsForMassWindow).toHaveBeenCalledWith({
+      measurementDates: ["2026-09-21", "2026-09-22", "2026-09-23"], measurementInstants: [],
+    });
     expect(publicationLifecycle.readUnifiedPublicationBlockToken).toHaveBeenCalledTimes(3);
     expect(publicationLifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledTimes(3);
     expect(afterHealthSyncMatch).toHaveBeenCalledTimes(3);
     expect(result.modelPublicationStatus).toBe("current");
     expect(rebuildUnifiedExperimentalPhysiologyStateV1).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh weight-dependent candidates when Health sync changed no weight", async () => {
+    const publicationLifecycle = {
+      readUnifiedPublicationBlockToken: vi.fn(async ({ sourceKey }: { sourceKey: string }) => ({ revision: 1, fromDate: sourceKey })),
+      blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+      hasUnifiedPublicationBlocks: vi.fn().mockResolvedValue(false),
+      readUnifiedPublicationFence: vi.fn().mockResolvedValue({ invalidationGeneration: 1, updatedAt: "2026-09-23T00:00:00.000Z" }),
+      restoreUnifiedPublicationBlocksIfCurrent: vi.fn().mockResolvedValue(false),
+    };
+
+    const result = await syncHealthData({ days: [{ date: "2026-09-23" }] }, healthSyncRepository as never,
+      undefined, undefined, undefined, { publicationLifecycle: publicationLifecycle as never });
+
+    expect(recordExperimentalStrengthShadowsForWeightDates).not.toHaveBeenCalled();
+    expect(recordExperimentalStepperActiveEnergyShadowsForMassWindow).not.toHaveBeenCalled();
+    expect(result.modelPublicationStatus).toBe("current");
+  });
+
+  it("keeps publication deferred after source persistence", async () => {
+    healthSyncRepository.syncDay.mockResolvedValueOnce({
+      date: "2026-09-23", action: "updated", affectedWorkoutIds: [502],
+    });
+
+    const result = await syncHealthData({ days: [{ date: "2026-09-23" }] }, healthSyncRepository as never,
+      undefined, undefined, undefined, { deferDependentRefresh: true });
+
+    expect(result.dates).toEqual([{ date: "2026-09-23", action: "updated" }]);
+    expect(publishActiveEnergyChangesV1).not.toHaveBeenCalled();
   });
 
   it("keeps Unified stale when Health matching reports failed publication dependencies", async () => {

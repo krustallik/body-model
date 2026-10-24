@@ -328,14 +328,15 @@ export class StepperWorkoutRepository {
       });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction, profileId: 1, workoutIds: [created.id], affectedInstants: [startAt, endAt],
+        staleMatchingAliasesOnly: true,
       });
-      await persistStepperReconciliationV1(transaction, { from: date, to: date });
+      const reconciliation = await persistStepperReconciliationV1(transaction, { from: date, to: date });
       const modelDate = await earliestAffectedDateV1(transaction, [], [startAt]);
       await enqueueTrainingSourceChangeInTransaction(transaction, {
         profileId: 1,
         operationKind: "stepper_workout_create",
         affectedSessionIds: [],
-        affectedWorkoutIds: [created.id],
+        affectedWorkoutIds: [...new Set([created.id, ...reconciliation.affectedWorkoutIds])],
         publicationBlockSourceKeys: [String(created.id)],
         newSourceIdentity: { kind: "manual-stepper", workoutId: created.id, sourceIdentity: sourceKey },
         newEventInstants: [startAt.toISOString(), endAt.toISOString()],
@@ -383,7 +384,7 @@ export class StepperWorkoutRepository {
 
   async update(id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
     const { startAt, endAt, date } = workoutDates(input);
-    const updatedId = await this.client.$transaction(async (transaction) => {
+    const outcome = await this.client.$transaction(async (transaction) => {
       await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const existing = await transaction.workout.findFirst({
         where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
@@ -392,12 +393,22 @@ export class StepperWorkoutRepository {
           dailyHealthData: { select: { date: true } },
           type: true, startAt: true, endAt: true, durationMinutes: true,
           energyKcal: true, activeEnergyKcal: true,
+          manualStepCount: true, manualActiveEnergyKcal: true, syncProtected: true,
           matchedDiarySession: { select: { id: true } },
         },
       });
       if (existing === null) return null;
       const isManual = existing.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX);
       if (!isManual && existing.matchedDiarySession !== null) return null;
+      if (existing.dailyHealthData.date === date
+          && existing.startAt.getTime() === startAt.getTime()
+          && existing.endAt.getTime() === endAt.getTime()
+          && existing.durationMinutes === input.durationMinutes
+          && existing.manualStepCount === (input.manualStepCount ?? null)
+          && existing.manualActiveEnergyKcal === (input.manualActiveEnergyKcal ?? null)
+          && (isManual || existing.syncProtected)) {
+        return { id, changed: false as const };
+      }
       await new PhysiologyV7PersistenceRepository(transaction).blockUnifiedPublication({
         profileId: 1,
         fromDate: await earliestAffectedDateV1(
@@ -480,12 +491,13 @@ export class StepperWorkoutRepository {
       }
       const reconcileFrom = existing.dailyHealthData.date < date ? existing.dailyHealthData.date : date;
       const reconcileTo = existing.dailyHealthData.date > date ? existing.dailyHealthData.date : date;
-      await persistStepperReconciliationV1(transaction, { from: reconcileFrom, to: reconcileTo });
+      const reconciliation = await persistStepperReconciliationV1(transaction, { from: reconcileFrom, to: reconcileTo });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction,
         profileId: 1,
         workoutIds: [id],
         affectedInstants: [existing.startAt, existing.endAt, startAt, endAt],
+        staleMatchingAliasesOnly: true,
       });
       const episodes = await transaction.modelEpisode.findMany({
         where: { profileId: 1 },
@@ -498,7 +510,7 @@ export class StepperWorkoutRepository {
         profileId: 1,
         operationKind: "stepper_workout_update",
         affectedSessionIds: linked === null ? [] : [linked.id],
-        affectedWorkoutIds: [id],
+        affectedWorkoutIds: [...new Set([id, ...reconciliation.affectedWorkoutIds])],
         publicationBlockSourceKeys: [String(id)],
         oldSourceIdentity: { kind: "stepper", workoutId: id, sourceIdentity: existing.sourceIdentity },
         newSourceIdentity: { kind: "stepper", workoutId: id, sourceIdentity: updated.sourceIdentity },
@@ -508,13 +520,13 @@ export class StepperWorkoutRepository {
         newModelDates: [...new Set([date, newModelDate])],
         deadlineMode: "stepper-fast",
       });
-      return updated.id;
+      return { id: updated.id, changed: true as const };
     });
-    if (updatedId === null) return null;
-    const refreshed = await this.client.workout.findUnique({ where: { id: updatedId }, select: stepperSelect });
+    if (outcome === null) return null;
+    const refreshed = await this.client.workout.findUnique({ where: { id: outcome.id }, select: stepperSelect });
     if (!refreshed) return null;
     const [dto] = await attachReconciliation(this.client, [toDto(refreshed)]);
-    return dto ? { ...dto, modelPublicationStatus: this.client === prisma ? "stale" : "not-run" } : null;
+    return dto ? { ...dto, modelPublicationStatus: this.client === prisma && outcome.changed ? "stale" : "not-run" } : null;
   }
 
   async delete(id: number): Promise<StepperWorkoutDeleteResult> {
@@ -577,14 +589,15 @@ export class StepperWorkoutRepository {
       });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction, profileId: 1, workoutIds: [id], affectedInstants: [existing.startAt, existing.endAt],
+        staleMatchingAliasesOnly: true,
       });
-      await persistStepperReconciliationV1(transaction, { from: date, to: date });
+      const reconciliation = await persistStepperReconciliationV1(transaction, { from: date, to: date });
       const modelDate = await earliestAffectedDateV1(transaction, [], [existing.startAt]);
       await enqueueTrainingSourceChangeInTransaction(transaction, {
         profileId: 1,
         operationKind: "stepper_workout_delete",
         affectedSessionIds: [],
-        affectedWorkoutIds: [id],
+        affectedWorkoutIds: [...new Set([id, ...reconciliation.affectedWorkoutIds])],
         publicationBlockSourceKeys: [String(id)],
         oldSourceIdentity: { kind: "stepper", workoutId: id, sourceIdentity: existing.sourceIdentity },
         oldEventInstants: [existing.startAt.toISOString(), existing.endAt.toISOString()],

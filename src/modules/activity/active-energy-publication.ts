@@ -1,6 +1,7 @@
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
 import { getModelStatus, recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import type { ActiveEnergyCandidateScopeV1 } from "./active-energy-materialization";
 import { logEvent } from "@/lib/logger";
 
 export type CurrentActiveEnergyPublicationWindowV1 = {
@@ -22,6 +23,7 @@ export async function recalculateActiveEnergyChangesV1(input: {
   reuseCurrentProduction?: boolean;
   now?: Date;
   requireDependentStages?: boolean;
+  activeEnergyCandidateScope?: ActiveEnergyCandidateScopeV1;
   onLifecycleFenceChanged?: (fence: ProductionPublicationFenceV1) => void | Promise<void>;
   onCandidateProcessed?: () => void | Promise<void>;
 } = {}): Promise<CurrentActiveEnergyPublicationWindowV1 | null> {
@@ -40,6 +42,7 @@ export async function recalculateActiveEnergyChangesV1(input: {
     episodeId: status.episodeId,
     ...(input.now === undefined ? {} : { now: input.now }),
     ...(input.requireDependentStages === undefined ? {} : { requireDependentStages: input.requireDependentStages }),
+    ...(input.activeEnergyCandidateScope === undefined ? {} : { activeEnergyCandidateScope: input.activeEnergyCandidateScope }),
     ...(input.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: input.onLifecycleFenceChanged }),
     ...(input.onCandidateProcessed === undefined ? {} : { onCandidateProcessed: input.onCandidateProcessed }),
   });
@@ -57,6 +60,7 @@ export async function recalculateActiveEnergyChangesV1(input: {
 export async function publishActiveEnergyChangesV1(input: {
   reuseCurrentProduction?: boolean;
   now?: Date;
+  activeEnergyCandidateScope?: ActiveEnergyCandidateScopeV1;
   onLifecycleFenceChanged?: (fence: ProductionPublicationFenceV1) => void | Promise<void>;
 } = {}): Promise<boolean> {
   const current = await recalculateActiveEnergyChangesV1(input);

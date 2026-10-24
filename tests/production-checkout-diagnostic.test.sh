@@ -356,9 +356,9 @@ assert_field "$INSPECT_ERROR_ABSENT_REPORT" bodycast_db_prod_found no
 INSPECT_AND_LIST_ERROR_REPORT="$(DOCKER_INSPECT_FAIL=bodycast-db-prod DOCKER_PS_FAIL=1 run_inspector "$TEST_REPO")"
 assert_field "$INSPECT_AND_LIST_ERROR_REPORT" bodycast_db_prod_found unknown
 
-SQLSTATE_REPORT="$(DOCKER_EXEC_RESULT='__diagnostic_query_error__|sqlstate-42703' run_inspector "$TEST_REPO")"
-assert_field "$SQLSTATE_REPORT" energy_diagnostic_inventory_status query-error-sqlstate-42703
-if [[ "$SQLSTATE_REPORT" == *'__diagnostic_query_error__'* || "$SQLSTATE_REPORT" == *'42703: '* ]]; then
+SQLSTATE_REPORT="$(DOCKER_EXEC_RESULT='__diagnostic_query_error__|sqlstate-42P01|object-relation-target_workout_72_events' run_inspector "$TEST_REPO")"
+assert_field "$SQLSTATE_REPORT" energy_diagnostic_inventory_status query-error-sqlstate-42P01-object-relation-target_workout_72_events
+if [[ "$SQLSTATE_REPORT" == *'__diagnostic_query_error__'* || "$SQLSTATE_REPORT" == *'42P01: '* ]]; then
   echo 'Production diagnostic exposed an internal query error marker or message.' >&2
   exit 1
 fi

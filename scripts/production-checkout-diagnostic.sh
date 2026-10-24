@@ -362,12 +362,21 @@ if ! query_result="$(PGPASSFILE="$passfile" \
   PGCONNECT_TIMEOUT=5 \
   PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
   psql --no-psqlrc --quiet --tuples-only --no-align --field-separator='|' --no-password \
-    --set=ON_ERROR_STOP=1 --set=VERBOSITY=sqlstate \
+    --set=ON_ERROR_STOP=1 --set=VERBOSITY=verbose \
     --host "$server_ip" --username="$POSTGRES_USER" --dbname=bodycast \
     --command "BEGIN READ ONLY; $query; ROLLBACK" 2>"$error_file")"; then
   sqlstate="$(sed -nE 's/^[A-Z]+:[[:space:]]+([0-9A-Z]{5})(:|$).*/\1/p' "$error_file" | head -n 1)"
   if [[ "$sqlstate" =~ ^[0-9A-Z]{5}$ ]]; then
-    printf '__diagnostic_query_error__|sqlstate-%s\n' "$sqlstate"
+    safe_object="$(sed -nE \
+      -e 's/^[A-Z]+:[[:space:]]+[0-9A-Z]{5}:[[:space:]]+relation "([A-Za-z0-9_]+)" does not exist.*/relation-\1/p' \
+      -e 's/^[A-Z]+:[[:space:]]+[0-9A-Z]{5}:[[:space:]]+missing FROM-clause entry for table "([A-Za-z0-9_]+)".*/table-reference-\1/p' \
+      "$error_file" | head -n 1)"
+    case "$safe_object" in
+      relation-Workout|relation-ActiveEnergyEventAlias|relation-ActiveEnergyCanonicalEvent|relation-ActiveEnergyResolutionRevision|relation-ActiveEnergyCandidate|relation-ExperimentalStepperActiveEnergyShadow|relation-StepperReconciliationCandidate|relation-StepperReconciliationGroup|relation-StrengthDiarySession|relation-eligible_aliases|relation-current_events|relation-target_strength_session_candidates|relation-target_strength_session_localized|relation-target_strength_session_day|relation-target_workout_56|relation-target_workout_56_reconciliation|relation-target_workout_56_reconciliation_pairs|relation-target_workout_56_reconciliation_member_ids|relation-target_workout_56_representative|relation-target_workout_56_events|relation-target_workout_72|relation-target_workout_72_events|relation-target_workout_56_canonical_event|table-reference-w|table-reference-e|table-reference-a|table-reference-c|table-reference-r|table-reference-s)
+        printf '__diagnostic_query_error__|sqlstate-%s|object-%s\n' "$sqlstate" "$safe_object"
+        ;;
+      *) printf '__diagnostic_query_error__|sqlstate-%s\n' "$sqlstate" ;;
+    esac
   else
     printf '__diagnostic_query_error__|connection-or-client\n'
   fi
@@ -376,6 +385,10 @@ fi
 printf '%s\n' "$query_result"
 BASH
 )" || return 1
+  if [[ "$inventory" =~ ^__diagnostic_query_error__\|sqlstate-([0-9A-Z]{5})\|object-([A-Za-z0-9_-]+)$ ]]; then
+    printf '__diagnostic_query_error__|sqlstate-%s|object-%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 1
+  fi
   if [[ "$inventory" =~ ^__diagnostic_query_error__\|(sqlstate-[0-9A-Z]{5}|connection-or-client)$ ]]; then
     printf '%s\n' "$inventory"
     return 1
@@ -686,7 +699,9 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_shadow_payload_b64 "$energy_shadow_payload_b64"
   else
     energy_inventory_status=unavailable
-    if [[ "${energy_inventory:-}" =~ ^__diagnostic_query_error__\|sqlstate-([0-9A-Z]{5})$ ]]; then
+    if [[ "${energy_inventory:-}" =~ ^__diagnostic_query_error__\|sqlstate-([0-9A-Z]{5})\|object-([A-Za-z0-9_-]+)$ ]]; then
+      energy_inventory_status="query-error-sqlstate-${BASH_REMATCH[1]}-object-${BASH_REMATCH[2]}"
+    elif [[ "${energy_inventory:-}" =~ ^__diagnostic_query_error__\|sqlstate-([0-9A-Z]{5})$ ]]; then
       energy_inventory_status="query-error-sqlstate-${BASH_REMATCH[1]}"
     elif [[ "${energy_inventory:-}" == '__diagnostic_query_error__|connection-or-client' ]]; then
       energy_inventory_status=query-error-connection-or-client

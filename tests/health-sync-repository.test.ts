@@ -57,7 +57,14 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     restingHeartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     sleepSegment: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     healthSyncSnapshot: {
-      create: vi.fn().mockResolvedValue({ id: 1 }),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn().mockImplementation(async ({ data }: { data: { date: string; receivedAt: Date; syncedAt: Date | null; steps: number | null } }) => ({
+        id: 1,
+        date: data.date,
+        receivedAt: data.receivedAt,
+        syncedAt: data.syncedAt,
+        steps: data.steps,
+      })),
     },
     healthMetricSample: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -65,6 +72,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     },
     strengthDiarySession: { findFirst: vi.fn().mockResolvedValue(null) },
     healthActivityInterval: {
+      findMany: vi.fn().mockResolvedValue([]),
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       aggregate: vi.fn().mockImplementation(({ where }: { where: { metric: string } }) => Promise.resolve({
@@ -237,6 +245,7 @@ describe("Prisma health synchronization repository", () => {
         walkingDistanceKm: null,
         rawPayload: { Date: "2026-08-23", Steps: 0, Walkingdistancekm: "" },
       }),
+      select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true },
     });
   });
 
@@ -436,7 +445,11 @@ describe("Prisma health synchronization repository", () => {
       },
     ]);
     await repository.syncDay({ date: "2026-08-21" });
-    expect(transaction.workout.findMany).not.toHaveBeenCalled();
+    expect(transaction.workout.findMany).toHaveBeenCalledTimes(1);
+    expect(transaction.workout.findMany).toHaveBeenCalledWith({
+      where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
+      select: { id: true, startAt: true, endAt: true },
+    });
     expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
     expect(transaction.workout.createMany).not.toHaveBeenCalled();
   });
@@ -463,7 +476,11 @@ describe("Prisma health synchronization repository", () => {
         }],
       },
     );
-    expect(transaction.workout.findMany).not.toHaveBeenCalled();
+    expect(transaction.workout.findMany).toHaveBeenCalledTimes(1);
+    expect(transaction.workout.findMany).toHaveBeenCalledWith({
+      where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
+      select: { id: true, startAt: true, endAt: true },
+    });
     expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
   });
 

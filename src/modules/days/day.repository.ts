@@ -711,7 +711,10 @@ export class DailyMetricRepository {
         // A prior DELETE may have committed the raw removal and failed during
         // derived refresh. Retrying the same idempotent DELETE repairs that
         // durable block without recreating the source row.
-        return { deleted: token !== null, needsPublication: token !== null, weightSourceChanged: false, affectedWorkoutIds: undefined };
+        // The durable day fence does not retain whether the committed delete
+        // removed a weight. Re-run weight-dependent shadows conservatively so
+        // a failed first attempt cannot publish candidates using the old mass.
+        return { deleted: token !== null, needsPublication: token !== null, weightSourceChanged: token !== null, affectedWorkoutIds: undefined };
       }
       const weightSampleCount = await transaction.healthMetricSample.count({
         where: { date, metric: "weight-kg", source: "apple-health-shortcut" },

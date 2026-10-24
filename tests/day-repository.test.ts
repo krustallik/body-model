@@ -680,6 +680,6 @@ describe("DailyMetricRepository", () => {
     await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
 
     expect(dailyHealthData.delete).toHaveBeenCalledTimes(1);
-    expect(shadowReplayer.replayFrom).toHaveBeenNthCalledWith(2, record.date, { weightSourceChanged: false });
+    expect(shadowReplayer.replayFrom).toHaveBeenNthCalledWith(2, record.date, { weightSourceChanged: true });
   });
 });

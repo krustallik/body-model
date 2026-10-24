@@ -40,6 +40,7 @@ const clientMock = {
   $transaction: vi.fn(async (callback: (transaction: object) => unknown) => callback({
     $queryRaw: vi.fn().mockResolvedValue([]),
     $executeRaw: vi.fn().mockResolvedValue(1),
+    dailyModelState: { findMany: vi.fn().mockResolvedValue([]) },
     physiologyV7Lifecycle: {
       findUnique: vi.fn().mockResolvedValue({
         profileId: 1,

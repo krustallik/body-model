@@ -2164,7 +2164,12 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         startWeightKg: true, dynamicRmrKcalPerDay: true, modelVersion: true,
       },
     });
-    expect(second).toEqual(first);
+    expect({ ...second,
+      activeEnergyModelChangedDays: first.activeEnergyModelChangedDays,
+      strengthHorizonChangedEpisodeId: first.strengthHorizonChangedEpisodeId,
+    }).toEqual(first);
+    expect(second.activeEnergyModelChangedDays).toEqual([]);
+    expect(second.strengthHorizonChangedEpisodeId).toBeNull();
     expect(secondRows).toEqual(firstRows);
     expect(secondRows).toHaveLength(11);
     expect(new Set(secondRows.map(({ date }) => date)).size).toBe(11);
@@ -2304,7 +2309,12 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
 
     const repeated = await recalculateModelEpisode({ episodeId, now });
-    expect(repeated).toEqual(observedRun);
+    expect({ ...repeated,
+      activeEnergyModelChangedDays: observedRun.activeEnergyModelChangedDays,
+      strengthHorizonChangedEpisodeId: observedRun.strengthHorizonChangedEpisodeId,
+    }).toEqual(observedRun);
+    expect(repeated.activeEnergyModelChangedDays).toEqual([]);
+    expect(repeated.strengthHorizonChangedEpisodeId).toBeNull();
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
   });
 
@@ -2371,7 +2381,13 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(laterHistory.days).toEqual([]);
     expect(laterHistory.unknownIntervals).toHaveLength(1);
     expect(laterHistory.observationsAwaitingRecovery.map(({ date }) => date)).toEqual([finalDate]);
-    expect(await recalculateModelEpisode({ episodeId, now })).toEqual(unresolved);
+    const repeatedUnresolved = await recalculateModelEpisode({ episodeId, now });
+    expect({ ...repeatedUnresolved,
+      activeEnergyModelChangedDays: unresolved.activeEnergyModelChangedDays,
+      strengthHorizonChangedEpisodeId: unresolved.strengthHorizonChangedEpisodeId,
+    }).toEqual(unresolved);
+    expect(repeatedUnresolved.activeEnergyModelChangedDays).toEqual([]);
+    expect(repeatedUnresolved.strengthHorizonChangedEpisodeId).toBeNull();
     expect(await prisma.modelUnknownInterval.count({ where: { episodeId } })).toBe(1);
 
     await Promise.all(gapDates.map((date) => prisma.dailyHealthData.create({

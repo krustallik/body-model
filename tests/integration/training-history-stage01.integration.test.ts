@@ -2361,6 +2361,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     let programId: number | null = null;
     let sessionId: number | null = null;
     let episodeId: number | null = null;
+    let setupCanonicalEventId: number | null = null;
     const eventKeyPrefix = `test:accounting-context:${Date.now()}`;
     const lifecycleBeforeTest = await db.physiologyV7Lifecycle.findUnique({ where: { profileId } });
     try {
@@ -2430,6 +2431,10 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         },
       });
       await service.finishSession(session.id, profileId);
+      setupCanonicalEventId = (await db.activeEnergyCanonicalEvent.findUnique({
+        where: { profileId_logicalEventKey: { profileId, logicalEventKey: `strength-session:${session.id}` } },
+        select: { id: true },
+      }))?.id ?? null;
       const eventDates = [
         { suffix: "old", occurrenceAt: oldInstant, modelDate: "2099-01-02" },
         { suffix: "new", occurrenceAt: earlierInstant, modelDate: "2099-01-01" },
@@ -2445,6 +2450,24 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           inputFingerprint: "0".repeat(64),
           isStale: false,
         })),
+      });
+      const oldCanonicalEvent = await db.activeEnergyCanonicalEvent.findFirstOrThrow({
+        where: { profileId, logicalEventKey: `${eventKeyPrefix}:old` },
+        select: { id: true },
+      });
+      await db.activeEnergyEventAlias.upsert({
+        where: { profileId_sourceType_sourceId: {
+          profileId,
+          sourceType: "strength-session",
+          sourceId: String(session.id),
+        } },
+        update: { eventId: oldCanonicalEvent.id },
+        create: {
+          profileId,
+          sourceType: "strength-session",
+          sourceId: String(session.id),
+          eventId: oldCanonicalEvent.id,
+        },
       });
       // Program/session setup itself mutates the singleton profile's active
       // energy lifecycle. Put the explicit current fixture state after that
@@ -2487,7 +2510,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         orderBy: { logicalEventKey: "asc" },
         select: { modelDate: true, isStale: true },
       })).toEqual([
-        { modelDate: "2099-01-01", isStale: true },
+        { modelDate: "2099-01-01", isStale: false },
         { modelDate: "2099-01-02", isStale: true },
       ]);
 
@@ -2574,6 +2597,9 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         trainingSessionIds: sessionId === null ? [] : [sessionId],
       });
       await db.activeEnergyCanonicalEvent.deleteMany({ where: { logicalEventKey: { startsWith: eventKeyPrefix } } });
+      if (setupCanonicalEventId !== null) {
+        await db.activeEnergyCanonicalEvent.deleteMany({ where: { id: setupCanonicalEventId } });
+      }
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
       if (catalogId !== null) await db.exerciseCatalog.deleteMany({ where: { id: catalogId } });

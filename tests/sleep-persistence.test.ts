@@ -29,7 +29,16 @@ describe("sleep segment persistence", () => {
         findUnique: vi.fn(async () => null),
         upsert: vi.fn(async () => ({ id: 11 })),
       },
-      healthSyncSnapshot: { create: vi.fn(async () => ({})) },
+      healthSyncSnapshot: {
+        findMany: vi.fn(async () => []),
+        create: vi.fn(async ({ data }: { data: { date: string; receivedAt: Date; syncedAt: Date | null; steps: number | null } }) => ({
+          id: 1,
+          date: data.date,
+          receivedAt: data.receivedAt,
+          syncedAt: data.syncedAt,
+          steps: data.steps,
+        })),
+      },
       healthMetricSample: { findMany: vi.fn(async () => []), upsert: vi.fn(async () => ({})) },
       workout: {
         findMany: vi.fn(async () => []),

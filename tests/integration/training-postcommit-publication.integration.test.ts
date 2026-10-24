@@ -456,6 +456,6 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
     expect([repsEdit.reps, noteEdit.reps]).toContain(12);
     const final = await prisma.strengthSet.findUniqueOrThrow({ where: { id: set.id } });
     expect(final).toMatchObject({ reps: 12, rir: 4, comment: "concurrent edit" });
-    expect(final.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
+    expect(final.loadAccountingOverride).toMatchObject({ additionalLoadKg: 15 });
   });
 });

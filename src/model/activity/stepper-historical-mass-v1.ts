@@ -38,6 +38,17 @@ export type StepperMassProvenanceV1 = {
   modelGeneration?: number;
 };
 
+/** Match Prisma JSON's 15-significant-digit numeric persistence projection. */
+export function stepperJsonPersistenceProjectionV1<T extends object>(value: T): T {
+  const json = JSON.stringify(value, (_key, item: unknown) => (
+    typeof item === "number" && Number.isFinite(item) && !Number.isSafeInteger(item)
+      ? Number(item.toPrecision(15))
+      : item
+  ));
+  if (json === undefined) throw new TypeError("Stepper persistence value must be JSON serializable");
+  return JSON.parse(json) as T;
+}
+
 /** Exclude volatile publication generation while retaining the as-of mass identity and value. */
 export function stableStepperMassProvenanceV1(provenance: StepperMassProvenanceV1): StepperMassProvenanceV1 {
   if (provenance.status !== "model-estimated") return provenance;

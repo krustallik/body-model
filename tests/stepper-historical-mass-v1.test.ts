@@ -5,6 +5,7 @@ import {
   stepperActiveEnergyCandidateFingerprintV1,
   stepperActiveEnergyInputFingerprintV1,
   stepperMassCandidateDependsOnReplayV1,
+  stepperJsonPersistenceProjectionV1,
   STEPPER_HISTORICAL_MASS_POLICY_V1,
 } from "@/model/activity/stepper-historical-mass-v1";
 
@@ -16,6 +17,19 @@ function obs(sourceId: string, date: string, valueKg: number, timestamp: string 
 }
 
 describe("Stepper historical mass policy v1", () => {
+  it("projects floating payload values to the precision preserved by Prisma JSON", () => {
+    const projected = stepperJsonPersistenceProjectionV1({
+      lowerBoundKcal: 128.60881720841297,
+      massKg: 80.123456789012347,
+      stepCount: 1_234_567,
+    });
+    expect(projected).toEqual({
+      lowerBoundKcal: 128.608817208413,
+      massKg: 80.1234567890124,
+      stepCount: 1_234_567,
+    });
+  });
+
   it("selects the nearest observed measurement in the inclusive seven-day window", () => {
     const result = resolveStepperHistoricalMassV1({
       workoutAt, workoutDate, timeZone: "Europe/Bratislava",

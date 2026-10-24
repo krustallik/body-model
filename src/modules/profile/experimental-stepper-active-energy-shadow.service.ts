@@ -22,6 +22,7 @@ import {
   stableStepperMassProvenanceV1,
   stepperActiveEnergyCandidateFingerprintV1,
   stepperActiveEnergyInputFingerprintV1,
+  stepperJsonPersistenceProjectionV1,
   type StepperObservedMassInputV1,
 } from "@/model/activity/stepper-historical-mass-v1";
 import { persistActiveEnergyCanonicalResolutionV1 } from "@/model/activity/active-energy-canonical.repository";
@@ -315,11 +316,15 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     })),
   });
   const equipment = FIXED_STEPPER_EQUIPMENT_V7;
-  const result = estimateExperimentalStepperActiveEnergyV1({
+  const estimatedResult = estimateExperimentalStepperActiveEnergyV1({
     workout: evidence,
     bodyMassKg: mass.massKg,
     equipment,
   });
+  // Fingerprint, publish, and persist the same numeric JSON representation.
+  const result = stepperJsonPersistenceProjectionV1(estimatedResult);
+  const persistedMassReference = stepperJsonPersistenceProjectionV1(mass.provenance);
+  const stableMassReference = stepperJsonPersistenceProjectionV1(stableStepperMassProvenanceV1(mass.provenance));
   const fingerprintInputs = {
     workout: { id: workout.id, type: workout.type, sourceIdentity: workout.sourceIdentity, startAt, endAt, durationMinutes: workout.durationMinutes, activeEnergyKcal: workout.activeEnergyKcal, manualActiveEnergyKcal: workout.manualActiveEnergyKcal, manualStepCount: workout.manualStepCount, updatedAt: workout.updatedAt.toISOString() },
     modelContext: { episodeId: episode?.id ?? null, modelVersion: episode?.modelVersion ?? null, modelDate: workoutDate, modelTimeZone },
@@ -345,20 +350,20 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
   const sourceFingerprint = stepperActiveEnergyCandidateFingerprintV1(
     experimentalStepperActiveEnergyV1Fingerprint(result), inputFingerprint,
   );
-  const persisted = { ...result, massReference: mass.provenance, inputFingerprint };
+  const persisted = { ...result, massReference: persistedMassReference, inputFingerprint };
   const manualSource = groupWorkouts.find((row) => row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)) ?? null;
   const deviceSource = group?.status === "pending" || group?.status === "ambiguous"
     ? null
     : groupWorkouts.find((row) => row.id !== manualSource?.id && row.activeEnergyKcal !== null) ?? null;
   const manualMechanical = manualSource?.manualStepCount === null || manualSource?.manualStepCount === undefined
     ? null
-    : adaptManualStepperEnergyV1({ manualStepCount: manualSource.manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: mass.massKg }).mechanicalKcal;
+    : adaptManualStepperEnergyV1({ manualStepCount: manualSource.manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: persistedMassReference.valueKg }).mechanicalKcal;
   const candidates = group?.status === "ambiguous" ? [] : [
     ...(result.availability === "available" && result.estimatedActiveKcal !== null && mass.massKg !== null
-      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-shadow:${workout.id}`, sourceFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference: stableStepperMassProvenanceV1(mass.provenance) } }]
+      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-shadow:${workout.id}`, sourceFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference: stableMassReference } }]
       : []),
     ...(result.availability !== "available" && manualMechanical !== null && Number.isFinite(manualMechanical)
-      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-manual-steps:${manualSource!.id}`, sourceFingerprint: stableSha256(`${inputFingerprint}|manual-steps|${manualMechanical}`), valueKcal: manualMechanical, provenance: { source: "bodycast-manual-step-mechanical", workoutId: manualSource!.id, massReference: stableStepperMassProvenanceV1(mass.provenance) } }]
+      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-manual-steps:${manualSource!.id}`, sourceFingerprint: stableSha256(`${inputFingerprint}|manual-steps|${manualMechanical}`), valueKcal: manualMechanical, provenance: { source: "bodycast-manual-step-mechanical", workoutId: manualSource!.id, massReference: stableMassReference } }]
       : []),
     ...(manualSource?.manualActiveEnergyKcal !== null && manualSource?.manualActiveEnergyKcal !== undefined
       ? [{ source: "manual-kcal" as const, sourceIdentity: `workout:${manualSource.id}:manual`, sourceFingerprint: stableSha256(`manual|${manualSource.id}|${manualSource.manualActiveEnergyKcal}|${manualSource.updatedAt.toISOString()}`), valueKcal: manualSource.manualActiveEnergyKcal, provenance: { source: "user-entered-workout", workoutId: manualSource.id } }]

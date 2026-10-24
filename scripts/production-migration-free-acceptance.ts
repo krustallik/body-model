@@ -9,6 +9,7 @@ import {
   resolveStepperHistoricalMassV1,
   stableStepperMassProvenanceV1,
   stepperActiveEnergyCandidateFingerprintV1,
+  stepperJsonPersistenceProjectionV1,
   STEPPER_HISTORICAL_MASS_POLICY_V1,
   type StepperObservedMassInputV1,
   type StepperMassProvenanceV1,
@@ -324,7 +325,7 @@ function stepperMassMatchesRawInputs(
     observations,
     modelEstimate,
   });
-  return stableJson(stableStepperMassProvenanceV1(resolved.provenance))
+  return stableJson(stepperJsonPersistenceProjectionV1(stableStepperMassProvenanceV1(resolved.provenance)))
     === stableJson(stableStepperMassProvenanceV1(shadow.massReference));
 }
 

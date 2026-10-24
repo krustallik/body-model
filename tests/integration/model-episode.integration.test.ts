@@ -1439,6 +1439,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       storedSourceFingerprint: originalShadow.sourceFingerprint,
     });
     expect(originalShadow.sourceFingerprint, fingerprintDiagnostic).toBe(persistedSourceFingerprint);
+    expect(changedFields).toEqual([]);
+    expect(Number(storedLowerBoundRows[0]?.value)).toBe(originalResult.lowerBoundKcal);
 
     await prisma.experimentalStepperActiveEnergyShadow.update({
       where: { workoutId: workout.id },

@@ -21,6 +21,7 @@ import {
 import {
   stepperActiveEnergyCandidateFingerprintV1,
   stepperActiveEnergyInputFingerprintV1,
+  stepperJsonPersistenceProjectionV1,
   STEPPER_HISTORICAL_MASS_POLICY_V1,
   type StepperObservedMassInputV1,
 } from "../src/model/activity/stepper-historical-mass-v1";
@@ -539,6 +540,39 @@ describe("migration-free production energy acceptance", () => {
     });
   });
 
+  it("compares persisted Stepper mass provenance at JSON persistence precision", () => {
+    const input = validAcceptanceInput();
+    const producerMassKg = 80.123456789012347;
+    input.massObservations[0]!.valueKg = producerMassKg;
+    const massReference = stepperJsonPersistenceProjectionV1({
+      status: "observed",
+      sourceType: "health-metric-sample",
+      sourceId: "1",
+      valueKg: producerMassKg,
+      sourceTimestamp: "2026-10-01T09:00:00.000Z",
+      sourceDate: "2026-10-01",
+      normalizedLocalDate: "2026-10-01",
+      dayDistance: 0,
+      policyVersion: STEPPER_HISTORICAL_MASS_POLICY_V1,
+    });
+    for (const workoutId of [1, 2]) {
+      const event = input.workoutAliases.find((alias) => alias.workoutId === workoutId)!.event;
+      const evidence = { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference };
+      (event.currentProvenance as Record<string, unknown>).evidence = evidence;
+      event.candidates[0]!.provenance = structuredClone(evidence);
+      refreshResolutionFingerprint(event);
+      const shadowIndex = input.stepperShadows.findIndex((shadow) => shadow.workoutId === workoutId);
+      input.stepperShadows[shadowIndex] = makeStepperShadow(workoutId, event.currentKcal, massReference);
+    }
+
+    expect(evaluateMigrationFreeEnergyAcceptanceV1(input)).toMatchObject({
+      historicalWorkoutResolutions: 33,
+      currentWorkoutResolutions: 33,
+      historicalStepperResolutions: 12,
+      currentStepperResolutions: 12,
+    });
+  });
+
   it("accepts explicit current unavailable energy only for post-cutoff Workouts", () => {
     const input = validAcceptanceInput();
     const unavailableOther = currentUnavailableEvent(200, "other");
@@ -727,24 +761,42 @@ describe("migration-free production energy acceptance", () => {
     event.logicalEventKey = "stepper-reconciliation:10";
     setStepperMassDate(event, "2026-10-24", "101");
     const manualStepCount = 500;
-    const mechanicalKcal = adaptManualStepperEnergyV1({ manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: 80 }).mechanicalKcal!;
+    const producerMassKg = 80.123456789012347;
+    const massReference = stepperJsonPersistenceProjectionV1({
+      status: "observed",
+      sourceType: "health-metric-sample",
+      sourceId: "101",
+      valueKg: producerMassKg,
+      sourceTimestamp: "2026-10-24T09:00:00.000Z",
+      sourceDate: "2026-10-24",
+      normalizedLocalDate: "2026-10-24",
+      dayDistance: 0,
+      policyVersion: STEPPER_HISTORICAL_MASS_POLICY_V1,
+    });
+    const estimatorEvidence = { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference };
+    (event.currentProvenance as Record<string, unknown>).evidence = estimatorEvidence;
+    event.candidates[0]!.provenance = structuredClone(estimatorEvidence);
+    const mechanicalKcal = adaptManualStepperEnergyV1({
+      manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: massReference.valueKg,
+    }).mechanicalKcal!;
+    expect(adaptManualStepperEnergyV1({
+      manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: producerMassKg,
+    }).mechanicalKcal).not.toBe(mechanicalKcal);
     const inputFingerprint = fingerprint("stepper-fixture-input:101");
-    const massReference = ((event.currentProvenance as Record<string, unknown>).evidence as Record<string, unknown>).massReference;
-    const shadow = makeStepperShadow(101, null, massReference as Record<string, unknown>, "unavailable");
+    const shadow = makeStepperShadow(101, null, massReference, "unavailable");
     const sourceFingerprint = fingerprint(`${inputFingerprint}|manual-steps|${mechanicalKcal}`);
-    const evidence = { source: "bodycast-manual-step-mechanical", workoutId: 100,
-      massReference: (event.currentProvenance as Record<string, unknown>).evidence
-        && ((event.currentProvenance as Record<string, unknown>).evidence as Record<string, unknown>).massReference };
+    const fallbackEvidence = { source: "bodycast-manual-step-mechanical", workoutId: 100,
+      massReference };
     event.currentKcal = mechanicalKcal;
     event.currentProvenance = {
       policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
       source: "bodycast-stepper-mechanical",
       sourceIdentity: "stepper-manual-steps:100",
       sourceFingerprint,
-      evidence,
+      evidence: fallbackEvidence,
     };
     event.candidates = [{ source: "bodycast-stepper-mechanical", sourceIdentity: "stepper-manual-steps:100",
-      sourceFingerprint, availability: "available", valueKcal: mechanicalKcal, provenance: evidence }];
+      sourceFingerprint, availability: "available", valueKcal: mechanicalKcal, provenance: fallbackEvidence }];
     event.resolutions[0]!.source = "bodycast-stepper-mechanical";
     event.resolutions[0]!.valueKcal = mechanicalKcal;
     refreshResolutionFingerprint(event);
@@ -759,7 +811,7 @@ describe("migration-free production energy acceptance", () => {
         createdAt: new Date("2026-10-24T11:01:00.000Z"), hiddenFromHistory: false, activeEnergyKcal: null,
         manualActiveEnergyKcal: null, manualStepCount: null, updatedAt: new Date("2026-10-24T11:01:00.000Z") },
     );
-    input.massObservations.push({ sourceType: "health-metric-sample", sourceId: "101", valueKg: 80,
+    input.massObservations.push({ sourceType: "health-metric-sample", sourceId: "101", valueKg: producerMassKg,
       timestamp: new Date("2026-10-24T09:00:00.000Z"), date: "2026-10-24" });
     input.stepperReconciliationGroups = [{ id: 10, status: "confirmed", candidates: [
       { manualWorkoutId: 100, garminWorkoutId: 101, candidateStatus: "confirmed" },

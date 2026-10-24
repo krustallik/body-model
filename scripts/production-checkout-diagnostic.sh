@@ -291,10 +291,10 @@ SELECT count(*),
         JOIN target_workout_56_representative AS r ON r."id" = target."workoutId" AND target."profileId" = 1),
       'shadowPresent', s."workoutId" IS NOT NULL,
       'targetWorkout72', COALESCE((SELECT jsonb_build_object(
-        'visible', NOT w."hiddenFromHistory",
-        'expectedKind', w.expected_kind,
-        'createdOnOrAfterAcceptanceCutoff', w."createdAt" >= TIMESTAMPTZ '2026-10-22 00:00:00+00',
-        'rawEnergyNonNull', w."activeEnergyKcal" IS NOT NULL OR w."manualActiveEnergyKcal" IS NOT NULL,
+        'visible', NOT "hiddenFromHistory",
+        'expectedKind', expected_kind,
+        'createdOnOrAfterAcceptanceCutoff', "createdAt" >= TIMESTAMPTZ '2026-10-22 00:00:00+00',
+        'rawEnergyNonNull', "activeEnergyKcal" IS NOT NULL OR "manualActiveEnergyKcal" IS NOT NULL,
         'workoutAliasCount', (SELECT count(*) FROM "ActiveEnergyEventAlias" AS a
           WHERE a."profileId" = 1 AND a."sourceType" = 'workout' AND a."workoutId" = 72),
         'canonicalEventCount', (SELECT count(DISTINCT e."id") FROM target_workout_72_events AS e),
@@ -351,7 +351,7 @@ SELECT count(*),
           ELSE 7 END FROM target_workout_72_events AS e ORDER BY e."id" LIMIT 1),
         'stepperShadowPresent', EXISTS (SELECT 1 FROM "ExperimentalStepperActiveEnergyShadow" AS s
           WHERE s."profileId" = 1 AND s."workoutId" = 72)
-      )), jsonb_build_object('visible', false, 'expectedKind', 'missing'))
+      ) FROM target_workout_72), jsonb_build_object('visible', false, 'expectedKind', 'missing'))
     )::text, 'UTF8'), 'base64'), E'\n', ''), E'\r', '')
     FROM (SELECT 1) AS diagnostic_anchor
     LEFT JOIN "ExperimentalStepperActiveEnergyShadow" AS s

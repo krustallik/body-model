@@ -142,6 +142,24 @@ describe("Stepper active-energy shadow writer", () => {
     expect(resolution.candidates.some((item: { source: string }) => item.source === "bodycast-stepper-mechanical")).toBe(false);
   });
 
+  it("repairs a stale persisted result even when its source fingerprint and revision match", async () => {
+    await recordExperimentalStepperActiveEnergyShadow({ workoutId: 44, profileId: 7 });
+    const originalWrite = mocks.tx.experimentalStepperActiveEnergyShadow.upsert.mock.calls[0]![0];
+    const staleResult = { ...originalWrite.create.result, estimatedActiveKcal: 999 };
+    mocks.tx.experimentalStepperActiveEnergyShadow.findUnique.mockResolvedValueOnce({
+      sourceFingerprint: originalWrite.create.sourceFingerprint,
+      modelRevision: originalWrite.create.modelRevision,
+      result: staleResult,
+    });
+    mocks.tx.experimentalStepperActiveEnergyShadow.upsert.mockClear();
+
+    await recordExperimentalStepperActiveEnergyShadow({ workoutId: 44, profileId: 7 });
+
+    expect(mocks.tx.experimentalStepperActiveEnergyShadow.upsert).toHaveBeenCalledOnce();
+    expect(mocks.tx.experimentalStepperActiveEnergyShadow.upsert.mock.calls[0]![0].update.result)
+      .toEqual(originalWrite.create.result);
+  });
+
   it("uses the workout episode's initial mass when no observed measurement is available", async () => {
     prepareQueries({ stepCount: 800 });
     mocks.prisma.modelEpisode.findMany.mockResolvedValue([{

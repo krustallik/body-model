@@ -374,10 +374,16 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       await lifecycle.assertActiveEnergyConvergenceOwner(profileId, input.activeEnergyConvergenceOwner);
     }
     const existingShadow = await tx.experimentalStepperActiveEnergyShadow.findUnique({
-      where: { workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true },
+      where: { workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true, result: true },
     });
+    // A matching row fingerprint alone does not prove that the persisted
+    // estimator payload still corresponds to it. Repair legacy/inconsistent
+    // rows so read-only acceptance can independently recompute the fingerprint.
+    const resultMatches = existingShadow !== null && existingShadow !== undefined
+      && stableSha256(existingShadow.result) === stableSha256(persisted);
     const shadowChanged = existingShadow?.sourceFingerprint !== sourceFingerprint
-      || existingShadow.modelRevision !== EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION;
+      || existingShadow.modelRevision !== EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION
+      || !resultMatches;
     if (shadowChanged) await tx.experimentalStepperActiveEnergyShadow.upsert({
       where: { workoutId: workout.id },
       create: { workoutId: workout.id, profileId, sourceFingerprint, modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, features: result.features, result: persisted as unknown as Prisma.InputJsonValue },

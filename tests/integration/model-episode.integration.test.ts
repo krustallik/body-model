@@ -29,6 +29,11 @@ import { ActiveEnergyConvergenceBusyError, PhysiologyV7PersistenceRepository } f
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
+import {
+  experimentalStepperActiveEnergyV1Fingerprint,
+} from "@/model/activity/experimental-stepper-active-energy-v1";
+import { stepperActiveEnergyCandidateFingerprintV1 } from "@/model/activity/stepper-historical-mass-v1";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { calculateHistoricalBodyweightAsOfV1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
@@ -1327,6 +1332,126 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { id: finalEvent.id } });
     await prisma.workout.delete({ where: { id: workout.id } });
     await prisma.healthActivityInterval.deleteMany({ where: { sourceFingerprint: { startsWith: "active-energy-post-replay-" } } });
+  }, 60_000);
+
+  it("repairs a stale Stepper JSON payload on refresh when its input fingerprint is unchanged", async () => {
+    const workoutDate = finalDate;
+    const workoutStart = new Date("2041-03-30T08:00:00.000Z");
+    const workoutEnd = new Date("2041-03-30T08:20:00.000Z");
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: workoutDate } });
+    const workout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: health.id,
+        sourceIdentity: "active-energy-stepper-stale-shadow-refresh",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: workoutStart,
+        endAt: workoutEnd,
+        durationMinutes: 20,
+        activeEnergyKcal: 90,
+      },
+    });
+    await prisma.healthActivityInterval.createMany({
+      data: [400, 350, 450, 400].map((value, index) => ({
+        date: workoutDate,
+        metric: "steps",
+        startAt: new Date(workoutStart.getTime() + index * 5 * 60_000),
+        endAt: new Date(workoutStart.getTime() + (index + 1) * 5 * 60_000),
+        value,
+        sourceFingerprint: `active-energy-stale-shadow-refresh-${index}`,
+      })),
+    });
+
+    await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId: 1 });
+    const originalShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({
+      where: { workoutId: workout.id },
+    });
+    const originalResult = originalShadow.result as Record<string, unknown> & {
+      availability: string;
+      estimatedActiveKcal: number | null;
+      inputFingerprint: string;
+    };
+    const originalKcal = originalResult.estimatedActiveKcal;
+    expect(originalResult.availability).toBe("available");
+    if (originalKcal === null) throw new Error("Stepper fixture did not produce an available estimate.");
+    expect(originalKcal).toBeGreaterThan(0);
+    const estimatorResult = Object.fromEntries(Object.entries(originalResult)
+      .filter(([key]) => key !== "massReference" && key !== "inputFingerprint"));
+    expect(originalShadow.sourceFingerprint).toBe(stepperActiveEnergyCandidateFingerprintV1(
+      experimentalStepperActiveEnergyV1Fingerprint(
+        estimatorResult as Parameters<typeof experimentalStepperActiveEnergyV1Fingerprint>[0],
+      ),
+      originalResult.inputFingerprint,
+    ));
+
+    await prisma.experimentalStepperActiveEnergyShadow.update({
+      where: { workoutId: workout.id },
+      data: { result: { ...originalResult, estimatedActiveKcal: originalKcal + 1_000 } },
+    });
+    const staleShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({
+      where: { workoutId: workout.id },
+    });
+    expect(staleShadow.sourceFingerprint).toBe(originalShadow.sourceFingerprint);
+    expect((staleShadow.result as typeof originalResult).inputFingerprint).toBe(originalResult.inputFingerprint);
+
+    const refreshed = await materializeActiveEnergyCandidatesV1(1);
+    expect(refreshed.stepperWorkoutIds).toContain(workout.id);
+    const repairedShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({
+      where: { workoutId: workout.id },
+    });
+    expect(repairedShadow.result).toEqual(originalShadow.result);
+    expect(repairedShadow.sourceFingerprint).toBe(originalShadow.sourceFingerprint);
+
+    const canonical = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+      where: { profileId: 1, aliases: { some: { sourceType: "workout", sourceId: String(workout.id) } } },
+      include: { candidates: true, resolutions: { orderBy: { revision: "asc" } } },
+    });
+    expect(canonical.inputFingerprint).toBe(originalResult.inputFingerprint);
+    expect(canonical.currentSource).toBe("bodycast-stepper-mechanical");
+    expect(canonical.currentKcal).toBe(originalResult.estimatedActiveKcal);
+    expect(canonical.currentProvenance).toMatchObject({
+      source: "bodycast-stepper-mechanical",
+      sourceIdentity: `stepper-shadow:${workout.id}`,
+      sourceFingerprint: originalShadow.sourceFingerprint,
+      evidence: {
+        revision: expect.any(String),
+        massReference: {
+          status: (originalResult.massReference as { status: string }).status,
+        },
+      },
+    });
+    expect(canonical.candidates).toContainEqual(expect.objectContaining({
+      source: "bodycast-stepper-mechanical",
+      sourceIdentity: `stepper-shadow:${workout.id}`,
+      sourceFingerprint: originalShadow.sourceFingerprint,
+      valueKcal: originalResult.estimatedActiveKcal,
+      availability: "available",
+      provenance: expect.objectContaining({
+        revision: expect.any(String),
+        massReference: expect.objectContaining({
+          status: (originalResult.massReference as { status: string }).status,
+        }),
+      }),
+    }));
+    expect(canonical.candidates).toContainEqual(expect.objectContaining({
+      source: "device-kcal",
+      sourceIdentity: `workout:${workout.id}:device`,
+      valueKcal: 90,
+      availability: "available",
+      provenance: { source: "wearable-device", workoutId: workout.id },
+    }));
+
+    const repairedUpdatedAt = repairedShadow.updatedAt;
+    const resolutionRevision = canonical.resolutionRevision;
+    await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId: 1 });
+    const repeatedShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({
+      where: { workoutId: workout.id },
+    });
+    const repeatedCanonical = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+      where: { profileId: 1, aliases: { some: { sourceType: "workout", sourceId: String(workout.id) } } },
+    });
+    expect(repeatedShadow.updatedAt).toEqual(repairedUpdatedAt);
+    expect(repeatedShadow.result).toEqual(repairedShadow.result);
+    expect(repeatedCanonical.resolutionRevision).toBe(resolutionRevision);
   }, 60_000);
 
   it("persists a compatible production suffix without touching its prefix and falls back to full replay when incompatible", async () => {

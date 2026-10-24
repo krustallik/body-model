@@ -1372,6 +1372,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const originalShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({
       where: { workoutId: workout.id },
     });
+    const storedLowerBoundRows = await prisma.$queryRaw<Array<{ value: string | null }>>`
+      SELECT "result"->>'lowerBoundKcal' AS value
+      FROM "ExperimentalStepperActiveEnergyShadow"
+      WHERE "workoutId" = ${workout.id}
+    `;
     const originalResult = originalShadow.result as Record<string, unknown> & {
       availability: string;
       estimatedActiveKcal: number | null;
@@ -1408,6 +1413,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
             : estimatorResult[key] === null ? "null" : typeof estimatorResult[key],
         producerValueFingerprint: fieldFingerprint(producerEstimatorResult, key),
         persistedValueFingerprint: fieldFingerprint(estimatorResult, key),
+        ...(key === "lowerBoundKcal" ? {
+          producerValue: producerEstimatorResult[key],
+          persistedValue: estimatorResult[key],
+          postgresJsonText: storedLowerBoundRows[0]?.value ?? null,
+        } : {}),
       }));
     const fingerprintDiagnostic = JSON.stringify({
       producerCaptured: producerResult !== null,

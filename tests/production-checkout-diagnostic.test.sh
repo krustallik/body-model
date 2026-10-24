@@ -66,6 +66,9 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'Workout' "$DOCKER_EXEC_INPUT" || exit 93
   grep -Fq 'sourceType' "$DOCKER_EXEC_INPUT" || exit 91
   grep -Fq 'count(DISTINCT workout_id)' "$DOCKER_EXEC_INPUT" || exit 90
+  grep -Fq 'WHERE w."id" = 56' "$DOCKER_EXEC_INPUT" || exit 78
+  grep -Fq '"ActiveEnergyResolutionRevision"' "$DOCKER_EXEC_INPUT" || exit 77
+  grep -Fq '"ActiveEnergyCandidate"' "$DOCKER_EXEC_INPUT" || exit 76
   grep -Fq '"StrengthDiarySession"' "$DOCKER_EXEC_INPUT" || exit 89
   grep -Fq '"accountingTimeZone"' "$DOCKER_EXEC_INPUT" || exit 88
   grep -Fq "to_char(" "$DOCKER_EXEC_INPUT" || exit 87
@@ -78,7 +81,7 @@ if [[ "$1" == exec ]]; then
   grep -Fq 'WHERE target_session_matches = 1' "$DOCKER_EXEC_INPUT" || exit 81
   if grep -Fq '"matchStatus" = '\''UNMATCHED'\''' "$DOCKER_EXEC_INPUT"; then exit 85; fi
   if grep -Eiq '^[[:space:]]*(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)[[:space:]]' "$DOCKER_EXEC_INPUT"; then exit 92; fi
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2}"
+  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|0|0}"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -169,7 +172,7 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
-    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2}" \
+    DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|0|0}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
@@ -225,6 +228,16 @@ assert_field "$CLEAN_REPORT" energy_diagnostic_strength_session_web_start_target
 assert_field "$CLEAN_REPORT" energy_diagnostic_target_strength_session_scope_matches 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_canonical_events_before_target_strength_local_date 5
 assert_field "$CLEAN_REPORT" energy_diagnostic_canonical_events_on_or_after_target_strength_local_date 2
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_visible 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_aliases 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_canonical_events 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_event_kind_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_identity_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_current_resolution 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_resolution_revision_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_candidate_matches 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_raw_energy_inputs 0
+assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_available_candidates 0
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes
@@ -255,6 +268,7 @@ fi
 ENERGY_DIAGNOSTIC_FAILURE_REPORT="$(DOCKER_EXEC_FAIL=1 run_inspector "$TEST_REPO")"
 assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_inventory_status unavailable
 assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_available_events_with_visible_workout_alias unavailable
+assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_workout_56_visible unavailable
 
 PIN_ABSENT_REPORT="$(DOCKER_IMAGE_LIST_OUTPUT= run_inspector "$TEST_REPO")"
 assert_field "$PIN_ABSENT_REPORT" deploy_rollback_pin_state absent

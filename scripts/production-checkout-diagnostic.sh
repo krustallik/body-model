@@ -136,6 +136,18 @@ WITH eligible_aliases AS (
     min(local_day_start) FILTER (WHERE is_in_acceptance_utc_window AND is_target_local_minute
       AND "status" = 'COMPLETED' AND "entryMode" = 'LIVE' AND "matchedWorkoutId" IS NULL) AS local_day_start
   FROM target_strength_session_localized
+), target_workout_56 AS (
+  SELECT w."id", w."type", w."hiddenFromHistory", w."activeEnergyKcal",
+    w."manualActiveEnergyKcal",
+    CASE WHEN lower(btrim(w."type")) = 'traditional strength training' THEN 'strength'
+      WHEN lower(btrim(w."type")) = 'stair climbing' THEN 'stepper' ELSE 'other' END AS expected_kind
+  FROM "Workout" AS w
+  WHERE w."id" = 56
+), target_workout_56_events AS (
+  SELECT DISTINCT e.*
+  FROM target_workout_56 AS w
+  JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"
+  JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
 )
 SELECT count(*),
   count(*) FILTER (WHERE has_superseded_workout),
@@ -158,7 +170,44 @@ SELECT count(*),
   (SELECT count(*) FROM current_events CROSS JOIN target_strength_session_day
     WHERE target_session_matches = 1 AND event_occurrence_at < local_day_start),
   (SELECT count(*) FROM current_events CROSS JOIN target_strength_session_day
-    WHERE target_session_matches = 1 AND event_occurrence_at >= local_day_start)
+    WHERE target_session_matches = 1 AND event_occurrence_at >= local_day_start),
+  (SELECT count(*) FROM target_workout_56 WHERE NOT "hiddenFromHistory"),
+  (SELECT count(*) FROM target_workout_56 AS w
+    JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"),
+  (SELECT count(DISTINCT e."id") FROM target_workout_56 AS w
+    JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"
+    JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"),
+  (SELECT count(*) FROM target_workout_56 AS w CROSS JOIN target_workout_56_events AS e
+    WHERE e."eventKind" = w.expected_kind),
+  (SELECT count(*) FROM target_workout_56 AS w CROSS JOIN target_workout_56_events AS e
+    WHERE e."logicalEventKey" = 'workout:56'
+      OR (w.expected_kind = 'stepper' AND e."logicalEventKey" LIKE 'stepper-reconciliation:%')),
+  (SELECT count(*) FROM target_workout_56_events AS e
+    WHERE NOT e."isStale" AND e."supersededByEventId" IS NULL
+      AND e."currentSource" IS NOT NULL AND e."currentSource" <> 'unavailable'
+      AND e."currentKcal" IS NOT NULL AND e."currentKcal" >= 0
+      AND e."currentKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity')
+      AND e."currentResolutionFingerprint" ~ '^[a-f0-9]{64}$'),
+  (SELECT count(*) FROM target_workout_56_events AS e
+    JOIN "ActiveEnergyResolutionRevision" AS r ON r."eventId" = e."id"
+      AND r."revision" = e."resolutionRevision"
+      AND r."resolutionFingerprint" = e."currentResolutionFingerprint"
+      AND r."source" = e."currentSource"
+      AND r."valueKcal" IS NOT DISTINCT FROM e."currentKcal"
+      AND r."provenance" = e."currentProvenance"),
+  (SELECT count(*) FROM target_workout_56_events AS e
+    JOIN "ActiveEnergyCandidate" AS c ON c."eventId" = e."id"
+      AND c."source" = e."currentSource"
+      AND c."sourceIdentity" = e."currentProvenance"->>'sourceIdentity'
+      AND c."sourceFingerprint" = e."currentProvenance"->>'sourceFingerprint'
+      AND c."availability" = 'available'
+      AND c."valueKcal" IS NOT DISTINCT FROM e."currentKcal"),
+  (SELECT count(*) FROM target_workout_56 AS w
+    WHERE w."activeEnergyKcal" IS NOT NULL OR w."manualActiveEnergyKcal" IS NOT NULL),
+  (SELECT count(*) FROM target_workout_56_events AS e
+    JOIN "ActiveEnergyCandidate" AS c ON c."eventId" = e."id"
+    WHERE c."availability" = 'available' AND c."valueKcal" IS NOT NULL
+      AND c."valueKcal" >= 0 AND c."valueKcal"::text NOT IN ('NaN', 'Infinity', '-Infinity'))
 FROM current_events
 SQL
 )"
@@ -171,7 +220,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c loc
     --command "BEGIN READ ONLY; $query; ROLLBACK"
 BASH
 )" || return 1
-  [[ "$inventory" =~ ^([0-9]+\|){19}[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^([0-9]+\|){29}[0-9]+$ ]] || return 1
   printf '%s\n' "$inventory"
 }
 
@@ -434,7 +483,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
-    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_completed_matches energy_target_live_matches energy_target_unmatched_candidates energy_target_local_minute_matches energy_target_effective_local_minute_matches energy_target_web_started_local_minute_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date <<< "$energy_inventory"
+    IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_completed_matches energy_target_live_matches energy_target_unmatched_candidates energy_target_local_minute_matches energy_target_effective_local_minute_matches energy_target_web_started_local_minute_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date energy_w56_visible energy_w56_aliases energy_w56_events energy_w56_kind_matches energy_w56_identity_matches energy_w56_current energy_w56_resolution_revision_matches energy_w56_selected_candidate_matches energy_w56_raw_energy_inputs energy_w56_available_candidates <<< "$energy_inventory"
     emit energy_diagnostic_inventory_status available
     emit energy_diagnostic_available_events_with_visible_workout_alias "$energy_total"
     emit energy_diagnostic_events_with_superseded_workout_alias "$energy_with_superseded"
@@ -456,6 +505,16 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_target_strength_session_scope_matches "$energy_target_strength_session_matches"
     emit energy_diagnostic_canonical_events_before_target_strength_local_date "$energy_before_strength_local_date"
     emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date "$energy_on_or_after_strength_local_date"
+    emit energy_diagnostic_workout_56_visible "$energy_w56_visible"
+    emit energy_diagnostic_workout_56_aliases "$energy_w56_aliases"
+    emit energy_diagnostic_workout_56_canonical_events "$energy_w56_events"
+    emit energy_diagnostic_workout_56_event_kind_matches "$energy_w56_kind_matches"
+    emit energy_diagnostic_workout_56_identity_matches "$energy_w56_identity_matches"
+    emit energy_diagnostic_workout_56_current_resolution "$energy_w56_current"
+    emit energy_diagnostic_workout_56_resolution_revision_matches "$energy_w56_resolution_revision_matches"
+    emit energy_diagnostic_workout_56_selected_candidate_matches "$energy_w56_selected_candidate_matches"
+    emit energy_diagnostic_workout_56_raw_energy_inputs "$energy_w56_raw_energy_inputs"
+    emit energy_diagnostic_workout_56_available_candidates "$energy_w56_available_candidates"
   else
     emit energy_diagnostic_inventory_status unavailable
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
@@ -478,6 +537,16 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_target_strength_session_scope_matches unavailable
     emit energy_diagnostic_canonical_events_before_target_strength_local_date unavailable
     emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date unavailable
+    emit energy_diagnostic_workout_56_visible unavailable
+    emit energy_diagnostic_workout_56_aliases unavailable
+    emit energy_diagnostic_workout_56_canonical_events unavailable
+    emit energy_diagnostic_workout_56_event_kind_matches unavailable
+    emit energy_diagnostic_workout_56_identity_matches unavailable
+    emit energy_diagnostic_workout_56_current_resolution unavailable
+    emit energy_diagnostic_workout_56_resolution_revision_matches unavailable
+    emit energy_diagnostic_workout_56_selected_candidate_matches unavailable
+    emit energy_diagnostic_workout_56_raw_energy_inputs unavailable
+    emit energy_diagnostic_workout_56_available_candidates unavailable
   fi
 else
   emit docker_daemon_available no
@@ -508,6 +577,16 @@ else
   emit energy_diagnostic_target_strength_session_scope_matches unavailable
   emit energy_diagnostic_canonical_events_before_target_strength_local_date unavailable
   emit energy_diagnostic_canonical_events_on_or_after_target_strength_local_date unavailable
+  emit energy_diagnostic_workout_56_visible unavailable
+  emit energy_diagnostic_workout_56_aliases unavailable
+  emit energy_diagnostic_workout_56_canonical_events unavailable
+  emit energy_diagnostic_workout_56_event_kind_matches unavailable
+  emit energy_diagnostic_workout_56_identity_matches unavailable
+  emit energy_diagnostic_workout_56_current_resolution unavailable
+  emit energy_diagnostic_workout_56_resolution_revision_matches unavailable
+  emit energy_diagnostic_workout_56_selected_candidate_matches unavailable
+  emit energy_diagnostic_workout_56_raw_energy_inputs unavailable
+  emit energy_diagnostic_workout_56_available_candidates unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then

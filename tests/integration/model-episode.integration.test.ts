@@ -45,6 +45,7 @@ import { RESISTANCE } from "@/modules/training/training.constants";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { runWithHealthSyncRefreshWorkerLease } from "@/modules/health/health-sync-worker-context";
+import { inventoryV4RecoveryRawSourcesV1 } from "../../scripts/production-v4-recovery-evidence";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -1332,6 +1333,103 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.workout.delete({ where: { id: workout.id } });
     await prisma.healthActivityInterval.deleteMany({ where: { sourceFingerprint: { startsWith: "active-energy-post-replay-" } } });
   }, 60_000);
+
+  it("keeps the V4 source fingerprint stable through Active Energy candidate materialization", async () => {
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: finalDate } });
+    const workoutStart = new Date("2041-03-30T08:00:00.000Z");
+    let workoutId: number | null = null;
+    let sessionId: number | null = null;
+    let setId: number | null = null;
+    const originalHealth = { weightKg: health.weightKg, caloriesKcal: health.caloriesKcal, updatedAt: health.updatedAt };
+
+    try {
+      await prepareCurrentForecastV2(now);
+      const workout = await prisma.workout.create({
+        data: {
+          dailyHealthDataId: health.id,
+          sourceIdentity: "raw-fingerprint-accounting-convergence",
+          type: "Other Fixture",
+          startAt: workoutStart,
+          endAt: new Date(workoutStart.getTime() + 45 * 60_000),
+          durationMinutes: 45,
+          activeEnergyKcal: 240,
+        },
+      });
+      workoutId = workout.id;
+      const session = await prisma.strengthDiarySession.create({
+        data: {
+          profileId: 1,
+          status: "COMPLETED",
+          entryMode: "LIVE",
+          webStartedAt: workoutStart,
+          matchStatus: "UNMATCHED",
+        },
+      });
+      sessionId = session.id;
+      const exercise = await prisma.strengthSessionExercise.create({
+        data: {
+          sessionId,
+          snapshotExerciseName: "fingerprint regression press",
+          sortOrder: 0,
+          plannedSets: 1,
+          resistanceType: "EXTERNAL_WEIGHT",
+          origin: "EXTRA",
+        },
+      });
+      const set = await prisma.strengthSet.create({
+        data: { sessionExerciseId: exercise.id, setNumber: 1, reps: 8, weightKg: 20, completedAt: workoutStart },
+      });
+      setId = set.id;
+
+      const before = await inventoryV4RecoveryRawSourcesV1(prisma);
+      expect(session.currentSnapshotRevision).toBeNull();
+      const convergence = await materializeActiveEnergyCandidatesV1(1);
+      expect(convergence.strengthSessionIds).toContain(sessionId);
+      const materialized = await prisma.strengthDiarySession.findUniqueOrThrow({ where: { id: sessionId } });
+      expect(materialized.currentSnapshotRevision).not.toBeNull();
+      expect(materialized.effectiveAccountingAt).toEqual(workoutStart);
+      expect(materialized.accountingTimeZone).not.toBeNull();
+      expect(await prisma.strengthSessionAccountingSnapshot.count({ where: { sessionId } })).toBeGreaterThan(0);
+      expect(await prisma.strengthSessionAccountingOperation.count({ where: { sessionId } })).toBeGreaterThan(0);
+      const canonical = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+        where: { profileId: 1, aliases: { some: { sourceType: "strength-session", sourceId: String(sessionId) } } },
+      });
+      expect(canonical.isStale).toBe(false);
+      expect(canonical.currentResolutionFingerprint).not.toBeNull();
+      expect(canonical.resolutionRevision).toBeGreaterThan(0);
+      expect((await inventoryV4RecoveryRawSourcesV1(prisma)).sourceFingerprint).toBe(before.sourceFingerprint);
+
+      const assertMutationDetected = async (label: string, mutate: () => Promise<unknown>, restore: () => Promise<unknown>) => {
+        const fingerprint = (await inventoryV4RecoveryRawSourcesV1(prisma)).sourceFingerprint;
+        await mutate();
+        try {
+          expect((await inventoryV4RecoveryRawSourcesV1(prisma)).sourceFingerprint, label).not.toBe(fingerprint);
+        } finally {
+          await restore();
+        }
+      };
+      await assertMutationDetected("body weight", () => prisma.dailyHealthData.update({ where: { id: health.id }, data: { weightKg: (originalHealth.weightKg ?? 80) + 1, updatedAt: originalHealth.updatedAt } }), () => prisma.dailyHealthData.update({ where: { id: health.id }, data: { weightKg: originalHealth.weightKg, updatedAt: originalHealth.updatedAt } }));
+      await assertMutationDetected("nutrition", () => prisma.dailyHealthData.update({ where: { id: health.id }, data: { caloriesKcal: (originalHealth.caloriesKcal ?? 2_450) + 1, updatedAt: originalHealth.updatedAt } }), () => prisma.dailyHealthData.update({ where: { id: health.id }, data: { caloriesKcal: originalHealth.caloriesKcal, updatedAt: originalHealth.updatedAt } }));
+      await assertMutationDetected("workout energy", () => prisma.workout.update({ where: { id: workout.id }, data: { activeEnergyKcal: (workout.activeEnergyKcal ?? 240) + 1 } }), () => prisma.workout.update({ where: { id: workout.id }, data: { activeEnergyKcal: workout.activeEnergyKcal } }));
+      await assertMutationDetected("workout timestamp", () => prisma.workout.update({ where: { id: workout.id }, data: { startAt: new Date(workout.startAt.getTime() + 60_000) } }), () => prisma.workout.update({ where: { id: workout.id }, data: { startAt: workout.startAt } }));
+      await assertMutationDetected("workout source identity", () => prisma.workout.update({ where: { id: workout.id }, data: { sourceIdentity: `${workout.sourceIdentity}-changed` } }), () => prisma.workout.update({ where: { id: workout.id }, data: { sourceIdentity: workout.sourceIdentity } }));
+      await assertMutationDetected("strength set weight", () => prisma.strengthSet.update({ where: { id: set.id }, data: { weightKg: 21 } }), () => prisma.strengthSet.update({ where: { id: set.id }, data: { weightKg: set.weightKg } }));
+      await assertMutationDetected("session provenance", () => prisma.strengthDiarySession.update({ where: { id: session.id }, data: { accountingTimeZoneProvenance: "manual-correction" } }), () => prisma.strengthDiarySession.update({ where: { id: session.id }, data: { accountingTimeZoneProvenance: session.accountingTimeZoneProvenance } }));
+    } finally {
+      if (workoutId !== null) {
+        await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, aliases: { some: { workoutId } } } });
+        await prisma.workout.deleteMany({ where: { id: workoutId } });
+      }
+      if (sessionId !== null) {
+        await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, aliases: { some: { sourceType: "strength-session", sourceId: String(sessionId) } } } });
+        await prisma.experimentalStrengthEnergyShadow.deleteMany({ where: { sessionId } });
+        await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+        await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1, affectedSessionIds: { has: sessionId } } });
+      }
+      if (setId !== null) await prisma.strengthSet.deleteMany({ where: { id: setId } });
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+    }
+  }, 120_000);
 
   it("repairs a stale Stepper JSON payload on refresh when its input fingerprint is unchanged", async () => {
     const workoutDate = finalDate;

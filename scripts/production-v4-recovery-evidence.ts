@@ -16,9 +16,10 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-type";
 
 const APPLE_HEALTH_SHORTCUT_SOURCE = "apple-health-shortcut";
 
-// Keep this exact allowlist aligned with the audited legacy recovery source.
-// HealthSyncAudit is fingerprinted separately for recovery preservation; it
-// is not part of the long-lived V4 calculation currentness fingerprint.
+// Keep only durable source rows in the strict projection. The accounting
+// snapshots/operations are replay outputs and are validated by their own
+// freshness/provenance contracts. HealthSyncAudit is fingerprinted separately
+// for retention-aware preservation.
 const RECOVERY_RAW_INPUT_TABLES = [
   "Profile",
   "ModelEpisode",
@@ -44,8 +45,6 @@ const RECOVERY_RAW_INPUT_TABLES = [
   "WorkInterval",
   "StepperReconciliationGroup",
   "StepperReconciliationCandidate",
-  "StrengthSessionAccountingSnapshot",
-  "StrengthSessionAccountingOperation",
 ] as const;
 // Larger deterministic pages avoid hundreds of database round trips while the
 // migration-free release holds its currentness fence. The per-row digest and
@@ -117,12 +116,22 @@ export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma, opt
   const auditRetentionExisting = options.healthSyncAuditBaselineMaxId !== undefined
     ? createHealthSyncAuditRetentionAccumulatorV1() : null;
   let auditRetentionNewRowCount = 0;
-  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v3\0");
+  const digest = createHash("sha256").update("bodycast-v4-recovery-raw-sources-v4\0");
   let healthSyncAuditFingerprint: string | null = null;
   for (const table of RECOVERY_RAW_INPUT_TABLES) {
     const rawRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY['personalOffsetKcalPerDay', 'activityCalibration', 'calibrationStatus', 'calibrationDiagnostics', 'latestModeledDate', 'updatedAt']::text[]`
-      : "to_jsonb(source_row)";
+      : table === "StrengthDiarySession"
+        ? `(to_jsonb(source_row) - ARRAY['currentSnapshotRevision', 'updatedAt', 'effectiveAccountingAt', 'accountingTimeZone', 'accountingTimeZoneProvenance']::text[])
+           || jsonb_build_object(
+             'effectiveAccountingAt', COALESCE(source_row."effectiveAccountingAt", matched_workout."startAt", source_row."webStartedAt", source_row."createdAt"),
+             'accountingTimeZone', COALESCE(source_row."accountingTimeZone", $3::text),
+             'accountingTimeZoneProvenance', COALESCE(source_row."accountingTimeZoneProvenance", 'legacy-default')
+           )`
+        : "to_jsonb(source_row)";
+    const sourceJoins = table === "StrengthDiarySession"
+      ? `LEFT JOIN public."Workout" AS matched_workout ON matched_workout."id" = source_row."matchedWorkoutId"`
+      : "";
     const [countRow] = await client.$queryRawUnsafe<Array<{ count: number }>>(
       `SELECT count(*)::int AS count FROM public."${table}"`,
     );
@@ -131,34 +140,27 @@ export async function inventoryV4RecoveryRawSourcesV1(client: typeof prisma, opt
       throw new Error(`V4 strict source fingerprint returned invalid ${table} row count`);
     }
     const tableDigest = createHash("sha256").update(`${table}\0${rowCount}\0`);
-    let lastId: number | null = null;
+    let lastId = -2_147_483_649;
     let seen = 0;
     while (seen < rowCount) {
-      let rows: Array<{ id: number; raw_row: string }>;
-      if (lastId === null) {
-        rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
-          `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
-           FROM public."${table}" AS source_row
-           ORDER BY source_row.id
-           LIMIT $1`,
-          table === "HealthSyncAudit" ? RECOVERY_AUDIT_FINGERPRINT_PAGE_SIZE : RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
-        );
-      } else {
-        rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
-          `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
-           FROM public."${table}" AS source_row
-           WHERE source_row.id > $1
-           ORDER BY source_row.id
-           LIMIT $2`,
-          lastId,
-          table === "HealthSyncAudit" ? RECOVERY_AUDIT_FINGERPRINT_PAGE_SIZE : RECOVERY_RAW_FINGERPRINT_PAGE_SIZE,
-        );
-      }
+      const pageSize = table === "HealthSyncAudit"
+        ? RECOVERY_AUDIT_FINGERPRINT_PAGE_SIZE : RECOVERY_RAW_FINGERPRINT_PAGE_SIZE;
+      const rows = await client.$queryRawUnsafe<Array<{ id: number; raw_row: string }>>(
+        `SELECT source_row.id, (${rawRowExpression})::text AS raw_row
+         FROM public."${table}" AS source_row
+         ${sourceJoins}
+         WHERE source_row.id > $1::bigint
+         ORDER BY source_row.id
+         LIMIT $2`,
+        lastId,
+        pageSize,
+        ...(table === "StrengthDiarySession" ? [DEFAULT_TIME_ZONE] : []),
+      );
       if (rows.length === 0) {
         throw new Error(`V4 strict source fingerprint stopped before the end of ${table}`);
       }
       for (const row of rows) {
-        if (!Number.isSafeInteger(row.id) || (lastId !== null && row.id <= lastId) || typeof row.raw_row !== "string") {
+        if (!Number.isSafeInteger(row.id) || row.id <= lastId || typeof row.raw_row !== "string") {
           throw new Error(`V4 strict source fingerprint returned invalid ${table} row`);
         }
         tableDigest.update(`${row.id}:${Buffer.byteLength(row.raw_row, "utf8")}:${row.raw_row}\n`);

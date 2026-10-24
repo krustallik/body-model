@@ -10,6 +10,11 @@ const ESTIMATOR_RESULT_FIELDS = new Set([
   "lowerBoundKcal", "upperBoundKcal", "unavailableReason", "features", "reasons",
   "recoveryEnergy", "garminReferenceKcal",
 ]);
+const STRENGTH_ESTIMATOR_RESULT_FIELDS = new Set([
+  "contractVersion", "provenance", "supportedDomain", "availability", "estimatedActiveKcal",
+  "lowerBoundKcal", "upperBoundKcal", "unavailableReason", "features", "reasons",
+  "recoveryEnergy", "garminReferenceKcal",
+]);
 const STEPPER_MASS_POLICY = "stepper-observed-nearest-seven-calendar-days-v1";
 
 function canonicalize(value) {
@@ -144,6 +149,25 @@ export function summarizeStepperShadowDiagnostic(row) {
   else if (!sourceFingerprintMatchesVerifierPayload) failureReason = "source-fingerprint-verifier-reconstruction-mismatch";
 
   const workout72 = isRecord(row.targetWorkout72) ? row.targetWorkout72 : null;
+  const strengthBinding = workout72 && isRecord(workout72.strengthBinding) ? workout72.strengthBinding : null;
+  const strengthResult = strengthBinding && isRecord(strengthBinding.shadowResult) ? strengthBinding.shadowResult : null;
+  const strengthEstimatorPayload = strengthResult
+    ? Object.fromEntries([...STRENGTH_ESTIMATOR_RESULT_FIELDS]
+      .filter((key) => Object.hasOwn(strengthResult, key))
+      .map((key) => [key, strengthResult[key]]))
+    : null;
+  const strengthInputFingerprint = typeof strengthResult?.inputFingerprint === "string"
+    && /^[a-f0-9]{64}$/.test(strengthResult.inputFingerprint)
+    ? strengthResult.inputFingerprint : null;
+  const strengthPersistedFingerprint = strengthBinding?.shadowSourceFingerprint;
+  const strengthPayloadFingerprintMatches = strengthInputFingerprint !== null
+    && typeof strengthPersistedFingerprint === "string"
+    && /^[a-f0-9]{64}$/.test(strengthPersistedFingerprint)
+    && strengthPersistedFingerprint === stableSha256(`${stableSha256(strengthEstimatorPayload)}|${strengthInputFingerprint}`);
+  const strengthCandidateKcal = strengthBinding?.selectedCandidateKcal;
+  const strengthShadowKcalMatches = Number.isFinite(strengthResult?.estimatedActiveKcal)
+    && Number.isFinite(strengthCandidateKcal)
+    && strengthResult.estimatedActiveKcal === strengthCandidateKcal;
   const workout72Lines = workout72 ? [
     `energy_diagnostic_workout_72_visible=${yesNo(workout72.visible === true)}`,
     `energy_diagnostic_workout_72_expected_kind=${["strength", "stepper", "other"].includes(workout72.expectedKind) ? workout72.expectedKind : "unknown"}`,
@@ -161,6 +185,31 @@ export function summarizeStepperShadowDiagnostic(row) {
     `energy_diagnostic_workout_72_selected_source_code_first_event=${Number.isSafeInteger(workout72.selectedSourceCodeFirstEvent) ? workout72.selectedSourceCodeFirstEvent : "unknown"}`,
     `energy_diagnostic_workout_72_selected_identity_code_first_event=${Number.isSafeInteger(workout72.selectedIdentityCodeFirstEvent) ? workout72.selectedIdentityCodeFirstEvent : "unknown"}`,
     `energy_diagnostic_workout_72_stepper_shadow_present=${yesNo(workout72.stepperShadowPresent === true)}`,
+    `energy_diagnostic_workout_72_strength_selected_source=${yesNo(strengthBinding?.selectedSourceIsStrengthEstimate === true)}`,
+    `energy_diagnostic_workout_72_strength_selected_identity=${yesNo(strengthBinding?.selectedIdentityIsStrengthSession === true)}`,
+    `energy_diagnostic_workout_72_strength_session_exists=${yesNo(strengthBinding?.sessionExists === true)}`,
+    `energy_diagnostic_workout_72_strength_session_completed=${yesNo(strengthBinding?.sessionCompleted === true)}`,
+    `energy_diagnostic_workout_72_strength_session_matched_workout=${yesNo(strengthBinding?.sessionMatchedToWorkout72 === true)}`,
+    `energy_diagnostic_workout_72_strength_alias_count=${Number.isSafeInteger(strengthBinding?.strengthSessionAliasCount) ? strengthBinding.strengthSessionAliasCount : "unknown"}`,
+    `energy_diagnostic_workout_72_strength_alias_same_event_count=${Number.isSafeInteger(strengthBinding?.strengthSessionAliasSameEventCount) ? strengthBinding.strengthSessionAliasSameEventCount : "unknown"}`,
+    `energy_diagnostic_workout_72_strength_snapshot_exists=${yesNo(strengthBinding?.snapshotExists === true)}`,
+    `energy_diagnostic_workout_72_strength_snapshot_revision_matches_session=${yesNo(strengthBinding?.snapshotRevisionMatchesSession === true)}`,
+    `energy_diagnostic_workout_72_strength_snapshot_accounting_revision_matches=${yesNo(strengthBinding?.snapshotAccountingRevisionMatchesSession === true)}`,
+    `energy_diagnostic_workout_72_strength_snapshot_payload_identity_matches=${yesNo(strengthBinding?.snapshotPayloadIdentityMatches === true)}`,
+    `energy_diagnostic_workout_72_strength_snapshot_fingerprint_matches_payload=${yesNo(strengthBinding?.snapshotFingerprintMatchesPayload === true)}`,
+    `energy_diagnostic_workout_72_strength_shadow_exists=${yesNo(strengthBinding?.shadowExists === true)}`,
+    `energy_diagnostic_workout_72_strength_shadow_revision_matches=${yesNo(strengthBinding?.shadowModelRevisionMatches === true)}`,
+    `energy_diagnostic_workout_72_strength_shadow_fingerprint_matches_payload=${yesNo(strengthPayloadFingerprintMatches)}`,
+    `energy_diagnostic_workout_72_strength_shadow_input_fingerprint_matches_selected=${yesNo(strengthBinding?.shadowInputFingerprintMatchesSelected === true)}`,
+    `energy_diagnostic_workout_72_strength_shadow_available=${yesNo(strengthBinding?.shadowAvailable === true)}`,
+    `energy_diagnostic_workout_72_strength_shadow_kcal_matches_current=${yesNo(strengthShadowKcalMatches)}`,
+    `energy_diagnostic_workout_72_strength_candidate_provenance_matches_shadow=${yesNo(strengthBinding?.selectedCandidateProvenanceMatchesShadow === true)}`,
+    `energy_diagnostic_workout_72_strength_stage02_mass_matches_snapshot=${yesNo(strengthBinding?.shadowStage02MassMatchesSnapshot === true)}`,
+    `energy_diagnostic_workout_72_strength_stage02_revision_matches_snapshot=${yesNo(strengthBinding?.shadowStage02RevisionMatchesSnapshot === true)}`,
+    `energy_diagnostic_workout_72_strength_stage02_identity_matches_snapshot=${yesNo(strengthBinding?.shadowStage02IdentityMatchesSnapshot === true)}`,
+    `energy_diagnostic_workout_72_strength_stage02_revision_is_current=${yesNo(strengthBinding?.shadowStage02RevisionIsCurrent === true)}`,
+    `energy_diagnostic_workout_72_strength_energy_mass_matches_available_stage02=${strengthBinding?.energyMassMatchesAvailableStage02 === null ? "not-applicable" : yesNo(strengthBinding?.energyMassMatchesAvailableStage02 === true)}`,
+    `energy_diagnostic_workout_72_strength_mass_status=${["observed", "model-estimated", "unavailable"].includes(strengthBinding?.stage02MassStatus) ? strengthBinding.stage02MassStatus : "unknown"}`,
   ] : [];
 
   return [

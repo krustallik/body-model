@@ -101,6 +101,102 @@ describe("production Workout 56 shadow diagnostic sanitizer", () => {
     expect(output).not.toContain("must-not-be-printed");
   });
 
+  it("reports the full Strength source-binding chain without exposing its persisted payload", () => {
+    const row = validRow();
+    const strengthResult = {
+      contractVersion: "experimental-strength-active-energy-v1",
+      provenance: "experimental-heuristic",
+      supportedDomain: "resistance-diary-session-shadow-only",
+      availability: "available",
+      estimatedActiveKcal: 318.25,
+      lowerBoundKcal: 270,
+      upperBoundKcal: 370,
+      unavailableReason: null,
+      features: { privateMassValue: 88.4 },
+      reasons: ["session-estimate"],
+      recoveryEnergy: { disposition: "separate" },
+      garminReferenceKcal: 401,
+      inputFingerprint: "b".repeat(64),
+      stage02MassReference: { sourceId: "private-health-id" },
+    };
+    const estimatorFields = ["contractVersion", "provenance", "supportedDomain", "availability", "estimatedActiveKcal",
+      "lowerBoundKcal", "upperBoundKcal", "unavailableReason", "features", "reasons", "recoveryEnergy", "garminReferenceKcal"];
+    const estimatorPayload = Object.fromEntries(estimatorFields
+      .map((key) => [key, strengthResult[key]]));
+    const strengthFingerprint = stableSha256(`${stableSha256(estimatorPayload)}|${strengthResult.inputFingerprint}`);
+    row.targetWorkout72 = {
+      visible: true,
+      expectedKind: "strength",
+      selectedSourceCodeFirstEvent: 4,
+      selectedIdentityCodeFirstEvent: 4,
+      strengthBinding: {
+        selectedSourceIsStrengthEstimate: true,
+        selectedIdentityIsStrengthSession: true,
+        sessionExists: true,
+        sessionCompleted: true,
+        sessionMatchedToWorkout72: true,
+        strengthSessionAliasCount: 1,
+        strengthSessionAliasSameEventCount: 1,
+        snapshotExists: true,
+        snapshotRevisionMatchesSession: true,
+        snapshotAccountingRevisionMatchesSession: true,
+        snapshotPayloadIdentityMatches: true,
+        snapshotFingerprintMatchesPayload: true,
+        shadowExists: true,
+        shadowModelRevisionMatches: true,
+        shadowInputFingerprintMatchesSelected: true,
+        shadowAvailable: true,
+        selectedCandidateKcal: 318.25,
+        shadowSourceFingerprint: strengthFingerprint,
+        shadowResult: strengthResult,
+        selectedCandidateProvenanceMatchesShadow: true,
+        shadowStage02MassMatchesSnapshot: true,
+        shadowStage02RevisionMatchesSnapshot: true,
+        shadowStage02IdentityMatchesSnapshot: true,
+        shadowStage02RevisionIsCurrent: true,
+        energyMassMatchesAvailableStage02: true,
+        stage02MassStatus: "observed",
+      },
+    };
+    const output = sanitizeCheckoutDiagnosticOutput(diagnosticLine(row));
+
+    expect(output).toContain("energy_diagnostic_workout_72_strength_shadow_fingerprint_matches_payload=yes");
+    expect(output).toContain("energy_diagnostic_workout_72_strength_session_matched_workout=yes");
+    expect(output).toContain("energy_diagnostic_workout_72_strength_energy_mass_matches_available_stage02=yes");
+    expect(output).not.toContain("318.25");
+    expect(output).not.toContain("88.4");
+    expect(output).not.toContain("private-health-id");
+    expect(output).not.toContain(strengthFingerprint);
+  });
+
+  it("identifies when a Strength shadow payload was not refreshed with its fingerprint", () => {
+    const row = validRow();
+    row.targetWorkout72 = {
+      expectedKind: "strength",
+      strengthBinding: {
+        shadowSourceFingerprint: "c".repeat(64),
+        shadowResult: {
+          contractVersion: "experimental-strength-active-energy-v1",
+          provenance: "experimental-heuristic",
+          supportedDomain: "resistance-diary-session-shadow-only",
+          availability: "available",
+          estimatedActiveKcal: 318,
+          lowerBoundKcal: 270,
+          upperBoundKcal: 370,
+          unavailableReason: null,
+          features: {},
+          reasons: [],
+          recoveryEnergy: { disposition: "separate" },
+          garminReferenceKcal: null,
+          inputFingerprint: "d".repeat(64),
+        },
+      },
+    };
+    const output = sanitizeCheckoutDiagnosticOutput(diagnosticLine(row));
+
+    expect(output).toContain("energy_diagnostic_workout_72_strength_shadow_fingerprint_matches_payload=no");
+  });
+
   it("keeps Workout 72 evidence when the Workout 56 shadow is absent", () => {
     const row = validRow();
     row.shadowPresent = false;

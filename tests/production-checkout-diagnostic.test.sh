@@ -72,6 +72,9 @@ if [[ "$1" == exec ]]; then
   grep -Fq '"ActiveEnergyResolutionRevision"' "$DOCKER_EXEC_INPUT" || exit 77
   grep -Fq '"ActiveEnergyCandidate"' "$DOCKER_EXEC_INPUT" || exit 76
   grep -Fq '"StrengthDiarySession"' "$DOCKER_EXEC_INPUT" || exit 89
+  grep -Fq '"StrengthSessionAccountingSnapshot"' "$DOCKER_EXEC_INPUT" || exit 68
+  grep -Fq '"ExperimentalStrengthEnergyShadow"' "$DOCKER_EXEC_INPUT" || exit 67
+  grep -Fq "'strengthBinding'" "$DOCKER_EXEC_INPUT" || exit 66
   grep -Fq '"accountingTimeZone"' "$DOCKER_EXEC_INPUT" || exit 88
   grep -Fq "to_char(" "$DOCKER_EXEC_INPUT" || exit 87
   grep -Fq 'TIMESTAMPTZ '\''2026-10-21 00:00:00+00'\''' "$DOCKER_EXEC_INPUT" || exit 86

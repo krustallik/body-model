@@ -194,6 +194,14 @@ WITH eligible_aliases AS (
   JOIN "ActiveEnergyEventAlias" AS a ON a."profileId" = 1 AND a."workoutId" = w."id"
     AND a."sourceType" = 'workout'
   JOIN "ActiveEnergyCanonicalEvent" AS e ON e."id" = a."eventId"
+), target_workout_72_selected_event AS (
+  SELECT e.* FROM target_workout_72_events AS e ORDER BY e."id" LIMIT 1
+), target_workout_72_selected_strength_session AS (
+  SELECT e."id" AS event_id,
+    CASE WHEN e."currentProvenance"->>'sourceIdentity' ~ '^strength-session:[0-9]+$'
+      THEN substring(e."currentProvenance"->>'sourceIdentity' FROM '^strength-session:([0-9]+)$')::integer
+      ELSE NULL END AS session_id
+  FROM target_workout_72_selected_event AS e
 ), target_workout_56_canonical_event AS (
   SELECT e."inputFingerprint"
   FROM "ActiveEnergyEventAlias" AS a
@@ -350,7 +358,66 @@ SELECT count(*),
           WHEN e."currentProvenance"->>'sourceIdentity' = 'workout:72:device' THEN 6
           ELSE 7 END FROM target_workout_72_events AS e ORDER BY e."id" LIMIT 1),
         'stepperShadowPresent', EXISTS (SELECT 1 FROM "ExperimentalStepperActiveEnergyShadow" AS s
-          WHERE s."profileId" = 1 AND s."workoutId" = 72)
+          WHERE s."profileId" = 1 AND s."workoutId" = 72),
+        'strengthBinding', COALESCE((SELECT jsonb_build_object(
+          'selectedSourceIsStrengthEstimate', e."currentSource" = 'bodycast-strength-estimate',
+          'selectedIdentityIsStrengthSession', selected.session_id IS NOT NULL,
+          'sessionExists', session."id" IS NOT NULL,
+          'sessionCompleted', session."status" = 'COMPLETED',
+          'sessionMatchedToWorkout72', session."matchStatus" = 'MATCHED' AND session."matchedWorkoutId" = 72,
+          'strengthSessionAliasCount', (SELECT count(*) FROM "ActiveEnergyEventAlias" AS alias
+            WHERE alias."profileId" = 1 AND alias."sourceType" = 'strength-session'
+              AND alias."sourceId" = selected.session_id::text),
+          'strengthSessionAliasSameEventCount', (SELECT count(*) FROM "ActiveEnergyEventAlias" AS alias
+            WHERE alias."profileId" = 1 AND alias."sourceType" = 'strength-session'
+              AND alias."sourceId" = selected.session_id::text AND alias."eventId" = e."id"),
+          'snapshotExists', snapshot."id" IS NOT NULL,
+          'snapshotRevisionMatchesSession', snapshot."snapshotRevision" = session."currentSnapshotRevision",
+          'snapshotAccountingRevisionMatchesSession', snapshot."accountingInputRevision" = session."accountingInputRevision",
+          'snapshotPayloadIdentityMatches', snapshot."payload"->>'sessionId' = session."id"::text
+            AND snapshot."payload"->>'snapshotRevision' = snapshot."snapshotRevision"::text
+            AND snapshot."payload"->>'accountingInputRevision' = session."accountingInputRevision"::text,
+          'snapshotFingerprintMatchesPayload', snapshot."inputFingerprint" = snapshot."payload"->>'inputFingerprint',
+          'snapshotMassReferenceMatchesPayload', snapshot."payload"->'massReference' IS NOT NULL,
+          'shadowExists', shadow."sessionId" IS NOT NULL,
+          'shadowModelRevisionMatches', shadow."modelRevision" = 'experimental-strength-active-energy-v1',
+          'shadowInputFingerprintMatchesSelected', shadow."result"->>'inputFingerprint' = e."currentProvenance"->>'sourceFingerprint',
+          'shadowAvailable', shadow."result"->>'availability' = 'available',
+          'selectedCandidateKcal', candidate."valueKcal",
+          'shadowSourceFingerprint', shadow."sourceFingerprint",
+          'shadowResult', shadow."result",
+          'selectedCandidateProvenanceMatchesShadow', candidate."provenance" = jsonb_build_object(
+            'estimator', 'experimental-strength-active-energy-v1',
+            'stage02MassReference', COALESCE(shadow."result"->'stage02MassReference', 'null'::jsonb),
+            'stage02SnapshotRevision', COALESCE(shadow."result"->'stage02SnapshotRevision', 'null'::jsonb),
+            'energyMassReference', COALESCE(shadow."result"->'energyMassReference', 'null'::jsonb),
+            'energyMassResolutionIdentity', COALESCE(shadow."result"->'energyMassResolutionIdentity', 'null'::jsonb),
+            'energyMassResolutionMethodVersion', COALESCE(shadow."result"->'energyMassResolutionMethodVersion', 'null'::jsonb)),
+          'shadowStage02MassMatchesSnapshot', shadow."result"->'stage02MassReference' = snapshot."payload"->'massReference',
+          'shadowStage02RevisionMatchesSnapshot', shadow."result"->>'stage02SnapshotRevision' = snapshot."payload"->>'snapshotRevision',
+          'shadowStage02IdentityMatchesSnapshot', shadow."result"->>'stage02MassResolutionIdentity' = snapshot."payload"->>'massResolutionIdentity',
+          'stage02MassStatus', snapshot."payload"->'massReference'->>'status',
+          'energyMassMatchesAvailableStage02', CASE
+            WHEN snapshot."payload"->'massReference'->>'status' IS NOT NULL
+              AND snapshot."payload"->'massReference'->>'status' <> 'unavailable'
+            THEN shadow."result"->'energyMassReference' = snapshot."payload"->'massReference'
+              AND shadow."result"->>'energyMassResolutionIdentity' = snapshot."payload"->>'massResolutionIdentity'
+              AND shadow."result"->'energyMassResolutionMethodVersion' = 'null'::jsonb
+            ELSE NULL END,
+          'shadowStage02RevisionIsCurrent', shadow."result"->>'stage02SnapshotRevision' = session."currentSnapshotRevision"::text
+        ) FROM target_workout_72_selected_strength_session AS selected
+          LEFT JOIN target_workout_72_selected_event AS e ON e."id" = selected.event_id
+          LEFT JOIN "StrengthDiarySession" AS session ON session."id" = selected.session_id
+          LEFT JOIN "StrengthSessionAccountingSnapshot" AS snapshot
+            ON snapshot."sessionId" = session."id" AND snapshot."snapshotRevision" = session."currentSnapshotRevision"
+          LEFT JOIN "ExperimentalStrengthEnergyShadow" AS shadow ON shadow."sessionId" = session."id"
+          LEFT JOIN "ActiveEnergyCandidate" AS candidate ON candidate."eventId" = e."id"
+            AND candidate."source" = e."currentSource"
+            AND candidate."sourceIdentity" = e."currentProvenance"->>'sourceIdentity'
+            AND candidate."sourceFingerprint" = e."currentProvenance"->>'sourceFingerprint'
+            AND candidate."availability" = 'available'
+            AND candidate."valueKcal" IS NOT DISTINCT FROM e."currentKcal"
+        ), jsonb_build_object('selectedSourceIsStrengthEstimate', false))
       ) FROM target_workout_72), jsonb_build_object('visible', false, 'expectedKind', 'missing'))
     )::text, 'UTF8'), 'base64'), E'\n', ''), E'\r', '')
     FROM (SELECT 1) AS diagnostic_anchor
@@ -374,7 +441,7 @@ if ! query_result="$(PGPASSFILE="$passfile" \
       -e 's/^[A-Z]+:[[:space:]]+[0-9A-Z]{5}:[[:space:]]+missing FROM-clause entry for table "([A-Za-z0-9_]+)".*/table-reference-\1/p' \
       "$error_file" | head -n 1)"
     case "$safe_object" in
-      relation-Workout|relation-ActiveEnergyEventAlias|relation-ActiveEnergyCanonicalEvent|relation-ActiveEnergyResolutionRevision|relation-ActiveEnergyCandidate|relation-ExperimentalStepperActiveEnergyShadow|relation-StepperReconciliationCandidate|relation-StepperReconciliationGroup|relation-StrengthDiarySession|relation-eligible_aliases|relation-current_events|relation-target_strength_session_candidates|relation-target_strength_session_localized|relation-target_strength_session_day|relation-target_workout_56|relation-target_workout_56_reconciliation|relation-target_workout_56_reconciliation_pairs|relation-target_workout_56_reconciliation_member_ids|relation-target_workout_56_representative|relation-target_workout_56_events|relation-target_workout_72|relation-target_workout_72_events|relation-target_workout_56_canonical_event|table-reference-w|table-reference-e|table-reference-a|table-reference-c|table-reference-r|table-reference-s)
+      relation-Workout|relation-ActiveEnergyEventAlias|relation-ActiveEnergyCanonicalEvent|relation-ActiveEnergyResolutionRevision|relation-ActiveEnergyCandidate|relation-ExperimentalStepperActiveEnergyShadow|relation-ExperimentalStrengthEnergyShadow|relation-StrengthSessionAccountingSnapshot|relation-StepperReconciliationCandidate|relation-StepperReconciliationGroup|relation-StrengthDiarySession|relation-eligible_aliases|relation-current_events|relation-target_strength_session_candidates|relation-target_strength_session_localized|relation-target_strength_session_day|relation-target_workout_56|relation-target_workout_56_reconciliation|relation-target_workout_56_reconciliation_pairs|relation-target_workout_56_reconciliation_member_ids|relation-target_workout_56_representative|relation-target_workout_56_events|relation-target_workout_72|relation-target_workout_72_events|relation-target_workout_72_selected_event|relation-target_workout_72_selected_strength_session|relation-target_workout_56_canonical_event|table-reference-w|table-reference-e|table-reference-a|table-reference-c|table-reference-r|table-reference-s|table-reference-session|table-reference-snapshot|table-reference-shadow|table-reference-candidate)
         printf '__diagnostic_query_error__|sqlstate-%s|object-%s\n' "$sqlstate" "$safe_object"
         ;;
       *) printf '__diagnostic_query_error__|sqlstate-%s\n' "$sqlstate" ;;

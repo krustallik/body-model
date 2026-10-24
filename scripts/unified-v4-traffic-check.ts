@@ -425,7 +425,7 @@ const verify = async () => {
   }
   if (profileId !== 1) throw new Error("The held production currentness fence is restricted to profile 1.");
   const fenceStartedAt = Date.now();
-  const transactionTimeoutMs = 180_000;
+  const transactionTimeoutMs = 300_000;
   const routeSafetyMarginMs = 5_000;
   const minimumRouteBudgetMs = 120_000;
   // READ COMMITTED is deliberate: after profile-lock acquisition, readiness

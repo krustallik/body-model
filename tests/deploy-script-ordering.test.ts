@@ -112,6 +112,22 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh.slice(reloadAt)).not.toContain("stop_candidate_fail_closed");
   });
 
+  it("reserves a bounded route window after the observed production fence verification time", () => {
+    const transactionTimeoutMs = Number(trafficCheck.match(/const transactionTimeoutMs = (\d+)_000;/)?.[1]) * 1_000;
+    const routeSafetyMarginMs = Number(trafficCheck.match(/const routeSafetyMarginMs = (\d+)_000;/)?.[1]) * 1_000;
+    const minimumRouteBudgetMs = Number(trafficCheck.match(/const minimumRouteBudgetMs = (\d+)_000;/)?.[1]) * 1_000;
+    const observedProductionVerificationMs = 80_000;
+    expect(transactionTimeoutMs - observedProductionVerificationMs - routeSafetyMarginMs)
+      .toBeGreaterThanOrEqual(minimumRouteBudgetMs);
+
+    const fenceStart = cutoverSh.indexOf("coproc BODYCAST_TRAINING_V4_FENCE");
+    const fenceBlock = cutoverSh.slice(fenceStart, cutoverSh.indexOf("  while (( SECONDS < fence_deadline", fenceStart));
+    const runnerTimeouts = [...fenceBlock.matchAll(/timeout (\d+)s docker compose/g)].map((match) => Number(match[1]) * 1_000);
+    const shellFenceDeadlineMs = Number(fenceBlock.match(/fence_deadline=\$\(\(SECONDS \+ (\d+)\)\)/)?.[1]) * 1_000;
+    expect(runnerTimeouts).toEqual([transactionTimeoutMs + routeSafetyMarginMs, transactionTimeoutMs + routeSafetyMarginMs]);
+    expect(shellFenceDeadlineMs).toBe(transactionTimeoutMs + routeSafetyMarginMs);
+  });
+
   it("requires an exact uncached public maintenance response before stopping the old app", () => {
     expect(routePrimitivesSh).toContain('respond "BodyCast is temporarily unavailable while the model is updated." 503');
     expect(routePrimitivesSh).toContain('Cache-Control "no-store"');

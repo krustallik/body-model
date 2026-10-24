@@ -57,7 +57,8 @@ server_ip="$1"
 [[ "$POSTGRES_PASSWORD" != *$'\n'* && "$POSTGRES_PASSWORD" != *$'\r'* ]] || exit 1
 umask 077
 passfile="$(mktemp /tmp/bodycast-checkout-diagnostic.XXXXXX)"
-trap 'rm -f -- "$passfile"' EXIT
+error_file="$(mktemp /tmp/bodycast-checkout-diagnostic-error.XXXXXX)"
+trap 'rm -f -- "$passfile" "$error_file"' EXIT
 chmod 600 "$passfile"
 escaped_password="${POSTGRES_PASSWORD//\\/\\\\}"
 escaped_password="${escaped_password//:/\\:}"
@@ -356,18 +357,32 @@ SELECT count(*),
 FROM current_events
 SQL
 )"
-PGPASSFILE="$passfile" \
-PGAPPNAME=bodycast-production-checkout-diagnostic \
-PGCONNECT_TIMEOUT=5 \
-PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
+if ! query_result="$(PGPASSFILE="$passfile" \
+  PGAPPNAME=bodycast-production-checkout-diagnostic \
+  PGCONNECT_TIMEOUT=5 \
+  PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
   psql --no-psqlrc --quiet --tuples-only --no-align --field-separator='|' --no-password \
-    --set=ON_ERROR_STOP=1 --host "$server_ip" --username="$POSTGRES_USER" --dbname=bodycast \
-    --command "BEGIN READ ONLY; $query; ROLLBACK"
+    --set=ON_ERROR_STOP=1 --set=VERBOSITY=sqlstate \
+    --host "$server_ip" --username="$POSTGRES_USER" --dbname=bodycast \
+    --command "BEGIN READ ONLY; $query; ROLLBACK" 2>"$error_file")"; then
+  sqlstate="$(sed -nE 's/^[A-Z]+:[[:space:]]+([0-9A-Z]{5})(:|$).*/\1/p' "$error_file" | head -n 1)"
+  if [[ "$sqlstate" =~ ^[0-9A-Z]{5}$ ]]; then
+    printf '__diagnostic_query_error__|sqlstate-%s\n' "$sqlstate"
+  else
+    printf '__diagnostic_query_error__|connection-or-client\n'
+  fi
+  exit 0
+fi
+printf '%s\n' "$query_result"
 BASH
 )" || return 1
+  if [[ "$inventory" =~ ^__diagnostic_query_error__\|(sqlstate-[0-9A-Z]{5}|connection-or-client)$ ]]; then
+    printf '%s\n' "$inventory"
+    return 1
+  fi
   shadow_payload_b64="${inventory##*|}"
   inventory="${inventory%|*}"
-  [[ "$inventory" =~ ^([0-9]+\|){32}[0-9]+$ ]] || return 1
+  [[ "$inventory" =~ ^([0-9]+\|){32}[0-9]+$ ]] || { printf '__diagnostic_query_error__|invalid-result-shape\n'; return 1; }
   [[ "$shadow_payload_b64" == none || "$shadow_payload_b64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 1
   printf '%s\n%s\n' "$inventory" "$shadow_payload_b64"
 }
@@ -670,7 +685,15 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_selected_identity_code "$energy_w56_selected_identity_code"
     emit energy_diagnostic_workout_56_shadow_payload_b64 "$energy_shadow_payload_b64"
   else
-    emit energy_diagnostic_inventory_status unavailable
+    energy_inventory_status=unavailable
+    if [[ "${energy_inventory:-}" =~ ^__diagnostic_query_error__\|sqlstate-([0-9A-Z]{5})$ ]]; then
+      energy_inventory_status="query-error-sqlstate-${BASH_REMATCH[1]}"
+    elif [[ "${energy_inventory:-}" == '__diagnostic_query_error__|connection-or-client' ]]; then
+      energy_inventory_status=query-error-connection-or-client
+    elif [[ "${energy_inventory:-}" == '__diagnostic_query_error__|invalid-result-shape' ]]; then
+      energy_inventory_status=invalid-result-shape
+    fi
+    emit energy_diagnostic_inventory_status "$energy_inventory_status"
     emit energy_diagnostic_available_events_with_visible_workout_alias unavailable
     emit energy_diagnostic_events_with_superseded_workout_alias unavailable
     emit energy_diagnostic_events_with_current_workout_alias unavailable

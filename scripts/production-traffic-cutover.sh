@@ -802,7 +802,7 @@ serve_training_release() {
       if [[ "$fence_line" == BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID\ * ]]; then
         stepper_diagnostic_workout_id="${fence_line#BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID }"
         [[ "$stepper_diagnostic_workout_id" =~ ^[1-9][0-9]*$ ]] || {
-          printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+          (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
           exec {fence_input_fd}>&-
           if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
           exec {fence_output_fd}<&-
@@ -814,7 +814,7 @@ serve_training_release() {
       if [[ "$fence_line" == BODYCAST_TARGET_STRENGTH_SESSION_ID\ * ]]; then
         target_strength_session_id="${fence_line#BODYCAST_TARGET_STRENGTH_SESSION_ID }"
         [[ "$target_strength_session_id" =~ ^[1-9][0-9]*$ ]] || {
-          printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+          (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
           exec {fence_input_fd}>&-
           if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
           exec {fence_output_fd}<&-
@@ -826,7 +826,7 @@ serve_training_release() {
       if [[ "$fence_line" == BODYCAST_UNIFIED_V4_FENCE_READY\ * ]]; then
         fence_route_budget_ms="${fence_line#BODYCAST_UNIFIED_V4_FENCE_READY }"
         [[ "$fence_route_budget_ms" =~ ^[0-9]+$ && "$fence_route_budget_ms" -ge 120000 ]] || {
-          printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+          (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
           exec {fence_input_fd}>&-
           if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
           exec {fence_output_fd}<&-
@@ -843,7 +843,7 @@ serve_training_release() {
     fi
   done
   if [[ "$fence_ready" != true ]]; then
-    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
     exec {fence_output_fd}<&-
@@ -852,7 +852,7 @@ serve_training_release() {
     return 1
   fi
   if [[ "$migration_free_serving" == "true" && ! "$stepper_diagnostic_workout_id" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
     exec {fence_output_fd}<&-
@@ -861,7 +861,7 @@ serve_training_release() {
     return 1
   fi
   if [[ "$migration_free_serving" == "true" && ! "$target_strength_session_id" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
     exec {fence_output_fd}<&-
@@ -872,7 +872,7 @@ serve_training_release() {
 
   SERVING_COMMIT_OCCURRED=false
   if ! bodycast_assert_current_main_sha "$expected_release_sha"; then
-    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
     exec {fence_output_fd}<&-
@@ -887,7 +887,7 @@ serve_training_release() {
     # The fence itself rechecks V4 currentness; the immutable recovery marker
     # digest is checked below while the fence remains held.
     [[ "$(sha256sum "$recovery_marker_path" | awk '{print $1}')" == "$recovery_marker_digest" ]] || {
-      printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+      (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
       exec {fence_input_fd}>&-
       if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
       exec {fence_output_fd}<&-
@@ -898,7 +898,7 @@ serve_training_release() {
   fi
   if [[ "$migration_free_serving" == "true" ]]; then
     bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}" || {
-      printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+      (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
       exec {fence_input_fd}>&-
       if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
       exec {fence_output_fd}<&-
@@ -907,7 +907,7 @@ serve_training_release() {
     }
     bodycast_assert_migration_free_attestation_receipt "$expected_release_sha" \
       "${BODYCAST_RELEASE_WORKFLOW_RUN_ID:-}" "${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT:-}" || {
-        printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+        (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
         exec {fence_input_fd}>&-
         if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
         exec {fence_output_fd}<&-
@@ -917,7 +917,7 @@ serve_training_release() {
   fi
   if [[ "$recovered_v4_release" == "true" ]]; then
     if ! publish_candidate_route "" "" "" "$staged_route" true "$fence_pid" true true; then
-      printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+      (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
       exec {fence_input_fd}>&-
       if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
       exec {fence_output_fd}<&-
@@ -926,13 +926,13 @@ serve_training_release() {
   elif ! BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID="$stepper_diagnostic_workout_id" \
       BODYCAST_TARGET_STRENGTH_SESSION_ID="$target_strength_session_id" \
       publish_candidate_route "$expected_release_sha" "$marker_digest" "app-ready" "$staged_route" true "$fence_pid" true "$require_absent_marker"; then
-    printf 'abort\n' >&"$fence_input_fd" 2>/dev/null || true
+    (printf 'abort\n' >&"$fence_input_fd") 2>/dev/null || true
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
     exec {fence_output_fd}<&-
     return 1
   fi
-  if ! printf 'route-committed\n' >&"$fence_input_fd"; then
+  if ! (printf 'route-committed\n' >&"$fence_input_fd"); then
     exec {fence_input_fd}>&-
     if wait "$fence_pid"; then fence_status=0; else fence_status=$?; fi
     exec {fence_output_fd}<&-

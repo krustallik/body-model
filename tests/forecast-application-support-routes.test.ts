@@ -26,6 +26,7 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", async (
   const actual = await importOriginal<typeof import("@/modules/model-episodes/physiology-v7-persistence.repository")>();
   return {
     ...actual,
+    ActiveEnergyConvergenceBusyError: actual.ActiveEnergyConvergenceBusyError,
     PhysiologyV7PersistenceRepository: class {
       readDay = v7Persistence.readDay;
     },

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { bashAvailable, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish, PRODUCTION_DB_IDENTITY } from "./helpers/production-release-cutover-fixture";
@@ -70,6 +70,31 @@ function prepareTrainingServeFixture() {
 }
 
 describe("serving-route commit boundary", () => {
+  it.skipIf(!bashAvailable || process.platform === "win32")("keeps the release shell alive when a failed fence closes its input pipe", () => {
+    const source = readFileSync(path.join(process.cwd(), "scripts", "production-traffic-cutover.sh"), "utf8");
+    expect(source).toContain("(printf 'abort\\n' >&\"$fence_input_fd\") 2>/dev/null || true");
+    expect(source).toContain("if ! (printf 'route-committed\\n' >&\"$fence_input_fd\"); then");
+
+    const script = [
+      "set -Eeuo pipefail",
+      "coproc FENCE { sleep 0.02; exit 1; }",
+      "fence_pid=\"$FENCE_PID\"",
+      "exec {fence_output_fd}<&\"${FENCE[0]}\"",
+      "exec {fence_input_fd}>&\"${FENCE[1]}\"",
+      "read_status=0",
+      "IFS= read -r -t 2 -u \"$fence_output_fd\" fence_line || read_status=$?",
+      "if (( read_status != 1 )); then printf 'expected fence EOF, got status %s\\n' \"$read_status\" >&2; exit 90; fi",
+      "if (( read_status == 1 )); then (printf 'abort\\n' >&\"$fence_input_fd\") 2>/dev/null || true; fi",
+      "exec {fence_input_fd}>&-",
+      "exec {fence_output_fd}<&-",
+      "wait \"$fence_pid\" || true",
+      "printf 'survived\\n'",
+    ].join("\n");
+    const result = spawnSync("bash", ["-c", script], { encoding: "utf8", timeout: 5_000 });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("survived");
+  });
+
   it.skipIf(!bashAvailable)("serves the exact candidate when canonical main remains unchanged", () => {
     const fixture = createFixture();
     writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());

@@ -4,6 +4,14 @@ import { prisma } from "@/lib/db/prisma";
 import { assertHealthSyncAuditRetentionTransitionV1 } from "@/modules/health/health-sync-audit-retention-integrity";
 import { verifyUnifiedV4ReadyForTraffic } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "@/modules/training/bodyweight-reference-v2";
+import { resolveStrengthEnergyMassReferenceV1, STRENGTH_ENERGY_MASS_RESOLUTION_V1 } from "@/modules/training/session-mass-reference";
+import {
+  buildMassResolutionIdentity,
+  isPersistedLoadAccountingPayloadVersion,
+  persistedPayloadFromUnknown,
+} from "@/modules/training/persisted-load-accounting-v1";
 
 function profileIdArg(): number {
   const index = process.argv.indexOf("--profile-id");
@@ -109,36 +117,171 @@ async function assertPrismaDatabaseIdentityV1(client: typeof prisma) {
 
 async function assertMigrationFreeEnergyAcceptanceV1(client: typeof prisma) {
   const { evaluateMigrationFreeEnergyAcceptanceV1 } = await import("./production-migration-free-acceptance");
-  const workoutAliases = await client.activeEnergyEventAlias.findMany({
-    where: { profileId, sourceType: { in: ["workout", "strength-session"] } },
-    select: {
-      sourceType: true,
-      sourceId: true,
-      workoutId: true,
-      workout: { select: { type: true, hiddenFromHistory: true } },
-      event: { select: {
-        id: true, logicalEventKey: true, eventKind: true, supersededByEventId: true, isStale: true,
-        currentResolutionFingerprint: true, currentSource: true, currentKcal: true, currentProvenance: true,
-        candidates: {
-          where: { source: "bodycast-strength-estimate", availability: "available", valueKcal: { not: null } },
-          select: { source: true, sourceIdentity: true, sourceFingerprint: true, availability: true, valueKcal: true, provenance: true },
-        },
-      } },
-    },
+  const [workoutAliases, workouts] = await Promise.all([
+    client.activeEnergyEventAlias.findMany({
+      where: { profileId, sourceType: { in: ["workout", "strength-session"] } },
+      select: {
+        sourceType: true,
+        sourceId: true,
+        workoutId: true,
+        workout: { select: { type: true, hiddenFromHistory: true } },
+        event: { select: {
+          id: true, logicalEventKey: true, eventKind: true, modelDate: true, modelTimeZone: true, supersededByEventId: true, isStale: true,
+          currentResolutionFingerprint: true, currentSource: true, currentKcal: true, currentProvenance: true,
+          resolutionRevision: true,
+          resolutions: {
+            orderBy: { revision: "desc" }, take: 1,
+            select: { revision: true, resolutionFingerprint: true, source: true, valueKcal: true, provenance: true },
+          },
+          candidates: {
+            where: { availability: "available", valueKcal: { not: null } },
+            select: { source: true, sourceIdentity: true, sourceFingerprint: true, availability: true, valueKcal: true, provenance: true },
+          },
+        } },
+      },
+    }),
+    client.workout.findMany({
+      // Health source rows are global in the single-profile schema: Workout
+      // and DailyHealthData do not carry profileId. Query all visible raw rows
+      // so an unaliased Workout cannot be hidden from the acceptance gate.
+      where: { hiddenFromHistory: false },
+      select: {
+        id: true, sourceIdentity: true, type: true, startAt: true, createdAt: true, hiddenFromHistory: true,
+        activeEnergyKcal: true, manualActiveEnergyKcal: true, manualStepCount: true, updatedAt: true,
+      },
+    }),
+  ]);
+  const [stepperReconciliationGroups, targetSessions] = await Promise.all([
+    client.stepperReconciliationGroup.findMany({
+      where: { profileId, status: { in: ["confirmed", "pending"] } },
+      select: {
+        id: true, status: true,
+        candidates: { select: { manualWorkoutId: true, garminWorkoutId: true, candidateStatus: true } },
+      },
+    }),
+    client.strengthDiarySession.findMany({
+      where: {
+        profileId, status: "COMPLETED",
+        OR: [
+          { entryMode: "LIVE", webStartedAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") } },
+          { matchedWorkoutId: { not: null } },
+        ],
+      },
+      select: {
+        id: true, status: true, entryMode: true, effectiveAccountingAt: true, webStartedAt: true, webEndedAt: true,
+        matchStatus: true, matchedWorkoutId: true, accountingTimeZone: true, accountingInputRevision: true,
+        currentSnapshotRevision: true,
+        currentAccountingSnapshot: { select: {
+          snapshotRevision: true, accountingInputRevision: true, inputFingerprint: true,
+          effectiveLocalDate: true, timeZone: true, accountingMethodVersion: true,
+          massResolutionMethodVersion: true, massResolutionIdentity: true, payloadVersion: true, payload: true,
+        } },
+        exercises: { select: { sets: { select: { completedAt: true } } } },
+      },
+    }),
+  ]);
+  const [stepperShadows, strengthShadows, weightSamples, dailyWeights, modelEpisodes, stepperLifecycle] = await Promise.all([
+    client.experimentalStepperActiveEnergyShadow.findMany({
+      where: { profileId, workoutId: { in: workouts.filter((row) =>
+        canonicalizeWorkoutType(row.type).classification === "stair-climbing").map((row) => row.id) } },
+      select: { workoutId: true, sourceFingerprint: true, modelRevision: true, result: true },
+    }),
+    client.experimentalStrengthEnergyShadow.findMany({
+      where: { profileId, sessionId: { in: targetSessions.map((row) => row.id) } },
+      select: { sessionId: true, sourceFingerprint: true, modelRevision: true, result: true },
+    }),
+    client.healthMetricSample.findMany({
+      where: { metric: "weight-kg", source: "apple-health-shortcut" },
+      select: { id: true, date: true, timestamp: true, value: true, source: true },
+    }),
+    client.dailyHealthData.findMany({
+      where: { weightKg: { not: null } }, select: { date: true, weightKg: true },
+    }),
+    client.modelEpisode.findMany({
+      where: { profileId },
+      select: { id: true, timezone: true, modelVersion: true, startDate: true, latestModeledDate: true,
+        initialFilteredWeightKg: true, updatedAt: true, createdAt: true, active: true },
+      orderBy: { startDate: "asc" },
+    }),
+    client.physiologyV7Lifecycle.findUnique({
+      where: { profileId },
+      select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
+    }),
+  ]);
+  const stepperModelDates = [...new Set(workoutAliases
+    .filter((row) => row.sourceType === "workout" && row.workout !== null
+      && canonicalizeWorkoutType(row.workout.type).classification === "stair-climbing")
+    .map((row) => row.event.modelDate))];
+  const predecessorDates = [...new Set(stepperModelDates.flatMap((date) => {
+    const previous = new Date(`${date}T00:00:00.000Z`);
+    previous.setUTCDate(previous.getUTCDate() - 1);
+    return [previous.toISOString().slice(0, 10)];
+  }))];
+  const modelStates = modelEpisodes.length === 0 || predecessorDates.length === 0 ? []
+    : await client.dailyModelState.findMany({
+      where: { episodeId: { in: modelEpisodes.map((episode) => episode.id) }, date: { in: predecessorDates } },
+      select: { id: true, episodeId: true, date: true, status: true, endWeightKg: true,
+        filteredWeightKg: true, modelVersion: true, createdAt: true },
+    });
+  const verifiedStrengthSessions = await Promise.all(targetSessions.map(async (session) => {
+    const snapshot = session.currentAccountingSnapshot;
+    const payload = snapshot && isPersistedLoadAccountingPayloadVersion(snapshot.payloadVersion)
+      ? persistedPayloadFromUnknown(snapshot.payload) : null;
+    if (!snapshot || !payload || snapshot.snapshotRevision !== session.currentSnapshotRevision
+      || snapshot.accountingInputRevision !== session.accountingInputRevision
+      || payload.sessionId !== session.id || payload.snapshotRevision !== snapshot.snapshotRevision
+      || payload.accountingInputRevision !== session.accountingInputRevision
+      || snapshot.inputFingerprint !== payload.inputFingerprint
+      || snapshot.effectiveLocalDate !== payload.effectiveLocalDate || snapshot.timeZone !== payload.timeZone
+      || payload.effectiveAccountingAt !== session.effectiveAccountingAt?.toISOString()
+      || payload.timeZone !== session.accountingTimeZone
+      || snapshot.accountingMethodVersion !== payload.accountingMethodVersion
+      || snapshot.massResolutionMethodVersion !== payload.massResolutionMethodVersion
+      || snapshot.massResolutionIdentity !== payload.massResolutionIdentity
+      || payload.massResolutionMethodVersion !== BODYWEIGHT_RESOLUTION_METHOD_V2
+      || buildMassResolutionIdentity({
+        localDate: payload.effectiveLocalDate,
+        timeZone: payload.timeZone,
+        methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
+        reference: payload.massReference,
+      }) !== payload.massResolutionIdentity) {
+      return { ...session, verifiedEnergyMassReference: null };
+    }
+    const resolved = await resolveStrengthEnergyMassReferenceV1(client, {
+      stage02Mass: {
+        reference: payload.massReference,
+        snapshotRevision: payload.snapshotRevision,
+        inputFingerprint: payload.inputFingerprint,
+        massResolutionIdentity: payload.massResolutionIdentity,
+      },
+      localDate: payload.effectiveLocalDate,
+      timeZone: payload.timeZone,
+    });
+    return {
+      ...session,
+      verifiedEnergyMassReference: resolved === null ? null : {
+        stage02MassReference: payload.massReference,
+        stage02SnapshotRevision: payload.snapshotRevision,
+        energyMassReference: resolved.reference,
+        energyMassResolutionIdentity: resolved.massResolutionIdentity,
+        energyMassResolutionMethodVersion: resolved.massResolutionIdentity !== payload.massResolutionIdentity
+          ? STRENGTH_ENERGY_MASS_RESOLUTION_V1 : null,
+      },
+    };
+  }));
+  return evaluateMigrationFreeEnergyAcceptanceV1({
+    workoutAliases, workouts, stepperReconciliationGroups, strengthSessions: verifiedStrengthSessions,
+    stepperShadows, strengthShadows,
+    massObservations: [
+      ...weightSamples.map((row) => ({ sourceType: "health-metric-sample" as const, sourceId: String(row.id),
+        valueKg: row.value.toNumber(), timestamp: row.timestamp, date: row.date })),
+      ...dailyWeights.flatMap((row) => row.weightKg === null ? [] : [{ sourceType: "daily-health-data" as const,
+        sourceId: row.date, valueKg: row.weightKg, timestamp: null, date: row.date }]),
+    ],
+    modelEpisodes,
+    modelStates,
+    stepperLifecycle,
   });
-  const targetSessions = await client.strengthDiarySession.findMany({
-    where: {
-      profileId, status: "COMPLETED", entryMode: "LIVE",
-      webStartedAt: { gte: new Date("2026-10-21T00:00:00.000Z"), lt: new Date("2026-10-24T00:00:00.000Z") },
-    },
-    select: {
-      id: true, status: true, entryMode: true, effectiveAccountingAt: true, webStartedAt: true, webEndedAt: true,
-      matchStatus: true, matchedWorkoutId: true, accountingTimeZone: true, accountingInputRevision: true,
-      currentSnapshotRevision: true,
-      exercises: { select: { sets: { select: { completedAt: true } } } },
-    },
-  });
-  return evaluateMigrationFreeEnergyAcceptanceV1({ workoutAliases, strengthSessions: targetSessions });
 }
 
 async function waitForRouteCommit(timeoutMs: number): Promise<string> {
@@ -300,7 +443,9 @@ const verify = async () => {
     const decision = await waitForRouteCommit(routeBudgetMs);
     if (decision !== "route-committed") throw new Error("SSH route did not commit while Unified V4 currentness was fenced.");
     const loggedP1EnergyAcceptance = p1EnergyAcceptance === null ? null : {
+      historicalWorkoutResolutions: p1EnergyAcceptance.historicalWorkoutResolutions,
       currentWorkoutResolutions: p1EnergyAcceptance.currentWorkoutResolutions,
+      historicalStepperResolutions: p1EnergyAcceptance.historicalStepperResolutions,
       currentStepperResolutions: p1EnergyAcceptance.currentStepperResolutions,
       strengthSessionCurrent: p1EnergyAcceptance.strengthSessionCurrent,
     };

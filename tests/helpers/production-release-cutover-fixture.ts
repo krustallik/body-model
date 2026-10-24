@@ -707,7 +707,7 @@ elif [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
   response_headers=$'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
   if [[ "$url" == *"/api/v1/days?"* ]]; then
     history_events=""
-    for event_id in $(seq 1 33); do
+    for event_id in $(seq 1 "\${CANDIDATE_HISTORY_EVENT_COUNT:-33}"); do
       [[ -z "$history_events" ]] || history_events+=','
       history_events+="{\"eventId\":\"workout-$event_id\",\"source\":\"workout\",\"type\":\"Running\",\"occurrenceAt\":\"2026-10-21T12:00:00.000Z\",\"activeEnergyKcal\":100,\"energySource\":\"garmin-active-kcal\"}"
     done

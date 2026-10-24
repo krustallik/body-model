@@ -249,10 +249,10 @@ const targetStrength = events.find((event) => event.diarySessionId === targetStr
 const workoutEnergy = events.filter((event) => available(event)
   && (event.source === "workout" || event.source === "matched")
   && event.diarySessionId !== targetStrengthSessionId);
-if (workoutEnergy.length !== 33 || !targetStrength) {
+if (workoutEnergy.length < 33 || !targetStrength) {
   throw new Error("History API does not expose the current historical Training energy and target Strength kcal.");
 }
-process.stdout.write(`BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=${workoutEnergy.length} strength=visible\n`);
+process.stdout.write(`BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=${workoutEnergy.length} minimum=33 strength=visible\n`);
 NODE
   then
     rm -f -- "$headers" "$body"

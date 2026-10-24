@@ -221,12 +221,52 @@ describe("serving-route commit boundary", () => {
     expect(events).toContain("public-probe:200:https://bodycast.example.test/settings/profile");
     expect(events).toContain("public-probe:200:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
     expect(events).toContain("public-probe:200:https://bodycast.example.test/api/v1/workouts/1/stepper-diagnostic");
-    expect(result.stdout).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=33 strength=visible");
+    expect(result.stdout).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=33 minimum=33 strength=visible");
     expect(existsSync(markerPath)).toBe(false);
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("prisma migrate deploy");
     const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
     expect(dockerLog).toContain("--assert-prisma-database-identity");
     expect(dockerLog).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=bodycast|16384|7419276301947620311|bodycast|17.5|172.20.0.2|5432');
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("allows additional current historical events beyond the accepted 33-event baseline", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+      CANDIDATE_HISTORY_EVENT_COUNT: "34",
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(result.stdout).toContain("BODYCAST_TRAINING_HISTORY_ENERGY_CURRENT workouts=34 minimum=33 strength=visible");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps maintenance when public Training history has fewer than the accepted baseline events", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    rmSync(markerPath, { force: true });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+      CANDIDATE_HISTORY_EVENT_COUNT: "32",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(result.stderr).toContain("History API does not expose the current historical Training energy and target Strength kcal.");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps maintenance when the public history omits the accepted matched Strength session", () => {

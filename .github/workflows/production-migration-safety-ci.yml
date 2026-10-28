@@ -506,6 +506,12 @@ jobs:
           node scripts/production-db-preflight.mjs --manifest auth-multiuser-v1 \
             | PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
               --set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json" > "$RUNNER_TEMP/bodycast-auth-preflight-report.json"
+          # The identity gate must see the production database name (`bodycast`),
+          # while the test fingerprint helper intentionally accepts only an
+          # isolated test database name. Fingerprint an exact disposable clone.
+          psql postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE bodycast_restore TEMPLATE bodycast'
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_restore
           fingerprint="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           node --input-type=module - "$RUNNER_TEMP/bodycast-auth-preflight-report.json" "$fingerprint" <<'NODE'
           import { readFileSync, writeFileSync } from 'node:fs';

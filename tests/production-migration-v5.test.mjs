@@ -843,6 +843,19 @@ describe("V5 closed migration manifest and full pending set", () => {
     report.objects = schemaObjects("old-after");
 
     const expectedAbsent = new Set(AUTH_MULTIUSER_MANIFEST.postflightAbsentObjects);
+    for (const name of [
+      "StrengthDiarySession_current_snapshot_fkey",
+      "StrengthSessionAccountingOperation_result_snapshot_fkey",
+      "UnifiedExperimentalPhysiologyStateV2_profileId_modelEpisodeId_date_key",
+      "UnifiedExperimentalPhysiologyStateV2_profileId_modelEpisodeId_boundaryAt_idx",
+      "UnifiedExperimentalPhysiologyStateV2_profileId_modelRevision_updatedAt_idx",
+      "UnifiedExperimentalPhysiologyStateV2_profileId_qualityStatus_boundaryAt_idx",
+      "UnifiedExperimentalPhysiologyStateV2_profileId_resultFingerprint_idx",
+    ]) {
+      const object = report.objects.find((candidate) => candidate.name === name);
+      if (!object) throw new Error(`Missing renamed legacy schema fixture: ${name}`);
+      Object.assign(object, { present: false, kind: "missing", signature: null });
+    }
     for (const name of expectedAbsent) {
       const object = report.objects.find((candidate) => candidate.name === name);
       if (object) Object.assign(object, { present: false, kind: "missing", signature: null });

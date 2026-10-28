@@ -338,12 +338,14 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
         createdAt: new Date("2025-01-11T13:00:00.000Z"),
       },
     });
-    const exercise = await prisma.strengthSessionExercise.create({
-      data: { profile: { connect: { id: 1 } },
-        session: { connect: { profileId_id: { profileId: 1, id: sessionId } } },
-        snapshotExerciseName: "isolated deleted-set evidence", sortOrder: 0,
-        plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" },
-    });
+    // This pinned 65-migration schema predates StrengthSessionExercise.profileId;
+    // use its legacy columns instead of the current post-migration Prisma model.
+    const [exercise] = await prisma.$queryRaw`
+      INSERT INTO public."StrengthSessionExercise"
+        ("sessionId", "snapshotExerciseName", "sortOrder", "plannedSets", "resistanceType")
+      VALUES (${sessionId}, 'isolated deleted-set evidence', 0, 1, 'EXTERNAL_WEIGHT')
+      RETURNING id
+    `;
     const set = await prisma.strengthSet.create({
       data: { sessionExerciseId: exercise.id, setNumber: 1, reps: 5, weightKg: 30 },
     });

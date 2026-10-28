@@ -250,10 +250,12 @@ async function legacyHealthSyncAuditFingerprint() {
 async function assertHealthSyncAuditRetentionExcludedFromV4Fingerprint() {
   const before = await legacyUnpagedRawFingerprint();
   const auditBefore = await legacyHealthSyncAuditFingerprint();
-  const audit = await prisma.healthSyncAudit.create({
-    data: { receivedAt: new Date("2025-01-01T00:00:00.000Z"), outcome: "success", httpStatus: 200,
-      rawBody: "{\"fixture\":\"expired-audit\"}", contentType: "application/json" },
-  });
+  const [audit] = await prisma.$queryRaw`
+    INSERT INTO public."HealthSyncAudit" ("receivedAt", outcome, "httpStatus", "rawBody", "contentType")
+    VALUES (${new Date("2025-01-01T00:00:00.000Z")}, 'success', 200,
+      '{"fixture":"expired-audit"}', 'application/json')
+    RETURNING id
+  `;
   try {
     const retained = await readEvidence();
     if (retained.sourceFingerprint !== before
@@ -261,7 +263,7 @@ async function assertHealthSyncAuditRetentionExcludedFromV4Fingerprint() {
       throw new Error("A retention-managed HealthSyncAudit row changed the V4 model-input fingerprint.");
     }
   } finally {
-    await prisma.healthSyncAudit.delete({ where: { id: audit.id } });
+    await prisma.$executeRaw`DELETE FROM public."HealthSyncAudit" WHERE id = ${audit.id}`;
   }
   const pruned = await readEvidence();
   if (pruned.sourceFingerprint !== before || await legacyUnpagedRawFingerprint() !== before

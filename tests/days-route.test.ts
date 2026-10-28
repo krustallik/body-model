@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const dailyMetricRepository = vi.hoisted(() => ({
   list: vi.fn(),
   listWithTrainingFacts: vi.fn(),
@@ -8,7 +10,16 @@ const dailyMetricRepository = vi.hoisted(() => ({
   delete: vi.fn(),
 }));
 
-vi.mock("@/modules/days/day.repository", () => ({ dailyMetricRepository }));
+vi.mock("@/modules/days/day.repository", () => ({
+  dailyMetricRepository,
+  DailyMetricRepository: class {
+    list = dailyMetricRepository.list;
+    listWithTrainingFacts = dailyMetricRepository.listWithTrainingFacts;
+    create = dailyMetricRepository.create;
+    update = dailyMetricRepository.update;
+    delete = dailyMetricRepository.delete;
+  },
+}));
 
 import { DELETE, PATCH } from "@/app/api/v1/days/[date]/route";
 import { GET, POST } from "@/app/api/v1/days/route";

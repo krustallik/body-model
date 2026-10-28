@@ -250,18 +250,18 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(trafficCheck).toContain("--owner-authorized-active-energy-convergence");
     expect(trafficCheck).toContain("--wait-training-refresh-generations");
     expect(trafficCheck).toContain("exact Prisma database identity");
-    expect(trafficCheck).toContain("recalculateModelEpisode({ requireDependentStages: true })");
+    expect(trafficCheck).toContain("recalculateModelEpisode({ profileId, requireDependentStages: true })");
     expect(trafficCheck).toContain("rebuildUnifiedExperimentalPhysiologyStateV1({");
     expect(trafficCheck).toContain("fromDate: recalculation.effectiveReplayFromDate");
     expect(trafficCheck).toContain("targetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION");
-    expect(trafficCheck.indexOf("recalculateModelEpisode({ requireDependentStages: true })"))
+    expect(trafficCheck.indexOf("recalculateModelEpisode({ profileId, requireDependentStages: true })"))
       .toBeLessThan(trafficCheck.indexOf("rebuildUnifiedExperimentalPhysiologyStateV1({"));
     expect(trainingCurrentWaitAt).toBeGreaterThan(-1);
     expect(activeEnergyConvergenceAt).toBeGreaterThan(trainingCurrentWaitAt);
     expect(currentnessFenceAt).toBeGreaterThan(activeEnergyConvergenceAt);
     expect(trafficCheck).toContain("generationsCurrent && (!waitTrainingRefreshCurrent || unifiedCurrent)");
     expect(trafficCheck).toContain("BODYCAST_TRAINING_REFRESH_WAITING");
-    expect(trafficCheck).toContain('waitTrainingRefreshCurrent\n      ? "Timed out waiting for standard Health/Training refresh and Unified currentness; no queue or source rows were changed."');
+    expect(trafficCheck).toMatch(/throw new Error\(waitTrainingRefreshCurrent\s*\?\s*"Timed out waiting for standard Health\/Training refresh and Unified currentness; no queue or source rows were changed\."/);
     expect(trafficCheck).toContain(': "Timed out waiting for standard Health/Training refresh generations; no queue or source rows were changed.");');
     expect(cutoverSh).toContain("--hold-currentness-fence --expected-raw-input-fingerprint");
     expect(cutoverSh).toContain("BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE");

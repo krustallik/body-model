@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const stepperWorkoutRepository = vi.hoisted(() => ({ resolveCreateOperation: vi.fn() }));
 vi.mock("@/modules/training/stepper-workout.repository", () => ({ stepperWorkoutRepository }));
 
@@ -27,6 +29,6 @@ describe("Stepper create operation status route", () => {
     );
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toEqual({ state: "CONFLICT" });
-    expect(stepperWorkoutRepository.resolveCreateOperation).toHaveBeenCalledWith({ operationId, payloadDigest });
+    expect(stepperWorkoutRepository.resolveCreateOperation).toHaveBeenCalledWith(1, { operationId, payloadDigest });
   });
 });

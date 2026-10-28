@@ -48,9 +48,21 @@ describe("fresh empty-install migration verification", () => {
       .toThrow(/pre-existing Workout rows/);
   });
 
-  it("hashes the complete 75-migration tree and agrees with the repository snapshot", async () => {
+  it("allows only the single pre-existing legacy profile in test migration rehearsals", () => {
+    expect(verifyFreshMigrationLedger({
+      migrations: [migration], rows: applied, profileCount: 1, profileIds: [1], sourceCounts: emptyCounts, allowLegacyProfileOne: true,
+    })).toMatchObject({ profileCount: 1, sourceCounts: emptyCounts });
+    expect(() => verifyFreshMigrationLedger({
+      migrations: [migration], rows: applied, profileCount: 2, profileIds: [1, 2], sourceCounts: emptyCounts, allowLegacyProfileOne: true,
+    })).toThrow(/unexpected user profile/);
+    expect(() => verifyFreshMigrationLedger({
+      migrations: [migration], rows: applied, profileCount: 1, profileIds: [2], sourceCounts: emptyCounts, allowLegacyProfileOne: true,
+    })).toThrow(/unexpected user profile/);
+  });
+
+  it("hashes the complete 77-migration tree and agrees with the repository snapshot", async () => {
     const tree = await readMigrationTree(resolve("prisma/migrations"));
-    expect(tree.migrations).toHaveLength(75);
+    expect(tree.migrations).toHaveLength(77);
     const expected = createHash("sha256");
     for (const item of tree.migrations) {
       const sql = await readFile(resolve("prisma/migrations", item.name, "migration.sql"));

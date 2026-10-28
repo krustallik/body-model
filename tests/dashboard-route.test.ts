@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const dailyMetricRepository = vi.hoisted(() => ({
   listWithTrainingFacts: vi.fn(),
   latestUpdatedAt: vi.fn(),
@@ -15,8 +17,20 @@ const sleepRepository = vi.hoisted(() => ({
   summaryForDate: vi.fn(),
 }));
 
-vi.mock("@/modules/days/day.repository", () => ({ dailyMetricRepository }));
-vi.mock("@/modules/health/sleep.repository", () => ({ sleepRepository }));
+vi.mock("@/modules/days/day.repository", () => ({
+  dailyMetricRepository,
+  DailyMetricRepository: class {
+    listWithTrainingFacts = dailyMetricRepository.listWithTrainingFacts;
+    latestUpdatedAt = dailyMetricRepository.latestUpdatedAt;
+    latestRestingHeartRate = dailyMetricRepository.latestRestingHeartRate;
+  },
+}));
+vi.mock("@/modules/health/sleep.repository", () => ({
+  sleepRepository,
+  SleepRepository: class {
+    latestCompleted = sleepRepository.latestCompleted;
+  },
+}));
 
 import { GET } from "@/app/api/v1/dashboard/route";
 

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const trainingService = vi.hoisted(() => ({
   listCatalog: vi.fn(),
 }));
@@ -30,14 +32,14 @@ describe("GET /api/v1/training/exercises", () => {
     const response = await GET(new Request(base));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ exercises });
-    expect(trainingService.listCatalog).toHaveBeenCalledWith({ includeInactive: false });
+    expect(trainingService.listCatalog).toHaveBeenCalledWith({ profileId: 1, includeInactive: false });
   });
 
   it("forwards includeInactive=true from the query string", async () => {
     trainingService.listCatalog.mockResolvedValue(exercises);
     const response = await GET(new Request(`${base}?includeInactive=true`));
     expect(response.status).toBe(200);
-    expect(trainingService.listCatalog).toHaveBeenCalledWith({ includeInactive: true });
+    expect(trainingService.listCatalog).toHaveBeenCalledWith({ profileId: 1, includeInactive: true });
   });
 
   it("rejects invalid includeInactive without calling the service", async () => {

@@ -109,8 +109,8 @@ WITH expected(name) AS (
     COALESCE(pg_total_relation_size(c.oid), 0) AS "totalBytes"
   FROM baseline_targets b LEFT JOIN pg_class c ON c.oid = to_regclass(format('public.%I', b.table_name))
 ), ddl_targets(table_name, required_lock_mode) AS (
-  SELECT table_name, required_lock_mode
-  FROM jsonb_to_recordset('__DDL_LOCK_TARGETS_JSON__'::jsonb) AS t(table_name text, required_lock_mode text)
+  SELECT "tableName" AS table_name, "requiredLockMode" AS required_lock_mode
+  FROM jsonb_to_recordset('__DDL_LOCK_TARGETS_JSON__'::jsonb) AS t("tableName" text, "requiredLockMode" text)
 ), conflicting_locks AS (
   SELECT a.pid, c.relname AS relation, l.mode, l.granted,
     t.required_lock_mode AS "requiredLockMode",

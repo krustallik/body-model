@@ -8,8 +8,10 @@ const services = vi.hoisted(() => ({
 const recoveryServices = vi.hoisted(() => ({
   recoverModelEpisode: vi.fn(),
 }));
+const authAccess = vi.hoisted(() => ({ getProfilePrincipal: vi.fn() }));
 vi.mock("@/modules/model-episodes/model-episode.service", () => services);
 vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
+vi.mock("@/modules/auth/access", () => authAccess);
 
 import { GET as GET_HISTORY } from "@/app/api/v1/model/history/route";
 import { POST as POST_RECALCULATE } from "@/app/api/v1/model/recalculate/route";
@@ -37,6 +39,11 @@ describe("model episode API routes", () => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.IOS_SHORTCUT_API_KEY = apiKey;
     vi.clearAllMocks();
+    authAccess.getProfilePrincipal.mockImplementation(async (request: Request) => (
+      request.headers.get("x-api-key") === apiKey
+        ? { profileId: 1, userId: "test-user-1", method: "api-key" }
+        : null
+    ));
   });
 
   it.each([
@@ -75,7 +82,7 @@ describe("model episode API routes", () => {
     ));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(result);
-    expect(services.recalculateModelEpisode).toHaveBeenCalledWith({ episodeId: 3 });
+    expect(services.recalculateModelEpisode).toHaveBeenCalledWith({ episodeId: 3, profileId: 1 });
   });
 
   it("runs recovery automatically after v1 recalculate when required", async () => {
@@ -95,6 +102,7 @@ describe("model episode API routes", () => {
     expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledWith({
       seed: 20_260_824,
       episodeId: 9,
+      profileId: 1,
     });
     await expect(response.json()).resolves.toMatchObject({
       episodeId: 9,
@@ -135,7 +143,7 @@ describe("model episode API routes", () => {
     ));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(status);
-    expect(services.getModelStatus).toHaveBeenCalledWith(4);
+    expect(services.getModelStatus).toHaveBeenCalledWith(1, 4);
   });
 
   it.each([
@@ -162,6 +170,7 @@ describe("model episode API routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(history);
     expect(services.getModelHistory).toHaveBeenCalledWith({
+      profileId: 1,
       from: "2026-08-01", to: "2026-08-22", limit: 10, offset: 0,
     });
   });

@@ -74,7 +74,7 @@ describe("Unified V1 durable source loader", () => {
     expect(result.days[0]?.childModelRevisions.glycogenState).toBe("experimental-glycogen-state-v2");
     expect(result.days[0]?.childModelRevisions.transientWater).toBe("experimental-transient-exercise-water-v2-impulse-ledger");
     expect(client.workout.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: "2064-12-30", lte: "2065-01-04" } } },
+      where: { profileId: 1, hiddenFromHistory: false, dailyHealthData: { date: { gte: "2064-12-30", lte: "2065-01-04" } } },
     }));
   });
 

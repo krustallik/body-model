@@ -325,10 +325,10 @@ const verify = async () => {
       await assertPrismaDatabaseIdentityV1(tx as unknown as typeof prisma);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 15_000 });
     const { recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
-    const recalculation = await recalculateModelEpisode({ profileId: profileId, requireDependentStages: true });
+    const recalculation = await recalculateModelEpisode({ profileId, requireDependentStages: true });
     const { rebuildUnifiedExperimentalPhysiologyStateV1 } = await import("@/modules/model-episodes/unified-experimental-physiology-state.service");
     await rebuildUnifiedExperimentalPhysiologyStateV1({
-      profileId: 1,
+      profileId,
       fromDate: recalculation.effectiveReplayFromDate,
       targetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
     });

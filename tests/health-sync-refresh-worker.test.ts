@@ -18,6 +18,7 @@ vi.mock("@/lib/db/prisma", () => ({ prisma }));
 vi.mock("@/modules/health/health.repository", () => ({
   APPLE_HEALTH_SHORTCUT_SOURCE: "apple-health-shortcut",
   healthSyncRepository: {},
+  healthSyncRepositoryForProfile: (profileId: number) => ({ profileId }),
 }));
 vi.mock("@/modules/health/health.service", () => ({ syncHealthData }));
 vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
@@ -103,7 +104,7 @@ describe("durable Health sync refresh worker", () => {
     });
     expect(syncHealthData).toHaveBeenCalledWith(
       { days: [{ date: "2040-01-01" }], timezone: "Europe/Bratislava" },
-      {},
+      { profileId: 1 },
       undefined,
       undefined,
       new Map(),

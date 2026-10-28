@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const stepperWorkoutRepository = vi.hoisted(() => ({ list: vi.fn(), count: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() }));
 vi.mock("@/modules/training/stepper-workout.repository", () => ({ stepperWorkoutRepository }));
 
@@ -18,7 +20,7 @@ describe("stepper workout CRUD routes", () => {
     const listed = await GET(new Request("http://localhost/api/v1/training/stepper-workouts?limit=5&offset=10"));
     expect(listed.status).toBe(200);
     await expect(listed.json()).resolves.toEqual({ workouts: [workout], totalCount: 23 });
-    expect(stepperWorkoutRepository.list).toHaveBeenCalledWith({ limit: 5, offset: 10 });
+    expect(stepperWorkoutRepository.list).toHaveBeenCalledWith(1, { limit: 5, offset: 10 });
 
     const missingKey = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {
       method: "POST", headers: { "content-type": "application/json" },
@@ -36,7 +38,7 @@ describe("stepper workout CRUD routes", () => {
     expect(created.status).toBe(201);
     await expect(created.json()).resolves.toEqual({ operationId, state: "COMMITTED", workout: { ...workout, modelPublicationStatus: "stale" } });
     expect(stepperWorkoutRepository.create).toHaveBeenCalledWith(
-      { startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 }, operationId,
+      1, { startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 }, operationId,
     );
   });
 

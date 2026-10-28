@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   afterHealthSyncMatch,
   healthSyncRepository,
+  MockPrismaHealthSyncRepository,
   rebuildAuthoritativeRelativeMuscleTrajectory,
   recordExperimentalStepperActiveEnergyShadowsForWorkouts,
   recordExperimentalStepperActiveEnergyShadowsForMassWindow,
@@ -15,13 +16,16 @@ const {
   rebuildUnifiedExperimentalPhysiologyStateV1,
   publishActiveEnergyChangesV1,
 } = vi.hoisted(() => {
-  const healthSyncRepository = {
-    syncDay: vi.fn(),
-    pruneOlderThan: vi.fn().mockResolvedValue({ deletedDays: 0, deletedSnapshots: 0 }),
-  };
+  class MockPrismaHealthSyncRepository {
+    profileId = 1;
+    syncDay = vi.fn();
+    pruneOlderThan = vi.fn().mockResolvedValue({ deletedDays: 0, deletedSnapshots: 0 });
+  }
+  const healthSyncRepository = new MockPrismaHealthSyncRepository();
   return {
     afterHealthSyncMatch: vi.fn().mockResolvedValue(true),
     healthSyncRepository,
+    MockPrismaHealthSyncRepository,
     rebuildAuthoritativeRelativeMuscleTrajectory: vi.fn().mockResolvedValue(undefined),
     recordExperimentalStepperActiveEnergyShadowsForWorkouts: vi.fn().mockResolvedValue(undefined),
     recordExperimentalStepperActiveEnergyShadowsForMassWindow: vi.fn().mockResolvedValue([]),
@@ -40,7 +44,10 @@ vi.mock("@/modules/training/training.service", () => ({
   trainingService: { afterHealthSyncMatch },
   recordExperimentalStrengthShadowsForWeightDates,
 }));
-vi.mock("@/modules/health/health.repository", () => ({ healthSyncRepository }));
+vi.mock("@/modules/health/health.repository", () => ({
+  PrismaHealthSyncRepository: MockPrismaHealthSyncRepository,
+  healthSyncRepository,
+}));
 vi.mock("@/lib/db/prisma", () => ({
   prisma: { trainingRefreshJob: { findUnique: async () => null } },
 }));
@@ -123,12 +130,13 @@ describe("health sync authoritative muscle suffix rebuild", () => {
 
     expect(rebuildAuthoritativeRelativeMuscleTrajectory).toHaveBeenCalledTimes(1);
     expect(rebuildAuthoritativeRelativeMuscleTrajectory).toHaveBeenCalledWith({
+      profileId: 1,
       fromDate: "2026-09-21",
     });
     // Glycogen is stateful, so its suffix replays once only after all same-day
     // stepper/depletion source shadows have been written.
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledTimes(1);
-    expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ date: "2026-09-21" });
+    expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ profileId: 1, date: "2026-09-21" });
     expect(publishActiveEnergyChangesV1).toHaveBeenCalledTimes(1);
     expect(publishActiveEnergyChangesV1).toHaveBeenCalledWith(expect.objectContaining({
       activeEnergyCandidateScope: { strengthSessionIds: [201, 202], workoutIds: [101, 102, 103, 104] },
@@ -139,12 +147,16 @@ describe("health sync authoritative muscle suffix rebuild", () => {
       { workoutIds: [102], profileId: 1 },
     ]);
     expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledTimes(1);
-    expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledWith({ dates: [
-      { date: "2026-09-21", action: "created", weightSourceChanged: true },
-      { date: "2026-09-22", action: "created", weightSourceChanged: true, affectedWorkoutIds: [104] },
-      { date: "2026-09-23", action: "created", weightSourceChanged: true, affectedWorkoutIds: [102] },
-    ] });
+    expect(recordExperimentalStrengthShadowsForWeightDates).toHaveBeenCalledWith({
+      profileId: 1,
+      dates: [
+        { date: "2026-09-21", action: "created", weightSourceChanged: true },
+        { date: "2026-09-22", action: "created", weightSourceChanged: true, affectedWorkoutIds: [104] },
+        { date: "2026-09-23", action: "created", weightSourceChanged: true, affectedWorkoutIds: [102] },
+      ],
+    });
     expect(recordExperimentalStepperActiveEnergyShadowsForMassWindow).toHaveBeenCalledWith({
+      profileId: 1,
       measurementDates: ["2026-09-21", "2026-09-22", "2026-09-23"], measurementInstants: [],
     });
     expect(publicationLifecycle.readUnifiedPublicationBlockToken).toHaveBeenCalledTimes(3);

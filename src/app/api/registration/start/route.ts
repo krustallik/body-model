@@ -27,12 +27,15 @@ export async function POST(request: Request): Promise<Response> {
   const ownerEmail = env.AUTH_PROFILE_ONE_OWNER_EMAIL?.trim().toLowerCase();
   const isProfileOneOwner = ownerEmail !== undefined && email === ownerEmail;
   const isProfileOneBootstrap = env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED === "true" && isProfileOneOwner;
-  if (isProfileOneOwner && !isProfileOneBootstrap) {
-    // Never create an ordinary Profile for the reserved legacy owner address.
+  if (env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED === "true" && !isProfileOneBootstrap) {
     return Response.json({ requestReceived: true }, { status: 202 });
   }
   if (env.AUTH_PUBLIC_REGISTRATION_ENABLED !== "true" && !isProfileOneBootstrap) {
     return Response.json({ error: "registration_not_enabled" }, { status: 503 });
+  }
+  if (isProfileOneOwner && !isProfileOneBootstrap) {
+    // Never create an ordinary Profile for the reserved legacy owner address.
+    return Response.json({ requestReceived: true }, { status: 202 });
   }
   const emailLimit = await enforceAuthRequestLimit(request, "registration-start", { email, ipMax: 100 });
   if (emailLimit) return emailLimit;

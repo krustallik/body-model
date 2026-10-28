@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const { getDiagnostics } = vi.hoisted(() => ({ getDiagnostics: vi.fn() }));
 vi.mock("@/modules/work-intervals/work-activity.service", () => ({
   getWorkActivityDiagnosticsForDay: getDiagnostics,
@@ -14,7 +16,7 @@ describe("GET /api/v1/work-activity", () => {
     getDiagnostics.mockResolvedValue({ date: "2026-08-23", diagnostics: { activity: {} } });
     const response = await GET(new Request("http://localhost/api/v1/work-activity?date=2026-08-23"));
     expect(response.status).toBe(200);
-    expect(getDiagnostics).toHaveBeenCalledWith("2026-08-23");
+    expect(getDiagnostics).toHaveBeenCalledWith("2026-08-23", 1);
   });
 
   it("validates date and handles server errors", async () => {

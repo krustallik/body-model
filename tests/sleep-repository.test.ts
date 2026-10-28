@@ -40,7 +40,7 @@ function repository(options: {
     if (options.snapshotError) throw options.snapshotError;
     return options.snapshotTimeZone ? { timezone: options.snapshotTimeZone } : null;
   });
-  const subject = new SleepRepository({
+  const subject = new SleepRepository(1, {
     sleepSegment: { findMany },
     healthSyncSnapshot: { findFirst },
   } as never);
@@ -78,6 +78,7 @@ describe("SleepRepository", () => {
     });
     expect(findMany).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       where: {
+        profileId: 1,
         startAt: { lte: new Date("2114-10-26T23:59:59.999Z") },
         endAt: { gte: new Date("2114-10-24T00:00:00.000Z") },
       },
@@ -103,6 +104,7 @@ describe("SleepRepository", () => {
       efficiencyPercent: null,
     });
     expect(findFirst).toHaveBeenCalledExactlyOnceWith({
+      where: { profileId: 1 },
       orderBy: { receivedAt: "desc" },
       select: { timezone: true },
     });
@@ -116,7 +118,7 @@ describe("SleepRepository", () => {
 
     await expect(subject.summaryForDate("2114-03-02")).resolves.toBeNull();
     await expect(subject.latestCompleted(undefined, new Date("2114-03-03T12:00:00.000Z"))).resolves.toBeNull();
-    await expect(new SleepRepository({} as never).summaryForDate("2114-03-02")).resolves.toBeNull();
+    await expect(new SleepRepository(1, {} as never).summaryForDate("2114-03-02")).resolves.toBeNull();
   });
 
   it("propagates unexpected persistence failures instead of converting them to empty or zero sleep", async () => {
@@ -146,6 +148,7 @@ describe("SleepRepository", () => {
     });
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
+        profileId: 1,
         endAt: {
           gte: new Date(now.getTime() - 21 * 24 * 60 * 60 * 1_000),
           lte: now,

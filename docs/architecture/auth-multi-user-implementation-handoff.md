@@ -1,76 +1,140 @@
-# BodyCast Auth / Multi-User — Implementation Handoff
+# BodyCast Auth / Multi-User Implementation Handoff
 
-Updated: 2026-10-28 (Europe/Bratislava)
+Updated: 2026-10-28
 
-## Current status
+## Status and scope
 
-**READY FOR INDEPENDENT RE-AUDIT** after two evidence-backed P2 fixes. The local implementation remains uncommitted; this task explicitly authorizes independent audit, followed by direct fast-forward push to `main` and exact-SHA CI only after audit PASS. Production deployment and all production changes remain forbidden.
+**Pending independent audit of the exact final tree.** After audit PASS, the authorized path is a normal commit and fast-forward push to `origin/main`, followed by successful exact-SHA CI. There is no PR in this task.
 
-The governing request is `C:\Users\wowan\.codex\attachments\48c5dcf5-0f52-48eb-9702-faaea334075a\Вставлений текст.txt`. The architecture decisions and acceptance criteria are in `docs/architecture/auth-multi-user-plan.md`.
+**Production is explicitly out of scope and must remain unchanged.** Do not deploy, run production Prisma migrations/DDL/backfill/restore, bootstrap User 1/Profile 1, activate public registration, alter production workers, touch Caddy/VPS, or operate production credentials. Production deployment remains `workflow_dispatch` only and requires separate authorization.
 
-Do not bootstrap a production user, enable public signup in production, run production DDL/backfill/restore, or deploy. Do not open a PR. Internal reviewers are not independent audit. The owner explicitly authorizes only the post-audit direct main push and exact-SHA required CI; verify workflows cannot trigger production deployment before pushing.
+Architecture and product contract: [`auth-multi-user-plan.md`](auth-multi-user-plan.md). This handoff records observed repository and test state, not a substitute for auditing it.
 
-## Workspace and exact snapshot
+## Git state and preservation
 
-- Worktree: `C:\Users\wowan\.codex\worktrees\auth-multi-user-implementation\physiology-active-energy-integration`
-- Base `HEAD`: `0f93f37dd6a4208cfc74331a0fb4c063c542c6bd` (detached; unchanged).
-- Local diff at this handoff snapshot: **214 tracked files changed, 35 untracked files; tracked diff +3,604 / -2,028 lines**. Untracked lines are excluded. The independent audit prompt also receives the immutable tree ID.
-- All implementation work remains uncommitted in this worktree. Preserve it; do not reset, switch branches, rewrite history, or remove files.
-- `git -c core.whitespace=cr-at-eol diff --check` passes. Git prints only the existing LF-to-CRLF advisory for `prisma/schema.prisma`.
+- Repository: `krustallik/body-model`.
+- Current worktree: `C:\Users\wowan\.codex\worktrees\auth-multi-user-implementation\physiology-active-energy-integration` (detached HEAD; keep this checkout and its changes intact).
+- `HEAD` and freshly fetched `origin/main`: `dc772ef29b4900a70c0a8fc07e3c35d868ec298a` (`Implement multi-user authentication and profile isolation`).
+- Baseline: `0f93f37dd6a4208cfc74331a0fb4c063c542c6bd`; it is an ancestor of HEAD. The local `main` branch is checked out in a different worktree at this baseline; do not switch, reset, or edit that worktree. The authorized push can be made from a new commit in this detached worktree with a normal fast-forward refspec.
+- The base-to-HEAD implementation commit changes 260 files (+8,591/-2,108), including the architecture plan and three additive migration files. Current schema contains 77 migration directories.
+- This worktree additionally has 41 tracked modified implementation/test-support files, this handoff document, and one new helper, `tests/helpers/mock-verified-profile-auth.ts`. The extra code fix is limited to registration response normalization; other changes update CI/test preparation and auth-aware test fixtures.
+- The previous handoff recorded 214 tracked and 35 untracked files, but not the names of those untracked files or an immutable tree ID. Current HEAD contains the auth implementation and a broader 260-file base-to-HEAD diff, so the previous uncommitted feature work appears integrated. Exact file-for-file reconciliation of the old 35 untracked paths cannot be proven from that handoff; do not claim it.
+- All other worktrees are occupied. Do not modify them. In particular, `D:\body-model\.worktrees\bodycast-imported-vps-release` owns local `main` at the baseline.
 
-## Implemented scope
+### Extra worktree diff
 
-The diff includes Better Auth 1.7.14 integration; open registration using the approved two-OTP sequence; verified login/session and password lifecycle; Brevo transactional email; Profile provisioning and the gated Profile 1 bootstrap rehearsal; per-Profile API keys; server-derived tenant identity; profile scoping across Health, Workout, Strength, Stepper, model/energy, Forecast/Goal, repositories, routes and workers; ownership constraints/composite relations; additive Prisma migrations; auth UI and focused unit/integration coverage.
+The 41 tracked implementation/test-support changes, excluding this handoff document, are:
 
-One final copy correction was made in `src/app/auth-flow.tsx`: generic enumeration-safe responses now say BodyCast will *try* to send a code, rather than promise delivery. The post-verification password step tells the user to enter the second code when it arrives and request another if it does not.
+```text
+.github/workflows/ci.yml
+.github/workflows/production-migration-safety-ci.yml
+Dockerfile
+scripts/ci/production-v4-fence-evidence-postgres-smoke.mjs
+scripts/production-db-preflight.sql
+scripts/production-empty-install-ledger.mjs
+scripts/unified-v4-traffic-check.ts
+src/app/api/registration/resend/route.ts
+src/app/api/registration/start/route.ts
+tests/dashboard-route.test.ts
+tests/days-route.test.ts
+tests/deploy-script-ordering.test.ts
+tests/forecast-action-route.test.ts
+tests/health-sync-authoritative-muscle-once.test.ts
+tests/health-sync-refresh-worker.test.ts
+tests/integration/auth-multiuser.integration.test.ts
+tests/model-episode-repository.test.ts
+tests/model-episode-routes.test.ts
+tests/model-forecast-routes.test.ts
+tests/model-recovery-routes.test.ts
+tests/production-empty-install-ledger.test.mjs
+tests/production-migration-v5.test.mjs
+tests/production-v4-derived-recovery.test.mjs
+tests/sleep-repository.test.ts
+tests/sleep-route.test.ts
+tests/stepper-create-operation-route.test.ts
+tests/stepper-diagnostic-route.test.ts
+tests/stepper-reconciliation-routes.test.ts
+tests/stepper-workout-diagnostic-route.test.ts
+tests/stepper-workout-routes.test.ts
+tests/training-accounting-routes.test.ts
+tests/training-day-fact-currentness.test.ts
+tests/training-exercises-routes.test.ts
+tests/training-match-routes.test.ts
+tests/training-program-routes.test.ts
+tests/training-retrospective-routes.test.ts
+tests/training-retrospective.test.ts
+tests/unified-experimental-physiology-source-loader.test.ts
+tests/work-activity-route.test.ts
+tests/work-interval-repository.test.ts
+tests/work-interval-route.test.ts
+```
 
-## Internal review evidence
+The additional untracked file is `tests/helpers/mock-verified-profile-auth.ts`.
 
-- Auth reviewer rechecked the prior `/0` trusted-proxy finding: `src/lib/env.ts` rejects zero-length IPv4/IPv6 CIDRs, and `tests/env.test.ts` covers `0.0.0.0/0` and `::/0`. Reviewer found no related blocker.
-- Tenant-isolation reviewer rechecked the prior application-reader coverage finding: the two-profile integration uses V7 `readDay()` and the Unified source loader, with profile-specific outputs. Reviewer found no related blocker.
-- Those are critical **internal** reviews only. No independent audit PASS is claimed.
-- The first independent audit returned **FIXES REQUIRED** with two P2 findings: History day deletion left Health sample rows attached to a `RESTRICT` composite FK, and password-login throttling used a global email bucket that allowed cross-IP lockout. Fixes now detach only optional Health sample pointers inside the existing day-delete transaction and scope the login email bucket by client IP. Targeted DB regressions cover surviving source observations and successful login from another IP after attacker attempts. This corrected tree requires a fresh independent audit.
+## CI failure evidence and local corrections
 
-## Validation completed
+At `dc772ef`, both main-push workflows were actually red:
 
-### Isolated PostgreSQL only
+- BodyCast CI/CD run `40705109743` failed. The production image build imported auth configuration during Next route collection but Dockerfile provided only `DATABASE_URL`; required `IOS_SHORTCUT_API_KEY` (and the auth build configuration) was absent. The run also showed auth-aware route tests still using pre-tenant mocks, and PostgreSQL jobs attempted the current 77-migration tree on an empty database even though the transition migration requires existing Profile 1.
+- Production migration safety CI run `40705109523` failed. Its Auth rehearsal reached migration `20261027120000_auth_multiuser` on an empty database and PostgreSQL raised `auth multi-user transition requires existing Profile 1`. The recovery rehearsal hit the same transition precondition.
+- In that same safety run, the 65-migration historical V4 smoke generated a Prisma client from the newer schema and attempted a `HealthSyncAudit.profileId` query against the old schema, where that column does not exist (`P2022`). The CI-only fixture was changed to insert/delete its synthetic retention row with SQL, while retaining fingerprint assertions.
 
-- Cluster: localhost `127.0.0.1:55435`, role `bodycast_test_runner`; allowlisted DBs: `bodycast_training_postcommit_test` and `bodycast_training_postcommit_fresh_test`.
-- No production database, VPS, Docker, Caddy, release workflow, or production secret was used.
-- Auth schema migration: `prisma/migrations/20261027120000_auth_multiuser/migration.sql`; tenant constraint migration: `prisma/migrations/20261028120000_scope_profile_constraints/migration.sql`.
-- Both isolated databases were migrated locally through the current 77 migrations; `prisma validate` and schema diff passed. The auth/multi-user migration and Profile 1 binding were rehearsed only on isolated DBs.
-- A custom-format test DB dump was restored into the allowlisted fresh DB. Dump SHA-256: `63634901A02C779768F9B7C72DD68684B02B68B3236CC4F15EFC0C1A62F391A9`. The rehearsal included one rolled-back failed migration attempt in the restored ledger; do not describe it as exactly 76 ledger rows.
-- The former schema-to-database mismatch on the composite `HealthSyncSnapshot` FK is resolved. The FK now matches Prisma's `ON DELETE RESTRICT`; the application day-delete transaction detaches only the optional `dailyHealthDataId` pointer before deleting the daily projection, preserving immutable snapshot payload and provenance. A targeted PostgreSQL integration verifies this contract and cross-profile FK rejection.
+The current extra diff addresses those concrete failures:
 
-### Tests and build
+1. Docker image build gets synthetic build-only auth env values; these are not deployment secrets and are used only to allow Next build-time route collection.
+2. CI PostgreSQL test/rehearsal databases apply the exact pinned 74-migration baseline, insert one synthetic Profile 1, then apply the 3 additive transition migrations. Raw-source tables remain empty and are verified. The production empty-install/schema verifier only permits Profile 1 in `--test` mode and still requires a loopback `*_test` DB; production modes still require zero profiles for empty install or exact migration ledger for schema postflight.
+3. Unit mocks now supply a verified Profile 1 principal to routes and services that correctly require authenticated tenant context. No production auth check is relaxed.
+4. The unified traffic CLI consistently threads its already-validated `profileId`; the owner-authorized migration-free path remains restricted to Profile 1 and keeps identity/fingerprint/currentness checks.
+5. SQL identifier quoting in DB preflight is corrected for PostgreSQL's case-sensitive JSON record fields. The CI-only HealthSyncAudit fixture uses direct SQL because this smoke validates legacy DB evidence without relying on the newer Prisma model; it deletes only its isolated fixture row.
+6. The first independent review of tree `f646239fbbca3f757a785cc8d58c34cc6d620317` found one P2: `/registration/start` and `/registration/resend` returned different status codes for the configured owner email while signup/bootstrap were disabled. Both routes now gate bootstrap mode before the public-signup-disabled response: all addresses receive the same generic response per mode, while only the exact owner address can enter the separately enabled bootstrap flow. An isolated PostgreSQL integration regression covers both endpoints for disabled and bootstrap-on cases and confirms an unrelated address does not create a User.
 
-- Focused unit command covering auth, env, profile ownership, Health sync, model recovery/diagnostics and Training routes: **13 files, 205 tests passed** (latest recorded selection; supersedes a stale 209 count elsewhere in the earlier handoff).
-- Isolated auth/multi-user PostgreSQL integration: **5/5 passed**. Includes registration/OTP, tenant isolation through Health/Workout/Strength/Stepper/V7/Unified, IDOR/composite-FK checks, API-key ownership, password/session revocation, concurrent Training generations, Profile 1 bootstrap rehearsal and HealthSyncAudit size bound.
-- Health sync integration: one full run had 30 passed and 2 test-fixture expectation failures; both of those exact tests later passed in a targeted rerun (2/2). The entire file was not rerun after the final fixture changes.
-- Full Health sync PostgreSQL integration after the delete-path fix: **32/32 passed** against the allowlisted local `bodycast_training_postcommit_fresh_test` database. The snapshot-retention case was rerun with the final immutable-payload assertion: **1/1 passed**.
-- Auth/multi-user PostgreSQL integration after the HealthSyncSnapshot cross-profile FK assertion: **5/5 passed** against the allowlisted local `bodycast_training_postcommit_test` database. A synthetic local-only password string was supplied solely to satisfy the test guard; local PostgreSQL accepts the test role and no production credential was used.
-- Daily repository unit regression after the audit fix: **25/25 passed**.
-- Isolated PostgreSQL durable-source-retention Test D after the audit fix: **1/1 passed**. It exercised `DailyMetricRepository.delete()` with linked Health metric, heart-rate, and resting-heart-rate samples; each source row, acquisition timestamp and provenance remained while only its optional daily-row pointer was detached.
-- Isolated PostgreSQL auth/multi-user regression after the audit fix: **1/1 passed**. Eleven wrong-password attempts from one client IP did not block valid login from a second IP.
-- Both allowlisted local PostgreSQL databases report **77 migrations up to date**. `prisma validate` passed and `migrate diff` reported no schema difference for both databases. The new HealthSyncSnapshot FK migration checksum matches the already rehearsed local migration ledger; existing migration files were left unchanged.
-- `npm run typecheck`: passed after the audit fixes.
-- ESLint on all changed implementation and targeted test files: passed with no warnings after the audit fixes.
-- `npx eslint . --format json`: **0 errors, 0 warnings**; the prior 28 warnings were inspected and cleared without global suppression.
-- `npm run build`: passed using synthetic local-only environment values and a `DATABASE_URL` at `127.0.0.1:1`; it could not reach production or either isolated test DB.
-- Workflow trigger audit: pushes to `main` run CI and migration-safety CI. `.github/workflows/deploy-production.yml` is triggered only by `workflow_dispatch`; no workflow in this repository dispatches production deployment on a main push. The stale CI header comment implying automatic deployment was corrected.
-- Full unit suite was not run; earlier broad run was stopped because it includes slow fake deployment-script cases.
+The P2 correction is implementation-complete and its isolated regression passes. The corrected tree still requires a fresh independent audit and has not been validated by GitHub exact-SHA CI. The prior red runs are not evidence that this worktree is green.
 
-### Browser QA limitation
+## QA evidence
 
-Real-browser visual/interaction QA was not completed. Prior local Next server starts through `exec_command` were rejected by execution policy (`CreateProcess: Rejected ... blocked by policy`); no policy bypass was attempted. A current loopback check found ports 3000, 3001, and 3005 closed. The available Chrome window was unrelated YouTube; the in-app production BodyCast URL was not opened. Route-handler/component tests and production build passed, but they are not a substitute for browser QA. Report this precise limitation; do not claim browser PASS.
+### Unit and integration
 
-## Continue from here
+- All 31 changed unit-test files passed when run one file per Vitest process with `--maxWorkers=1`: **423 passed, 1 skipped**.
+- Separately targeted route/release regressions previously passed: 63/63.
+- Full Health Sync isolated PostgreSQL integration previously passed: 32/32 on `bodycast_training_postcommit_fresh_test`.
+- Auth/multi-user isolated PostgreSQL integration passed after the enumeration fix: **5/5** on `bodycast_training_postcommit_test`, including the new owner/unrelated response-equivalence regression.
+- Both allowlisted local test DBs reported all 77 migrations applied. `prisma validate` passed; migration diff against the current schema was empty. No production DB or external database was used.
+- The full local unit run previously reported 4,113 passed, 37 skipped, 17 timeouts, and 6 Vitest worker RPC errors. The 17 timeouts were confined to three slow release-harness test files; rerunning those files serially passed 59 tests with 2 skipped. This points to worker contention, not an observed assertion regression. No timeout, skip, or suppression was added.
+- After the enumeration fix, `npm run typecheck`, whole-repo ESLint (0 errors / 0 warnings), targeted lint for both registration routes and the integration file, and `npm run build` passed. Build used synthetic auth values and an unreachable loopback test DB. The Docker build fix itself still needs exact-SHA CI.
 
-1. Keep this exact worktree/diff intact; compute and report an immutable Git tree ID using a temporary index without changing the real index.
-2. A separate independent Audit agent reviews the complete final tree, auth/tenant/security boundaries, migrations, and evidence. Require its own PASS; no internal review counts as independent.
-3. Resolve evidence-based P0/P1/P2 findings, rerun affected checks, and repeat audit for any changed tree.
-4. After PASS, refetch `origin/main`, ensure it is still the same base and a fast-forward is possible, commit neutrally, and push directly to `main`. Verify the exact pushed-SHA CI and migration-safety CI conclusions. Never deploy or trigger production workflows.
+### Browser QA alternative
 
-## Production requirements still outside this task
+Computer Use was not retried. The permitted local Playwright route worked by selecting an already-installed Chromium headless shell (Playwright's bundled expected binary was absent). A local Next dev server used synthetic auth values and `DATABASE_URL` at loopback port 1; no production endpoint or credential was used.
 
-Production signup remains disabled until configuration and controlled activation are separately authorized. Required production configuration includes a strong `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, explicit trusted proxy CIDRs, the chosen legacy Shortcut transition state, and Brevo API/sender configuration for public signup. Production schema changes/backfill and User 1 owner-email binding each require separate exact-binding owner authorization; production deployment requires its own authorization. No production credentials or owner email are stored in this handoff.
+Headless browser verified `/register`, `/login`, and `/forgot-password` render. On registration, mocked local requests progressed through `/api/registration/start`, `/api/auth/email-otp/verify-email`, and `/api/registration/password-reset/request`, and the UI displayed the next OTP step. This proves the UI state flow only; OTP/email delivery and real session issuance are covered by isolated integration tests, not by this mocked browser run. The server was stopped afterward.
+
+## Security and data boundaries for auditor
+
+Audit the full base-to-HEAD implementation plus this worktree diff and untracked helper. Pay particular attention to the approved architecture plan and these boundaries:
+
+- Better Auth is pinned to 1.7.14; public endpoints/wrappers, disabled HTTP paths, direct `auth.api` calls, OTP purpose/expiry/attempt/resend semantics, session revocation, and enumeration handling must match the plan.
+- Unverified users must have no usable session or private access. Signup requires the two-purpose OTP sequence and a verified Profile provisioner; no OTP JIT signup.
+- User 1/Profile 1 preservation and profile sequence allocation must not alter legacy payloads. New verified users receive independent empty profiles.
+- All personal APIs/repositories/workers use authenticated or explicit tenant context; test nested IDs, API-key ownership and legacy key retirement, unique keys, foreign keys, caches, SSR and publication readers.
+- Three migrations are additive and intended for a separate, explicitly authorized production transition. Verify no migration file changed after initial addition and no CI step targets production.
+- `HealthSyncAudit` alone keeps the approved 30-day retention; primary Health/Training/Garmin/Workout/Strength inputs and provenance remain strictly protected.
+- No production credentials, DB, VPS or runtime traffic have been used or changed in this task.
+
+## Trigger and push policy evidence
+
+Checked all workflow trigger headers in `.github/workflows`: only `ci.yml` and `production-migration-safety-ci.yml` run on push to `main`. `deploy-production.yml` and all production migration/recovery workflows are `workflow_dispatch` only; a push cannot deploy, migrate or mutate production. GitHub ruleset `BodyCast main protection` is active and forbids deletion/non-fast-forward; there are no bypass actors. The API reports no required status check rules, so do not describe checks as repository-enforced; nevertheless the task requires both exact-SHA main-push CI workflows to finish successfully before reporting completion. No force push or policy bypass is allowed.
+
+## Remaining steps
+
+1. Compute the exact final Git tree (including the untracked mock) using a temporary index, without changing the real index.
+2. Obtain a separate independent Audit agent PASS on that immutable tree; the previous audit correctly returned FIXES REQUIRED for the P2 above and does not count as PASS. Internal review does not count. If P0/P1/P2 findings arise, fix only evidence-backed items, rerun affected tests, update this handoff and request a new audit of the new tree.
+3. After PASS, fetch `origin/main` again and confirm it is still `dc772ef...` or a safe ancestor. Do not alter the other worktree's `main`. Commit the audited tree neutrally with real configured Git identity and normal fast-forward push `HEAD:refs/heads/main`; stop on rejection.
+4. Follow the two actual main-push workflow runs for that exact pushed SHA until complete. Require success from BodyCast CI/CD and Production migration safety tooling CI. For red results, diagnose and correct; re-audit any changed tree before another push.
+5. Do not dispatch deployment or make any other production change, even after CI success.
+
+## Acceptance status
+
+- Independent audit: **not yet performed on current tree**.
+- Final exact-SHA CI: **pending**; current `dc772ef` runs are red as described above.
+- Push of current fixes: **not yet performed**.
+- Production: **NOT DEPLOYED / NOT TOUCHED**.

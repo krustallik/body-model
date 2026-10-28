@@ -1,12 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const routeMocks = vi.hoisted(() => ({
   sleepRepository: { summaryForDate: vi.fn() },
   isLocalDemoMode: vi.fn(),
   localDemoSleepForDate: vi.fn(),
 }));
 
-vi.mock("@/modules/health/sleep.repository", () => ({ sleepRepository: routeMocks.sleepRepository }));
+vi.mock("@/modules/health/sleep.repository", () => ({
+  sleepRepository: routeMocks.sleepRepository,
+  SleepRepository: class {
+    summaryForDate = routeMocks.sleepRepository.summaryForDate;
+  },
+}));
 vi.mock("@/modules/demo/local-demo-mode", () => ({ isLocalDemoMode: routeMocks.isLocalDemoMode }));
 vi.mock("@/modules/demo/local-demo-data", () => ({ localDemoSleepForDate: routeMocks.localDemoSleepForDate }));
 

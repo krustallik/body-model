@@ -970,16 +970,37 @@ describe("auth and tenant registration integration", () => {
       select: { userId: true, sex: true, dateOfBirth: true, heightCm: true },
     });
     const email = `profile-one-${crypto.randomUUID()}@example.invalid`;
+    const unrelatedEmail = `unrelated-${crypto.randomUUID()}@example.invalid`;
     emails.add(email);
+    emails.add(unrelatedEmail);
     const priorRegistrationEnabled = process.env.AUTH_PUBLIC_REGISTRATION_ENABLED;
     const priorBootstrapEnabled = process.env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED;
     const priorOwnerEmail = process.env.AUTH_PROFILE_ONE_OWNER_EMAIL;
-    if (original.userId) await prisma.profile.update({ where: { id: 1 }, data: { userId: null } });
     process.env.AUTH_PUBLIC_REGISTRATION_ENABLED = "false";
-    process.env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED = "true";
+    process.env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED = "false";
     process.env.AUTH_PROFILE_ONE_OWNER_EMAIL = email;
 
     try {
+      const ownerStartDisabled = await registrationStart(request({ email, name: "Legacy Owner" }));
+      const unrelatedStartDisabled = await registrationStart(request({ email: unrelatedEmail, name: "Other" }));
+      expect(ownerStartDisabled.status).toBe(503);
+      expect(unrelatedStartDisabled.status).toBe(ownerStartDisabled.status);
+      expect(await unrelatedStartDisabled.json()).toEqual(await ownerStartDisabled.json());
+
+      const ownerResendDisabled = await registrationResend(request({ email }));
+      const unrelatedResendDisabled = await registrationResend(request({ email: unrelatedEmail }));
+      expect(ownerResendDisabled.status).toBe(503);
+      expect(unrelatedResendDisabled.status).toBe(ownerResendDisabled.status);
+      expect(await unrelatedResendDisabled.json()).toEqual(await ownerResendDisabled.json());
+
+      process.env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED = "true";
+      const unrelatedStartDuringBootstrap = await registrationStart(request({ email: unrelatedEmail, name: "Other" }));
+      const unrelatedResendDuringBootstrap = await registrationResend(request({ email: unrelatedEmail }));
+      expect(unrelatedStartDuringBootstrap.status).toBe(202);
+      expect(await unrelatedResendDuringBootstrap.json()).toEqual(await unrelatedStartDuringBootstrap.json());
+      expect(await prisma.user.findUnique({ where: { email: unrelatedEmail }, select: { id: true } })).toBeNull();
+
+      if (original.userId) await prisma.profile.update({ where: { id: 1 }, data: { userId: null } });
       const start = await registrationStart(request({ email, name: "Legacy Owner" }));
       expect(start.status).toBe(202);
       const user = await prisma.user.findUniqueOrThrow({ where: { email } });

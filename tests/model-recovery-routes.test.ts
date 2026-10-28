@@ -6,7 +6,9 @@ const services = vi.hoisted(() => ({
   TrainingRefreshVisibilityPendingError: class TrainingRefreshVisibilityPendingError extends Error {},
   ModelRefreshVisibilityPendingError: class ModelRefreshVisibilityPendingError extends Error {},
 }));
+const authAccess = vi.hoisted(() => ({ getProfilePrincipal: vi.fn() }));
 vi.mock("@/modules/model-recovery/model-recovery.service", () => services);
+vi.mock("@/modules/auth/access", () => authAccess);
 
 import { POST as POST_RECOVER } from "@/app/api/v1/model/recover/route";
 import { GET as GET_RECOVERY_STATUS } from "@/app/api/v1/model/recovery-status/route";
@@ -38,6 +40,11 @@ describe("historical recovery API", () => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.IOS_SHORTCUT_API_KEY = apiKey;
     vi.clearAllMocks();
+    authAccess.getProfilePrincipal.mockImplementation(async (request: Request) => (
+      request.headers.get("x-api-key") === apiKey
+        ? { profileId: 1, userId: "test-user-1", method: "api-key" }
+        : null
+    ));
   });
 
   it.each([
@@ -65,6 +72,7 @@ describe("historical recovery API", () => {
     expect(services.recoverModelEpisode).toHaveBeenCalledWith({
       episodeId: 7,
       seed: 20_260_824,
+      profileId: 1,
       config: { particleCount: 256 },
     });
   });
@@ -94,7 +102,7 @@ describe("historical recovery API", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.recovery).not.toHaveProperty("ensemble");
-    expect(services.getModelRecoveryStatus).toHaveBeenCalledWith(7);
+    expect(services.getModelRecoveryStatus).toHaveBeenCalledWith(1, 7);
   });
 
   it("validates the recovery-status query", async () => {

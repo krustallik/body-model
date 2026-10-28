@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
 import {
   CatalogExerciseNotFoundError,
   SessionNotEditableError,
@@ -76,7 +78,7 @@ describe("training accounting and exercise history routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(routeMocks.trainingService.updateCatalogLoadAccountingConfig)
-      .toHaveBeenCalledExactlyOnceWith(12, { loadAccountingConfig: null });
+      .toHaveBeenCalledExactlyOnceWith(12, { loadAccountingConfig: null }, 1);
   });
 
   it("maps a missing catalog exercise to its route error contract", async () => {
@@ -115,7 +117,7 @@ describe("training accounting and exercise history routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session: materializedSession });
     expect(routeMocks.trainingService.updateSessionAccountingContext)
-      .toHaveBeenCalledExactlyOnceWith(73, input);
+      .toHaveBeenCalledExactlyOnceWith(73, input, 1);
   });
 
   it("maps a missing session from accounting-context updates to 404", async () => {
@@ -140,7 +142,7 @@ describe("training accounting and exercise history routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session: materializedSession });
     expect(routeMocks.trainingService.materializeSessionAccounting)
-      .toHaveBeenCalledExactlyOnceWith(73, undefined, undefined);
+      .toHaveBeenCalledExactlyOnceWith(73, 1, undefined);
   });
 
   it("validates materialize idempotency payloads and reports non-editable sessions", async () => {
@@ -161,7 +163,7 @@ describe("training accounting and exercise history routes", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "session_not_editable" });
     expect(routeMocks.trainingService.materializeSessionAccounting)
-      .toHaveBeenCalledExactlyOnceWith(73, undefined, "request-73");
+      .toHaveBeenCalledExactlyOnceWith(73, 1, "request-73");
   });
 
   it("forwards refresh idempotency keys and maps a missing session", async () => {
@@ -172,7 +174,7 @@ describe("training accounting and exercise history routes", () => {
     expect(success.status).toBe(200);
     await expect(success.json()).resolves.toEqual({ session: materializedSession });
     expect(routeMocks.trainingService.refreshSessionAccounting)
-      .toHaveBeenCalledExactlyOnceWith(73, undefined, "refresh-73");
+      .toHaveBeenCalledExactlyOnceWith(73, 1, "refresh-73");
 
     routeMocks.trainingService.refreshSessionAccounting.mockReset();
     routeMocks.trainingService.refreshSessionAccounting.mockRejectedValueOnce(new SessionNotFoundError());
@@ -201,7 +203,7 @@ describe("training accounting and exercise history routes", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ entries });
-    expect(routeMocks.trainingService.getExerciseHistory).toHaveBeenCalledExactlyOnceWith(73, 19);
+    expect(routeMocks.trainingService.getExerciseHistory).toHaveBeenCalledExactlyOnceWith(73, 19, 1);
     expect(entries[0]?.topSetLoadKg).toBeNull();
     expect(entries[0]?.externalLoadVolumeKgReps).toBeNull();
   });

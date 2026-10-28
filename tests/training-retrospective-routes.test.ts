@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const trainingService = vi.hoisted(() => ({
   createSessionFromWorkout: vi.fn(),
   bulkCreateSessionsFromWorkouts: vi.fn(),
@@ -112,7 +114,7 @@ describe("Training retrospective API contracts", () => {
       expect(trainingService.createSessionFromWorkout).toHaveBeenCalledWith({
         workoutId: 501,
         programId: 7,
-      });
+      }, 1);
       const body = await response.json();
       expect(body.session.entryMode).toBe(ENTRY_MODE.RETROSPECTIVE);
       expect(body.session.matchedWorkoutId).toBe(501);
@@ -180,6 +182,7 @@ describe("Training retrospective API contracts", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({ totalCount: 37 });
       expect(trainingService.listHistoricalStrengthWorkouts).toHaveBeenCalledWith({
+        profileId: 1,
         limit: 20,
         cursor: undefined,
         onlyMissingDiary: false,
@@ -209,7 +212,7 @@ describe("Training retrospective API contracts", () => {
       expect(trainingService.changeSessionProgram).toHaveBeenCalledWith(88, {
         programId: 9,
         programVersionId: 22,
-      });
+      }, 1);
     });
 
     it("rejects invalid body without mutation", async () => {
@@ -268,7 +271,7 @@ describe("Training retrospective API contracts", () => {
       );
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({ session });
-      expect(trainingService.updateSessionExercise).toHaveBeenCalledWith(88, 1, { plannedSets: 4 });
+      expect(trainingService.updateSessionExercise).toHaveBeenCalledWith(88, 1, { plannedSets: 4 }, 1);
     });
 
     it("deletes an exercise with confirm", async () => {
@@ -281,7 +284,7 @@ describe("Training retrospective API contracts", () => {
       );
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({ session });
-      expect(trainingService.deleteSessionExercise).toHaveBeenCalledWith(88, 1, { confirm: true });
+      expect(trainingService.deleteSessionExercise).toHaveBeenCalledWith(88, 1, { confirm: true }, 1);
     });
 
     it("reorders exercises", async () => {
@@ -326,7 +329,7 @@ describe("Training retrospective API contracts", () => {
         idCtx("7"),
       );
       expect(response.status).toBe(200);
-      expect(trainingService.listProgramVersions).toHaveBeenCalledWith(7);
+      expect(trainingService.listProgramVersions).toHaveBeenCalledWith(7, 1);
     });
 
     it("maps missing program on versions to 404", async () => {
@@ -347,7 +350,7 @@ describe("Training retrospective API contracts", () => {
         idCtx("88"),
       );
       expect(response.status).toBe(200);
-      expect(trainingService.deleteDiarySession).toHaveBeenCalledWith(88);
+      expect(trainingService.deleteDiarySession).toHaveBeenCalledWith(88, 1);
       await expect(response.json()).resolves.toEqual({ deleted: true, matchedWorkoutId: 501 });
     });
 

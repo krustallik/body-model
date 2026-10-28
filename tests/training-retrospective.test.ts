@@ -46,7 +46,7 @@ function buildDb() {
       upsert: vi.fn().mockResolvedValue({}),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
-    exerciseCatalog: { findMany: vi.fn() },
+    exerciseCatalog: { findMany: vi.fn(), findFirst: vi.fn() },
     trainingProgram: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -94,6 +94,7 @@ function buildDb() {
     workout: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
     },
     activeEnergyEventAlias: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -195,9 +196,11 @@ function versionRecord(
 function retrospectiveDetail(overrides: Record<string, unknown> = {}) {
   return {
     id: 50,
+    profileId: 1,
     status: SESSION_STATUS.COMPLETED,
     entryMode: ENTRY_MODE.RETROSPECTIVE,
     revision: 1,
+    accountingInputRevision: 1,
     programId: 10,
     programVersionId: 101,
     webStartedAt: null as Date | null,
@@ -256,6 +259,7 @@ function sessionForEdit(overrides: Record<string, unknown> = {}) {
     status: SESSION_STATUS.COMPLETED,
     entryMode: ENTRY_MODE.RETROSPECTIVE,
     revision: 1,
+    accountingInputRevision: 1,
     programId: 10,
     programVersionId: 101,
     webStartedAt: null as Date | null,
@@ -313,7 +317,7 @@ describe("retrospective diary creation from historical workouts", () => {
   }
 
   it("creates a COMPLETED RETROSPECTIVE session directly linked to the workout", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout());
+    db.workout.findFirst.mockResolvedValue(strengthWorkout());
     arrangeProgram();
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
@@ -364,18 +368,21 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("does not run physiology publication inline when creating a retrospective session", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout());
+    db.workout.findFirst.mockResolvedValue(strengthWorkout());
     arrangeProgram();
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
-    db.strengthDiarySession.findUnique.mockResolvedValue({
+    db.strengthDiarySession.findUnique.mockResolvedValueOnce({
       id: 50,
       profileId: 1,
       status: SESSION_STATUS.COMPLETED,
       effectiveAccountingAt: workoutStartAt,
-      accountingTimeZone: "Europe/Bratislava",
       webStartedAt: null,
       createdAt: workoutStartAt,
-      matchedWorkout: { startAt: workoutStartAt },
+      matchedWorkoutId: 77,
+      matchStatus: MATCH_STATUS.MATCHED,
+      matchMethod: MATCH_METHOD.DIRECT_BACKFILL,
+      matchedAt: workoutStartAt,
+      matchedWorkout: { id: 77, sourceIdentity: "garmin:g-1", startAt: workoutStartAt, endAt: new Date("2026-08-12T17:17:00Z") },
     });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
     db.$queryRaw.mockResolvedValue([{ requestedGeneration: 1 }]);
@@ -415,7 +422,7 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("snapshots program exercises as PLANNED without running the fuzzy matcher", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout());
+    db.workout.findFirst.mockResolvedValue(strengthWorkout());
     arrangeProgram();
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
@@ -443,7 +450,7 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("allows an archived program for historical backfill", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout());
+    db.workout.findFirst.mockResolvedValue(strengthWorkout());
     arrangeProgram(new Date("2026-09-01T00:00:00Z"));
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
@@ -453,7 +460,7 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("rejects a stepper workout without writing a session", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout({
+    db.workout.findFirst.mockResolvedValue(strengthWorkout({
       type: "Stair Climbing",
       externalId: "stair-1",
     }));
@@ -464,7 +471,7 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("returns the existing session instead of creating a duplicate", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout({
+    db.workout.findFirst.mockResolvedValue(strengthWorkout({
       matchedDiarySession: {
         id: 50,
         status: SESSION_STATUS.COMPLETED,
@@ -482,7 +489,7 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("reports created versus existing sessions in a bulk backfill", async () => {
-    db.workout.findUnique
+    db.workout.findFirst
       .mockResolvedValueOnce(strengthWorkout({ id: 77 }))
       .mockResolvedValueOnce(strengthWorkout({
         id: 78,
@@ -515,7 +522,7 @@ describe("retrospective diary creation from historical workouts", () => {
   });
 
   it("coexists with an ACTIVE live session (no single-session guard)", async () => {
-    db.workout.findUnique.mockResolvedValue(strengthWorkout());
+    db.workout.findFirst.mockResolvedValue(strengthWorkout());
     arrangeProgram();
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
@@ -623,26 +630,25 @@ describe("historical program reassignment", () => {
     resistanceType: string;
   }>) {
     // The repository re-reads the source session inside its locked write
-    // transaction before recording old/new provenance. Keep that transactional
-    // read explicit instead of relying only on the service's preflight read.
-    db.strengthDiarySession.findUnique.mockResolvedValue({
-      id: 50,
-      profileId: 1,
-      status: SESSION_STATUS.COMPLETED,
-      programId: 10,
-      programVersionId: 101,
-      revision: 1,
-      matchedWorkoutId: 77,
-      effectiveAccountingAt: null,
-      webStartedAt: null,
-      createdAt: new Date("2026-09-17T12:00:00Z"),
-      matchedWorkout: { sourceIdentity: "garmin:g-1", startAt: workoutStartAt },
-    });
+    // transaction before recording old/new provenance. The preflight and
+    // transactional reads are profile-scoped findFirst calls.
     db.strengthDiarySession.findFirst
+      .mockResolvedValue(retrospectiveDetail())
       .mockResolvedValueOnce(sessionForEdit())
-      .mockResolvedValueOnce(retrospectiveDetail({ programId: 20, programVersionId: 201 }));
+      .mockResolvedValueOnce(retrospectiveDetail({
+        programId: 10,
+        programVersionId: 101,
+        matchedWorkout: { ...retrospectiveDetail().matchedWorkout, sourceIdentity: "garmin:g-1" },
+      }));
     db.trainingProgram.findFirst.mockResolvedValue(programRecord(20, 201));
     db.trainingProgramVersion.findFirst.mockResolvedValue(versionRecord(201, 1, exercises));
+    db.strengthSessionExercise.findMany.mockImplementation(async (args: { where?: { id?: { in?: number[] } } }) => {
+      const rows = [{ id: 501, sets: [{ id: 900 }] }, { id: 502, sets: [{ id: 901 }] }];
+      const ids = args.where?.id?.in;
+      return ids ? rows.filter(({ id }) => ids.includes(id)) : rows;
+    });
+    db.exerciseCatalog.findMany.mockImplementation(async (args: { where?: { id?: { in?: number[] } } }) =>
+      (args.where?.id?.in ?? []).map((id) => ({ id })));
   }
 
   it("preserves recorded sets for exercises matching on catalog + resistance type", async () => {
@@ -668,7 +674,7 @@ describe("historical program reassignment", () => {
       },
     });
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 50 },
+      where: { profileId_id: { profileId: 1, id: 50 } },
       data: expect.objectContaining({
         programId: 20,
         programVersionId: 201,
@@ -738,6 +744,8 @@ describe("session-level exercise edits", () => {
       .mockResolvedValueOnce(sessionForEdit())
       .mockResolvedValueOnce(retrospectiveDetail());
     db.exerciseCatalog.findMany.mockResolvedValue([catalogC]);
+    db.exerciseCatalog.findFirst.mockResolvedValue(catalogC);
+    db.strengthSessionExercise.findMany.mockResolvedValue([{ id: 501 }, { id: 502 }]);
     db.strengthSessionExercise.create.mockResolvedValue({ id: 503 });
 
     await service.addSessionExercise(50, {
@@ -779,7 +787,7 @@ describe("session-level exercise edits", () => {
       ],
     });
 
-    await expect(service.deleteSessionExercise(50, 501, { confirm: true }, 1))
+    await expect(service.deleteSessionExercise(50, 501, {}, 1))
       .rejects.toBeInstanceOf(ExerciseHasSetsError);
     expect(db.strengthSessionExercise.delete).not.toHaveBeenCalled();
   });
@@ -797,6 +805,7 @@ describe("session-level exercise edits", () => {
       origin: EXERCISE_ORIGIN.PLANNED,
       sets: [{ id: 900, weightKg: decimal(30), bandNominalResistanceKg: null }],
     });
+    db.strengthSessionExercise.findMany.mockResolvedValue([{ id: 501 }, { id: 502 }]);
 
     await service.deleteSessionExercise(50, 501, { confirm: true }, 1);
 
@@ -838,6 +847,7 @@ describe("session-level exercise edits", () => {
       origin: EXERCISE_ORIGIN.PLANNED,
       sets: [{ id: 900, weightKg: decimal(30), bandNominalResistanceKg: null }],
     });
+    db.strengthSet.findMany.mockResolvedValue([{ id: 900 }]);
 
     await service.updateSessionExercise(50, 501, {
       resistanceType: RESISTANCE.RESISTANCE_BAND,
@@ -845,7 +855,7 @@ describe("session-level exercise edits", () => {
     }, 1);
 
     expect(db.strengthSet.updateMany).toHaveBeenCalledWith({
-      where: { sessionExerciseId: 501 },
+      where: { id: { in: [900] }, sessionExerciseId: 501 },
       data: { weightKg: null },
     });
   });
@@ -854,6 +864,7 @@ describe("session-level exercise edits", () => {
     db.strengthDiarySession.findFirst
       .mockResolvedValueOnce(sessionForEdit())
       .mockResolvedValueOnce(retrospectiveDetail());
+    db.strengthSessionExercise.findMany.mockResolvedValue([{ id: 501 }, { id: 502 }]);
 
     await service.reorderSessionExercises(50, { exerciseIds: [502, 501] }, 1);
 
@@ -1177,8 +1188,8 @@ describe("delete diary session without touching Garmin", () => {
     const result = await service.deleteDiarySession(50, 1);
 
     expect(result).toEqual({ matchedWorkoutId: 77 });
-    expect(db.strengthDiarySession.delete).toHaveBeenCalledWith({ where: { id: 50 } });
-    expect(db.workout.findUnique).not.toHaveBeenCalled();
+    expect(db.strengthDiarySession.delete).toHaveBeenCalledWith({ where: { profileId_id: { profileId: 1, id: 50 } } });
+    expect(db.workout.findFirst).not.toHaveBeenCalled();
     expect(db.workout.findMany).not.toHaveBeenCalled();
   });
 

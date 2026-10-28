@@ -58,10 +58,14 @@ export function verifyMigrationLedger({ migrations, rows } = {}) {
   };
 }
 
-export function verifyFreshMigrationLedger({ migrations, rows, profileCount, sourceCounts = {} } = {}) {
+export function verifyFreshMigrationLedger({ migrations, rows, profileCount, profileIds, sourceCounts = {}, allowLegacyProfileOne = false } = {}) {
   const verifiedLedger = verifyMigrationLedger({ migrations, rows });
 
-  if (profileCount !== 0) reject("a supposedly fresh database already contains a user profile");
+  const onlyLegacyProfileOne = allowLegacyProfileOne && profileCount === 1
+    && Array.isArray(profileIds) && profileIds.length === 1 && profileIds[0] === 1;
+  if (profileCount !== 0 && !onlyLegacyProfileOne) {
+    reject("a supposedly fresh database contains an unexpected user profile");
+  }
   for (const [table, count] of Object.entries(sourceCounts)) {
     if (!Number.isSafeInteger(count) || count !== 0) reject(`fresh database contains pre-existing ${table} rows`);
   }
@@ -120,7 +124,8 @@ async function verifyDatabase(mode) {
       process.stdout.write(`${JSON.stringify({ ...verifiedLedger, status: "verified" })}\n`);
       return;
     }
-    const profileCount = await client.profile.count();
+    const profileIds = (await client.profile.findMany({ select: { id: true } })).map(({ id }) => id);
+    const profileCount = profileIds.length;
     const sourceCounts = {
       DailyHealthData: await client.dailyHealthData.count(),
       HealthMetricSample: await client.healthMetricSample.count(),
@@ -131,7 +136,14 @@ async function verifyDatabase(mode) {
       ModelEpisode: await client.modelEpisode.count(),
       PhysiologyV7Lifecycle: await client.physiologyV7Lifecycle.count(),
     };
-    const result = verifyFreshMigrationLedger({ migrations: tree.migrations, rows, profileCount, sourceCounts });
+    const result = verifyFreshMigrationLedger({
+      migrations: tree.migrations,
+      rows,
+      profileCount,
+      profileIds,
+      sourceCounts,
+      allowLegacyProfileOne: mode === "test",
+    });
     process.stdout.write(`${JSON.stringify({ ...result, status: "verified" })}\n`);
   } finally {
     await client.$disconnect();

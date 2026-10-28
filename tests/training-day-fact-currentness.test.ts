@@ -61,7 +61,7 @@ describe("TrainingDayFact currentness fence", () => {
     queue.read.mockResolvedValue({ requestedGeneration: 9, completedGeneration: 8 });
     queue.pending.mockReturnValue(true);
 
-    const [fact] = await new TrainingDayFactRepository(client() as never).list();
+    const [fact] = await new TrainingDayFactRepository(1, client() as never).list();
     expect(fact?.events[0]).toMatchObject({
       id: "strength-session:42",
       title: "Strength training",
@@ -78,7 +78,7 @@ describe("TrainingDayFact currentness fence", () => {
   it("masks derived energy when the generation changes during the read", async () => {
     queue.changed.mockResolvedValue(true);
 
-    const [fact] = await new TrainingDayFactRepository(client() as never).list();
+    const [fact] = await new TrainingDayFactRepository(1, client() as never).list();
     expect(fact?.events[0]).toMatchObject({
       id: "strength-session:42",
       title: "Strength training",
@@ -94,7 +94,7 @@ describe("TrainingDayFact currentness fence", () => {
 
   it("masks only derived values while Active Energy convergence is fenced", async () => {
     queue.convergenceRead.mockResolvedValue({ active: true, revision: 2, fromDate: "2026-09-30", lifecycleUpdatedAt: "2026-10-17T10:00:00.000Z" });
-    const [fact] = await new TrainingDayFactRepository(client() as never).list();
+    const [fact] = await new TrainingDayFactRepository(1, client() as never).list();
     expect(fact?.events[0]).toMatchObject({ activeEnergyKcal: null, energySource: "unavailable", sessionId: 42 });
     expect(fact?.events[0]).not.toHaveProperty("canonicalEnergyResolution");
   });

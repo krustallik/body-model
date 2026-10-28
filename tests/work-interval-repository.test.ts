@@ -24,14 +24,20 @@ const input = {
 };
 
 function fixture(options: { overlap?: boolean; existing?: boolean } = {}) {
+  const mutableRecord = { ...record };
   const transaction = {
     $executeRaw: vi.fn().mockResolvedValue(1),
     physiologyV7Lifecycle: { findUnique: vi.fn().mockResolvedValue(null) },
     workInterval: {
-      findFirst: vi.fn().mockResolvedValue(options.overlap ? { id: 99 } : null),
-      findUnique: vi.fn().mockResolvedValue(options.existing === false ? null : record),
-      create: vi.fn().mockResolvedValue(record),
-      update: vi.fn().mockImplementation(({ data }) => Promise.resolve({ ...record, ...data })),
+      findFirst: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
+        if (where.startAt) return Promise.resolve(options.overlap ? { id: 99 } : null);
+        return Promise.resolve(options.existing === false ? null : mutableRecord);
+      }),
+      create: vi.fn().mockResolvedValue(mutableRecord),
+      updateMany: vi.fn().mockImplementation(({ data }: { data: Partial<typeof mutableRecord> }) => {
+        Object.assign(mutableRecord, data);
+        return Promise.resolve({ count: 1 });
+      }),
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
   };
@@ -113,9 +119,9 @@ describe("work interval repository", () => {
     const transaction = {
       $executeRaw: vi.fn().mockResolvedValue(1),
       workInterval: {
-        findUnique: vi.fn().mockResolvedValue(record),
-        findFirst: vi.fn().mockResolvedValue(null),
-        update: vi.fn().mockRejectedValue({ code: "P2004" }),
+        findFirst: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(where.startAt ? null : record)),
+        updateMany: vi.fn().mockRejectedValue({ code: "P2004" }),
       },
     };
     const client = {
@@ -129,9 +135,9 @@ describe("work interval repository", () => {
     const transaction = {
       $executeRaw: vi.fn().mockResolvedValue(1),
       workInterval: {
-        findUnique: vi.fn().mockResolvedValue(record),
-        findFirst: vi.fn().mockResolvedValue(null),
-        update: vi.fn().mockRejectedValue(new Error("update failed")),
+        findFirst: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(where.startAt ? null : record)),
+        updateMany: vi.fn().mockRejectedValue(new Error("update failed")),
       },
     };
     const client = {

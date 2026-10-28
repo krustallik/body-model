@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const routeMocks = vi.hoisted(() => ({
   prisma: {
     stepperReconciliationCandidate: { findMany: vi.fn() },
@@ -66,6 +68,7 @@ describe("Stepper reconciliation write routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, activated: false, modelPublicationStatus: "current" });
     expect(routeMocks.confirm).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, {
+      profileId: 1,
       manualWorkoutId: 31,
       garminWorkoutId: 44,
     });
@@ -75,6 +78,7 @@ describe("Stepper reconciliation write routes", () => {
       profileId: 1,
     });
     expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({
+      profileId: 1,
       activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [31, 44] },
     });
   });
@@ -100,11 +104,13 @@ describe("Stepper reconciliation write routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, activated: true, modelPublicationStatus: "current" });
     expect(routeMocks.confirm).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, {
+      profileId: 1,
       manualWorkoutId: 31,
       garminWorkoutId: 44,
     });
     expect(routeMocks.activateVisibility).toHaveBeenCalledExactlyOnceWith({
       client: routeMocks.prisma,
+      profileId: 1,
       generationId: "reviewed-reconciliation-17",
       manualWorkoutId: 31,
       garminWorkoutId: 44,
@@ -116,7 +122,7 @@ describe("Stepper reconciliation write routes", () => {
       workoutIds: [31, 44],
       profileId: 1,
     });
-    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({});
+    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({ profileId: 1 });
   });
 
   it("maps an already-confirmed domain conflict and does not publish or activate", async () => {
@@ -145,6 +151,7 @@ describe("Stepper reconciliation write routes", () => {
     expect(routeMocks.confirm).toHaveBeenCalledOnce();
     expect(routeMocks.activateVisibility).toHaveBeenCalledExactlyOnceWith({
       client: routeMocks.prisma,
+      profileId: 1,
       generationId: "recon-31-44",
       manualWorkoutId: 31,
       garminWorkoutId: 44,
@@ -176,16 +183,17 @@ describe("Stepper reconciliation write routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, modelPublicationStatus: "current" });
     expect(routeMocks.prisma.stepperReconciliationCandidate.findMany).toHaveBeenCalledExactlyOnceWith({
-      where: { groupId: 70 },
+      where: { profileId: 1, groupId: 70 },
       select: { manualWorkoutId: true, garminWorkoutId: true },
     });
-    expect(routeMocks.reject).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, { groupId: 70 });
+    expect(routeMocks.reject).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, { profileId: 1, groupId: 70 });
     expect(routeMocks.activateVisibility).not.toHaveBeenCalled();
     expect(routeMocks.recordShadow).toHaveBeenCalledExactlyOnceWith({
       workoutIds: [31, 44, 45],
       profileId: 1,
     });
     expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith({
+      profileId: 1,
       activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [31, 44, 45] },
     });
   });
@@ -200,7 +208,7 @@ describe("Stepper reconciliation write routes", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, modelPublicationStatus: "stale" });
-    expect(routeMocks.reject).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, { groupId: 70 });
+    expect(routeMocks.reject).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, { profileId: 1, groupId: 70 });
     expect(routeMocks.recordShadow).toHaveBeenCalledOnce();
     expect(routeMocks.publishActiveEnergy).toHaveBeenCalledOnce();
   });

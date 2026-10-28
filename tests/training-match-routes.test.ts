@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const trainingService = vi.hoisted(() => ({
   listMatchAttention: vi.fn(),
   countMatchAttention: vi.fn(),
@@ -74,7 +76,7 @@ describe("/api/v1/training matching routes", () => {
       sessions: [{ id: 42, matchStatus: MATCH_STATUS.AMBIGUOUS }],
       totalCount: 12,
     });
-    expect(trainingService.listMatchAttention).toHaveBeenCalledWith({ limit: 5, offset: 10 });
+    expect(trainingService.listMatchAttention).toHaveBeenCalledWith({ profileId: 1, limit: 5, offset: 10 });
   });
 
   it("returns match candidates for a session", async () => {
@@ -82,7 +84,7 @@ describe("/api/v1/training matching routes", () => {
     const response = await CANDIDATES(new Request(`${base}/42/match-candidates`), sessionCtx("42"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ candidates });
-    expect(trainingService.listMatchCandidates).toHaveBeenCalledWith(42);
+    expect(trainingService.listMatchCandidates).toHaveBeenCalledWith(42, 1);
   });
 
   it("rejects invalid session id for candidates without service call", async () => {
@@ -109,7 +111,7 @@ describe("/api/v1/training matching routes", () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session: matchedSession });
-    expect(trainingService.manualMatch).toHaveBeenCalledWith(42, { workoutId: 100 });
+    expect(trainingService.manualMatch).toHaveBeenCalledWith(42, { workoutId: 100 }, 1);
   });
 
   it("allows explicit unmatched finalize via workoutId=null", async () => {
@@ -125,7 +127,7 @@ describe("/api/v1/training matching routes", () => {
       sessionCtx("42"),
     );
     expect(response.status).toBe(200);
-    expect(trainingService.manualMatch).toHaveBeenCalledWith(42, { workoutId: null });
+    expect(trainingService.manualMatch).toHaveBeenCalledWith(42, { workoutId: null }, 1);
   });
 
   it("rejects invalid match body without mutation", async () => {

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const services = vi.hoisted(() => ({ forecastModelEpisode: vi.fn() }));
+const authAccess = vi.hoisted(() => ({ getProfilePrincipal: vi.fn() }));
 vi.mock("@/modules/model-forecast/model-forecast.service", () => services);
+vi.mock("@/modules/auth/access", () => authAccess);
 
 import { POST } from "@/app/api/v1/model/forecast/route";
 import {
@@ -41,6 +43,11 @@ describe("forecast API", () => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.IOS_SHORTCUT_API_KEY = apiKey;
     vi.clearAllMocks();
+    authAccess.getProfilePrincipal.mockImplementation(async (request: Request) => (
+      request.headers.get("x-api-key") === apiKey
+        ? { profileId: 1, userId: "test-user-1", method: "api-key" }
+        : null
+    ));
   });
 
   it("authorizes, validates, and applies deterministic default seed", async () => {
@@ -49,7 +56,7 @@ describe("forecast API", () => {
     services.forecastModelEpisode.mockResolvedValue({ status: "ok", dates: [] });
     const response = await POST(request(body));
     expect(response.status).toBe(200);
-    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...body, seed: 20_260_824 });
+    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...body, seed: 20_260_824, profileId: 1 });
   });
 
   it.each([

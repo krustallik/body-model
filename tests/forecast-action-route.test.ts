@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const services = vi.hoisted(() => ({
   initializeNewModelEpisode: vi.fn(),
   recalculateModelEpisode: vi.fn(),
@@ -72,12 +74,13 @@ describe("forecast action recalculation route", () => {
 
     const response = await firstRequest;
     expect(services.recalculateModelEpisode).toHaveBeenCalledTimes(1);
-    expect(services.recalculateModelEpisode).toHaveBeenCalledWith({});
+    expect(services.recalculateModelEpisode).toHaveBeenCalledWith({ profileId: 1 });
     expect(services.recoverModelEpisode).toHaveBeenCalledWith({
+      profileId: 1,
       seed: 20_260_824,
       episodeId: activeEpisodeId,
     });
-    expect(services.getModelStatus).toHaveBeenCalledWith(activeEpisodeId);
+    expect(services.getModelStatus).toHaveBeenCalledWith(1, activeEpisodeId);
     expect(unified.rebuild).toHaveBeenCalledWith({
       profileId: 1,
       fromDate: "2041-03-01",

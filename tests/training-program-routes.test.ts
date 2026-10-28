@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const trainingService = vi.hoisted(() => ({
   listPrograms: vi.fn(),
   createProgram: vi.fn(),
@@ -76,7 +78,7 @@ describe("/api/v1/training/programs", () => {
     const response = await CREATE(jsonRequest(base, "POST", body));
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ program });
-    expect(trainingService.createProgram).toHaveBeenCalledWith(body);
+    expect(trainingService.createProgram).toHaveBeenCalledWith(body, 1);
   });
 
   it.each([
@@ -116,7 +118,7 @@ describe("/api/v1/training/programs", () => {
     const response = await GET_PROGRAM(new Request(`${base}/7`), ctx("7"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ program });
-    expect(trainingService.getProgram).toHaveBeenCalledWith(7);
+    expect(trainingService.getProgram).toHaveBeenCalledWith(7, 1);
   });
 
   it("returns 404 when program is missing", async () => {
@@ -139,7 +141,7 @@ describe("/api/v1/training/programs", () => {
       ctx("7"),
     );
     expect(response.status).toBe(200);
-    expect(trainingService.updateProgram).toHaveBeenCalledWith(7, { name: "День А" });
+    expect(trainingService.updateProgram).toHaveBeenCalledWith(7, { name: "День А" }, 1);
   });
 
   it("rejects empty update body without mutation", async () => {
@@ -165,7 +167,7 @@ describe("/api/v1/training/programs", () => {
     });
     const response = await ARCHIVE(new Request(`${base}/7/archive`, { method: "POST" }), ctx("7"));
     expect(response.status).toBe(200);
-    expect(trainingService.archiveProgram).toHaveBeenCalledWith(7);
+    expect(trainingService.archiveProgram).toHaveBeenCalledWith(7, 1);
   });
 
   it("maps archive not-found to 404", async () => {

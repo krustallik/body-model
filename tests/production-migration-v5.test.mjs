@@ -700,12 +700,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(authSql).not.toContain("__BASELINE_TABLES_JSON__");
     expect(authSql).not.toContain("__DDL_LOCK_TARGETS_JSON__");
     expect(authSql).toContain(JSON.stringify(AUTH_MULTIUSER_MANIFEST.requiredTablesBefore));
-    expect(authSql).toContain(JSON.stringify(AUTH_MULTIUSER_MANIFEST.ddlLockTargets));
+    expect(authSql).toContain(JSON.stringify(AUTH_MULTIUSER_MANIFEST.ddlLockTargets.map(({ tableName, requiredLockMode }) => ({ tableName, requiredLockMode }))));
     expect(AUTH_MULTIUSER_MANIFEST.ddlLockTargets).toHaveLength(50);
     expect(authSql).toContain("AccessExclusiveLock");
     expect(authSql).toContain("AuthRateLimitBucket");
     expect(trainingSql).toContain('{"tableName":"Workout","requiredLockMode":"ShareRowExclusiveLock"}');
     expect(trainingSql).toContain('{"tableName":"DailyModelState","requiredLockMode":"AccessExclusiveLock"}');
+    expect(trainingSql).toContain('AS t("tableName" text, "requiredLockMode" text)');
     expect(trainingSql).toContain(JSON.stringify(ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredTablesBefore));
   });
 

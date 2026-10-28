@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/modules/auth/access", async () => (await import("./helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const { repository } = vi.hoisted(() => ({
   repository: {
     list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(),
@@ -30,7 +32,7 @@ describe("work interval routes", () => {
     repository.list.mockResolvedValue([dto]);
     const response = await GET(new Request("http://localhost/api/v1/work-intervals?date=2026-08-23"));
     expect(response.status).toBe(200);
-    expect(repository.list).toHaveBeenCalledWith("2026-08-23");
+    expect(repository.list).toHaveBeenCalledWith(1, "2026-08-23");
     await expect(response.json()).resolves.toEqual({ intervals: [dto] });
   });
 
@@ -38,7 +40,7 @@ describe("work interval routes", () => {
     repository.create.mockResolvedValue(dto);
     const response = await POST(jsonRequest("http://localhost/api/v1/work-intervals", valid));
     expect(response.status).toBe(201);
-    expect(repository.create).toHaveBeenCalledWith({ ...valid, timezone: "Europe/Bratislava" });
+    expect(repository.create).toHaveBeenCalledWith(1, { ...valid, timezone: "Europe/Bratislava" });
   });
 
   it("updates and deletes an interval", async () => {
@@ -49,7 +51,7 @@ describe("work interval routes", () => {
       context("1"),
     );
     expect(patched.status).toBe(200);
-    expect(repository.update).toHaveBeenCalledWith(1, { category: "manualLight" });
+    expect(repository.update).toHaveBeenCalledWith(1, 1, { category: "manualLight" });
     expect((await DELETE(new Request("http://localhost"), context("1"))).status).toBe(204);
   });
 

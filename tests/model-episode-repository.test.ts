@@ -253,7 +253,7 @@ describe("model episode repository mapping", () => {
     await repository.deactivateActive(at);
     const created = await repository.createPrepared(prepared);
     expect(db.modelEpisode.updateMany).toHaveBeenCalledWith({
-      where: { active: true }, data: { active: false, deactivatedAt: at },
+      where: { profileId: 1, active: true }, data: { active: false, deactivatedAt: at },
     });
     expect(db.modelEpisode.create.mock.calls[0]?.[0].data).toMatchObject({
       startDate: "2026-08-22",

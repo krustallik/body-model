@@ -4,10 +4,11 @@ Updated: 2026-10-28
 
 ## Final status
 
-- Auth/multi-user implementation and its release-tooling follow-up are on `origin/main` at commit `e5769a1334edac8eb1dfb2e418bd86d7eeaee27a`, tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8`. The source commit is detached in this checkout, and fetched `origin/main` equals `HEAD`; the only staged change is this handoff refresh.
+- The Auth/multi-user implementation and release-tooling source revision audited is `e5769a1334edac8eb1dfb2e418bd86d7eeaee27a`, tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8`. At that source audit, detached `HEAD` and fetched `origin/main` matched. The handoff was refreshed in a separate documentation-only commit and pushed; no source, schema, migration, or test files changed in that refresh.
 - Independent audit: **PASS** on source tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8` from `/root/independent_auth_final_audit`; patch SHA-256 `588ee7d9cb583e8cccff2d0f4390d47628b8bb25fdc23f854cfbabed65970c75`. The auditor verified the tree with staged `git write-tree`; no temporary Git index was used. No P0/P1/P2 findings on that source tree. The audit did not run tests or production operations.
 - BodyCast CI/CD run [40744790083](https://github.com/krustallik/body-model/actions/runs/40744790083): **success** on exact SHA `e5769a1`; unit shards/coverage, quality, Auth PostgreSQL integration, PostgreSQL shards, build, and container checks passed.
 - Production migration safety workflow [40744789978](https://github.com/krustallik/body-model/actions/runs/40744789978): **failure overall**. The Auth manifest rehearsal passed. The separate legacy V4 recovery image rehearsal failed with `Persisted source, audit preservation, publication fence, or lifecycle binding changed after exact-image rehearsal; recovery stopped before derived writes`; the aggregate backup/restore smoke consequently failed. The same V4 fixture failure is present on prior base runs `40726534567`, `40738814214`, and `40743322274`. No gate was disabled.
+- A subsequent documentation-only main commit `4b943f75d7acf556af7d31f45acf1ddf3d5c9032` also received successful exact-SHA BodyCast CI run [40746696826](https://github.com/krustallik/body-model/actions/runs/40746696826). Its safety run [40746696955](https://github.com/krustallik/body-model/actions/runs/40746696955) reproduced the same isolated legacy V4 fixture failure; the Auth migration-tooling job passed again.
 - GitHub main protection reports **no required status checks enabled** (the endpoint returns 404). The successful BodyCast CI run is the green exact-SHA application CI; the safety workflow failure remains a disclosed residual, not a required status context.
 - Production status: **NOT DEPLOYED / NOT CHANGED**. This auth/multi-user finalization performed no production write, migration, DDL, data operation, credential operation, workflow dispatch, or deploy. The push-triggered workflows are isolated CI; deploy/migration/recovery workflows are manual-dispatch.
 
@@ -32,7 +33,7 @@ The last postflight fix records the seven exact objects renamed by migration `20
 
 ## Independent audit
 
-The auditor verified the exact source tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8` with staged `git write-tree`; no temporary Git index was used. It found no P0/P1/P2 source findings. Tests and browser QA were not independently rerun by the auditor. A later doc-only review found P2 inaccuracies in the handoff’s index/hash provenance; they are corrected in the current staged document and need a final doc-only confirmation before commit.
+The auditor verified the exact source tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8` with staged `git write-tree`; no temporary Git index was used. It found no P0/P1/P2 source findings. Tests and browser QA were not independently rerun by the auditor. A later doc-only review found P2 inaccuracies in the handoff’s index/hash provenance; those were corrected and the corrected handoff was independently confirmed on exact tree `0e27a290f6bc3b7c28d4d82b91cdb640480a70e1` before the documentation-only push.
 
 ## Verification evidence
 

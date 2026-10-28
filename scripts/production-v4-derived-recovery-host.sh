@@ -298,6 +298,7 @@ if (evidence.database?.database !== "bodycast" || !evidence.database.version.sta
     || evidence.lifecycle?.unifiedRolloutEpoch !== 1 || evidence.database?.serverAddress !== process.argv[8]
     || evidence.database?.serverPort !== 5432
     || !/^[a-f0-9]{64}$/.test(evidence.sourceFingerprint)
+    || !/^[a-f0-9]{64}$/.test(evidence.legacyRecoverySourceFingerprint)
     || !/^[a-f0-9]{64}$/.test(evidence.healthSyncAuditFingerprint)
     || !(staleRecoverableV4 || alreadyCurrentV4)
     || evidence.lifecycle?.unifiedTargetRevision !== "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once") {
@@ -366,6 +367,7 @@ const appImageId = process.argv[8] === "null" ? null : process.argv[8];
 if (expected.schemaSha256 !== process.argv[4] || expected.databaseContainerId !== process.argv[5]
     || expected.databaseImageId !== process.argv[6] || expected.appContainerId !== appContainerId
     || expected.appImageId !== appImageId || expected.evidence?.sourceFingerprint !== live.sourceFingerprint
+    || expected.evidence?.legacyRecoverySourceFingerprint !== live.legacyRecoverySourceFingerprint
     || expected.evidence?.healthSyncAuditFingerprint !== live.healthSyncAuditFingerprint
     || JSON.stringify(expected.evidence?.sourceModelDayKeys) !== JSON.stringify(live.sourceModelDayKeys)
     || JSON.stringify(expected.evidence?.migrationRows) !== JSON.stringify(live.migrationRows)
@@ -385,7 +387,7 @@ process.stdout.write(JSON.stringify({ preflightDigest: createHash("sha256").upda
   healthSyncAuditFingerprint: live.healthSyncAuditFingerprint }) + "\n");
 NODE
 binding_json="$(docker run --rm --interactive --network "$network" "$recovery_image_ref" \
-  node --input-type=module -e 'import { readFileSync } from "node:fs"; import { recoveryEvidenceBinding } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); const binding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint, healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint, blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle }); process.stdout.write(JSON.stringify(binding));' \
+  node --input-type=module -e 'import { readFileSync } from "node:fs"; import { recoveryEvidenceBinding } from "/app/dist/production-v4-derived-recovery.mjs"; const report = JSON.parse(readFileSync(0, "utf8")); const binding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.legacyRecoverySourceFingerprint, healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint, blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle }); process.stdout.write(JSON.stringify(binding));' \
   < "$expected_file")" || fail "canonical-recovery-binding"
 BODYCAST_BINDING_JSON="$binding_json" BODYCAST_EXPECTED_FILE="$expected_file" node --input-type=module <<'NODE'
 import { readFileSync } from "node:fs";
@@ -586,7 +588,7 @@ if (before.sourceFingerprint !== after.sourceFingerprint
     || createHash("sha256").update(after.migrationRows.map((row) => row.name + "\t" + row.checksum + "\n").join("")).digest("hex")
       !== process.env.BODYCAST_TARGET_LEDGER_DIGEST
     || result.command !== "unified-v4-derived-recovery"
-    || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.sourceFingerprint
+    || result.rolloutEpoch !== 1 || result.rawInputFingerprint !== before.legacyRecoverySourceFingerprint
     || result.healthSyncAuditFingerprint !== before.healthSyncAuditFingerprint
     || result.alreadyCurrent !== expectedAlreadyCurrent) {
   throw new Error("Read-only postflight did not prove strict raw parity and V4 CURRENT coverage at epoch 1.");

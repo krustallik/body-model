@@ -439,7 +439,7 @@ jobs:
           import { readFileSync, writeFileSync } from "node:fs";
           import { recoveryEvidenceBinding } from "./scripts/production-v4-derived-recovery.mjs";
           const before = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          const binding = recoveryEvidenceBinding({ sourceFingerprint: before.sourceFingerprint,
+          const binding = recoveryEvidenceBinding({ sourceFingerprint: before.legacyRecoverySourceFingerprint,
             healthSyncAuditFingerprint: before.healthSyncAuditFingerprint, blocks: before.blocks, lifecycle: before.lifecycle });
           writeFileSync(`${process.env.RUNNER_TEMP}/bodycast-v4-artifact/expected-entry-binding.json`, `${JSON.stringify(binding)}\n`, { mode: 0o600, flag: "wx" });
           NODE
@@ -517,6 +517,7 @@ jobs:
             && /^[a-f0-9]{40}$/.test(targetMigrationTree) && /^[a-f0-9]{40}$/.test(targetSchemaBlob);
           if (before.database?.database !== "bodycast_restore" || !migrationValid
             || before.sourceFingerprint !== after.sourceFingerprint
+            || before.legacyRecoverySourceFingerprint !== after.legacyRecoverySourceFingerprint
             || before.healthSyncAuditFingerprint !== after.healthSyncAuditFingerprint || after.blocks.length !== 0
             || after.lifecycle?.unifiedRolloutEpoch !== 1 || after.lifecycle?.unifiedPublishedRolloutEpoch !== 1
             || after.lifecycle?.unifiedPublishedGeneration !== after.lifecycle?.invalidationGeneration
@@ -526,7 +527,7 @@ jobs:
             || after.sourceModelDayCount !== after.sourceModelDayKeys.length || after.coveredDayCount !== after.coveredModelDayKeys.length
             || JSON.stringify(before.sourceModelDayKeys) !== JSON.stringify(after.sourceModelDayKeys)
             || result.command !== "unified-v4-derived-recovery" || result.rolloutEpoch !== 1
-            || result.rawInputFingerprint !== before.sourceFingerprint
+            || result.rawInputFingerprint !== before.legacyRecoverySourceFingerprint
             || result.healthSyncAuditFingerprint !== before.healthSyncAuditFingerprint) throw new Error("Isolated exact-image V4 recovery rehearsal did not pass raw parity/CURRENT.");
           const rehearsalCoverageSha256 = modelDayKeysDigest(after.coveredModelDayKeys);
           assertRehearsedCoverageEvidence({ sourceModelDayKeys: after.sourceModelDayKeys,
@@ -584,7 +585,7 @@ jobs:
           for (const [name, value] of Object.entries(headroomMeasurements)) {
             if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid isolated recovery headroom measurement: ${name}`);
           }
-          const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: before.sourceFingerprint,
+          const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: before.legacyRecoverySourceFingerprint,
             healthSyncAuditFingerprint: before.healthSyncAuditFingerprint,
             blocks: before.blocks, lifecycle: before.lifecycle });
           if (JSON.stringify(expectedEntryBinding) !== readFileSync(`${root}expected-entry-binding.json`, "utf8").trim()) {
@@ -708,7 +709,7 @@ jobs:
             sourceFingerprint: report.evidence.sourceFingerprint,
             healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint, lifecycle: report.evidence.lifecycle,
             blocks: report.evidence.blocks, sourceEvidence: report.evidence.sourceEvidence, expected });
-          const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.sourceFingerprint,
+          const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: report.evidence.legacyRecoverySourceFingerprint,
             healthSyncAuditFingerprint: report.evidence.healthSyncAuditFingerprint,
             blocks: report.evidence.blocks, lifecycle: report.evidence.lifecycle });
           if (JSON.stringify(expectedEntryBinding) !== JSON.stringify(measurements.expectedEntryBinding)) {

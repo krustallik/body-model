@@ -683,7 +683,17 @@ async function main() {
       timeout: 60_000,
     }),
   ]);
-  const output = { ...result, expectedMigrationRows: manifest.rows, expectedLedgerDigest: manifest.treeDigest };
+  // The recovery CLI in the pinned 65-migration image has its own v3 source
+  // projection. Bind its entrypoint to that exact inventory while keeping the
+  // current v4 projection above as the release-wide raw-data gate.
+  // @ts-expect-error This module is supplied only by LEGACY_V4_RECOVERY.sourceSha in the recovery image.
+  const legacyRecoveryRaw = await import("@/modules/model-episodes/unified-v4-derived-recovery.service")
+    .then((module) => module.inventoryV4RecoveryRawSourcesV1(prisma));
+  if (legacyRecoveryRaw.healthSyncAuditFingerprint !== result.healthSyncAuditFingerprint) {
+    throw new Error("HealthSyncAudit changed between the current and exact-image recovery evidence snapshots.");
+  }
+  const output = { ...result, legacyRecoverySourceFingerprint: legacyRecoveryRaw.fingerprint,
+    expectedMigrationRows: manifest.rows, expectedLedgerDigest: manifest.treeDigest };
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }
 

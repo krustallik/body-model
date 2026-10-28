@@ -711,7 +711,10 @@ try {
   await insertHealthDay("2025-01-10", 2, true);
   await assertHealthSyncAuditRetentionExcludedFromV4Fingerprint();
   const recoveryPreflight = await validateCurrentEvidence(9);
-  const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: recoveryPreflight.sourceFingerprint,
+  if (!/^[a-f0-9]{64}$/.test(recoveryPreflight.legacyRecoverySourceFingerprint)) {
+    throw new Error("Exact legacy recovery source fingerprint is missing from the recovery image evidence.");
+  }
+  const expectedEntryBinding = recoveryEvidenceBinding({ sourceFingerprint: recoveryPreflight.legacyRecoverySourceFingerprint,
     healthSyncAuditFingerprint: recoveryPreflight.healthSyncAuditFingerprint,
     blocks: recoveryPreflight.blocks, lifecycle: recoveryPreflight.lifecycle });
   const recoveryRawBefore = await legacyUnpagedRawFingerprint();
@@ -760,7 +763,8 @@ try {
   }
   const recoveryResult = JSON.parse(recoveryOutput.trim());
   if (recoveryResult.command !== "unified-v4-derived-recovery" || recoveryResult.current !== true
-    || recoveryResult.rolloutEpoch !== 1 || recoveryResult.rawInputFingerprint !== recoveryRawBefore
+    || recoveryResult.rolloutEpoch !== 1
+    || recoveryResult.rawInputFingerprint !== recoveryPreflight.legacyRecoverySourceFingerprint
     || recoveryResult.healthSyncAuditFingerprint !== recoveryAuditBefore
     || recoveryResult.healthDatesRefreshed.join(",") !== recoveryPreflight.blocks.filter((block) => block.source === "health")
       .map((block) => block.sourceKey).sort().join(",")
@@ -780,6 +784,9 @@ try {
     ]);
   const lifecycle = lifecycleRows[0];
   const evidenceAfter = await readEvidence();
+  if (evidenceAfter.legacyRecoverySourceFingerprint !== recoveryPreflight.legacyRecoverySourceFingerprint) {
+    throw new Error("Pinned legacy recovery source inventory changed during derived-only publication.");
+  }
   const [staleTransientRows] = await prisma.$queryRawUnsafe(
     `SELECT count(*)::int AS count FROM public."ExperimentalTransientExerciseWaterShadow" WHERE "sessionId" = 26`,
   );

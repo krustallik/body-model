@@ -22,11 +22,13 @@ const stepperV7Date = "2042-06-16";
 const crossMidnightStartDate = "2042-06-17";
 const crossMidnightEndDate = "2042-06-18";
 const timezone = "Europe/Bratislava";
+const clientIp = `198.51.100.${1 + (crypto.getRandomValues(new Uint8Array(1))[0]! % 254)}`;
+const originalLegacyShortcutSetting = process.env.LEGACY_IOS_SHORTCUT_ENABLED;
 
 function syncRequest(body: unknown): Request {
   return new Request("http://localhost/api/v1/health/sync", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": apiKey },
+    headers: { "content-type": "application/json", "x-api-key": apiKey, "x-forwarded-for": clientIp },
     body: JSON.stringify(body),
   });
 }
@@ -54,12 +56,20 @@ async function cleanCrossMidnightStepper(): Promise<void> {
 }
 
 describe("v6 workout activity PostgreSQL integration", () => {
-  beforeAll(clean);
-  afterAll(async () => {
+  beforeAll(async () => {
+    process.env.LEGACY_IOS_SHORTCUT_ENABLED = "true";
     await clean();
-    await cleanStepperV7();
-    await cleanCrossMidnightStepper();
-    await prisma.$disconnect();
+  });
+  afterAll(async () => {
+    try {
+      await clean();
+      await cleanStepperV7();
+      await cleanCrossMidnightStepper();
+    } finally {
+      if (originalLegacyShortcutSetting === undefined) delete process.env.LEGACY_IOS_SHORTCUT_ENABLED;
+      else process.env.LEGACY_IOS_SHORTCUT_ENABLED = originalLegacyShortcutSetting;
+      await prisma.$disconnect();
+    }
   });
 
   it("syncs mixed-case Stair + Stair + Strength payload and persists activeEnergyKcal", async () => {

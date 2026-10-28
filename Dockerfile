@@ -18,11 +18,11 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 COPY . .
-RUN DATABASE_URL=postgresql://build:build@localhost:5432/build \
+RUN export DATABASE_URL=postgresql://build:build@localhost:5432/build \
     IOS_SHORTCUT_API_KEY=integration-test-secret \
     BETTER_AUTH_SECRET=bodycast-ci-only-auth-secret-not-for-deployment \
     BETTER_AUTH_URL=http://localhost:3000 \
-    AUTH_TRUSTED_PROXIES=127.0.0.1/32 \
+    AUTH_TRUSTED_PROXIES=127.0.0.1/32 && \
     npm run prisma:generate && \
     npx next build
 

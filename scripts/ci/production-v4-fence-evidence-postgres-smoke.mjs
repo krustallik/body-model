@@ -751,8 +751,12 @@ try {
       "--env", `BODYCAST_V4_EXPECTED_EVIDENCE_BINDING=${JSON.stringify(expectedEntryBinding)}`,
       image, "node", "/app/dist/production-full-history-recalculate.mjs", "--derived-v4-recovery",
       "--owner-authorized", "--profile-id", "1"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  } catch {
-    throw new Error("Exact legacy recovery image failed its derived-only execution rehearsal on the isolated fixture.");
+  } catch (error) {
+    const stderr = error && typeof error === "object" && "stderr" in error
+      ? String(error.stderr ?? "").replaceAll(databaseUrl, "[redacted isolated database URL]").trim()
+      : "";
+    const detail = stderr ? `: ${stderr.slice(-1200)}` : "";
+    throw new Error(`Exact legacy recovery image failed its derived-only execution rehearsal on the isolated fixture${detail}`);
   }
   const recoveryResult = JSON.parse(recoveryOutput.trim());
   if (recoveryResult.command !== "unified-v4-derived-recovery" || recoveryResult.current !== true

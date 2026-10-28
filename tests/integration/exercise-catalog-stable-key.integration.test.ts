@@ -1,22 +1,41 @@
 import { PrismaClient } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 import { TrainingRepository } from "@/modules/training/training.repository";
+
+requireIsolatedStage01Database(process.env.DATABASE_URL, process.env.BODYCAST_STAGE01_MODE, "test");
 
 const prisma = new PrismaClient();
 const trainingRepository = new TrainingRepository(prisma);
 const profileA = 991001;
 const profileB = 991002;
 const profileSeed = 991003;
+const profileFixtures = [profileA, profileB, profileSeed, profileSeed + 1];
+const profilesCreatedBySuite: number[] = [];
 
-async function clean(profileIds: number[] = [profileA, profileB, profileSeed]): Promise<void> {
+async function clean(profileIds: number[] = profileFixtures): Promise<void> {
   await prisma.exerciseCatalog.deleteMany({ where: { profileId: { in: profileIds } } });
 }
 
 describe("ExerciseCatalog stable identity with PostgreSQL", () => {
+  beforeAll(async () => {
+    for (const id of profileFixtures) {
+      if (await prisma.profile.findUnique({ where: { id }, select: { id: true } })) continue;
+      await prisma.profile.create({ data: { id } });
+      profilesCreatedBySuite.push(id);
+    }
+  });
+
   afterAll(async () => {
-    await clean();
-    await prisma.$disconnect();
+    try {
+      await clean();
+      if (profilesCreatedBySuite.length > 0) {
+        await prisma.profile.deleteMany({ where: { id: { in: profilesCreatedBySuite } } });
+      }
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 
   it("exposes all eighteen canonical rows through the catalog repository surface", async () => {

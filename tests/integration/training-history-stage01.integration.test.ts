@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { EXPECTED_MS100_V1, EXPECTED_GOLDEN_V1 } from "../fixtures/training-history-stage01/expected-v1";
 import {
@@ -17,6 +17,8 @@ import {
   TRAINING_HISTORY_STAGE01_CREATED_AT,
   TRAINING_HISTORY_STAGE01_PROFILE_ID,
 } from "../fixtures/training-history-stage01/fixture-v1";
+
+vi.mock("@/modules/auth/access", async () => (await import("../helpers/mock-verified-profile-auth")).mockProfileAuth);
 
 const SENTINEL_WORKOUT_ID = 15_000_001;
 const SENTINEL_SOURCE_IDENTITY = "sentinel:stage01-cleanup-preservation-check";

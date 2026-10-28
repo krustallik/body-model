@@ -14,6 +14,7 @@ const profileId = 991307;
 const dates = ["2051-05-01", "2051-05-02"];
 const request = { profileId, fromDate: dates[0], toDate: dates[1], timeZone: "Europe/Bratislava" };
 const persistence = new PhysiologyV7PersistenceRepository(prisma);
+let profileCreatedBySuite = false;
 let profileOneLifecycleSnapshot: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle.findUnique>> | null = null;
 let profileOneLifecycleSnapshotCaptured = false;
 
@@ -38,6 +39,7 @@ async function clean() {
   await prisma.physiologyV7ShadowDiagnostic.deleteMany({ where: { profileId } });
   await prisma.physiologyV7DailyResult.deleteMany({ where: { profileId } });
   await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+  await prisma.dailyHealthData.deleteMany({ where: { profileId, date: { in: dates } } });
   await deleteDailyHealthRows(prisma, dates);
 }
 async function seed() {
@@ -49,6 +51,10 @@ async function seed() {
 }
 describe("v7 shadow diagnostics with PostgreSQL", () => {
   beforeEach(async () => {
+    if (!await prisma.profile.findUnique({ where: { id: profileId }, select: { id: true } })) {
+      await prisma.profile.create({ data: { id: profileId } });
+      profileCreatedBySuite = true;
+    }
     profileOneLifecycleSnapshot = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 } });
     profileOneLifecycleSnapshotCaptured = true;
     await clean();
@@ -69,6 +75,7 @@ describe("v7 shadow diagnostics with PostgreSQL", () => {
         profileOneLifecycleSnapshotCaptured = true;
       }
       await clean();
+      if (profileCreatedBySuite) await prisma.profile.deleteMany({ where: { id: profileId } });
     } finally {
       try {
         await restoreProfileOneLifecycle();

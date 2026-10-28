@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   buildExerciseMuscleMappingSnapshotV7,
   parseExerciseMuscleMappingSnapshotV7,
@@ -15,11 +15,14 @@ import {
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
 import { RESISTANCE } from "@/modules/training/training.constants";
+import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
+
+requireIsolatedStage01Database(process.env.DATABASE_URL, process.env.BODYCAST_STAGE01_MODE, "test");
 
 const prisma = new PrismaClient();
 const repo = new TrainingRepository(prisma);
 const service = new TrainingService(prisma, repo);
-const profileId = 1;
+const profileId = 991308;
 
 async function clean(): Promise<void> {
   await prisma.trainingSourceChange.deleteMany({ where: { profileId } });
@@ -36,6 +39,10 @@ async function clean(): Promise<void> {
   await prisma.programExercise.deleteMany({
     where: { programVersion: { program: { profileId } } },
   });
+  await prisma.trainingProgram.updateMany({
+    where: { profileId, currentVersionId: { not: null } },
+    data: { currentVersionId: null },
+  });
   await prisma.trainingProgramVersion.deleteMany({
     where: { program: { profileId } },
   });
@@ -44,9 +51,17 @@ async function clean(): Promise<void> {
 }
 
 describe("V7 and anatomy mapping snapshots with PostgreSQL", () => {
+  beforeAll(async () => {
+    await prisma.profile.create({ data: { id: profileId } });
+  });
+
   afterAll(async () => {
-    await clean();
-    await prisma.$disconnect();
+    try {
+      await clean();
+      await prisma.profile.deleteMany({ where: { id: profileId } });
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 
   it("stores approved immutable mapping snapshots on live start and leaves them after catalog rename", async () => {

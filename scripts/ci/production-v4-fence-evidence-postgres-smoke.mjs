@@ -339,7 +339,8 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
       },
     });
     const exercise = await prisma.strengthSessionExercise.create({
-      data: { session: { connect: { profileId_id: { profileId: 1, id: sessionId } } },
+      data: { profile: { connect: { id: 1 } },
+        session: { connect: { profileId_id: { profileId: 1, id: sessionId } } },
         snapshotExerciseName: "isolated deleted-set evidence", sortOrder: 0,
         plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" },
     });

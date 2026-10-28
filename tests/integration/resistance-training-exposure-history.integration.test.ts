@@ -57,6 +57,10 @@ async function clean(): Promise<void> {
   await prisma.programExercise.deleteMany({
     where: { programVersion: { program: { name: programName } } },
   });
+  await prisma.trainingProgram.updateMany({
+    where: { profileId, name: programName },
+    data: { currentVersionId: null },
+  });
   await prisma.trainingProgramVersion.deleteMany({
     where: { program: { name: programName } },
   });

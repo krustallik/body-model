@@ -19,6 +19,8 @@ const persistence = new PhysiologyV7PersistenceRepository(prisma);
 const service = new PhysiologyV7PersistedRebuildService();
 const dates = ["2051-04-01", "2051-04-02", "2051-04-03", "2051-04-04"] as const;
 const concurrencyProfileIds = [991310, 991311, 991312, 991313, 991314, 991315] as const;
+const fixtureProfileIds = [991302, ...concurrencyProfileIds];
+const profilesCreatedBySuite: number[] = [];
 const laterDate = "2051-04-05";
 const lastDate = "2051-04-06";
 const request = {
@@ -140,6 +142,11 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
     requireIsolatedStage01Database(process.env.DATABASE_URL, process.env.BODYCAST_STAGE01_MODE, "test");
     await Promise.all([prisma.$connect(), concurrencyPrisma.$connect()]);
     connected = true;
+    for (const id of fixtureProfileIds) {
+      if (await prisma.profile.findUnique({ where: { id }, select: { id: true } })) continue;
+      await prisma.profile.create({ data: { id } });
+      profilesCreatedBySuite.push(id);
+    }
   }, 60_000);
 
   beforeEach(async () => {
@@ -150,6 +157,9 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
   afterAll(async () => {
     if (!connected) return;
     await clean();
+    if (profilesCreatedBySuite.length > 0) {
+      await prisma.profile.deleteMany({ where: { id: { in: profilesCreatedBySuite } } });
+    }
     await prisma.$disconnect();
     await concurrencyPrisma.$disconnect();
   });

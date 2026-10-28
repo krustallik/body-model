@@ -42,6 +42,7 @@ async function clean(): Promise<void> {
     where: { programVersion: { program: fixtureProgram } },
   });
   await prisma.programExercise.deleteMany({ where: { programVersion: { program: fixtureProgram } } });
+  await prisma.trainingProgram.updateMany({ where: fixtureProgram, data: { currentVersionId: null } });
   await prisma.trainingProgramVersion.deleteMany({ where: { program: fixtureProgram } });
   await prisma.trainingProgram.deleteMany({ where: fixtureProgram });
   await prisma.heartRateSample.deleteMany({ where: { profileId, date: { in: [...dates] } } });

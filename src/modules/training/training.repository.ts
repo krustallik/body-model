@@ -1217,12 +1217,14 @@ export class TrainingRepository {
           versionNumber: nextVersionNumber,
           exercises: {
             create: nextExercises.map((exercise) => ({
-              profileId,
-              exerciseCatalogId: exercise.exerciseCatalogId,
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
               resistanceType: exercise.resistanceType,
               loadAccountingConfigSnapshot: nullableJsonInput(exercise.loadAccountingConfigSnapshot),
+              exerciseCatalog: {
+                connect: { profileId_id: { profileId, id: exercise.exerciseCatalogId } },
+              },
+              profile: { connect: { id: profileId } },
             })),
           },
         },

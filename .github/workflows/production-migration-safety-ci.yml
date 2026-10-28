@@ -467,13 +467,10 @@ jobs:
       - name: Rehearse the exact Auth manifest from the pinned 74-migration baseline
         env:
           BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd
-          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_auth_migration_test
-          BODYCAST_TEST_ADMIN_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: |
           set -Eeuo pipefail
           baseline_root="$RUNNER_TEMP/bodycast-auth-74-baseline"
-          psql "$BODYCAST_TEST_ADMIN_DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 \
-            --command='CREATE DATABASE bodycast_auth_migration_test'
           git fetch --no-tags https://github.com/krustallik/body-model.git "$BASELINE_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$BASELINE_SHA"
           mkdir -p "$baseline_root"

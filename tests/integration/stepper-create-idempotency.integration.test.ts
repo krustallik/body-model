@@ -7,14 +7,16 @@ process.env.DATABASE_URL = databaseUrl;
 const { prisma } = await import("@/lib/db/prisma");
 const { StepperWorkoutRepository, StepperCreateOperationConflictError } = await import("@/modules/training/stepper-workout.repository");
 
-const profileId = 1;
+const profileId = 991399;
 const operationId = randomUUID();
 const startAt = "2098-11-17T08:00:00.000Z";
+const workoutDate = startAt.slice(0, 10);
 const input = { startAt, durationMinutes: 24, manualStepCount: 1800 };
 const repository = new StepperWorkoutRepository(prisma);
 let workoutId: number | null = null;
 let createdQueue = false;
 let profileCreated = false;
+let dailyHealthRowPreexisting = false;
 
 describe("Stepper create idempotency on isolated PostgreSQL", () => {
   beforeAll(async () => {
@@ -26,6 +28,10 @@ describe("Stepper create idempotency on isolated PostgreSQL", () => {
     if (existingJob?.requestedGeneration !== existingJob?.completedGeneration) {
       throw new Error("Refusing to mutate an isolated test database with pending Training work.");
     }
+    dailyHealthRowPreexisting = (await prisma.dailyHealthData.findUnique({
+      where: { profileId_date: { profileId, date: workoutDate } },
+      select: { id: true },
+    })) !== null;
     if (!(await prisma.profile.findUnique({ where: { id: profileId }, select: { id: true } }))) {
       await prisma.profile.create({
         data: {
@@ -47,6 +53,10 @@ describe("Stepper create idempotency on isolated PostgreSQL", () => {
       await prisma.workout.deleteMany({ where: { id: workoutId } });
     }
     if (createdQueue) await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
+    if (profileCreated) await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+    if (!dailyHealthRowPreexisting) {
+      await prisma.dailyHealthData.deleteMany({ where: { profileId, date: workoutDate } });
+    }
     if (profileCreated) await prisma.profile.deleteMany({ where: { id: profileId } });
     await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS test_pause_stepper_operation_insert ON \"StepperCreateOperation\"");
     await prisma.$executeRawUnsafe("DROP FUNCTION IF EXISTS public.test_pause_stepper_operation_insert()");

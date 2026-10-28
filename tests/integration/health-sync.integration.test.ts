@@ -86,11 +86,11 @@ async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
   throw new Error("Expected transaction did not wait for the profile advisory lock.");
 }
 
-async function saveHealthState() {
+async function saveHealthState(profileId = 1) {
   return {
-    queue: await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } }),
-    lifecycle: await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 } }),
-    blocks: await prisma.unifiedPublicationBlock.findMany({ where: { profileId: 1 } }),
+    queue: await prisma.healthSyncRefreshJob.findUnique({ where: { profileId } }),
+    lifecycle: await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId } }),
+    blocks: await prisma.unifiedPublicationBlock.findMany({ where: { profileId } }),
   };
 }
 
@@ -114,14 +114,14 @@ async function restoreTrainingRefreshState(state: Awaited<ReturnType<typeof save
   if (state.queue) await prisma.trainingRefreshJob.create({ data: state.queue });
 }
 
-async function restoreHealthState(state: Awaited<ReturnType<typeof saveHealthState>>): Promise<void> {
-  await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId: 1 } });
+async function restoreHealthState(state: Awaited<ReturnType<typeof saveHealthState>>, profileId = 1): Promise<void> {
+  await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId } });
   if (state.queue) await prisma.healthSyncRefreshJob.create({ data: state.queue });
-  await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1 } });
+  await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId } });
   if (state.blocks.length > 0) await prisma.unifiedPublicationBlock.createMany({ data: state.blocks, skipDuplicates: true });
   if (state.lifecycle) {
     await prisma.physiologyV7Lifecycle.upsert({
-      where: { profileId: 1 },
+      where: { profileId },
       create: state.lifecycle,
       update: {
         staleFromDate: state.lifecycle.staleFromDate,
@@ -145,7 +145,7 @@ async function restoreHealthState(state: Awaited<ReturnType<typeof saveHealthSta
       },
     });
   } else {
-    await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId: 1 } });
+    await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
   }
 }
 
@@ -529,19 +529,27 @@ describe("Apple Health sync with PostgreSQL", () => {
 
   it("journals linked Health edits with episode-local dates from the canonical workout instant", async () => {
     const date = "2044-01-07";
+    const profileId = 991401;
     const sourceId = `health-journal-boundary-${Date.now()}`;
     const oldStartAt = new Date("2044-01-06T23:30:00.000Z");
     const newStartAt = new Date("2044-01-07T00:30:00.000Z");
-    const repository = new PrismaHealthSyncRepository(1, prisma);
-    const healthState = await saveHealthState();
-    const trainingJobBefore = await prisma.trainingRefreshJob.findUnique({ where: { profileId: 1 } });
+    const repository = new PrismaHealthSyncRepository(profileId, prisma);
+    const healthState = await saveHealthState(profileId);
+    const trainingJobBefore = await prisma.trainingRefreshJob.findUnique({ where: { profileId } });
     let workoutId: number | null = null;
     let sessionId: number | null = null;
     let episodeId: number | null = null;
+    let fixtureProfileCreated = false;
     try {
+      if (await prisma.profile.findUnique({ where: { id: profileId }, select: { id: true } })) {
+        throw new Error("Reserved Health date-boundary fixture Profile already exists.");
+      }
+      await prisma.profile.create({ data: { id: profileId } });
+      fixtureProfileCreated = true;
+
       const episode = await prisma.modelEpisode.create({
         data: {
-          profileId: 1,
+          profileId,
           startDate: "2044-01-01",
           timezone: "UTC",
           modelVersion: "health-journal-boundary-integration",
@@ -592,11 +600,11 @@ describe("Apple Health sync with PostgreSQL", () => {
         { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
       );
       const workout = await prisma.workout.findFirstOrThrow({
-        where: { externalId: sourceId }, select: { id: true },
+        where: { profileId, externalId: sourceId }, select: { id: true },
       });
       workoutId = workout.id;
       const unmatchedCreate = await prisma.trainingSourceChange.findFirstOrThrow({
-        where: { profileId: 1, operationKind: "health-unmatched-strength-workout-reconciled", affectedWorkoutIds: { has: workout.id } },
+        where: { profileId, operationKind: "health-unmatched-strength-workout-reconciled", affectedWorkoutIds: { has: workout.id } },
       });
       expect(unmatchedCreate.affectedSessionIds).toEqual([]);
       expect(unmatchedCreate.affectedWorkoutIds).toEqual([workout.id]);
@@ -607,7 +615,7 @@ describe("Apple Health sync with PostgreSQL", () => {
         where: { id: workout.id }, select: { updatedAt: true },
       });
       const unmatchedChangesBeforeRepeat = await prisma.trainingSourceChange.count({
-        where: { profileId: 1, affectedWorkoutIds: { has: workout.id }, operationKind: "health-unmatched-strength-workout-reconciled" },
+        where: { profileId, affectedWorkoutIds: { has: workout.id }, operationKind: "health-unmatched-strength-workout-reconciled" },
       });
       await repository.syncDay(
         { date, workouts: [oldWorkout] },
@@ -618,12 +626,12 @@ describe("Apple Health sync with PostgreSQL", () => {
         where: { id: workout.id }, select: { updatedAt: true },
       })).toEqual(beforeRepeat);
       expect(await prisma.trainingSourceChange.count({
-        where: { profileId: 1, affectedWorkoutIds: { has: workout.id }, operationKind: "health-unmatched-strength-workout-reconciled" },
+        where: { profileId, affectedWorkoutIds: { has: workout.id }, operationKind: "health-unmatched-strength-workout-reconciled" },
       })).toBe(unmatchedChangesBeforeRepeat);
 
       const session = await prisma.strengthDiarySession.create({
         data: {
-          profileId: 1,
+          profileId,
           status: "COMPLETED",
           entryMode: "RETROSPECTIVE",
           // Deliberately diverge the session accounting override from the
@@ -652,7 +660,7 @@ describe("Apple Health sync with PostgreSQL", () => {
       );
 
       const journal = await prisma.trainingSourceChange.findFirstOrThrow({
-        where: { profileId: 1, affectedSessionIds: { has: session.id }, operationKind: "health-linked-workout-reconciled" },
+        where: { profileId, affectedSessionIds: { has: session.id }, operationKind: "health-linked-workout-reconciled" },
         orderBy: { createdAt: "desc" },
       });
       expect(journal.oldEventInstants).toMatchObject({ workoutStartAt: oldStartAt.toISOString() });
@@ -674,7 +682,7 @@ describe("Apple Health sync with PostgreSQL", () => {
         { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
       );
       const changes = await prisma.trainingSourceChange.findMany({
-        where: { profileId: 1, affectedSessionIds: { has: session.id }, operationKind: "health-linked-workout-reconciled" },
+        where: { profileId, affectedSessionIds: { has: session.id }, operationKind: "health-linked-workout-reconciled" },
         orderBy: { generation: "asc" },
       });
       expect(changes).toHaveLength(2);
@@ -685,29 +693,33 @@ describe("Apple Health sync with PostgreSQL", () => {
       const correctedStoredWorkout = await prisma.workout.findUniqueOrThrow({ where: { id: workout.id } });
       expect(Number(correctedStoredWorkout.energyKcal)).toBe(420);
       expect(correctedStoredWorkout.durationMinutes).toBe(45);
-      const correctedJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      const correctedJob = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
       expect(correctedJob.requestedGeneration).toBeGreaterThanOrEqual(2);
 
-      const sourceChangeCount = await prisma.trainingSourceChange.count({ where: { profileId: 1 } });
+      const sourceChangeCount = await prisma.trainingSourceChange.count({ where: { profileId } });
       await repository.syncDay(
         { date, workouts: [correctedWorkout] },
         { date, workouts: [correctedWorkout] },
         { timezone: "Europe/Bratislava", receivedAt: new Date(), syncedAt: null },
       );
-      expect(await prisma.trainingSourceChange.count({ where: { profileId: 1 } })).toBe(sourceChangeCount);
+      expect(await prisma.trainingSourceChange.count({ where: { profileId } })).toBe(sourceChangeCount);
     } finally {
-      if (sessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
-      if (workoutId !== null) await prisma.workout.deleteMany({ where: { id: workoutId } });
-      if (episodeId !== null) await prisma.modelEpisode.deleteMany({ where: { id: episodeId } });
+      if (sessionId !== null) await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId, profileId } });
+      if (workoutId !== null) await prisma.workout.deleteMany({ where: { id: workoutId, profileId } });
+      if (episodeId !== null) await prisma.modelEpisode.deleteMany({ where: { id: episodeId, profileId } });
       if (sessionId !== null) {
-        await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1, affectedSessionIds: { has: sessionId } } });
+        await prisma.trainingSourceChange.deleteMany({ where: { profileId, affectedSessionIds: { has: sessionId } } });
       }
       if (workoutId !== null) {
-        await prisma.trainingSourceChange.deleteMany({ where: { profileId: 1, affectedWorkoutIds: { has: workoutId } } });
+        await prisma.trainingSourceChange.deleteMany({ where: { profileId, affectedWorkoutIds: { has: workoutId } } });
       }
-      await prisma.trainingRefreshJob.deleteMany({ where: { profileId: 1 } });
+      await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });
       if (trainingJobBefore) await prisma.trainingRefreshJob.create({ data: trainingJobBefore });
-      await releaseHealthState(healthState, date);
+      await prisma.healthSyncSnapshot.deleteMany({ where: { profileId, date } });
+      await prisma.healthActivityInterval.deleteMany({ where: { profileId, date } });
+      await prisma.dailyHealthData.deleteMany({ where: { profileId, date } });
+      await restoreHealthState(healthState, profileId);
+      if (fixtureProfileCreated) await prisma.profile.deleteMany({ where: { id: profileId } });
     }
   });
 

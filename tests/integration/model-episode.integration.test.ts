@@ -47,6 +47,8 @@ import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-p
 import { runWithHealthSyncRefreshWorkerLease } from "@/modules/health/health-sync-worker-context";
 import { inventoryV4RecoveryRawSourcesV1 } from "../../scripts/production-v4-recovery-evidence";
 
+vi.mock("@/modules/auth/access", async () => (await import("../helpers/mock-verified-profile-auth")).mockProfileAuth);
+
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
 const finalDate = "2041-03-30";

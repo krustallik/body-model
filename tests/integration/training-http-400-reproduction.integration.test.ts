@@ -1,10 +1,11 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 import type { ResistanceType } from "@/modules/training/training.constants";
 
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
 process.env.DATABASE_URL = databaseUrl;
+vi.mock("@/modules/auth/access", async () => (await import("../helpers/mock-verified-profile-auth")).mockProfileAuth);
 const profileId = 1;
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const { GET, PATCH } = await import("@/app/api/v1/training/sessions/[id]/sets/[setId]/route");

@@ -1834,7 +1834,10 @@ export const AUTH_MULTIUSER_MANIFEST = Object.freeze({
     ...TRAINING_MUTATION_LEDGER_MANIFEST.postflightAbsentObjects,
     ...AUTH_MULTIUSER_REMOVED_OBJECTS,
   ]),
-  postflightSignatureIncludes: TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureIncludes,
+  postflightSignatureIncludes: Object.freeze({
+    ...TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureIncludes,
+    ...AUTH_MULTIUSER_POSTFLIGHT_SIGNATURES,
+  }),
   postflightSignatureEquals: Object.freeze({
     ...TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals,
     ...AUTH_MULTIUSER_POSTFLIGHT_SIGNATURES,

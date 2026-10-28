@@ -582,15 +582,17 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   const names = objectRows.map((entry) => entry?.name);
   if (!sameArray(names, ALL_REVIEWED_OBJECTS)) blockers.push("Postflight object inventory differs from the closed production migration manifests.");
   const byName = new Map(objectRows.map((entry) => [entry?.name, entry]));
-  const missing = manifest.postflightObjects.filter((name) => byName.get(name)?.present !== true);
+  const expectedAbsent = new Set(manifest.postflightAbsentObjects);
+  const missing = manifest.postflightObjects.filter((name) => !expectedAbsent.has(name) && byName.get(name)?.present !== true);
   if (missing.length) blockers.push(`Postflight schema objects are missing: ${missing.join(", ")}.`);
-  const missingStage02 = EXPECTED_MIGRATION_OBJECTS.filter((name) => byName.get(name)?.present !== true);
+  const missingStage02 = EXPECTED_MIGRATION_OBJECTS.filter((name) => !expectedAbsent.has(name) && byName.get(name)?.present !== true);
   if (missingStage02.length) blockers.push(`Stage 02 schema objects are missing after migration: ${missingStage02.join(", ")}.`);
   const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
   const unexpectedLegacyIndexes = manifest.postflightAbsentObjects.filter((name) => byName.get(name)?.present === true);
   if (unexpectedLegacyIndexes.length) blockers.push(`Legacy Relative Muscle indexes remain after migration: ${unexpectedLegacyIndexes.join(", ")}.`);
   const wrongRelativeMuscleSignatures = Object.entries(manifest.postflightSignatureIncludes).filter(([name, fragment]) => {
+    if (expectedAbsent.has(name)) return false;
     const object = byName.get(name);
     const signature = canonicalInventorySignature(object);
     return object?.present !== true || typeof object.signature !== "string"
@@ -598,6 +600,7 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   }).map(([name]) => name);
   if (wrongRelativeMuscleSignatures.length) blockers.push(`Relative Muscle postflight schema signatures differ from the reviewed contract: ${wrongRelativeMuscleSignatures.join(", ")}.`);
   const wrongExactPostflightSignatures = Object.entries(manifest.postflightSignatureEquals ?? {}).filter(([name, expected]) => {
+    if (expectedAbsent.has(name)) return false;
     const object = byName.get(name);
     const signature = canonicalInventorySignature(object);
     return object?.present !== true || typeof signature !== "string"

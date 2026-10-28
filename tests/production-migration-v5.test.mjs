@@ -835,6 +835,54 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(rejected.blockers.join(" ")).toContain("pre-migration schema signatures differ");
   });
 
+  it("accepts only Auth-reviewed legacy removals and keeps unexpected postflight gaps fail-closed", () => {
+    const report = validTrainingMutationLedgerPreflightReport({ applied: true });
+    const authDirs = [...trainingMutationLedgerDirs, ...AUTH_MULTIUSER_MANIFEST.migrations.map(({ name }) => name)];
+    report.identity = { ...report.identity, database: "bodycast_restore", role: "bodycast_restore", serverAddress: "172.20.0.3" };
+    report.migrations.push(...AUTH_MULTIUSER_MANIFEST.migrations.map((migration) => migrationRow(migration)));
+    report.objects = schemaObjects("old-after");
+
+    const expectedAbsent = new Set(AUTH_MULTIUSER_MANIFEST.postflightAbsentObjects);
+    for (const name of expectedAbsent) {
+      const object = report.objects.find((candidate) => candidate.name === name);
+      if (object) Object.assign(object, { present: false, kind: "missing", signature: null });
+    }
+    for (const name of AUTH_MULTIUSER_MANIFEST.postflightObjects) {
+      const object = report.objects.find((candidate) => candidate.name === name);
+      if (!object) throw new Error(`Missing Auth postflight schema fixture: ${name}`);
+      const signature = AUTH_MULTIUSER_MANIFEST.postflightSignatureEquals[name]
+        ?? AUTH_MULTIUSER_MANIFEST.postflightSignatureIncludes[name]
+        ?? "reviewed-signature";
+      Object.assign(object, {
+        present: !expectedAbsent.has(name),
+        kind: !expectedAbsent.has(name) ? (name.includes(".") ? "column" : name.endsWith("_idx") ? "index" : "constraint") : "missing",
+        signature: expectedAbsent.has(name) ? null : signature,
+      });
+    }
+
+    const accepted = evaluateProductionPostflight(report, authDirs, AUTH_MULTIUSER_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore",
+      expectedRole: "bodycast_restore",
+    });
+    expect(accepted.ready, accepted.blockers.join(" | ")).toBe(true);
+
+    const unexpectedGap = structuredClone(report);
+    const authIndex = unexpectedGap.objects.find((object) => object.name === "User_email_key");
+    Object.assign(authIndex, { present: false, kind: "missing", signature: null });
+    expect(evaluateProductionPostflight(unexpectedGap, authDirs, AUTH_MULTIUSER_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore",
+      expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("Postflight schema objects are missing: User_email_key");
+
+    const unexpectedLegacyObject = structuredClone(report);
+    const legacyConstraint = unexpectedLegacyObject.objects.find((object) => object.name === "StrengthDiarySession_programId_fkey");
+    Object.assign(legacyConstraint, { present: true, kind: "constraint", signature: "unexpected-legacy-constraint" });
+    expect(evaluateProductionPostflight(unexpectedLegacyObject, authDirs, AUTH_MULTIUSER_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore",
+      expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("Legacy Relative Muscle indexes remain after migration");
+  });
+
   it("blocks an extra release migration, unexpected database row, failed row, duplicate, rollback, checksum drift, or partial target schema", () => {
     const extraDirectory = evaluateProductionPreflight(validPreflightReport(), [...dirs, "20261004120000_unreviewed"]);
     expect(extraDirectory.blockers.join(" ")).toContain("Full release-tree pending set differs");

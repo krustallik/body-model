@@ -8,6 +8,23 @@ Complete final auth/multi-user QA, obtain independent audit PASS on the exact fi
 
 **Production must remain untouched.** Do not deploy, access production credentials or DB, run production DDL/migrations/backfills/restores, bootstrap User 1/Profile 1, enable public signup, change VPS/Caddy/workers, or dispatch a production workflow. Do not use real Brevo credentials for OTP tests. No force push, CI bypass, author spoofing, or AI attribution.
 
+## Latest finalization status (2026-10-28; supersedes older pending-state notes below)
+
+- `origin/main` and `HEAD` are `36f8137148a741a96ccc7078e8a8d0a452cf2da6` (`Cover auth route boundaries in unit CI`). The working checkout has a staged follow-up addressing a newly exposed Auth migration postflight false blocker; candidate code tree before this documentation update: `9bd4598834e0c3b4245a2d7033c23cbb017099c1`.
+- Independent auditor `/root/independent_auth_final_audit` returned **PASS** on that candidate tree. Patch SHA-256: `c0a2ea01d73486ea3e0b30ba13f34ab55b10f452aa78dfae4dca00188edcb0b0` (7,701 bytes); no P0/P1/P2 findings. It confirmed the postflight validator only exempts manifest-declared absent objects and that all 40 Auth `DROP DEFAULT` columns have reviewed target signatures. Any change to this handoff changes the tree and needs exact-tree confirmation before push.
+- On commit `36f8137`, exact-SHA BodyCast CI/CD run **40741209800 succeeded**, including quality/lint/typecheck, all unit shards and coverage merge, Auth PostgreSQL integration, build, and Compose/container checks.
+- Exact-SHA production migration safety run **40741209433 failed**. Its Auth rehearsal exposed that generic postflight checks required old indexes/FKs that the Auth manifest explicitly declares absent, and compared two defaults against pre-Auth signatures. The staged follow-up makes the presence/signature checks honor the manifest's explicit absent list, supplies the Auth target signatures, and adds fail-closed regression cases. `npx vitest run tests/production-migration-v5.test.mjs`: **91 passed, 1 skipped**; `npm run lint` passed; CRLF-aware `git diff --check` passed. Exact-SHA safety CI for the fix is pending.
+- The same safety run's `Exact legacy 65-schema V4 recovery tool image` job failed with the already-seen derived-only fixture error; it also failed in base run **40726534567** and parent run **40738814214**. Treat it as an unresolved non-Auth safety workflow failure, not as green or as permission to bypass it.
+- GitHub ruleset inspection showed only `deletion` and `non_fast_forward` rules; the required-status-checks endpoint reports checks are not enabled. The safety workflow is therefore not a configured required status context, but its red status must still be reported. No production workflow was dispatched, and no production DB/VPS state was accessed.
+- Browser UI QA remains unpassed due the previously recorded execution-policy rejection. SSR/HTTP and route regression evidence do not count as browser PASS.
+
+### Next steps
+
+1. Have the independent auditor confirm the final tree after this status-only handoff update.
+2. Commit the audited source/test/docs delta, fetch `origin/main`, require it still equals `36f8137`, and use a normal fast-forward push only.
+3. Check exact-SHA BodyCast CI/CD and production migration safety results. Fix only evidence-backed failures; no blind retries, gate bypass, or production operation.
+4. Final acceptance must report any remaining safety-workflow failure and the browser limitation honestly. **Production: NOT DEPLOYED / NOT TOUCHED.**
+
 ## Git / worktree state
 
 - Repository: `krustallik/body-model`; `origin` is `https://github.com/krustallik/body-model.git`.

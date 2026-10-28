@@ -1,6 +1,7 @@
 import { resolveStrengthEnergyMassReferenceV1 } from "@/modules/training/session-mass-reference";
 import { isValidTimeZone } from "@/model/time-zone";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -436,13 +437,17 @@ function toUnknownInterval(record: UnknownIntervalRecord): UnknownIntervalDto {
 }
 
 export class ModelEpisodeRepository {
-  constructor(private readonly client: ModelDatabaseClient = prisma) {}
+  private readonly profileId: number;
+  constructor(profileId: number, private readonly client: ModelDatabaseClient = prisma) {
+    this.profileId = requireProfileId(profileId);
+  }
 
   async getProfile(): Promise<ModelProfileSource | null> {
     const profile = await this.client.profile.findUnique({
-      where: { id: 1 },
+      where: { id: this.profileId },
       select: { id: true, sex: true, dateOfBirth: true, heightCm: true },
     });
+    if (!profile?.sex || !profile.dateOfBirth || profile.heightCm === null) return null;
     return profile ? {
       id: profile.id,
       sex: profile.sex as ModelProfileSource["sex"],
@@ -453,7 +458,7 @@ export class ModelEpisodeRepository {
 
   async getActive(): Promise<PersistedEpisode | null> {
     const record = await this.client.modelEpisode.findFirst({
-      where: { active: true },
+      where: { profileId: this.profileId, active: true },
       orderBy: { id: "desc" },
       select: episodeSelect,
     });
@@ -462,7 +467,7 @@ export class ModelEpisodeRepository {
 
   async getById(id: number): Promise<PersistedEpisode | null> {
     const record = await this.client.modelEpisode.findUnique({
-      where: { id }, select: episodeSelect,
+      where: { profileId_id: { profileId: this.profileId, id } }, select: episodeSelect,
     });
     return record ? toEpisode(record) : null;
   }
@@ -470,7 +475,7 @@ export class ModelEpisodeRepository {
   /** Resolve the latest episode that had started by the requested local date. */
   async getAsOf(localDate: string): Promise<PersistedEpisode | null> {
     const record = await this.client.modelEpisode.findFirst({
-      where: { profileId: 1, startDate: { lte: localDate } },
+      where: { profileId: this.profileId, startDate: { lte: localDate } },
       orderBy: [{ startDate: "desc" }, { id: "desc" }],
       select: episodeSelect,
     });
@@ -488,7 +493,7 @@ export class ModelEpisodeRepository {
     const webWindowEnd = localDateTimeToInstant(addCalendarDays(to, 3), "00:00", timeZone);
     const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples, webSessions, reconciliationRows] = await Promise.all([
       this.client.dailyHealthData.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: { profileId: this.profileId, date: { gte: from, lte: to } },
         orderBy: { date: "asc" },
         select: {
           date: true,
@@ -506,7 +511,7 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.healthSyncSnapshot.findMany({
-        where: { date: { gte: contextFrom, lte: contextTo } },
+        where: { profileId: this.profileId, date: { gte: contextFrom, lte: contextTo } },
         orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
         select: {
           id: true,
@@ -519,6 +524,7 @@ export class ModelEpisodeRepository {
       }),
       this.client.healthActivityInterval.findMany({
         where: {
+          profileId: this.profileId,
           OR: [
             { date: { gte: contextFrom, lte: contextTo } },
             { startAt: { lt: workoutWindowEnd }, endAt: { gt: workoutWindowStart } },
@@ -528,7 +534,7 @@ export class ModelEpisodeRepository {
         select: { id: true, date: true, metric: true, startAt: true, endAt: true, value: true },
       }),
       this.client.workInterval.findMany({
-        where: { date: { gte: contextFrom, lte: contextTo } },
+        where: { profileId: this.profileId, date: { gte: contextFrom, lte: contextTo } },
         orderBy: [{ date: "asc" }, { startAt: "asc" }, { id: "asc" }],
         select: {
           id: true,
@@ -542,6 +548,7 @@ export class ModelEpisodeRepository {
       }),
       this.client.workout.findMany({
         where: {
+          profileId: this.profileId,
           hiddenFromHistory: false,
           OR: [
             { dailyHealthData: { date: { gte: from, lte: to } } },
@@ -562,7 +569,7 @@ export class ModelEpisodeRepository {
           manualStepCount: true,
           manualActiveEnergyKcal: true,
           activeEnergyAliases: {
-            where: { profileId: 1, sourceType: "workout" },
+            where: { profileId: this.profileId, sourceType: "workout" },
             select: {
               event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
             },
@@ -614,6 +621,7 @@ export class ModelEpisodeRepository {
       }),
       this.client.heartRateSample.findMany({
         where: {
+          profileId: this.profileId,
           OR: [
             { date: { gte: contextFrom, lte: contextTo } },
             { timestamp: { gte: workoutWindowStart, lt: workoutWindowEnd } },
@@ -624,6 +632,7 @@ export class ModelEpisodeRepository {
       }),
       this.client.strengthDiarySession.findMany({
         where: {
+          profileId: this.profileId,
           matchedWorkoutId: null,
           status: { in: ["COMPLETED", "ACTIVE"] },
           webStartedAt: { gte: webWindowStart, lt: webWindowEnd },
@@ -672,7 +681,7 @@ export class ModelEpisodeRepository {
       }),
       this.client.stepperReconciliationCandidate.findMany({
         where: {
-          group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
+          group: { profileId: this.profileId, status: { in: ["pending", "ambiguous", "confirmed"] } },
           OR: [
             { manualWorkout: { dailyHealthData: { date: { gte: contextFrom, lte: contextTo } } } },
             { garminWorkout: { dailyHealthData: { date: { gte: contextFrom, lte: contextTo } } } },
@@ -708,6 +717,7 @@ export class ModelEpisodeRepository {
         const massInstant = session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
         const stage02Mass = strengthStage02MassSnapshot(session);
         energyMassBySessionId.set(session.id, await resolveStrengthEnergyMassReferenceV1(this.client, {
+          profileId: this.profileId,
           stage02Mass,
           localDate: stage02Mass?.reference.localDate ?? instantToLocalDateTime(massInstant, massTimeZone).date,
           timeZone: massTimeZone,
@@ -715,7 +725,7 @@ export class ModelEpisodeRepository {
       }
     }
     const modelEpisodes = strengthSessions.length > 0 ? await this.client.modelEpisode.findMany({
-      where: { profileId: 1 },
+      where: { profileId: this.profileId },
       select: {
         id: true,
         timezone: true,
@@ -735,7 +745,7 @@ export class ModelEpisodeRepository {
     }) : [];
     const webSessionEnergyAliases = webSessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
       where: {
-        profileId: 1,
+        profileId: this.profileId,
         sourceType: "strength-session",
         sourceId: { in: webSessions.map((session) => String(session.id)) },
       },
@@ -891,7 +901,7 @@ export class ModelEpisodeRepository {
 
   async deactivateActive(at: Date): Promise<void> {
     await this.client.modelEpisode.updateMany({
-      where: { active: true },
+      where: { profileId: this.profileId, active: true },
       data: { active: false, deactivatedAt: at },
     });
   }
@@ -899,7 +909,7 @@ export class ModelEpisodeRepository {
   async createPrepared(input: PreparedEpisodeInitialization): Promise<PersistedEpisode> {
     const record = await this.client.modelEpisode.create({
       data: {
-        profileId: input.profileId,
+        profileId: this.profileId,
         startDate: input.startDate,
         timezone: input.timezone,
         modelVersion: input.modelVersion,
@@ -1075,7 +1085,7 @@ export class ModelEpisodeRepository {
       });
     }
     await this.client.modelEpisode.update({
-      where: { id: episodeId },
+      where: { profileId_id: { profileId: this.profileId, id: episodeId } },
       data: {
         ...(modelVersion === undefined ? {} : { modelVersion }),
         personalOffsetKcalPerDay:
@@ -1317,5 +1327,3 @@ export class ModelEpisodeRepository {
     };
   }
 }
-
-export const modelEpisodeRepository = new ModelEpisodeRepository();

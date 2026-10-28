@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getEnv } from "@/lib/env";
-import { isValidApiKey } from "@/modules/health/auth";
+import { getProfilePrincipal } from "@/modules/auth/access";
 import { HealthSyncRequestSchema } from "@/modules/health/health.schema";
 import { syncHealthData } from "@/modules/health/health.service";
 import { recordHealthSyncAudit, type HealthSyncAuditOutcome } from "@/modules/health/health-sync-audit";
@@ -18,19 +17,65 @@ import {
   ShortcutRangeNormalizationError,
 } from "@/modules/health/normalize-shortcut-range-payload";
 import { errorKind, logEvent } from "@/lib/logger";
+import { healthSyncRepositoryForProfile } from "@/modules/health/health.repository";
+import { enforceAuthRequestLimit } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
+const MAX_HEALTH_SYNC_BODY_BYTES = 5 * 1024 * 1024;
+
+async function readBoundedBody(request: Request): Promise<{ rawBody: string; tooLarge: false } | { rawBody: null; tooLarge: true }> {
+  if (!request.body) return { rawBody: "", tooLarge: false };
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    totalBytes += next.value.byteLength;
+    if (totalBytes > MAX_HEALTH_SYNC_BODY_BYTES) {
+      await reader.cancel();
+      return { rawBody: null, tooLarge: true };
+    }
+    chunks.push(next.value);
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { rawBody: new TextDecoder().decode(body), tooLarge: false };
+}
 
 export async function POST(request: Request): Promise<Response> {
   const requestId = randomUUID();
   const requestStartedAt = performance.now();
   const bodyReadStartedAt = performance.now();
   const contentType = request.headers.get("content-type");
-  let rawBody: string | null;
+  let auditProfileId: number | null = null;
+  let rawBody: string | null = null;
   let bodyReadMs: number;
+  const audit = async (outcome: HealthSyncAuditOutcome, httpStatus: number, errorType?: string) => {
+    await recordHealthSyncAudit({ profileId: auditProfileId, outcome, httpStatus, rawBody, contentType, errorType: errorType ?? null });
+  };
+  const ipLimit = await enforceAuthRequestLimit(request, "health-sync", { ipMax: 10 });
+  if (ipLimit) {
+    await audit("unauthorized", 429, "RateLimited");
+    return ipLimit;
+  }
+  const declaredBytes = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredBytes) && declaredBytes > MAX_HEALTH_SYNC_BODY_BYTES) {
+    await audit("payload-too-large", 413, "BodyTooLarge");
+    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  }
   try {
     // Read text once so malformed JSON and rejected requests retain their exact body.
-    rawBody = await request.text();
+    const body = await readBoundedBody(request);
+    if (body.tooLarge) {
+      await audit("payload-too-large", 413, "BodyTooLarge");
+      return Response.json({ error: "payload_too_large" }, { status: 413 });
+    }
+    rawBody = body.rawBody;
     bodyReadMs = Math.round(performance.now() - bodyReadStartedAt);
   } catch (error) {
     await recordHealthSyncAudit({
@@ -43,15 +88,14 @@ export async function POST(request: Request): Promise<Response> {
     logEvent("warn", "health_sync_body_read_failed", { errorType: errorKind(error) });
     return Response.json({ error: "validation_error", details: [{ path: [], message: "Unable to read request body" }] }, { status: 400 });
   }
-  const audit = async (outcome: HealthSyncAuditOutcome, httpStatus: number, errorType?: string) => {
-    await recordHealthSyncAudit({ outcome, httpStatus, rawBody, contentType, errorType: errorType ?? null });
-  };
 
-  if (!isValidApiKey(request.headers.get("x-api-key"), getEnv().IOS_SHORTCUT_API_KEY)) {
+  const principal = await getProfilePrincipal(request);
+  if (!principal || principal.method === "session") {
     await audit("unauthorized", 401);
     logEvent("warn", "health_sync_unauthorized", { contentType });
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
+  auditProfileId = principal.profileId;
 
   if (!contentType?.toLowerCase().startsWith("application/json")) {
     await audit("invalid-content-type", 400);
@@ -145,10 +189,10 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const persistenceStartedAt = performance.now();
     const result = rangeNormalized
-      ? await syncHealthData(parsed.data, undefined, normalized.originalDays, undefined, rangeNormalized.metricSamplesByDate, {
+      ? await syncHealthData(parsed.data, healthSyncRepositoryForProfile(principal.profileId), normalized.originalDays, undefined, rangeNormalized.metricSamplesByDate, {
         deferDependentRefresh: true,
       })
-      : await syncHealthData(parsed.data, undefined, normalized.originalDays, undefined, undefined, {
+      : await syncHealthData(parsed.data, healthSyncRepositoryForProfile(principal.profileId), normalized.originalDays, undefined, undefined, {
         deferDependentRefresh: true,
       });
     const persistenceMs = Math.round(performance.now() - persistenceStartedAt);

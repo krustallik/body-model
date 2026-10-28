@@ -66,7 +66,7 @@ async function main() {
     const strengthMinutes = isLegacyStrengthOnly ? 62 : 45;
 
     const row = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date,
         weightKg: 89.4 - index * 0.012 + [0.08, -0.03, 0.04, -0.06][index % 4]!,
         bodyFatPercent: inBiaWindow
@@ -92,7 +92,7 @@ async function main() {
       const startAt = new Date(`${date}T16:00:00.000Z`);
       const endAt = new Date(`${date}T16:45:00.000Z`);
       await prisma.workout.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: row.id,
           externalId,
           sourceIdentity: workoutSourceIdentity({ externalId, type, startAt, endAt }),
@@ -116,7 +116,7 @@ async function main() {
       const strengthEndAt = new Date(`${date}T17:45:00.000Z`);
       await prisma.workout.createMany({
         data: [
-          {
+          { profileId: 1,
             dailyHealthDataId: row.id,
             externalId: stairExternalId,
             sourceIdentity: workoutSourceIdentity({
@@ -131,7 +131,7 @@ async function main() {
             durationMinutes: 62,
             activeEnergyKcal: 154,
           },
-          {
+          { profileId: 1,
             dailyHealthDataId: row.id,
             externalId: strengthExternalId,
             sourceIdentity: workoutSourceIdentity({
@@ -156,7 +156,7 @@ async function main() {
       const startAt = new Date(`${date}T10:00:00.000Z`);
       const endAt = new Date(`${date}T10:40:00.000Z`);
       await prisma.workout.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: row.id,
           externalId,
           sourceIdentity: workoutSourceIdentity({ externalId, type, startAt, endAt }),
@@ -174,7 +174,7 @@ async function main() {
       const startAt = new Date(`${date}T06:00:00.000Z`);
       const endAt = new Date(`${date}T14:00:00.000Z`);
       await prisma.workInterval.create({
-        data: {
+        data: { profileId: 1,
           date,
           startAt,
           endAt,
@@ -185,7 +185,7 @@ async function main() {
       });
       await prisma.healthSyncSnapshot.createMany({
         data: [
-          {
+          { profileId: 1,
             date,
             receivedAt: startAt,
             timezone: TIME_ZONE,
@@ -193,7 +193,7 @@ async function main() {
             walkingDistanceKm: 0.8,
             rawPayload: { source: "bodycast-ui-review-seed" },
           },
-          {
+          { profileId: 1,
             date,
             receivedAt: endAt,
             timezone: TIME_ZONE,
@@ -206,8 +206,8 @@ async function main() {
     }
   }
 
-  const episode = await initializeNewModelEpisode({ startDate: episodeStart, timezone: TIME_ZONE, now }, prisma);
-  const calculation = await recalculateModelEpisode({ episodeId: episode.id, now }, prisma);
+  const episode = await initializeNewModelEpisode({ profileId: 1, startDate: episodeStart, timezone: TIME_ZONE, now }, prisma);
+  const calculation = await recalculateModelEpisode({ profileId: 1, episodeId: episode.id, now }, prisma);
   const workoutCount = await prisma.workout.count();
 
   console.log(JSON.stringify({

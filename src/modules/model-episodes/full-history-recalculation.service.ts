@@ -247,9 +247,9 @@ export async function runOwnerAuthorizedFullHistoryRecalculation(input: {
   const client = input.client ?? prisma;
   const profileId = input.profileId;
   const beforeRaw = await inventoryRawInputs(client);
-  const status = await getModelStatus(undefined, client);
+  const status = await getModelStatus(profileId, undefined, client);
   const episode = await client.modelEpisode.findUnique({
-    where: { id: status.episodeId },
+    where: { profileId_id: { profileId, id: status.episodeId } },
     select: { id: true, profileId: true, startDate: true, modelVersion: true, active: true },
   });
   if (!episode || episode.profileId !== profileId || episode.active !== true) {
@@ -268,7 +268,7 @@ export async function runOwnerAuthorizedFullHistoryRecalculation(input: {
   assertV3PreActivationLifecycle(afterTransientLifecycle, profileId);
 
   await new PhysiologyV7PersistenceRepository(client).invalidate(profileId, episode.startDate);
-  const recalculation = await recalculateModelEpisode({ episodeId: episode.id }, client);
+  const recalculation = await recalculateModelEpisode({ profileId, episodeId: episode.id }, client);
   await rebuildUnifiedExperimentalPhysiologyStateV1({
     profileId,
     client,

@@ -63,7 +63,7 @@ describe("Stepper workout currentness during Training refresh", () => {
   });
 
   it("hides canonical energy while a Training generation is pending", async () => {
-    const [workout] = await repository().list();
+    const [workout] = await repository().list(1);
     expect(workout).toMatchObject({
       id: 41,
       selectedActiveEnergyKcal: null,
@@ -81,7 +81,7 @@ describe("Stepper workout currentness during Training refresh", () => {
       dirtyToDate: null,
     });
     fences.changed.mockResolvedValue(true);
-    const [workout] = await repository().list();
+    const [workout] = await repository().list(1);
     expect(workout?.selectedActiveEnergyKcal).toBeNull();
     expect(workout?.selectedActiveEnergySource).toBe("unavailable");
     expect(workout?.selectedActiveEnergyStatus).toBe("pending");
@@ -89,7 +89,7 @@ describe("Stepper workout currentness during Training refresh", () => {
 
   it("hides canonical energy while Active Energy convergence is in progress", async () => {
     fences.convergenceRead.mockResolvedValue({ active: true, revision: 4, fromDate: "2026-09-01", lifecycleUpdatedAt: "2026-10-17T10:00:00.000Z" });
-    const [workout] = await repository().list();
+    const [workout] = await repository().list(1);
     expect(workout?.selectedActiveEnergyKcal).toBeNull();
     expect(workout?.selectedActiveEnergySource).toBe("unavailable");
     expect(workout?.selectedActiveEnergyStatus).toBe("pending");
@@ -98,7 +98,7 @@ describe("Stepper workout currentness during Training refresh", () => {
   it("masks if convergence starts while the list query is in flight", async () => {
     fences.convergenceRead.mockResolvedValueOnce(null).mockResolvedValueOnce({ active: true, revision: 4, fromDate: "2026-09-01", lifecycleUpdatedAt: "2026-10-17T10:00:00.000Z" });
     fences.convergenceChanged.mockImplementation(async (_client, _profileId, before) => before === null);
-    const [workout] = await repository().list();
+    const [workout] = await repository().list(1);
     expect(workout?.selectedActiveEnergyKcal).toBeNull();
     expect(workout?.selectedActiveEnergyStatus).toBe("pending");
   });
@@ -110,7 +110,7 @@ describe("Stepper workout currentness during Training refresh", () => {
       dirtyFromDate: null,
       dirtyToDate: null,
     });
-    const [workout] = await repository().list();
+    const [workout] = await repository().list(1);
     expect(workout?.selectedActiveEnergyKcal).toBe(245);
     expect(workout?.selectedActiveEnergySource).toBe("model-v1");
     expect(workout?.selectedActiveEnergyStatus).toBe("current");

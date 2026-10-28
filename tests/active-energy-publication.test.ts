@@ -34,7 +34,7 @@ describe("Active Energy publication availability", () => {
         latestModeledDate: "2026-10-11",
       });
 
-    await expect(publishActiveEnergyChangesV1()).resolves.toBe(false);
+    await expect(publishActiveEnergyChangesV1({ profileId: 1 })).resolves.toBe(false);
 
     expect(logEvent).toHaveBeenCalledWith("warn", "active_energy_publication_not_current", {
       reason: "production-generation-unavailable",

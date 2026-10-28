@@ -73,6 +73,7 @@ const fixedForecastScenario = {
 
 function targetRequest(targetValueKg: number, goalDate: string, requestNow: Date) {
   return {
+    profileId: 1,
     episodeId, goal: { metric: "weightKg" as const, targetValueKg, goalDate },
     control: { type: "daily-calorie-center" as const,
       constraints: { minCaloriesKcal: 1_800, maxCaloriesKcal: 3_000 },
@@ -160,7 +161,7 @@ async function seedSources(options: { includeHistoricalAsOfAnchorBia?: boolean }
       ? 20 + [0, 0.2, -0.1][index % 3]
       : null;
     await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date,
         weightKg: 80 + [0, 0.05, -0.04, 0.02][index % 4],
         bodyFatPercent,
@@ -177,7 +178,7 @@ async function seedSources(options: { includeHistoricalAsOfAnchorBia?: boolean }
     });
   }
   await prisma.workInterval.create({
-    data: {
+    data: { profileId: 1,
       date: workDate,
       startAt: new Date("2041-03-25T07:00:00.000Z"),
       endAt: new Date("2041-03-25T15:00:00.000Z"),
@@ -188,7 +189,7 @@ async function seedSources(options: { includeHistoricalAsOfAnchorBia?: boolean }
   });
   await prisma.healthSyncSnapshot.createMany({
     data: [
-      {
+      { profileId: 1,
         date: workDate,
         receivedAt: new Date("2041-03-25T07:00:00.000Z"),
         timezone: "Europe/Bratislava",
@@ -196,7 +197,7 @@ async function seedSources(options: { includeHistoricalAsOfAnchorBia?: boolean }
         walkingDistanceKm: 0.8,
         rawPayload: { source: "model-episode-integration" },
       },
-      {
+      { profileId: 1,
         date: workDate,
         receivedAt: new Date("2041-03-25T15:00:00.000Z"),
         timezone: "Europe/Bratislava",
@@ -209,12 +210,12 @@ async function seedSources(options: { includeHistoricalAsOfAnchorBia?: boolean }
 }
 
 async function initializeTestEpisode(): Promise<void> {
-  const episode = await initializeNewModelEpisode({ startDate: episodeStart, now });
+  const episode = await initializeNewModelEpisode({ profileId: 1, startDate: episodeStart, now });
   episodeId = episode.id;
 }
 
 async function prepareCurrentForecastV2(requestNow: Date): Promise<void> {
-  await recalculateModelEpisode({ episodeId, now: requestNow });
+  await recalculateModelEpisode({ profileId: 1, episodeId, now: requestNow });
   const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
   if (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION) {
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart });
@@ -299,7 +300,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     let releaseFirst!: () => void;
     const firstAtBoundary = new Promise<void>((resolve) => { enterFirst = resolve; });
     const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const firstReplay = recalculateModelEpisode({
+    const firstReplay = recalculateModelEpisode({ profileId: 1,
       episodeId,
       now,
       afterProductionPassBeforeCandidateRefresh: async () => {
@@ -308,18 +309,18 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       },
     });
     await firstAtBoundary;
-    expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false, recoveryRequired: true });
-    expect((await getModelHistory({ episodeId, from: episodeStart, to: finalDate, limit: 200, offset: 0 })).days).toEqual([]);
+    expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: false, recoveryRequired: true });
+    expect((await getModelHistory({ profileId: 1, episodeId, from: episodeStart, to: finalDate, limit: 200, offset: 0 })).days).toEqual([]);
 
     try {
-      await expect(recalculateModelEpisode({ episodeId, now }))
+      await expect(recalculateModelEpisode({ profileId: 1, episodeId, now }))
         .rejects.toBeInstanceOf(ActiveEnergyConvergenceBusyError);
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: false });
     } finally {
       releaseFirst();
     }
     await firstReplay;
-    expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+    expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: true });
   }, 60_000);
 
   it("publishes owned production after a heartbeat between candidate persistence and the final lease lock", async () => {
@@ -339,9 +340,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     try {
       await runWithHealthSyncRefreshWorkerLease({ profileId: 1, requestedGeneration: 90001, leaseToken },
-        () => recalculateModelEpisode({ episodeId, now }));
+        () => recalculateModelEpisode({ profileId: 1, episodeId, now }));
       expect(heartbeats).toBeGreaterThan(0);
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: true });
       expect(await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } }))
         .toMatchObject({ requestedGeneration: 90001, completedGeneration: 90000, leaseToken });
     } finally {
@@ -357,15 +358,15 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await persist.apply(this, args);
       await prisma.$transaction(async (tx) => {
         // A source writer updates raw inputs and invalidation atomically.
-        await tx.dailyHealthData.update({ where: { date: finalDate }, data: { caloriesKcal: 2401 } });
+        await tx.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: finalDate } }, data: { caloriesKcal: 2401 } });
         await new PhysiologyV7PersistenceRepository(tx).invalidate(1, finalDate);
       });
     });
     try {
-      await expect(recalculateModelEpisode({ episodeId, now }))
+      await expect(recalculateModelEpisode({ profileId: 1, episodeId, now }))
         .rejects.toThrow("v7 durable sources changed during rebuild");
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
-      expect(await prisma.dailyHealthData.findUnique({ where: { date: finalDate } }))
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: false });
+      expect(await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: finalDate } } }))
         .toMatchObject({ caloriesKcal: 2401 });
     } finally {
       spy.mockRestore();
@@ -374,25 +375,25 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
   it("fences concurrent occupational CRUD, preserves the edit, and recovers CURRENT", async () => {
     const work = new WorkIntervalRepository(prisma);
-    const created = await work.create({ date: finalDate, startTime: "08:00", endTime: "09:00",
+    const created = await work.create(1, { date: finalDate, startTime: "08:00", endTime: "09:00",
       timezone: "Europe/Bratislava", category: "standingLight", breakMinutes: 0 });
     const persist = ModelEpisodeRepository.prototype.persistCalculation;
     const spy = vi.spyOn(ModelEpisodeRepository.prototype, "persistCalculation").mockImplementationOnce(async function (this: ModelEpisodeRepository, ...args) {
       await persist.apply(this, args);
-      await work.update(created.id, { category: "manualModerate" });
+      await work.update(1, created.id, { category: "manualModerate" });
     });
     try {
-      await expect(recalculateModelEpisode({ episodeId, now })).rejects.toThrow("v7 durable sources changed during rebuild");
+      await expect(recalculateModelEpisode({ profileId: 1, episodeId, now })).rejects.toThrow("v7 durable sources changed during rebuild");
       expect(await prisma.workInterval.findUnique({ where: { id: created.id } })).toMatchObject({ category: "manualModerate" });
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: false });
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: false });
       spy.mockRestore();
-      await recalculateModelEpisode({ episodeId, now });
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      await recalculateModelEpisode({ profileId: 1, episodeId, now });
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: true });
       const generation = (await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).invalidationGeneration;
-      await work.delete(created.id);
+      await work.delete(1, created.id);
       expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).invalidationGeneration).toBeGreaterThan(generation);
-      await recalculateModelEpisode({ episodeId, now });
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      await recalculateModelEpisode({ profileId: 1, episodeId, now });
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: true });
     } finally {
       spy.mockRestore();
       await prisma.workInterval.deleteMany({ where: { id: created.id } });
@@ -426,11 +427,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await trainingService.finishSession(session.id, 1);
       await completePendingTrainingRefresh();
 
-      const asOfEpisode = await new ModelEpisodeRepository(prisma).getAsOf(addCalendarDays(episodeStart, 8));
+      const asOfEpisode = await new ModelEpisodeRepository(1, prisma).getAsOf(addCalendarDays(episodeStart, 8));
       expect(asOfEpisode, "the fixture must have an active episode for the session date").not.toBeNull();
       const asOfEstimate = calculateHistoricalBodyweightAsOfV1({
         episode: asOfEpisode!,
-        sources: await new ModelEpisodeRepository(prisma).loadSources(asOfEpisode!.startDate, addCalendarDays(episodeStart, 8)),
+        sources: await new ModelEpisodeRepository(1, prisma).loadSources(asOfEpisode!.startDate, addCalendarDays(episodeStart, 8)),
         localDate: addCalendarDays(episodeStart, 8),
       });
       expect(asOfEstimate, `historical as-of model estimate unavailable: ${asOfEstimate.reason ?? "no reason"}; initialization=${asOfEpisode!.initializationStatus}`).toMatchObject({ status: "available" });
@@ -448,7 +449,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         select: { id: true, reps: true, weightKg: true, bandNominalResistanceKg: true },
       });
 
-      const updated = await new DailyMetricRepository().update(episodeStart, { weightKg: 95 });
+      const updated = await new DailyMetricRepository(1).update(episodeStart, { weightKg: 95 });
       const lifecycleAfterWeightChange = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({
         where: { profileId: 1 },
         select: {
@@ -468,7 +469,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         .toBe("stale");
       expect(blocksAfterWeightChange.some(({ source }) => source === "training")).toBe(true);
       await completePendingTrainingRefresh();
-      expect(await getModelStatus(episodeId)).toMatchObject({ productionCurrent: true });
+      expect(await getModelStatus(1, episodeId)).toMatchObject({ productionCurrent: true });
       expect(await prisma.unifiedPublicationBlock.findMany({ where: { profileId: 1 } })).toEqual([]);
 
       const after = await trainingService.getSession(session.id, 1);
@@ -488,7 +489,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         // production replay. Repeating the batch must preserve canonical kcal.
         for (let attempt = 0; attempt < 2; attempt += 1) {
           replay.mockClear();
-          await recordExperimentalStrengthShadowsForWeightDates({ dates: [
+          await recordExperimentalStrengthShadowsForWeightDates({ profileId: 1, dates: [
             { date: addCalendarDays(episodeStart, 8) },
             { date: addCalendarDays(episodeStart, 9) },
           ] });
@@ -499,14 +500,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
           })).toEqual(canonicalBeforeBatch);
         }
       } finally { replay.mockRestore(); }
-      await activeEnergyPublication.publishActiveEnergyChangesV1({ now, reuseCurrentProduction: true });
+      await activeEnergyPublication.publishActiveEnergyChangesV1({ profileId: 1, now, reuseCurrentProduction: true });
       expect(await prisma.strengthSet.findMany({
         where: { sessionExercise: { sessionId: session.id } },
         orderBy: [{ setNumber: "asc" }, { id: "asc" }],
         select: { id: true, reps: true, weightKg: true, bandNominalResistanceKg: true },
       })).toEqual(rawSetsBefore);
       expect(await prisma.dailyHealthData.findUniqueOrThrow({
-        where: { date: episodeStart }, select: { weightKg: true },
+        where: { profileId_date: { profileId: 1, date: episodeStart } }, select: { weightKg: true },
       })).toMatchObject({ weightKg: 95 });
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId: 1 })).resolves.toMatchObject({ rolloutEpoch: 1 });
       const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
@@ -584,25 +585,25 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       calibrationStatus: "insufficient-history",
     });
     await prisma.dailyHealthData.update({
-      where: { date: episode.baselineWindowEndDate }, data: { caloriesKcal: 3_500 },
+      where: { profileId_date: { profileId: 1, date: episode.baselineWindowEndDate } }, data: { caloriesKcal: 3_500 },
     });
     expect((await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }))
       .baselineEnergyIntakeKcalPerDay).toBe(2_450);
 
-    const replacement = await initializeNewModelEpisode({ startDate: episodeStart, now });
+    const replacement = await initializeNewModelEpisode({ profileId: 1, startDate: episodeStart, now });
     expect(replacement.id).not.toBe(episodeId);
     await prisma.dailyHealthData.update({
-      where: { date: episodeStart }, data: { workoutFeedObserved: true },
+      where: { profileId_date: { profileId: 1, date: episodeStart } }, data: { workoutFeedObserved: true },
     });
     await prisma.healthSyncSnapshot.create({
-      data: {
+      data: { profileId: 1,
         date: episodeStart,
         receivedAt: new Date(`${episodeStart}T12:00:00.000Z`),
         timezone: "Europe/Bratislava",
         rawPayload: { source: "verified-relative-muscle-rest-day" },
       },
     });
-    await recalculateModelEpisode({ episodeId: replacement.id, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId: replacement.id, now });
     const episodeLocalDiagnostic = await prisma.experimentalCessationDetrainingShadow.findUnique({
       where: { profileId_modelEpisodeId_date: { profileId: 1, modelEpisodeId: replacement.id, date: episodeStart } },
     });
@@ -619,7 +620,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   it("invalidates only Unified currentness when initializeNewModelEpisode changes the partition", async () => {
     // Use the same post-commit orchestration as production so the persisted
     // FatWeight child output exists before Unified/Forecast read it.
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const currentRelativeState = await prisma.experimentalCessationDetrainingShadow.findFirst({
       where: { profileId: 1, modelEpisodeId: episodeId, isStale: false },
       orderBy: { date: "desc" },
@@ -629,7 +630,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect((currentRelativeState?.result as { state?: { relativeCumulativeDeltaKg?: unknown } } | undefined)
       ?.state?.relativeCumulativeDeltaKg).not.toBeUndefined();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
-    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    const request = { profileId: 1, episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
     const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({
       where: { profileId: 1 },
@@ -644,7 +645,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       where: { profileId: 1 }, orderBy: { date: "asc" }, select: { date: true, resultFingerprint: true, updatedAt: true },
     });
 
-    const replacement = await initializeNewModelEpisode({ startDate: finalDate, now });
+    const replacement = await initializeNewModelEpisode({ profileId: 1, startDate: finalDate, now });
 
     const afterLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({
       where: { profileId: 1 },
@@ -669,9 +670,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   }, 60_000);
 
   it("rolls back Unified invalidation when initializeNewModelEpisode partition mutation fails", async () => {
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
-    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    const request = { profileId: 1, episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
     const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     const beforePartition = await prisma.modelEpisode.findMany({
@@ -694,7 +695,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       EXECUTE FUNCTION "transient_partition_test_failure"()
     `);
     try {
-      await expect(initializeNewModelEpisode({ startDate: finalDate, now })).rejects.toThrow(/forced ModelEpisode partition mutation rollback/);
+      await expect(initializeNewModelEpisode({ profileId: 1, startDate: finalDate, now })).rejects.toThrow(/forced ModelEpisode partition mutation rollback/);
     } finally {
       await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "transient_partition_test_failure" ON "ModelEpisode"');
       await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "transient_partition_test_failure"()');
@@ -727,11 +728,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       data: { bodyFatPercent: 20 },
     });
 
-    await recalculateModelEpisode({ episodeId, now: initialNow });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now: initialNow });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: initialThroughDate });
     const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(isUnifiedGenerationCurrentV1(beforeLifecycle)).toBe(true);
-    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now: initialNow };
+    const request = { profileId: 1, episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now: initialNow };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
     const beforeProductionPrefix = await prisma.physiologyV7DailyResult.findMany({
       where: { profileId: 1, date: { lte: initialThroughDate } }, orderBy: { date: "asc" },
@@ -740,7 +741,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     // The optional client deliberately exercises the production service's
     // automatic-restart branch directly; the standard wrapper uses an
     // explicit active episode id while coordinating Active Energy refreshes.
-    const result = await recalculateModelEpisode({ now }, prisma);
+    const result = await recalculateModelEpisode({ profileId: 1, now }, prisma);
 
     expect(result.episodeId).not.toBe(episodeId);
     const afterLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
@@ -759,7 +760,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     // Re-run the restarted episode through normal orchestration to materialize
     // its post-commit child shadows before Unified V2 consumes them.
-    await recalculateModelEpisode({ episodeId: result.episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId: result.episodeId, now });
     const productionRepublished = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(isProductionGenerationCurrentV1(productionRepublished)).toBe(true);
     expect(isUnifiedGenerationCurrentV1(productionRepublished)).toBe(false);
@@ -777,9 +778,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const baselineNow = new Date("2041-03-30T10:00:00.000Z");
     const candidateNow = new Date("2041-03-31T10:00:00.000Z");
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
-    const baseline = await recalculateModelEpisode({ episodeId, now: baselineNow }, prisma);
+    const baseline = await recalculateModelEpisode({ profileId: 1, episodeId, now: baselineNow }, prisma);
     expect(baseline).toMatchObject({ latestModeledDate: "2041-03-29", completeDays: 28 });
-    const baselineDiagnostics = await getModelDiagnostics(prisma);
+    const baselineDiagnostics = await getModelDiagnostics(1, prisma);
     expect(baselineDiagnostics.currentState.status).toBe("available");
     expect(baselineDiagnostics.dataContinuity.completeDayCount).toBe(28);
 
@@ -788,16 +789,16 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       data: { steps: null, walkingDistanceKm: null },
     });
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-26" }, data: { bodyFatPercent: 20 },
+      where: { profileId_date: { profileId: 1, date: "2041-03-26" } }, data: { bodyFatPercent: 20 },
     });
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+      where: { profileId_date: { profileId: 1, date: "2041-03-30" } }, data: { steps: null, walkingDistanceKm: null },
     });
     await prisma.physiologyV7Lifecycle.update({
       where: { profileId: 1 },
       data: { invalidationGeneration: { increment: 1 }, productionStaleFromDate: null },
     });
-    const staleDiagnostics = await getModelDiagnostics(prisma);
+    const staleDiagnostics = await getModelDiagnostics(1, prisma);
     expect(staleDiagnostics.currentState.status).toBe("unavailable");
     expect(staleDiagnostics.dataContinuity.completeDayCount).toBe(0);
     expect(staleDiagnostics.episode.latestModeledDate).toBeNull();
@@ -809,7 +810,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       episodes: await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }),
     };
 
-    const first = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    const first = await recalculateModelEpisode({ profileId: 1, now: candidateNow }, prisma);
     expect(first.episodeId).toBe(episodeId);
     if (first.current === null) throw new Error("Expected current status for stale incumbent result");
     expect(first.current.productionCurrent).toBe(false);
@@ -821,11 +822,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       episodes: await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }),
     };
     expect(afterFirst).toEqual(before);
-    const afterDiagnostics = await getModelDiagnostics(prisma);
+    const afterDiagnostics = await getModelDiagnostics(1, prisma);
     expect(afterDiagnostics.episode.latestModeledDate).toBeNull();
     expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(0);
 
-    const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    const repeated = await recalculateModelEpisode({ profileId: 1, now: candidateNow }, prisma);
     expect(repeated.episodeId).toBe(episodeId);
     expect(repeated.current).toMatchObject({ productionCurrent: false, latestModeledDate: null, daysModeled: 0 });
     expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
@@ -838,54 +839,54 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const baselineNow = new Date("2041-03-30T10:00:00.000Z");
     const candidateNow = new Date("2041-03-31T10:00:00.000Z");
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
-    await recalculateModelEpisode({ episodeId, now: baselineNow }, prisma);
+    await recalculateModelEpisode({ profileId: 1, episodeId, now: baselineNow }, prisma);
 
     await prisma.dailyHealthData.updateMany({
       where: { date: { gte: "2041-03-22", lte: "2041-03-25" } },
       data: { steps: null, walkingDistanceKm: null },
     });
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-26" }, data: { bodyFatPercent: 20 },
+      where: { profileId_date: { profileId: 1, date: "2041-03-26" } }, data: { bodyFatPercent: 20 },
     });
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+      where: { profileId_date: { profileId: 1, date: "2041-03-30" } }, data: { steps: null, walkingDistanceKm: null },
     });
     await prisma.physiologyV7Lifecycle.update({
       where: { profileId: 1 },
       data: { invalidationGeneration: { increment: 1 }, productionStaleFromDate: null },
     });
 
-    const staleDiagnostics = await getModelDiagnostics(prisma);
+    const staleDiagnostics = await getModelDiagnostics(1, prisma);
     expect(staleDiagnostics.episode.latestModeledDate).toBeNull();
     expect(staleDiagnostics.dataContinuity.completeDayCount).toBe(0);
 
     const episodeCount = await prisma.modelEpisode.count({
       where: { startDate: { gte: testRangeStart, lte: finalDate } },
     });
-    const rebuilt = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    const rebuilt = await recalculateModelEpisode({ profileId: 1, now: candidateNow }, prisma);
     expect(rebuilt.episodeId).toBe(episodeId);
     if (rebuilt.current === null) throw new Error("Expected current status after incumbent replay");
     expect(rebuilt.current.productionCurrent).toBe(true);
     expect(rebuilt.current.latestModeledDate).not.toBeNull();
-    const currentDiagnostics = await getModelDiagnostics(prisma);
+    const currentDiagnostics = await getModelDiagnostics(1, prisma);
     expect(currentDiagnostics.episode.latestModeledDate).toBe(rebuilt.current.latestModeledDate);
     expect(currentDiagnostics.dataContinuity.completeDayCount).toBeGreaterThan(0);
     expect(await prisma.modelEpisode.count({
       where: { startDate: { gte: testRangeStart, lte: finalDate } },
     })).toBe(episodeCount);
 
-    const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    const repeated = await recalculateModelEpisode({ profileId: 1, now: candidateNow }, prisma);
     expect(repeated.episodeId).toBe(episodeId);
   });
 
   it("continues route recovery on the existing active episode after rejecting a replacement", async () => {
     const candidateNow = new Date("2041-03-31T10:00:00.000Z");
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
-    await recalculateModelEpisode({ episodeId, now: candidateNow }, prisma);
+    await recalculateModelEpisode({ profileId: 1, episodeId, now: candidateNow }, prisma);
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+      where: { profileId_date: { profileId: 1, date: "2041-03-30" } }, data: { steps: null, walkingDistanceKm: null },
     });
-    const current = await recalculateModelEpisode({ episodeId, now: candidateNow }, prisma);
+    const current = await recalculateModelEpisode({ profileId: 1, episodeId, now: candidateNow }, prisma);
     expect(current).toMatchObject({ episodeId, recoveryRequired: true });
 
     const before = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
@@ -925,7 +926,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("switches only to a strictly improved candidate and does not churn on the next recalculate", async () => {
-    const switched = await recalculateModelEpisode({ now }, prisma);
+    const switched = await recalculateModelEpisode({ profileId: 1, now }, prisma);
     expect(switched.episodeId).not.toBe(episodeId);
     expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toMatchObject({
       active: false,
@@ -937,7 +938,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const countAfterSwitch = await prisma.modelEpisode.count({
       where: { startDate: { gte: testRangeStart, lte: finalDate } },
     });
-    const repeated = await recalculateModelEpisode({
+    const repeated = await recalculateModelEpisode({ profileId: 1,
       now: new Date(now.getTime() + 5 * 60_000),
     }, prisma);
     expect(repeated.episodeId).toBe(switched.episodeId);
@@ -949,7 +950,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
   it("does not switch on a readiness tie, including repeated recalculation", async () => {
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-14" } });
-    const current = await recalculateModelEpisode({ episodeId, now }, prisma);
+    const current = await recalculateModelEpisode({ profileId: 1, episodeId, now }, prisma);
     expect(current).toMatchObject({ latestModeledDate: finalDate, completeDays: 17 });
     await prisma.modelEpisode.update({
       where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v6" },
@@ -960,8 +961,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       episodes: await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }),
     };
 
-    const first = await recalculateModelEpisode({ now }, prisma);
-    const repeated = await recalculateModelEpisode({ now }, prisma);
+    const first = await recalculateModelEpisode({ profileId: 1, now }, prisma);
+    const repeated = await recalculateModelEpisode({ profileId: 1, now }, prisma);
     expect(first.episodeId).toBe(episodeId);
     expect(repeated.episodeId).toBe(episodeId);
     expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toEqual(before.episode);
@@ -974,8 +975,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
   it("keeps one active episode during concurrent automatic recalculations", async () => {
     const outcomes = await Promise.allSettled([
-      recalculateModelEpisode({ now }, prisma),
-      recalculateModelEpisode({ now: new Date(now.getTime() + 1_000) }, prisma),
+      recalculateModelEpisode({ profileId: 1, now }, prisma),
+      recalculateModelEpisode({ profileId: 1, now: new Date(now.getTime() + 1_000) }, prisma),
     ]);
     expect(outcomes).toHaveLength(2);
     expect(outcomes.some((outcome) => outcome.status === "fulfilled")).toBe(true);
@@ -1001,7 +1002,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       data: { strengthTrainingMinutes: null, workoutFeedObserved: false },
     });
 
-    const recalculated = await recalculateModelEpisode({ episodeId, now });
+    const recalculated = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(recalculated).toMatchObject({
       daysPersisted: 11,
       resolvedUntil: finalDate,
@@ -1019,7 +1020,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       stateCount: await prisma.dailyModelState.count({ where: { episodeId } }),
       recoveryCount: await prisma.modelRecoveryRun.count({ where: { episodeId } }),
     };
-    const diagnostics = await getModelDiagnostics(prisma);
+    const diagnostics = await getModelDiagnostics(1, prisma);
     const after = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
       stateCount: await prisma.dailyModelState.count({ where: { episodeId } }),
@@ -1070,11 +1071,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const beforeStates = await prisma.dailyModelState.findMany({
       where: { episodeId }, orderBy: { date: "asc" },
     });
-    const first = await forecastModelEpisode({
+    const first = await forecastModelEpisode({ profileId: 1,
       episodeId, horizonDays: 30, seed: 88, scenario: fixedForecastScenario,
       config: { pathCount: 32 }, now,
     }, prisma);
-    const second = await forecastModelEpisode({
+    const second = await forecastModelEpisode({ profileId: 1,
       episodeId, horizonDays: 30, seed: 88, scenario: fixedForecastScenario,
       config: { pathCount: 32 }, now,
     }, prisma);
@@ -1135,7 +1136,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       productionStaleFromDate: null,
     });
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId: 1 })).resolves.toMatchObject({ rolloutEpoch: 1 });
-    const forecast = await forecastModelEpisode({
+    const forecast = await forecastModelEpisode({ profileId: 1,
       episodeId,
       horizonDays: 30,
       seed: 88,
@@ -1147,7 +1148,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("uses only current production and Unified generations for the Forecast V1 historical anchor", async () => {
-    const currentProduction = await recalculateModelEpisode({ episodeId, now });
+    const currentProduction = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(currentProduction.episodeId).toBe(episodeId);
     const productionLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(productionLifecycle.productionPublishedGeneration).toBe(productionLifecycle.invalidationGeneration);
@@ -1174,7 +1175,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       rolloutEpoch: 0,
     });
     await verifyAndPublishUnifiedV3Postflight({ profileId: 1 });
-    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    const request = { profileId: 1, episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     const currentAnchor = await experimentalForecastModelEpisode(request, prisma);
     expect(currentAnchor).not.toBeNull();
     expect(currentAnchor && "dates" in currentAnchor && currentAnchor.dates[0]?.date).toBe("2041-03-31");
@@ -1215,7 +1216,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const invalidatedAnchor = await experimentalForecastModelEpisode(request, prisma);
     expect(invalidatedAnchor).toBeNull();
 
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const productionOnly = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(productionOnly.productionPublishedGeneration).toBe(productionOnly.invalidationGeneration);
     expect(productionOnly.productionStaleFromDate).toBeNull();
@@ -1242,9 +1243,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       where: { metric: "weight-kg", date: { gte: massWindowStart, lte: addCalendarDays(workoutDate, 7) } },
     })).toBe(0);
     await prisma.workout.deleteMany({ where: { sourceIdentity: "active-energy-stepper-post-replay" } });
-    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: workoutDate } });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: workoutDate } } });
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: health.id,
         sourceIdentity: "active-energy-stepper-post-replay",
         type: STAIR_CLIMBING_TYPE,
@@ -1256,6 +1257,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     await prisma.healthActivityInterval.createMany({
       data: [400, 350, 450, 400].map((value, index) => ({
+        profileId: 1,
         date: workoutDate,
         metric: "steps",
         startAt: new Date(workoutStart.getTime() + index * 5 * 60_000),
@@ -1293,7 +1295,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     expect(beforeResolution.currentSource).toBe("device-kcal");
 
-    const result = await recalculateModelEpisode({ episodeId, now });
+    const result = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(result.episodeId).toBe(episodeId);
     expect(result.latestModeledDate).toBe(finalDate);
     const predecessor = await prisma.dailyModelState.findUniqueOrThrow({
@@ -1335,7 +1337,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   }, 60_000);
 
   it("keeps the V4 source fingerprint stable through Active Energy candidate materialization", async () => {
-    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: finalDate } });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: finalDate } } });
     const workoutStart = new Date("2041-03-30T08:00:00.000Z");
     let workoutId: number | null = null;
     let sessionId: number | null = null;
@@ -1345,7 +1347,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     try {
       await prepareCurrentForecastV2(now);
       const workout = await prisma.workout.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: health.id,
           sourceIdentity: "raw-fingerprint-accounting-convergence",
           type: "Other Fixture",
@@ -1368,6 +1370,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       sessionId = session.id;
       const exercise = await prisma.strengthSessionExercise.create({
         data: {
+          profileId: 1,
           sessionId,
           snapshotExerciseName: "fingerprint regression press",
           sortOrder: 0,
@@ -1432,7 +1435,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   }, 120_000);
 
   it("materializes only explicitly affected Strength and Stepper candidates on PostgreSQL", async () => {
-    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: finalDate } });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: finalDate } } });
     const at = new Date("2041-03-30T08:00:00.000Z");
     const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
     const sessionIds: number[] = [];
@@ -1456,6 +1459,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         sessionIds.push(session.id);
         const exercise = await prisma.strengthSessionExercise.create({
           data: {
+            profileId: 1,
             sessionId: session.id, snapshotExerciseName: `scope ${label}`, sortOrder: 0,
             plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT", origin: "EXTRA",
           },
@@ -1464,7 +1468,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
           data: { sessionExerciseId: exercise.id, setNumber: 1, reps: 8, weightKg: 20, completedAt: at },
         });
         const workout = await prisma.workout.create({
-          data: {
+          data: { profileId: 1,
             dailyHealthDataId: health.id, sourceIdentity: `active-energy-scope-${label}-${suffix}`,
             type: STAIR_CLIMBING_TYPE,
             startAt: new Date(at.getTime() + (label === "target" ? 0 : 60) * 60_000),
@@ -1516,7 +1520,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   }, 120_000);
 
   it("does not refresh independent candidates when a replay leaves their V7 energy inputs unchanged", async () => {
-    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: finalDate } });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: finalDate } } });
     const at = new Date("2041-03-30T08:00:00.000Z");
     const session = await prisma.strengthDiarySession.create({
       data: {
@@ -1525,14 +1529,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       },
     });
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: health.id, sourceIdentity: `unchanged-replay-stepper-${Date.now()}`,
         type: STAIR_CLIMBING_TYPE, startAt: at, endAt: new Date(at.getTime() + 20 * 60_000),
         durationMinutes: 20, activeEnergyKcal: 80,
       },
     });
     const unmatchedStrengthWorkout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: health.id, sourceIdentity: `unchanged-replay-strength-${Date.now()}`,
         type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
         startAt: new Date("2041-03-30T10:00:00.000Z"), endAt: new Date("2041-03-30T10:30:00.000Z"),
@@ -1552,7 +1556,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       "persistActiveEnergyCanonicalResolutionV1",
     );
     try {
-      const first = await recalculateModelEpisode({ episodeId, now }, prisma);
+      const first = await recalculateModelEpisode({ profileId: 1, episodeId, now }, prisma);
       expect(first.strengthHorizonChangedEpisodeId).toBe(episodeId);
 
       // Candidate fingerprints consume filtered weight when present, so a
@@ -1568,7 +1572,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         data: { endWeightKg: massState.endWeightKg + 2 },
       });
 
-      const repeated = await recalculateModelEpisode({ episodeId, now }, prisma);
+      const repeated = await recalculateModelEpisode({ profileId: 1, episodeId, now }, prisma);
       expect(repeated.activeEnergyModelChangedDays).toEqual([]);
       expect(repeated.strengthHorizonChangedEpisodeId).toBeNull();
 
@@ -1613,9 +1617,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         data: { productionPublishedGeneration: lifecycle.invalidationGeneration, productionStaleFromDate: null },
       });
     });
-    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: workoutDate } });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: workoutDate } } });
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: health.id,
         sourceIdentity: "active-energy-stepper-stale-shadow-refresh",
         type: STAIR_CLIMBING_TYPE,
@@ -1627,6 +1631,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     await prisma.healthActivityInterval.createMany({
       data: [400, 350, 450, 400].map((value, index) => ({
+        profileId: 1,
         date: workoutDate,
         metric: "steps",
         startAt: new Date(workoutStart.getTime() + index * 5 * 60_000),
@@ -1810,7 +1815,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   it("persists a compatible production suffix without touching its prefix and falls back to full replay when incompatible", async () => {
     const dirtyDate = "2041-03-27";
     const predecessorDate = addCalendarDays(dirtyDate, -1);
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
 
     const readStates = () => prisma.dailyModelState.findMany({
       where: { episodeId }, orderBy: { date: "asc" },
@@ -1865,13 +1870,13 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(fullRows.find((row) => row.date === predecessorDate)?.weightFilterVarianceKg2).not.toBeNull();
     const prefixBeforeSuffix = prefixProjection(fullRows);
     await invalidate(dirtyDate);
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const suffixRows = await readStates();
     expect(prefixProjection(suffixRows)).toEqual(prefixBeforeSuffix);
 
     const suffixOutput = outputProjection(suffixRows);
     await invalidate(episodeStart);
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const equivalentFullRows = await readStates();
     expect(outputProjection(equivalentFullRows)).toEqual(suffixOutput);
 
@@ -1881,7 +1886,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       data: { weightFilterVarianceKg2: null },
     });
     await invalidate(dirtyDate);
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const nullVarianceFallback = await readStates();
     expect(nullVarianceFallback.find((row) => row.date === predecessorDate)?.weightFilterVarianceKg2).not.toBeNull();
     expect(nullVarianceFallback.find((row) => row.date === predecessorDate)?.updatedAt.getTime())
@@ -1892,7 +1897,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       where: { id: episodeId }, data: { calibrationDiagnostics: { calibrationInputFingerprint: "incompatible-calibration-fixture" } },
     });
     await invalidate(dirtyDate);
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const calibrationFallback = await readStates();
     expect(calibrationFallback.find((row) => row.date === predecessorDate)?.updatedAt.getTime())
       .toBeGreaterThan(beforeCalibrationFallback.find((row) => row.date === predecessorDate)!.updatedAt.getTime());
@@ -1900,7 +1905,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const beforeModelVersionFallback = await readStates();
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v6" } });
     await invalidate(dirtyDate);
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const modelVersionFallback = await readStates();
     expect(modelVersionFallback.find((row) => row.date === predecessorDate)?.modelVersion).toBe("bodycast-physiology-v6");
     expect(modelVersionFallback.find((row) => row.date === predecessorDate)?.updatedAt.getTime())
@@ -1933,7 +1938,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const notBracketed = await solveModelEpisodeTarget(targetRequest(20, "2041-04-29", now), prisma);
     expect(notBracketed.status).toBe("not-bracketed");
 
-    const minimumForecast = await forecastModelEpisode({ episodeId, horizonDays: 30, seed: 1601,
+    const minimumForecast = await forecastModelEpisode({ profileId: 1, episodeId, horizonDays: 30, seed: 1601,
       scenario: { ...fixedForecastScenario, schedule: { defaultDay: { ...fixedForecastScenario.schedule.defaultDay,
         nutrition: { caloriesKcal: 1_800, proteinG: 170 * 1_800 / 2_200,
           fatG: 70 * 1_800 / 2_200, carbsG: 230 * 1_800 / 2_200 } } } },
@@ -1969,7 +1974,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     try {
       await prisma.dailyHealthData.createMany({
         data: extendedDates.map((date, index) => ({
-          date, weightKg: 80 + index * 0.03, bodyFatPercent: null,
+          profileId: 1, date, weightKg: 80 + index * 0.03, bodyFatPercent: null,
           caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240,
           steps: 8_000, averageWalkingSpeedKmh: 5, walkingDistanceKm: 5,
           strengthTrainingMinutes: 30, rawPayload: { source: "phase-14a-canonical" },
@@ -1981,13 +1986,13 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await prisma.dailyHealthData.deleteMany({
         where: { date: { gte: "2041-03-23", lte: "2041-03-29" } },
       });
-      await recalculateModelEpisode({ episodeId, now: extendedNow });
+      await recalculateModelEpisode({ profileId: 1, episodeId, now: extendedNow });
       await prepareCurrentForecastV2(extendedNow);
       expect(await prisma.dailyModelState.findMany({
         where: { episodeId }, orderBy: { date: "asc" }, select: { date: true },
       })).toEqual([{ date: "2041-03-20" }, { date: "2041-03-21" }, { date: "2041-03-22" }]);
 
-      const recovered = await recoverModelEpisode({
+      const recovered = await recoverModelEpisode({ profileId: 1,
         episodeId, seed: 1234, config: { particleCount: 64 }, now: extendedNow,
       });
       expect(recovered).toMatchObject({
@@ -2022,7 +2027,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await prisma.modelRecoveryRun.update({
         where: { id: stored.id }, data: { status: "degraded" },
       });
-      const forecast = await forecastModelEpisode({
+      const forecast = await forecastModelEpisode({ profileId: 1,
         episodeId, horizonDays: 30, seed: 321, scenario: fixedForecastScenario,
         config: { pathCount: 64 }, now: extendedNow,
       }, prisma);
@@ -2039,7 +2044,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await prisma.modelRecoveryRun.update({
         where: { id: stored.id }, data: { status: "degenerate" },
       });
-      expect(await forecastModelEpisode({
+      expect(await forecastModelEpisode({ profileId: 1,
         episodeId, horizonDays: 7, seed: 321, scenario: fixedForecastScenario,
         config: { pathCount: 16 }, now: extendedNow,
       }, prisma)).toMatchObject({
@@ -2070,7 +2075,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       expect((await prisma.modelRecoveryRun.findUniqueOrThrow({ where: { id: stored.id } })).ensemble)
         .toEqual(stored.ensemble);
 
-      const repeated = await recoverModelEpisode({
+      const repeated = await recoverModelEpisode({ profileId: 1,
         episodeId, seed: 1234, config: { particleCount: 64 }, now: extendedNow,
       });
       expect(repeated.status === "ok" && repeated.recovery.id).toBe(stored.id);
@@ -2086,7 +2091,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         BEFORE INSERT ON "ModelRecoveryRun"
         FOR EACH ROW EXECUTE FUNCTION "model_recovery_test_failure"()
       `);
-      await expect(recoverModelEpisode({
+      await expect(recoverModelEpisode({ profileId: 1,
         episodeId, seed: 999, config: { particleCount: 64 }, now: extendedNow,
       })).rejects.toThrow();
       expect(await prisma.modelRecoveryRun.findUniqueOrThrow({ where: { id: stored.id } }))
@@ -2097,7 +2102,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await prisma.workInterval.updateMany({
         where: { date: workDate }, data: { breakMinutes: 45 },
       });
-      expect(await forecastModelEpisode({
+      expect(await forecastModelEpisode({ profileId: 1,
         episodeId, horizonDays: 7, seed: 321, scenario: fixedForecastScenario,
         config: { pathCount: 16 }, now: extendedNow,
       }, prisma)).toMatchObject({
@@ -2117,10 +2122,10 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         forecast: null,
         warnings: ["initial-state-unavailable"],
       });
-      const afterBreakEdit = await getModelRecoveryStatus(episodeId, prisma, extendedNow);
+      const afterBreakEdit = await getModelRecoveryStatus(1, episodeId, prisma, extendedNow);
       expect(afterBreakEdit.recovery).toMatchObject({ id: stored.id, stale: true });
 
-      const refreshed = await recoverModelEpisode({
+      const refreshed = await recoverModelEpisode({ profileId: 1,
         episodeId, seed: 1234, config: { particleCount: 64 }, now: extendedNow,
       });
       expect(refreshed.status).toBe("ok");
@@ -2129,9 +2134,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       expect(refreshed.recovery.stale).toBe(false);
 
       await prisma.dailyHealthData.update({
-        where: { date: "2041-04-06" }, data: { caloriesKcal: 2_700 },
+        where: { profileId_date: { profileId: 1, date: "2041-04-06" } }, data: { caloriesKcal: 2_700 },
       });
-      const afterNutritionEdit = await getModelRecoveryStatus(episodeId, prisma, extendedNow);
+      const afterNutritionEdit = await getModelRecoveryStatus(1, episodeId, prisma, extendedNow);
       expect(afterNutritionEdit.recovery).toMatchObject({
         id: refreshed.recovery.id, stale: true,
       });
@@ -2146,7 +2151,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("persists deterministic, idempotent history and overlap-aware walking", async () => {
-    const first = await recalculateModelEpisode({ episodeId, now });
+    const first = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const firstRows = await prisma.dailyModelState.findMany({
       where: { episodeId }, orderBy: { date: "asc" },
       select: {
@@ -2155,7 +2160,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         startWeightKg: true, dynamicRmrKcalPerDay: true, modelVersion: true,
       },
     });
-    const second = await recalculateModelEpisode({ episodeId, now });
+    const second = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const secondRows = await prisma.dailyModelState.findMany({
       where: { episodeId }, orderBy: { date: "asc" },
       select: {
@@ -2203,7 +2208,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("rebuilds the later trajectory after an occupational category edit", async () => {
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const beforeWork = await prisma.dailyModelState.findUniqueOrThrow({
       where: { episodeId_date: { episodeId, date: workDate } },
     });
@@ -2213,7 +2218,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.workInterval.updateMany({
       where: { date: workDate }, data: { category: "standingLight" },
     });
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const afterWork = await prisma.dailyModelState.findUniqueOrThrow({
       where: { episodeId_date: { episodeId, date: workDate } },
     });
@@ -2229,7 +2234,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.modelEpisode.update({
       where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v1" },
     });
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect((await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).modelVersion)
       .toBe("bodycast-physiology-v1");
     const versions = await prisma.dailyModelState.findMany({
@@ -2239,14 +2244,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("recomputes all later states after a historical source edit", async () => {
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const before = await prisma.dailyModelState.findUniqueOrThrow({
       where: { episodeId_date: { episodeId, date: finalDate } },
     });
     await prisma.dailyHealthData.update({
-      where: { date: episodeStart }, data: { caloriesKcal: { increment: 500 } },
+      where: { profileId_date: { profileId: 1, date: episodeStart } }, data: { caloriesKcal: { increment: 500 } },
     });
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const after = await prisma.dailyModelState.findUniqueOrThrow({
       where: { episodeId_date: { episodeId, date: finalDate } },
     });
@@ -2256,10 +2261,10 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   it("bridges missing nutrition, persists provenance, then replaces it with observed data", async () => {
     const missingDate = "2041-03-23";
     await prisma.dailyHealthData.update({
-      where: { date: missingDate },
+      where: { profileId_date: { profileId: 1, date: missingDate } },
       data: { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null },
     });
-    const estimatedRun = await recalculateModelEpisode({ episodeId, now });
+    const estimatedRun = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const estimatedGap = await prisma.dailyModelState.findUniqueOrThrow({
       where: { episodeId_date: { episodeId, date: missingDate } },
     });
@@ -2283,10 +2288,10 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(estimatedLater).toMatchObject({ status: "complete", dataQuality: "estimated" });
 
     await prisma.dailyHealthData.update({
-      where: { date: missingDate },
+      where: { profileId_date: { profileId: 1, date: missingDate } },
       data: { caloriesKcal: 3_100, proteinG: 180, fatG: 105, carbsG: 340 },
     });
-    const observedRun = await recalculateModelEpisode({ episodeId, now });
+    const observedRun = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const observedGap = await prisma.dailyModelState.findUniqueOrThrow({
       where: { episodeId_date: { episodeId, date: missingDate } },
     });
@@ -2308,7 +2313,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(observedLater.endWeightKg).not.toBe(estimatedLater.endWeightKg);
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
 
-    const repeated = await recalculateModelEpisode({ episodeId, now });
+    const repeated = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect({ ...repeated,
       activeEnergyModelChangedDays: observedRun.activeEnergyModelChangedDays,
       strengthHorizonChangedEpisodeId: observedRun.strengthHorizonChangedEpisodeId,
@@ -2331,7 +2336,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     await prisma.dailyHealthData.deleteMany({ where: { date: { in: gapDates } } });
 
-    const unresolved = await recalculateModelEpisode({ episodeId, now });
+    const unresolved = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(unresolved).toMatchObject({
       episodeId,
       daysPersisted: 3,
@@ -2368,20 +2373,20 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       personalOffsetKcalPerDay: frozenBefore.personalOffsetKcalPerDay,
       activityCalibration: frozenBefore.activityCalibration,
     });
-    expect(await getModelStatus(episodeId)).toMatchObject({
+    expect(await getModelStatus(1, episodeId)).toMatchObject({
       continuityStatus: "awaiting-recovery",
       lastResolvedDate: "2041-03-22",
       unknownIntervalCount: 1,
       unresolvedDayCount: 7,
       postGapObservedDayCount: 1,
     });
-    const laterHistory = await getModelHistory({
+    const laterHistory = await getModelHistory({ profileId: 1,
       episodeId, from: finalDate, to: finalDate, limit: 90, offset: 0,
     });
     expect(laterHistory.days).toEqual([]);
     expect(laterHistory.unknownIntervals).toHaveLength(1);
     expect(laterHistory.observationsAwaitingRecovery.map(({ date }) => date)).toEqual([finalDate]);
-    const repeatedUnresolved = await recalculateModelEpisode({ episodeId, now });
+    const repeatedUnresolved = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect({ ...repeatedUnresolved,
       activeEnergyModelChangedDays: unresolved.activeEnergyModelChangedDays,
       strengthHorizonChangedEpisodeId: unresolved.strengthHorizonChangedEpisodeId,
@@ -2391,14 +2396,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.modelUnknownInterval.count({ where: { episodeId } })).toBe(1);
 
     await Promise.all(gapDates.map((date) => prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date, weightKg: 80, bodyFatPercent: null, caloriesKcal: 2_450,
         proteinG: 150, fatG: 75, carbsG: 240, steps: 8_000,
         averageWalkingSpeedKmh: 5, walkingDistanceKm: 5,
         strengthTrainingMinutes: 30, rawPayload: { source: "phase-13.2-backfill" },
       },
     })));
-    const healed = await recalculateModelEpisode({ episodeId, now });
+    const healed = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(healed).toMatchObject({
       daysPersisted: 11,
       resolvedUntil: finalDate,
@@ -2422,7 +2427,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     await prisma.dailyHealthData.deleteMany({ where: { date: { in: gapDates } } });
 
-    const recalculated = await recalculateModelEpisode({ episodeId, now });
+    const recalculated = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(recalculated).toMatchObject({
       episodeId,
       daysPersisted: 4,
@@ -2456,7 +2461,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       data: { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null },
     });
 
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(await prisma.modelUnknownInterval.findMany({
       where: { episodeId }, orderBy: { startDate: "asc" },
       select: { startDate: true, lastUnknownDate: true, anchorDate: true },
@@ -2467,10 +2472,10 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(3);
 
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-24" },
+      where: { profileId_date: { profileId: 1, date: "2041-03-24" } },
       data: { caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240 },
     });
-    const partiallyHealed = await recalculateModelEpisode({ episodeId, now });
+    const partiallyHealed = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(partiallyHealed).toMatchObject({
       daysPersisted: 7,
       resolvedUntil: "2041-03-26",
@@ -2482,10 +2487,10 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(7);
 
     await prisma.dailyHealthData.update({
-      where: { date: "2041-03-28" },
+      where: { profileId_date: { profileId: 1, date: "2041-03-28" } },
       data: { caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240 },
     });
-    const healed = await recalculateModelEpisode({ episodeId, now });
+    const healed = await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(healed).toMatchObject({
       daysPersisted: 11,
       resolvedUntil: finalDate,
@@ -2500,7 +2505,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("rolls back partial rows and episode metadata when persistence fails", async () => {
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     const beforeRows = await prisma.dailyModelState.findMany({
       where: { episodeId }, orderBy: { date: "asc" },
       select: { date: true, endWeightKg: true, updatedAt: true },
@@ -2523,7 +2528,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       FOR EACH ROW EXECUTE FUNCTION "model_episode_test_failure"()
     `);
     try {
-      await expect(recalculateModelEpisode({ episodeId, now })).rejects.toThrow();
+      await expect(recalculateModelEpisode({ profileId: 1, episodeId, now })).rejects.toThrow();
     } finally {
       await prisma.$executeRawUnsafe('DROP TRIGGER "model_episode_test_failure" ON "DailyModelState"');
       await prisma.$executeRawUnsafe('DROP FUNCTION "model_episode_test_failure"()');
@@ -2539,7 +2544,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("cascades persisted daily state with its auditable episode relation", async () => {
-    await recalculateModelEpisode({ episodeId, now });
+    await recalculateModelEpisode({ profileId: 1, episodeId, now });
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBeGreaterThan(0);
     await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { modelEpisodeId: episodeId } });
     await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { modelEpisodeId: episodeId } });

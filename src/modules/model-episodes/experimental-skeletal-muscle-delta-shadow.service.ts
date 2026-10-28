@@ -4,7 +4,7 @@ import { rebuildRelativeMuscleEpisodeTrajectories } from "./relative-muscle-shad
 /** Rebuilds episode-owned daily and cumulative Relative Muscle shadow rows. */
 export async function recordExperimentalSkeletalMuscleDeltaShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
   await rebuildRelativeMuscleEpisodeTrajectories({ profileId: input.profileId, fromDate: input.date });
 }

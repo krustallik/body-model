@@ -101,7 +101,7 @@ describe("read-only historical bodyweight as-of adapter", () => {
     const localDate = "2026-08-22";
     const episode = asOfSafeEpisode(localDate);
     expect(calculateHistoricalBodyweightAsOfV1({
-      episode: { ...episode, initializationDiagnostics: { reason: "unknown" } },
+      episode: {  ...episode, initializationDiagnostics: { reason: "unknown" } },
       sources: sources(localDate), localDate,
     })).toMatchObject({ status: "unavailable", reason: "unsafe-initial-state" });
     expect(calculateHistoricalBodyweightAsOfV1({

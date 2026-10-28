@@ -7,7 +7,7 @@ import {
   parseExerciseMuscleMappingSnapshotV7,
   type ExerciseMuscleMappingSnapshotV7,
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
-import { DEFAULT_TRAINING_PROFILE_ID } from "./training.constants";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { exerciseMappingSnapshotWithAnatomyV1 } from "./exercise-anatomy-mapping-v1";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
@@ -78,8 +78,9 @@ export type MuscleMappingSnapshotBackfillApplyResult = MuscleMappingSnapshotBack
  */
 export async function reportNullMuscleMappingSnapshotBackfill(
   db: MuscleMappingSnapshotDb,
-  profileId = DEFAULT_TRAINING_PROFILE_ID,
+  profileId: number,
 ): Promise<MuscleMappingSnapshotBackfillReport> {
+  requireProfileId(profileId);
   const nullRows = await db.strengthSessionExercise.findMany({
     where: {
       AND: [
@@ -162,10 +163,10 @@ export async function reportNullMuscleMappingSnapshotBackfill(
  */
 export async function applyNullMuscleMappingSnapshotBackfill(
   db: PrismaClient,
-  options: { dryRun?: boolean; profileId?: number } = {},
+  options: { dryRun?: boolean; profileId: number },
 ): Promise<MuscleMappingSnapshotBackfillApplyResult> {
   const dryRun = options.dryRun ?? true;
-  const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  const profileId = requireProfileId(options.profileId);
   if (dryRun) {
     const report = await reportNullMuscleMappingSnapshotBackfill(db, profileId);
     return { ...report, updatedRows: 0, dryRun: true };

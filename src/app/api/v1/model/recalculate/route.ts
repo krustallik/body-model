@@ -3,7 +3,7 @@ import {
   ModelEpisodeNotFoundError,
   NoActiveModelEpisodeError,
 } from "@/modules/model-episodes/model-episode.errors";
-import { modelAuthorizationError } from "@/modules/model-episodes/model-http";
+import { modelPrincipal } from "@/modules/model-episodes/model-http";
 import { RecalculateModelRequestSchema } from "@/modules/model-episodes/model-episode.schema";
 import { recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
@@ -15,25 +15,28 @@ export const dynamic = "force-dynamic";
 const DEFAULT_RECOVERY_SEED = 20_260_824;
 
 export async function POST(request: Request): Promise<Response> {
-  const unauthorized = modelAuthorizationError(request);
-  if (unauthorized) return unauthorized;
+  const principal = await modelPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = RecalculateModelRequestSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const result = await recalculateModelEpisode(parsed.data);
+    const result = await recalculateModelEpisode({ ...parsed.data, profileId: principal.profileId });
     const {
       activeEnergyModelChangedDays: _activeEnergyModelChangedDays,
       sourceReplayChanged: _sourceReplayChanged,
       ...responseResult
     } = result;
+    void _activeEnergyModelChangedDays;
+    void _sourceReplayChanged;
     if (!result.recoveryRequired) return Response.json(responseResult);
     try {
       const recovery = await recoverModelEpisode({
         seed: DEFAULT_RECOVERY_SEED,
         episodeId: result.episodeId,
+        profileId: principal.profileId,
       });
       return Response.json({ ...responseResult, recovery });
     } catch (error) {

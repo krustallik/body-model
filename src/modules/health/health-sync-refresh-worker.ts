@@ -9,7 +9,7 @@ import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { runWithHealthSyncRefreshWorkerLease } from "./health-sync-worker-context";
 import { pruneExpiredHealthSyncAudits } from "./health-sync-audit";
-import { APPLE_HEALTH_SHORTCUT_SOURCE, healthSyncRepository } from "./health.repository";
+import { APPLE_HEALTH_SHORTCUT_SOURCE, healthSyncRepositoryForProfile } from "./health.repository";
 import { syncHealthData } from "./health.service";
 import type { TimestampedHealthMetricSample } from "./normalize-shortcut-range-payload";
 import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
@@ -228,7 +228,7 @@ async function refreshPendingHealthSyncWork(
   }
 
   const snapshots = await prisma.healthSyncSnapshot.findMany({
-    where: { date: { in: dates } },
+    where: { profileId: job.profileId, date: { in: dates } },
     select: { date: true, timezone: true },
     orderBy: [{ date: "asc" }, { receivedAt: "desc" }, { id: "desc" }],
   });
@@ -243,6 +243,7 @@ async function refreshPendingHealthSyncWork(
     ? []
     : await prisma.healthMetricSample.findMany({
       where: {
+        profileId: job.profileId,
         date: { in: weightSourceChangedDates },
         metric: "weight-kg",
         source: APPLE_HEALTH_SHORTCUT_SOURCE,
@@ -265,7 +266,7 @@ async function refreshPendingHealthSyncWork(
   let healthDependenciesComplete = false;
   await syncHealthData(
     { days: dates.map((date) => ({ date })), timezone: DEFAULT_TIME_ZONE },
-    healthSyncRepository,
+    healthSyncRepositoryForProfile(job.profileId),
     undefined,
     undefined,
     metricSamplesByDate,

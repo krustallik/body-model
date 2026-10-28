@@ -5,8 +5,8 @@ import { TrainingDayFactRepository } from "@/modules/days/training-day-fact.repo
 import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 
 const prisma = new PrismaClient();
-const facts = new TrainingDayFactRepository(prisma);
-const dailyMetrics = new DailyMetricRepository(prisma);
+const facts = new TrainingDayFactRepository(1, prisma);
+const dailyMetrics = new DailyMetricRepository(1, prisma);
 const programName = "stage00-training-day-fact-integration";
 const exerciseName = "stage00-training-day-fact-exercise";
 const localDate = "2046-01-02";
@@ -25,11 +25,11 @@ async function clean(): Promise<void> {
     ["2046-02-09", "day-fact-freshness-prior"],
     ["2046-02-10", "day-fact-freshness-same-day"],
   ] as const) {
-    const row = await prisma.dailyHealthData.findUnique({ where: { date } });
+    const row = await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: date } } });
     if (row && typeof row.rawPayload === "object" && row.rawPayload !== null
       && !Array.isArray(row.rawPayload)
       && (row.rawPayload as { marker?: unknown }).marker === marker) {
-      await prisma.dailyHealthData.delete({ where: { date } });
+      await prisma.dailyHealthData.delete({ where: { profileId_date: { profileId: 1, date } } });
     }
   }
   const sessions = await prisma.strengthDiarySession.findMany({
@@ -51,7 +51,7 @@ async function clean(): Promise<void> {
     });
   }
   await prisma.strengthDiarySession.deleteMany({ where: { program: { name: programName } } });
-  const healthRow = await prisma.dailyHealthData.findUnique({ where: { date: garminLocalDate } });
+  const healthRow = await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: garminLocalDate } } });
   if (healthRow && typeof healthRow.rawPayload === "object" && healthRow.rawPayload !== null
     && !Array.isArray(healthRow.rawPayload)
     && (healthRow.rawPayload as { marker?: unknown }).marker === healthRowMarker) {
@@ -73,12 +73,12 @@ describe("TrainingDayFact PostgreSQL repository", () => {
   });
 
   it("resolves started diary events on local start date without a Health row and excludes non-events", async () => {
-    const dailyHealthRow = await prisma.dailyHealthData.findUnique({ where: { date: localDate } });
+    const dailyHealthRow = await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: localDate } } });
     expect(dailyHealthRow).toBeNull();
 
-    const exercise = await prisma.exerciseCatalog.create({ data: { name: exerciseName } });
+    const exercise = await prisma.exerciseCatalog.create({ data: { profileId: 1, name: exerciseName } });
     const program = await prisma.trainingProgram.create({
-      data: {
+      data: { profileId: 1,
         name: programName,
         versions: {
           create: {
@@ -100,7 +100,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     await prisma.trainingProgram.update({ where: { id: program.id }, data: { currentVersionId: versionId } });
 
     await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: versionId,
         status: "ACTIVE",
@@ -110,7 +110,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       },
     });
     const cancelledWithSet = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: versionId,
         status: "CANCELLED",
@@ -130,7 +130,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       },
     });
     await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: versionId,
         status: "CANCELLED",
@@ -139,7 +139,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       },
     });
     await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: versionId,
         status: "COMPLETED",
@@ -185,10 +185,10 @@ describe("TrainingDayFact PostgreSQL repository", () => {
   it("counts a persisted matched pair once and keeps hidden events without exposing details", async () => {
     const program = await prisma.trainingProgram.findFirstOrThrow({ where: { name: programName }, include: { versions: true } });
     const daily = await prisma.dailyHealthData.create({
-      data: { date: garminLocalDate, rawPayload: { marker: healthRowMarker } },
+      data: { profileId: 1, date: garminLocalDate, rawPayload: { marker: healthRowMarker } },
     });
     const matchedWorkout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: daily.id,
         sourceIdentity: garminSourcePrefix + "matched",
         externalId: garminSourcePrefix + "matched",
@@ -199,7 +199,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       },
     });
     await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: program.versions[0]!.id,
         status: "COMPLETED",
@@ -211,7 +211,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       },
     });
     await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: daily.id,
         sourceIdentity: garminSourcePrefix + "only",
         externalId: garminSourcePrefix + "only",
@@ -246,13 +246,13 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     const freshDate = "2046-02-10";
     await clean();
     await prisma.dailyHealthData.create({
-      data: { date: "2046-02-09", weightKg: 79.5, rawPayload: { marker: "day-fact-freshness-prior" } },
+      data: { profileId: 1, date: "2046-02-09", weightKg: 79.5, rawPayload: { marker: "day-fact-freshness-prior" } },
     });
     await prisma.dailyHealthData.create({
-      data: { date: freshDate, weightKg: 80, rawPayload: { marker: "day-fact-freshness-same-day" } },
+      data: { profileId: 1, date: freshDate, weightKg: 80, rawPayload: { marker: "day-fact-freshness-same-day" } },
     });
     const massSample = await prisma.healthMetricSample.create({
-      data: {
+      data: { profileId: 1,
         date: freshDate,
         metric: "weight-kg",
         source: "apple-health-shortcut",
@@ -265,7 +265,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       where: { name: programName },
       include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 } },
     }) ?? await prisma.trainingProgram.create({
-      data: {
+      data: { profileId: 1,
         name: programName,
         versions: { create: { versionNumber: 1, exercises: { create: [] } } },
       },
@@ -273,10 +273,10 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     });
     const versionId = program.versions[0]?.id
       ?? (await prisma.trainingProgramVersion.create({
-        data: { programId: program.id, versionNumber: 1 },
+        data: { profileId: 1, programId: program.id, versionNumber: 1 },
       })).id;
     const session = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: versionId,
         status: "COMPLETED",
@@ -332,7 +332,7 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     });
 
     await prisma.dailyHealthData.update({
-      where: { date: freshDate },
+      where: { profileId_date: { profileId: 1, date: freshDate } },
       data: { weightKg: 81.4 },
     });
     await prisma.healthMetricSample.update({ where: { id: massSample.id }, data: { value: 81.4 } });

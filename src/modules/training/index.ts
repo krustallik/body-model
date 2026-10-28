@@ -28,7 +28,6 @@ export {
   SEEDED_EXERCISE_NAMES,
   MATCH_THRESHOLDS,
   TRAINING_LIMITS,
-  DEFAULT_TRAINING_PROFILE_ID,
 } from "./training.constants";
 export { matchDiaryToWorkouts } from "./training.matcher";
 export { planProgramExerciseReconcile } from "./training.program-reconcile";

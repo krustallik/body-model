@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { z } from "zod";
 import { validationResponse } from "@/modules/days/day.http";
 import { SessionIdParamsSchema } from "@/modules/training/training.schema";
@@ -11,6 +12,10 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const parsed = SessionIdParamsSchema.safeParse(await params);
   if (!parsed.success) return validationResponse(parsed.error);
   let body: unknown = {};
@@ -18,7 +23,7 @@ export async function POST(
   const payload = BodySchema.safeParse(body);
   if (!payload.success) return validationResponse(payload.error);
   try {
-    const session = await trainingService.materializeSessionAccounting(parsed.data.id, undefined, payload.data.idempotencyKey);
+    const session = await trainingService.materializeSessionAccounting(parsed.data.id, principal.profileId, payload.data.idempotencyKey);
     return Response.json({ session });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

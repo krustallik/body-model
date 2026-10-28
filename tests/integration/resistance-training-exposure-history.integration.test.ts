@@ -107,7 +107,7 @@ describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreS
     await clean();
 
     await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: profileId,
         date: dateLegacy,
         workoutFeedObserved: true,
         rawPayload: {},
@@ -168,7 +168,7 @@ describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreS
     }, profileId);
 
     const day = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: profileId,
         date: dateLinked,
         workoutFeedObserved: true,
         rawPayload: {},
@@ -253,7 +253,7 @@ describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreS
     await clean();
 
     await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: profileId,
         date: dateUnobserved,
         workoutFeedObserved: null,
         rawPayload: {},

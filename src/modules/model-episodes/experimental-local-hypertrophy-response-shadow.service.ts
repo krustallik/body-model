@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { prisma } from "@/lib/db/prisma";
 import {
   estimateExperimentalLocalHypertrophyFromWeeklyAggregateV1,
@@ -21,9 +22,9 @@ import { persistUnifiedShadowCandidateV1, readUnifiedSourceFenceV1 } from "./phy
  */
 export async function recordExperimentalLocalHypertrophyResponseShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
   const weekStartDate = utcMondayWeekStart(input.date);
   const weekEndDate = addCalendarDays(weekStartDate, 6);
@@ -32,7 +33,7 @@ export async function recordExperimentalLocalHypertrophyResponseShadow(input: {
 
   const [healthDays, sessionRows, workouts] = await Promise.all([
     prisma.dailyHealthData.findMany({
-      where: { date: { in: dates } },
+      where: { profileId, date: { in: dates } },
       select: { date: true, workoutFeedObserved: true },
       orderBy: { date: "asc" },
     }),
@@ -62,7 +63,7 @@ export async function recordExperimentalLocalHypertrophyResponseShadow(input: {
       },
     }),
     prisma.workout.findMany({
-      where: { hiddenFromHistory: false, dailyHealthData: { date: { in: dates } } },
+      where: { profileId, hiddenFromHistory: false, dailyHealthData: { date: { in: dates } } },
       select: {
         id: true,
         type: true,
@@ -137,7 +138,7 @@ export async function recordExperimentalLocalHypertrophyResponseShadow(input: {
     expectedFence: sourceFence,
     persist: async (tx) => {
       const currentDays = await tx.dailyHealthData.findMany({
-        where: { date: { in: dates } },
+        where: { profileId, date: { in: dates } },
         select: { date: true, workoutFeedObserved: true },
         orderBy: { date: "asc" },
       });

@@ -82,7 +82,7 @@ function isMissingRelationError(error: unknown): boolean {
 }
 
 export class SleepRepository {
-  constructor(private readonly client: PrismaClient = prisma) {}
+  constructor(private readonly profileId: number, private readonly client: PrismaClient = prisma) {}
 
   private sleepClient() {
     return this.client as unknown as {
@@ -109,6 +109,7 @@ export class SleepRepository {
     if (!findFirst) return undefined;
     try {
       const snapshot = await findFirst.call(this.sleepClient().healthSyncSnapshot, {
+        where: { profileId: this.profileId },
         orderBy: { receivedAt: "desc" },
         select: { timezone: true },
       });
@@ -128,6 +129,7 @@ export class SleepRepository {
     try {
       const rows = await client.findMany({
         where: {
+          profileId: this.profileId,
           startAt: { lte: to },
           endAt: { gte: from },
         },
@@ -185,7 +187,7 @@ export class SleepRepository {
     try {
       const [rows, resolvedZone] = await Promise.all([
         client.findMany({
-          where: { endAt: { gte: from, lte: now } },
+          where: { profileId: this.profileId, endAt: { gte: from, lte: now } },
           select: {
             startAt: true,
             endAt: true,
@@ -209,5 +211,3 @@ export class SleepRepository {
     }
   }
 }
-
-export const sleepRepository = new SleepRepository();

@@ -46,11 +46,11 @@ const RECOVERY_TRANSACTION_OPTIONS = {
 } as const;
 
 export async function recoverModelEpisode(
-  input: RecoverModelRequest & { now?: Date },
+  input: RecoverModelRequest & { profileId: number; now?: Date },
   client: PrismaClient = prisma,
 ) {
   return client.$transaction(async (transaction) => {
-    const episodes = new ModelEpisodeRepository(transaction);
+    const episodes = new ModelEpisodeRepository(input.profileId, transaction);
     const recovery = new ModelRecoveryRepository(transaction);
     const episode = input.episodeId === undefined
       ? await episodes.getActive()
@@ -154,11 +154,13 @@ export async function recoverModelEpisode(
 }
 
 export async function getModelRecoveryStatus(
+  profileId: number,
   episodeId?: number,
   client: PrismaClient = prisma,
   now = new Date(),
 ) {
-  const episodes = new ModelEpisodeRepository(client);
+  if (!Number.isInteger(profileId) || profileId <= 0) throw new Error("profileId must be a positive integer");
+  const episodes = new ModelEpisodeRepository(profileId, client);
   const recoveryRepository = new ModelRecoveryRepository(client);
   const episode = episodeId === undefined ? await episodes.getActive() : await episodes.getById(episodeId);
   if (!episode) {

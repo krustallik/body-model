@@ -102,25 +102,15 @@ WITH expected(name) AS (
     rolled_back_at AS "rolledBackAt", logs IS NOT NULL AS "hasLogs", md5(COALESCE(logs, '')) AS "logsFingerprint"
   FROM public."_prisma_migrations"
 ), baseline_targets(table_name) AS (
-  VALUES ('Workout'), ('Profile'), ('ModelEpisode'), ('PhysiologyV7Lifecycle'), ('DailyModelState'), ('StrengthDiarySession'), ('ExerciseCatalog'),
-    ('ExperimentalSkeletalMuscleDeltaShadow'), ('ExperimentalCessationDetrainingShadow'), ('_prisma_migrations')
+  SELECT jsonb_array_elements_text('__BASELINE_TABLES_JSON__'::jsonb)
 ), target_tables AS (
   SELECT b.table_name, to_regclass(format('public.%I', b.table_name)) IS NOT NULL AS exists,
     COALESCE(c.reltuples::bigint, 0) AS "estimatedRows",
     COALESCE(pg_total_relation_size(c.oid), 0) AS "totalBytes"
   FROM baseline_targets b LEFT JOIN pg_class c ON c.oid = to_regclass(format('public.%I', b.table_name))
 ), ddl_targets(table_name, required_lock_mode) AS (
-  VALUES
-    -- CREATE TABLE ... FOREIGN KEY requires SHARE ROW EXCLUSIVE on each referenced parent.
-    ('Workout', 'ShareRowExclusiveLock'),
-    ('Profile', 'ShareRowExclusiveLock'),
-    ('ModelEpisode', 'ShareRowExclusiveLock'),
-    ('StrengthDiarySession', 'AccessExclusiveLock'),
-    ('ExperimentalSkeletalMuscleDeltaShadow', 'AccessExclusiveLock'),
-    ('ExperimentalCessationDetrainingShadow', 'AccessExclusiveLock'),
-    -- Existing migration SQL adds columns to these relations; ALTER TABLE takes ACCESS EXCLUSIVE.
-    ('PhysiologyV7Lifecycle', 'AccessExclusiveLock'),
-    ('DailyModelState', 'AccessExclusiveLock')
+  SELECT table_name, required_lock_mode
+  FROM jsonb_to_recordset('__DDL_LOCK_TARGETS_JSON__'::jsonb) AS t(table_name text, required_lock_mode text)
 ), conflicting_locks AS (
   SELECT a.pid, c.relname AS relation, l.mode, l.granted,
     t.required_lock_mode AS "requiredLockMode",

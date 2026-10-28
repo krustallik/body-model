@@ -351,7 +351,7 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
   it("requires V3 postflight before explicit V4 replay and serves only exact current physical glycogen evidence", async () => {
     const episode = await prisma.modelEpisode.create({ data: episodeFixture });
     await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: profileId,
         date: modelDate,
         weightKg: 80,
         bodyFatPercent: 20,
@@ -654,6 +654,7 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       if (writer) await Promise.allSettled([writer]);
       if (previousJob) {
         const { profileId: _profileId, ...previousJobData } = previousJob;
+        void _profileId;
         await prisma.trainingRefreshJob.update({ where: { profileId }, data: previousJobData });
       } else {
         await prisma.trainingRefreshJob.deleteMany({ where: { profileId } });

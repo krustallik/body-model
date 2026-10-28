@@ -6,7 +6,7 @@ import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-p
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
-const repository = new PrismaHealthSyncRepository(prisma);
+const repository = new PrismaHealthSyncRepository(1, prisma);
 const date = "2041-03-15";
 const fixtureProgramName = "integration-reconcile-program";
 const fixtureTrainingSessionIds = new Set<string>();
@@ -151,7 +151,7 @@ describe("Workout stable reconciliation with PostgreSQL", () => {
       where: { isActive: true },
     });
     const program = await prisma.trainingProgram.create({
-      data: {
+      data: { profileId: 1,
         name: fixtureProgramName,
         versions: {
           create: {
@@ -176,7 +176,7 @@ describe("Workout stable reconciliation with PostgreSQL", () => {
     });
 
     const session = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id,
         programVersionId: versionId,
         status: "COMPLETED",

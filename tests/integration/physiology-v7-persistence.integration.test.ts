@@ -119,6 +119,7 @@ async function raceInvalidations(input: {
 async function seed(): Promise<void> {
   await prisma.dailyHealthData.createMany({
     data: dates.map((date, index) => ({
+      profileId: 1,
       date,
       weightKg: 80 - index * 0.1,
       bodyFatPercent: 20,
@@ -172,7 +173,7 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
     expect((await persistence.readRange(1, dates[0], dates[3])).map(({ resultFingerprint }) => resultFingerprint))
       .toEqual(fingerprints);
 
-    await prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { carbsG: 275 } });
+    await prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[1] } }, data: { carbsG: 275 } });
     const stale = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(stale.staleFromDate).toBe(dates[1]);
     expect((await persistence.readRange(1, dates[0], dates[3])).map(({ status }) => status))
@@ -232,20 +233,20 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
   it("merges invalidations atomically and transaction rollback cannot lose freshness state", async () => {
     await service.rebuild(request);
     await Promise.all([
-      prisma.dailyHealthData.update({ where: { date: dates[3] }, data: { carbsG: 260 } }),
-      prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { proteinG: 151 } }),
-      prisma.dailyHealthData.update({ where: { date: dates[2] }, data: { weightKg: 79 } }),
+      prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[3] } }, data: { carbsG: 260 } }),
+      prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[1] } }, data: { proteinG: 151 } }),
+      prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[2] } }, data: { weightKg: 79 } }),
     ]);
     const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(lifecycle.staleFromDate).toBe(dates[1]);
     const generation = lifecycle.invalidationGeneration;
     await expect(prisma.$transaction(async (tx) => {
-      await tx.dailyHealthData.update({ where: { date: dates[0] }, data: { carbsG: 999 } });
+      await tx.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[0] } }, data: { carbsG: 999 } });
       throw new Error("rollback");
     })).rejects.toThrow("rollback");
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } }))
       .invalidationGeneration).toBe(generation);
-    expect((await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[0] } })).carbsG)
+    expect((await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: dates[0] } } })).carbsG)
       .toBe(250);
   });
 
@@ -373,9 +374,9 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
 
   it("invalidates from the earlier authoritative day when a workout is reattached", async () => {
     await service.rebuild(request);
-    const dayThree = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] } });
+    const dayThree = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: dates[2] } } });
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: dayThree.id,
         externalId: "v7-persistence-move",
         sourceIdentity: "v7-persistence-move-source",
@@ -388,7 +389,7 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).staleFromDate)
       .toBe(dates[2]);
     await service.rebuild(request);
-    const dayTwo = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[1] } });
+    const dayTwo = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: dates[1] } } });
     await prisma.workout.update({ where: { id: workout.id }, data: { dailyHealthDataId: dayTwo.id } });
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).staleFromDate)
       .toBe(dates[1]);
@@ -396,11 +397,11 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
 
   it("lets a source mutation win a rebuild race and keeps crash/retry stale", async () => {
     await service.rebuild(request);
-    await prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { carbsG: 270 } });
+    await prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[1] } }, data: { carbsG: 270 } });
     await expect(service.rebuild({
       ...request,
       beforePromotion: async () => {
-        await prisma.dailyHealthData.update({ where: { date: dates[2] }, data: { proteinG: 155 } });
+        await prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: dates[2] } }, data: { proteinG: 155 } });
       },
     })).rejects.toBeInstanceOf(PhysiologyV7ConcurrentSourceChangeError);
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).staleFromDate)
@@ -445,7 +446,7 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
       .invalidationGeneration).toBe(generation);
     await prisma.exerciseCatalog.delete({ where: { id: catalog.id } });
 
-    await prisma.dailyHealthData.delete({ where: { date: dates[2] } });
+    await prisma.dailyHealthData.delete({ where: { profileId_date: { profileId: 1, date: dates[2] } } });
     expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).staleFromDate)
       .toBe(dates[2]);
     await service.rebuild(request);

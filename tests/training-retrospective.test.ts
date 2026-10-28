@@ -318,7 +318,7 @@ describe("retrospective diary creation from historical workouts", () => {
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
 
-    const session = await service.createSessionFromWorkout({ workoutId: 77, programId: 10 });
+    const session = await service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1);
 
     expect(repository.materializeAccounting).toHaveBeenCalledWith({ sessionId: 50, profileId: 1, mode: "ordinary" });
 
@@ -390,7 +390,7 @@ describe("retrospective diary creation from historical workouts", () => {
     const repository = new TrainingRepository(db as never);
     vi.spyOn(repository, "materializeAccounting").mockResolvedValue(1);
     const refreshDependencies = vi.fn(async () => {
-      await relativeMuscleShadowService.rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: "2026-08-12" });
+      await relativeMuscleShadowService.rebuildAuthoritativeRelativeMuscleTrajectory({ profileId: 1, fromDate: "2026-08-12" });
       await unifiedPublicationService.rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1 });
     });
     service = new TrainingService(
@@ -399,7 +399,7 @@ describe("retrospective diary creation from historical workouts", () => {
       refreshDependencies,
     );
 
-    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 })).resolves.toMatchObject({
+    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1)).resolves.toMatchObject({
       id: 50,
       entryMode: ENTRY_MODE.RETROSPECTIVE,
     });
@@ -420,7 +420,7 @@ describe("retrospective diary creation from historical workouts", () => {
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
 
-    await service.createSessionFromWorkout({ workoutId: 77, programId: 10 });
+    await service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1);
 
     expect(db.strengthDiarySession.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -448,7 +448,7 @@ describe("retrospective diary creation from historical workouts", () => {
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
 
-    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }))
+    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1))
       .resolves.toMatchObject({ id: 50 });
   });
 
@@ -458,7 +458,7 @@ describe("retrospective diary creation from historical workouts", () => {
       externalId: "stair-1",
     }));
 
-    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }))
+    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1))
       .rejects.toBeInstanceOf(WorkoutNotEligibleError);
     expect(db.strengthDiarySession.create).not.toHaveBeenCalled();
   });
@@ -475,7 +475,7 @@ describe("retrospective diary creation from historical workouts", () => {
     }));
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
 
-    const session = await service.createSessionFromWorkout({ workoutId: 77, programId: 10 });
+    const session = await service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1);
 
     expect(session.id).toBe(50);
     expect(db.strengthDiarySession.create).not.toHaveBeenCalled();
@@ -506,7 +506,7 @@ describe("retrospective diary creation from historical workouts", () => {
     const result = await service.bulkCreateSessionsFromWorkouts({
       workoutIds: [77, 78, 79],
       programId: 10,
-    });
+    }, 1);
 
     expect(result.createdSessionIds).toEqual([50]);
     expect(result.existingSessionIds).toEqual([51]);
@@ -520,7 +520,7 @@ describe("retrospective diary creation from historical workouts", () => {
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
 
-    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }))
+    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 }, 1))
       .resolves.toMatchObject({ entryMode: ENTRY_MODE.RETROSPECTIVE });
 
     const activeLookups = db.strengthDiarySession.findFirst.mock.calls.filter(
@@ -569,7 +569,7 @@ describe("historical strength workout listing", () => {
       { ...strengthWorkout({ id: 81, type: "Stair Climbing" }), matchedDiarySession: null },
     ]);
 
-    const rows = await service.listHistoricalStrengthWorkouts({ limit: 10 });
+    const rows = await service.listHistoricalStrengthWorkouts({ profileId: 1, limit: 10 });
 
     expect(rows.map((row) => row.workoutId)).toEqual([77, 78, 79, 80]);
     expect(rows.map((row) => row.diaryCompleteness)).toEqual([
@@ -651,7 +651,7 @@ describe("historical program reassignment", () => {
       { catalogId: 3, name: catalogC.name, plannedSets: 3, resistanceType: RESISTANCE.BODYWEIGHT },
     ]);
 
-    await service.changeSessionProgram(50, { programId: 20 });
+    await service.changeSessionProgram(50, { programId: 20 }, 1);
 
     expect(db.strengthSessionExercise.delete).not.toHaveBeenCalled();
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
@@ -683,7 +683,7 @@ describe("historical program reassignment", () => {
       { catalogId: 3, name: catalogC.name, plannedSets: 3, resistanceType: RESISTANCE.BODYWEIGHT },
     ]);
 
-    await service.changeSessionProgram(50, { programId: 20 });
+    await service.changeSessionProgram(50, { programId: 20 }, 1);
 
     expect(db.strengthSessionExercise.delete).not.toHaveBeenCalled();
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
@@ -704,7 +704,7 @@ describe("historical program reassignment", () => {
       { catalogId: 1, name: catalogA.name, plannedSets: 3, resistanceType: RESISTANCE.RESISTANCE_BAND },
     ]);
 
-    await service.changeSessionProgram(50, { programId: 20 });
+    await service.changeSessionProgram(50, { programId: 20 }, 1);
 
     expect(db.strengthSessionExercise.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -744,7 +744,7 @@ describe("session-level exercise edits", () => {
       catalogId: 3,
       plannedSets: 3,
       resistanceType: RESISTANCE.BODYWEIGHT,
-    });
+    }, 1);
 
     expect(db.strengthSessionExercise.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -779,7 +779,7 @@ describe("session-level exercise edits", () => {
       ],
     });
 
-    await expect(service.deleteSessionExercise(50, 501))
+    await expect(service.deleteSessionExercise(50, 501, { confirm: true }, 1))
       .rejects.toBeInstanceOf(ExerciseHasSetsError);
     expect(db.strengthSessionExercise.delete).not.toHaveBeenCalled();
   });
@@ -798,7 +798,7 @@ describe("session-level exercise edits", () => {
       sets: [{ id: 900, weightKg: decimal(30), bandNominalResistanceKg: null }],
     });
 
-    await service.deleteSessionExercise(50, 501, { confirm: true });
+    await service.deleteSessionExercise(50, 501, { confirm: true }, 1);
 
     expect(db.strengthSessionExercise.delete).toHaveBeenCalledWith({ where: { id: 501 } });
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
@@ -820,7 +820,7 @@ describe("session-level exercise edits", () => {
     });
 
     await expect(
-      service.updateSessionExercise(50, 501, { resistanceType: RESISTANCE.RESISTANCE_BAND }),
+      service.updateSessionExercise(50, 501, { resistanceType: RESISTANCE.RESISTANCE_BAND }, 1),
     ).rejects.toBeInstanceOf(ResistanceChangeBlockedError);
     expect(db.strengthSet.updateMany).not.toHaveBeenCalled();
   });
@@ -842,7 +842,7 @@ describe("session-level exercise edits", () => {
     await service.updateSessionExercise(50, 501, {
       resistanceType: RESISTANCE.RESISTANCE_BAND,
       confirmResistanceChange: true,
-    });
+    }, 1);
 
     expect(db.strengthSet.updateMany).toHaveBeenCalledWith({
       where: { sessionExerciseId: 501 },
@@ -855,7 +855,7 @@ describe("session-level exercise edits", () => {
       .mockResolvedValueOnce(sessionForEdit())
       .mockResolvedValueOnce(retrospectiveDetail());
 
-    await service.reorderSessionExercises(50, { exerciseIds: [502, 501] });
+    await service.reorderSessionExercises(50, { exerciseIds: [502, 501] }, 1);
 
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
       where: { id: 502 },
@@ -916,7 +916,7 @@ describe("set edits on a completed retrospective session", () => {
       updatedAt: new Date("2026-09-17T12:30:00Z"),
     });
 
-    const updated = await service.updateSet(50, 900, { reps: 8 });
+    const updated = await service.updateSet(50, 900, { reps: 8 }, 1);
 
     expect(updated.reps).toBe(8);
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith({
@@ -958,7 +958,7 @@ describe("set edits on a completed retrospective session", () => {
       updatedAt: new Date("2026-09-17T12:30:00Z"),
     });
 
-    await expect(service.updateSet(50, 900, { reps: 8 })).resolves.toMatchObject({ reps: 8 });
+    await expect(service.updateSet(50, 900, { reps: 8 }, 1)).resolves.toMatchObject({ reps: 8 });
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith({
       where: { id: 50 },
       data: {
@@ -1003,7 +1003,7 @@ describe("set edits on a completed retrospective session", () => {
       updatedAt: workoutStartAt,
     });
 
-    await service.createSet(50, 501, { reps: 12, weightKg: 30 });
+    await service.createSet(50, 501, { reps: 12, weightKg: 30 }, 1);
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         revision: { increment: 1 },
@@ -1022,7 +1022,7 @@ describe("set edits on a completed retrospective session", () => {
       sets: [],
     });
 
-    await expect(service.createSet(50, 503, { reps: 12, weightKg: 30 }))
+    await expect(service.createSet(50, 503, { reps: 12, weightKg: 30 }, 1))
       .rejects.toBeInstanceOf(SetValidationError);
     expect(db.strengthSet.create).not.toHaveBeenCalled();
   });
@@ -1036,7 +1036,7 @@ describe("set edits on a completed retrospective session", () => {
       sets: [],
     });
 
-    await expect(service.createSet(50, 502, { reps: 15, weightKg: 20 }))
+    await expect(service.createSet(50, 502, { reps: 15, weightKg: 20 }, 1))
       .rejects.toBeInstanceOf(SetValidationError);
 
     db.strengthSet.create.mockResolvedValue({
@@ -1052,7 +1052,7 @@ describe("set edits on a completed retrospective session", () => {
       updatedAt: workoutStartAt,
     });
 
-    const created = await service.createSet(50, 502, { reps: 15, bandNominalResistanceKg: 108 });
+    const created = await service.createSet(50, 502, { reps: 15, bandNominalResistanceKg: 108 }, 1);
     expect(created.weightKg).toBeNull();
     expect(created.bandNominalResistanceKg).toBe(108);
   });
@@ -1078,7 +1078,7 @@ describe("set edits on a completed retrospective session", () => {
       updatedAt: workoutStartAt,
     });
 
-    const created = await service.createSet(50, 501, { reps: 10, weightKg: 30, rir: 2 });
+    const created = await service.createSet(50, 501, { reps: 10, weightKg: 30, rir: 2 }, 1);
     expect(created.rir).toBe(2);
     expect(db.strengthSet.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ rir: 2 }),
@@ -1110,7 +1110,7 @@ describe("set edits on a completed retrospective session", () => {
       updatedAt: new Date("2026-09-17T12:40:00Z"),
     });
 
-    const cleared = await service.updateSet(50, 902, { rir: null });
+    const cleared = await service.updateSet(50, 902, { rir: null }, 1);
     expect(cleared.rir).toBeNull();
   });
 });
@@ -1126,7 +1126,7 @@ describe("matcher isolation for retrospective sessions", () => {
 
   it("returns no match candidates when there is no live web interval", async () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
-    await expect(service.listMatchCandidates(50)).resolves.toEqual([]);
+    await expect(service.listMatchCandidates(50, 1)).resolves.toEqual([]);
     expect(db.workout.findMany).not.toHaveBeenCalled();
   });
 
@@ -1140,7 +1140,7 @@ describe("matcher isolation for retrospective sessions", () => {
       matchedWorkoutId: 77,
     }]);
 
-    await service.afterHealthSyncMatch("2026-08-12", { timezone: "UTC" });
+    await service.afterHealthSyncMatch("2026-08-12", { profileId: 1, timezone: "UTC" });
 
     expect(db.workout.findMany).not.toHaveBeenCalled();
     expect(db.strengthDiarySession.update).not.toHaveBeenCalled();
@@ -1148,7 +1148,7 @@ describe("matcher isolation for retrospective sessions", () => {
 
   it("excludes retrospective rows from the pending-overlap query", async () => {
     db.strengthDiarySession.findMany.mockResolvedValue([]);
-    await service.afterHealthSyncMatch("2026-08-12", { timezone: "UTC" });
+    await service.afterHealthSyncMatch("2026-08-12", { profileId: 1, timezone: "UTC" });
 
     expect(db.strengthDiarySession.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
@@ -1174,7 +1174,7 @@ describe("delete diary session without touching Garmin", () => {
       .mockResolvedValueOnce({ id: 50, matchedWorkoutId: 77 });
     db.strengthDiarySession.delete.mockResolvedValue({ id: 50 });
 
-    const result = await service.deleteDiarySession(50);
+    const result = await service.deleteDiarySession(50, 1);
 
     expect(result).toEqual({ matchedWorkoutId: 77 });
     expect(db.strengthDiarySession.delete).toHaveBeenCalledWith({ where: { id: 50 } });
@@ -1189,12 +1189,12 @@ describe("delete diary session without touching Garmin", () => {
       webStartedAt: workoutStartAt,
     }));
 
-    await expect(service.deleteDiarySession(50)).rejects.toBeInstanceOf(SessionNotEditableError);
+    await expect(service.deleteDiarySession(50, 1)).rejects.toBeInstanceOf(SessionNotEditableError);
     expect(db.strengthDiarySession.delete).not.toHaveBeenCalled();
   });
 
   it("maps missing session to not found", async () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(null);
-    await expect(service.deleteDiarySession(999)).rejects.toBeInstanceOf(SessionNotFoundError);
+    await expect(service.deleteDiarySession(999, 1)).rejects.toBeInstanceOf(SessionNotFoundError);
   });
 });

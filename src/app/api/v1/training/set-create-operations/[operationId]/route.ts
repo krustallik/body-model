@@ -1,3 +1,4 @@
+import { getSessionPrincipal } from "@/modules/auth/access";
 import { trainingService } from "@/modules/training/training.service";
 import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { SetCreateOperationConflictError } from "@/modules/training/training.errors";
@@ -9,6 +10,9 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ operationId: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+
   const parsed = z.string().uuid().safeParse((await params).operationId);
   if (!parsed.success) return Response.json({ error: "invalid_operation_id" }, { status: 400 });
 
@@ -19,7 +23,7 @@ export async function GET(
   }
 
   try {
-    const result = await trainingService.getSetCreateOperation(parsed.data, undefined, digest?.success ? digest.data : undefined);
+    const result = await trainingService.getSetCreateOperation(parsed.data, principal.profileId, digest?.success ? digest.data : undefined);
     if (result.state === "NOT_FOUND") {
       return Response.json({ operationId: parsed.data, state: "NOT_FOUND" }, { status: 404 });
     }

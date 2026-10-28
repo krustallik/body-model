@@ -6,7 +6,6 @@ import {
   type StepperEquipmentAssignmentDto,
 } from "./stepper-equipment.schema";
 
-const PROFILE_ID = 1;
 const assignmentSelect = {
   id: true,
   machineFamily: true,
@@ -36,20 +35,20 @@ function toDto(record: AssignmentRecord): StepperEquipmentAssignmentDto {
 export class StepperEquipmentRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async list(): Promise<StepperEquipmentAssignmentDto[]> {
+  async list(profileId: number): Promise<StepperEquipmentAssignmentDto[]> {
     const records = await this.client.stepperEquipmentAssignment.findMany({
-      where: { profileId: PROFILE_ID },
+      where: { profileId },
       orderBy: [{ effectiveFrom: "asc" }, { id: "asc" }],
       select: assignmentSelect,
     });
     return records.map(toDto);
   }
 
-  async configureMs100(effectiveFrom: string): Promise<StepperEquipmentAssignmentDto> {
+  async configureMs100(profileId: number, effectiveFrom: string): Promise<StepperEquipmentAssignmentDto> {
     const at = new Date(effectiveFrom);
     return this.client.$transaction(async (transaction) => {
       const current = await transaction.stepperEquipmentAssignment.findFirst({
-        where: { profileId: PROFILE_ID, effectiveTo: null },
+        where: { profileId, effectiveTo: null },
         orderBy: [{ effectiveFrom: "desc" }, { id: "desc" }],
       });
       if (current && current.effectiveFrom.getTime() >= at.getTime()) {
@@ -57,12 +56,12 @@ export class StepperEquipmentRepository {
       }
       if (current) {
         await transaction.stepperEquipmentAssignment.update({
-          where: { id: current.id }, data: { effectiveTo: at },
+          where: { id: current.id, profileId }, data: { effectiveTo: at },
         });
       }
       const created = await transaction.stepperEquipmentAssignment.create({
         data: {
-          profileId: PROFILE_ID,
+          profileId,
           machineFamily: STEPPER_MACHINE_FAMILY,
           configuration: STEPPER_CONFIGURATION,
           effectiveFrom: at,

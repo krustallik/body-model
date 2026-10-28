@@ -200,7 +200,7 @@ describe("durable source — snapshot necessity for identical rebuild", () => {
       modelVersion: CURRENT_MODEL_VERSION,
     });
 
-    const repository = new PrismaHealthSyncRepository({} as PrismaClient);
+    const repository = new PrismaHealthSyncRepository(1, {} as PrismaClient);
     const pruned = await repository.pruneOlderThan("2026-07-01");
     expect(pruned).toEqual({
       cutoffDate: "2026-07-01",

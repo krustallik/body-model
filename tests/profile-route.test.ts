@@ -2,16 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const profileRepository = vi.hoisted(() => ({
   get: vi.fn(),
-  upsert: vi.fn(),
+  update: vi.fn(),
+}));
+const authAccess = vi.hoisted(() => ({
+  getSessionPrincipal: vi.fn().mockResolvedValue({ profileId: 42, userId: "user-42", method: "session" }),
+  isTrustedOrigin: vi.fn().mockReturnValue(true),
+  originRejected: vi.fn(() => Response.json({ error: "origin_rejected" }, { status: 403 })),
 }));
 
 vi.mock("@/modules/profile/profile.repository", () => ({ profileRepository }));
+vi.mock("@/modules/auth/access", () => authAccess);
 
 import { GET, PUT } from "@/app/api/v1/profile/route";
 
 const url = "http://localhost/api/v1/profile";
 const profile = {
-  id: 1,
+  id: 42,
   locale: "uk",
   sex: "male",
   dateOfBirth: "1990-05-12",
@@ -33,28 +39,30 @@ function request(body: unknown): Request {
 describe("/api/v1/profile", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 42, userId: "user-42", method: "session" });
+    authAccess.isTrustedOrigin.mockReturnValue(true);
     profileRepository.get.mockReset();
-    profileRepository.upsert.mockReset();
+    profileRepository.update.mockReset();
   });
 
   it("returns null before a profile is created", async () => {
     profileRepository.get.mockResolvedValue(null);
-    const response = await GET();
+    const response = await GET(new Request(url));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ profile: null });
   });
 
   it("keeps legacy target fields in profile read responses", async () => {
     profileRepository.get.mockResolvedValue(profile);
-    const response = await GET();
+    const response = await GET(new Request(url));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       profile: { targetWeightKg: 81.4, targetDate: "2027-06-01" },
     });
   });
 
-  it("creates a profile and parses decimal comma", async () => {
-    profileRepository.upsert.mockResolvedValue(profile);
+  it("updates the authenticated profile and parses decimal comma", async () => {
+    profileRepository.update.mockResolvedValue(profile);
     const response = await PUT(request({
       sex: "male",
       dateOfBirth: "1990-05-12",
@@ -64,7 +72,7 @@ describe("/api/v1/profile", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(profileRepository.upsert).toHaveBeenCalledWith({
+    expect(profileRepository.update).toHaveBeenCalledWith(42, {
       locale: "uk",
       sex: "male",
       dateOfBirth: "1990-05-12",
@@ -75,7 +83,7 @@ describe("/api/v1/profile", () => {
   });
 
   it("accepts a profile-only update without legacy goal fields", async () => {
-    profileRepository.upsert.mockResolvedValue(profile);
+    profileRepository.update.mockResolvedValue(profile);
     const response = await PUT(request({
       locale: "en",
       sex: "female",
@@ -84,14 +92,14 @@ describe("/api/v1/profile", () => {
     }));
 
     expect(response.status).toBe(200);
-    const input = profileRepository.upsert.mock.calls[0]?.[0];
+    const input = profileRepository.update.mock.calls[0]?.[1];
     expect(input).toMatchObject({ locale: "en", sex: "female", heightCm: 171.5 });
     expect(input).not.toHaveProperty("targetWeightKg");
     expect(input).not.toHaveProperty("targetDate");
   });
 
   it("fully updates a profile and clears omitted goal values", async () => {
-    profileRepository.upsert.mockResolvedValue({ ...profile, targetWeightKg: null, targetDate: null });
+    profileRepository.update.mockResolvedValue({ ...profile, targetWeightKg: null, targetDate: null });
     const response = await PUT(request({
       locale: "en",
       sex: "female",
@@ -102,7 +110,7 @@ describe("/api/v1/profile", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(profileRepository.upsert).toHaveBeenCalledWith({
+    expect(profileRepository.update).toHaveBeenCalledWith(42, {
       locale: "en",
       sex: "female",
       dateOfBirth: "1991-01-01",
@@ -127,6 +135,6 @@ describe("/api/v1/profile", () => {
     }));
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: "validation_error" });
-    expect(profileRepository.upsert).not.toHaveBeenCalled();
+    expect(profileRepository.update).not.toHaveBeenCalled();
   });
 });

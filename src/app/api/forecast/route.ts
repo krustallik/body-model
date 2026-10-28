@@ -14,18 +14,19 @@ import { latestCompletedLocalDate } from "@/modules/model-episodes/model-calenda
 import { isTrainingRefreshPending, readTrainingRefreshVisibilityFence } from "@/modules/training/training-refresh-queue";
 import { prisma } from "@/lib/db/prisma";
 import { ActiveEnergyConvergenceBusyError } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { getSessionPrincipal } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
 /** Forecast can replay health rows in memory; diagnostics need persisted DailyModelState. */
 const DEFAULT_RECOVERY_SEED = 20_260_824;
 
-async function ensurePersistedModelDays(now?: Date): Promise<void> {
+async function ensurePersistedModelDays(profileId: number, now?: Date): Promise<void> {
   try {
     // The Training worker owns publication while its durable generation is
     // pending. Do not let forecast bootstrap publish an intermediate graph.
-    if (isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, 1))) return;
-    let status = await getModelStatus();
+    if (isTrainingRefreshPending(await readTrainingRefreshVisibilityFence(prisma, profileId))) return;
+    let status = await getModelStatus(profileId);
     const latestCompletedDate = status.timezone
       ? latestCompletedLocalDate(now ?? new Date(), status.timezone)
       : null;
@@ -33,8 +34,8 @@ async function ensurePersistedModelDays(now?: Date): Promise<void> {
       && (status.latestModeledDate === null || status.latestModeledDate < latestCompletedDate);
     if (status.daysModeled === 0 || status.latestModeledDate === null || modelIsBehind) {
       try {
-        await recalculateModelEpisode(now ? { now } : {});
-        status = await getModelStatus();
+        await recalculateModelEpisode({ profileId, ...(now ? { now } : {}) });
+        status = await getModelStatus(profileId);
       } catch (error) {
         // Strict production initialization is intentionally allowed to fail
         // here; the forecast-only bootstrap can still provide a provisional
@@ -45,7 +46,7 @@ async function ensurePersistedModelDays(now?: Date): Promise<void> {
     }
     if (status.recoveryRequired) {
       try {
-        await recoverModelEpisode({ seed: DEFAULT_RECOVERY_SEED, ...(now ? { now } : {}) });
+        await recoverModelEpisode({ profileId, seed: DEFAULT_RECOVERY_SEED, ...(now ? { now } : {}) });
       } catch (error) {
         // Recovery evidence is a quality improvement, not a reason to dead-end
         // a forecast that can run from an observed or bootstrap anchor.
@@ -59,16 +60,18 @@ async function ensurePersistedModelDays(now?: Date): Promise<void> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = ForecastModelRequestSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
-  const release = tryAcquireOperation("forecast");
+  const release = tryAcquireOperation(`forecast:${principal.profileId}`);
   if (!release) return Response.json({ error: "operation_in_progress" }, { status: 429, headers: { "Retry-After": "1" } });
   const now = forecastQaNow();
   try {
-    await ensurePersistedModelDays(now);
-    return Response.json(await forecastModelEpisode({ ...parsed.data, ...(now ? { now } : {}) }));
+    await ensurePersistedModelDays(principal.profileId, now);
+    return Response.json(await forecastModelEpisode({ ...parsed.data, profileId: principal.profileId, ...(now ? { now } : {}) }));
   } catch (error) {
     if (error instanceof ActiveEnergyConvergenceBusyError) {
       return Response.json({ error: "model_refresh_pending" }, { status: 503, headers: { "Retry-After": "3" } });

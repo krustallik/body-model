@@ -20,6 +20,7 @@ import {
   physiologyV7CompartmentChips,
   workoutFeedProvenanceChip,
 } from "@/modules/provenance/provenance-presentation";
+import { getSessionPrincipal } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
@@ -36,14 +37,16 @@ type HistoryDayRow = {
   missingFields: string[];
 };
 
-export function GET(): Promise<Response>;
-export function GET(request: Request): Promise<Response>;
-export async function GET(request: Request = new Request("http://localhost")): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const profileId = principal.profileId;
   try {
-    const trainingFence = await readTrainingRefreshVisibilityFence(prisma, 1);
+    const trainingFence = await readTrainingRefreshVisibilityFence(prisma, profileId);
     const locale = new URL(request.url).searchParams.get("locale") === "uk" ? "uk" : "en";
-    const status = await getModelStatus();
+    const status = await getModelStatus(profileId);
     const history = await getModelHistory({
+      profileId,
       from: status.latestModeledDate ? addCalendarDays(status.latestModeledDate, -59) : undefined,
       to: status.latestModeledDate ?? undefined,
       limit: 60,
@@ -57,8 +60,8 @@ export async function GET(request: Request = new Request("http://localhost")): P
     const forecastStartDate = minimumGoalDate(latestCompletedDate);
     const observedWeights = await prisma.dailyHealthData.findMany({
       where: status.latestModeledDate
-        ? { date: { gte: addCalendarDays(status.latestModeledDate, -59), lte: forecastStartDate } }
-        : { date: { lte: forecastStartDate } },
+        ? { profileId, date: { gte: addCalendarDays(status.latestModeledDate, -59), lte: forecastStartDate } }
+        : { profileId, date: { lte: forecastStartDate } },
       orderBy: { date: "asc" },
       select: { date: true, weightKg: true },
     }).catch(() => [] as Array<{ date: string; weightKg: number | null }>);
@@ -68,14 +71,14 @@ export async function GET(request: Request = new Request("http://localhost")): P
       : days.find((day) => day.date === latestDate) ?? null;
     const v7 = latestDate === null
       ? null
-      : await new PhysiologyV7PersistenceRepository().readDay(1, latestDate).catch(() => null);
+      : await new PhysiologyV7PersistenceRepository().readDay(profileId, latestDate).catch(() => null);
     const workerOwnsGeneration = await trainingRefreshWorkerOwnsGeneration(
       prisma,
-      1,
+      profileId,
       trainingFence?.requestedGeneration,
     );
     if ((isTrainingRefreshPending(trainingFence) && !workerOwnsGeneration)
-        || await trainingRefreshFenceChanged(prisma, 1, trainingFence)) {
+        || await trainingRefreshFenceChanged(prisma, profileId, trainingFence)) {
       return Response.json({ error: "training_refresh_pending" }, { status: 503 });
     }
     const v7Status = v7 === null ? "missing" as const : v7.status;

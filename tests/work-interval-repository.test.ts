@@ -48,7 +48,7 @@ function fixture(options: { overlap?: boolean; existing?: boolean } = {}) {
 describe("work interval repository", () => {
   it("lists deterministically and maps UTC instants back to Košice local time", async () => {
     const { repository, client } = fixture();
-    await expect(repository.list("2026-08-23")).resolves.toEqual([expect.objectContaining({
+    await expect(repository.list(1, "2026-08-23")).resolves.toEqual([expect.objectContaining({
       id: 1,
       startTime: "08:00",
       endTime: "16:00",
@@ -57,16 +57,16 @@ describe("work interval repository", () => {
       breakSource: "user-entered",
     })]);
     expect(client.workInterval.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { date: "2026-08-23" },
+      where: { profileId: 1, date: "2026-08-23" },
       orderBy: [{ startAt: "asc" }, { id: "asc" }],
     }));
-    await repository.list();
-    expect(client.workInterval.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: undefined }));
+    await repository.list(1);
+    expect(client.workInterval.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { profileId: 1 } }));
   });
 
   it("creates resolved UTC instants after checking overlap", async () => {
     const { repository, transaction } = fixture();
-    await expect(repository.create(input)).resolves.toMatchObject({ id: 1 });
+    await expect(repository.create(1, input)).resolves.toMatchObject({ id: 1 });
     expect(transaction.workInterval.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         startAt: { lt: new Date("2026-08-23T14:00:00Z") },
@@ -80,32 +80,32 @@ describe("work interval repository", () => {
 
   it("rejects overlap before mutation", async () => {
     const { repository, transaction } = fixture({ overlap: true });
-    await expect(repository.create(input)).rejects.toThrow(WorkIntervalOverlapError);
+    await expect(repository.create(1, input)).rejects.toThrow(WorkIntervalOverlapError);
     expect(transaction.workInterval.create).not.toHaveBeenCalled();
   });
 
   it("updates a partial interval and excludes itself from overlap detection", async () => {
     const { repository, transaction } = fixture();
-    await expect(repository.update(1, { category: "manualLight" })).resolves.toMatchObject({
+    await expect(repository.update(1, 1, { category: "manualLight" })).resolves.toMatchObject({
       category: "manualLight",
     });
     expect(transaction.workInterval.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ id: { not: 1 } }),
+        where: expect.objectContaining({ profileId: 1, id: { not: 1 } }),
     }));
   });
 
   it("returns null for nonexistent update and reports delete result", async () => {
     const missing = fixture({ existing: false });
-    await expect(missing.repository.update(9, { category: "manualLight" })).resolves.toBeNull();
-    await expect(missing.repository.delete(9)).resolves.toBe(false);
-    await expect(fixture().repository.delete(1)).resolves.toBe(true);
+    await expect(missing.repository.update(1, 9, { category: "manualLight" })).resolves.toBeNull();
+    await expect(missing.repository.delete(1, 9)).resolves.toBe(false);
+    await expect(fixture().repository.delete(1, 1)).resolves.toBe(true);
   });
 
   it.each(["P2004", "P2010"])("maps database exclusion error %s to overlap", async (code) => {
     const client = {
       $transaction: vi.fn().mockRejectedValue({ code }),
     } as unknown as PrismaClient;
-    await expect(new WorkIntervalRepository(client).create(input))
+    await expect(new WorkIntervalRepository(client).create(1, input))
       .rejects.toThrow(WorkIntervalOverlapError);
   });
 
@@ -121,7 +121,7 @@ describe("work interval repository", () => {
     const client = {
       $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) => callback(transaction)),
     } as unknown as PrismaClient;
-    await expect(new WorkIntervalRepository(client).update(1, { category: "manualLight" }))
+    await expect(new WorkIntervalRepository(client).update(1, 1, { category: "manualLight" }))
       .rejects.toThrow(WorkIntervalOverlapError);
   });
 
@@ -137,7 +137,7 @@ describe("work interval repository", () => {
     const client = {
       $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) => callback(transaction)),
     } as unknown as PrismaClient;
-    await expect(new WorkIntervalRepository(client).update(1, { category: "manualLight" }))
+    await expect(new WorkIntervalRepository(client).update(1, 1, { category: "manualLight" }))
       .rejects.toThrow("update failed");
   });
 
@@ -145,6 +145,6 @@ describe("work interval repository", () => {
     const client = {
       $transaction: vi.fn().mockRejectedValue(new Error("db unavailable")),
     } as unknown as PrismaClient;
-    await expect(new WorkIntervalRepository(client).create(input)).rejects.toThrow("db unavailable");
+    await expect(new WorkIntervalRepository(client).create(1, input)).rejects.toThrow("db unavailable");
   });
 });

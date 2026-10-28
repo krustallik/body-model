@@ -36,6 +36,7 @@ describe("health sync audit retention", () => {
     });
     expect(create).toHaveBeenCalledWith({
       data: {
+        profileId: null,
         outcome: "validation-error",
         httpStatus: 400,
         rawBody: "{broken",

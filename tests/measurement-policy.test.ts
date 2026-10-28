@@ -116,7 +116,7 @@ describe("field-specific zero measurement semantics", () => {
       strengthDiarySession: { findMany: vi.fn().mockResolvedValue([]) },
       stepperReconciliationCandidate: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
-    const [dto] = await new DailyMetricRepository(client).list({ limit: 30, offset: 0, includeTrainingDays: true });
+    const [dto] = await new DailyMetricRepository(1, client).list({ limit: 30, offset: 0, includeTrainingDays: true });
     expect(dto.caloriesKcal).toBeNull();
     expect(dto.proteinG).toBeNull();
     expect(dto.weightKg).toBeNull();
@@ -125,7 +125,7 @@ describe("field-specific zero measurement semantics", () => {
     expect(dto.walkingDistanceKm).toBe(0);
     expect(dto.strengthTrainingMinutes).toBe(0);
     expect(dto.averageWalkingSpeedKmh).toBe(0);
-    const sources = await new ModelEpisodeRepository(client).loadSources(date, date);
+    const sources = await new ModelEpisodeRepository(1, client).loadSources(date, date);
     const [built] = buildSimulationDays({
       from: date,
       to: date,
@@ -170,7 +170,7 @@ describe("field-specific zero measurement semantics", () => {
       stepperReconciliationCandidate: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
 
-    const sources = await new ModelEpisodeRepository(client).loadSources(date, date);
+    const sources = await new ModelEpisodeRepository(1, client).loadSources(date, date);
     const [built] = buildSimulationDays({
       from: date,
       to: date,

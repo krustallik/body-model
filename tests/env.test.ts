@@ -9,7 +9,14 @@ const validEnv: NodeJS.ProcessEnv = {
 
 describe("environment validation", () => {
   it("returns validated values", () => {
-    expect(validateEnv(validEnv)).toEqual(validEnv);
+    expect(validateEnv(validEnv)).toMatchObject({
+      ...validEnv,
+      AUTH_PUBLIC_REGISTRATION_ENABLED: "false",
+      AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED: "false",
+      LEGACY_IOS_SHORTCUT_ENABLED: "false",
+      AUTH_EMAIL_DAILY_LIMIT: 250,
+      AUTH_EMAIL_RECIPIENT_DAILY_LIMIT: 10,
+    });
   });
 
   it("reports missing critical variables without exposing secrets", () => {
@@ -22,6 +29,19 @@ describe("environment validation", () => {
     expect(() => validateEnv({ ...validEnv, DATABASE_URL: "mysql://localhost/db" })).toThrow(
       /DATABASE_URL/,
     );
+  });
+
+  it("rejects malformed trusted proxy entries and accepts IPv4/IPv6 CIDRs", () => {
+    expect(() => validateEnv({ ...validEnv, AUTH_TRUSTED_PROXIES: "127.0.0.1/32,not-an-address" }))
+      .toThrow(/AUTH_TRUSTED_PROXIES.*valid IP addresses or CIDR ranges/);
+    expect(() => validateEnv({ ...validEnv, AUTH_TRUSTED_PROXIES: "192.0.2.1/33" }))
+      .toThrow(/AUTH_TRUSTED_PROXIES/);
+    expect(() => validateEnv({ ...validEnv, AUTH_TRUSTED_PROXIES: "0.0.0.0/0" }))
+      .toThrow(/AUTH_TRUSTED_PROXIES/);
+    expect(() => validateEnv({ ...validEnv, AUTH_TRUSTED_PROXIES: "::/0" }))
+      .toThrow(/AUTH_TRUSTED_PROXIES/);
+    expect(validateEnv({ ...validEnv, AUTH_TRUSTED_PROXIES: "127.0.0.1/32,2001:db8::/32" }).AUTH_TRUSTED_PROXIES)
+      .toBe("127.0.0.1/32,2001:db8::/32");
   });
 
   it("rejects production placeholder secrets", () => {

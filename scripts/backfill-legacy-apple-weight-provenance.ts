@@ -85,14 +85,14 @@ async function main(): Promise<void> {
     await prisma.$connect();
     if (!options.apply) {
       const summary = await summarizeLegacyWeightProvenanceBackfill(prisma);
-      console.log(JSON.stringify({ mode: "dry-run", database: identity, selection: "metric=weight-kg AND source IS NULL", ...summary }, null, 2));
+      console.log(JSON.stringify({ mode: "dry-run", database: identity, selection: "profileId=1 AND metric=weight-kg AND source IS NULL", ...summary }, null, 2));
       return;
     }
     const result = await prisma.$transaction(
       (transaction: Prisma.TransactionClient) => backfillLegacyWeightProvenance(transaction, options.expected!),
       { isolationLevel: "Serializable" },
     );
-    console.log(JSON.stringify({ mode: "applied", database: identity, selection: "metric=weight-kg AND source IS NULL", ...result }, null, 2));
+    console.log(JSON.stringify({ mode: "applied", database: identity, selection: "profileId=1 AND metric=weight-kg AND source IS NULL", ...result }, null, 2));
   } finally {
     await prisma.$disconnect();
   }

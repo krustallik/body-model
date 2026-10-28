@@ -94,6 +94,7 @@ async function seed() {
   });
   await prisma.dailyHealthData.createMany({
     data: dates.map((date, index) => ({
+      profileId: 1,
       date,
       weightKg: 80 - index * 0.02,
       bodyFatPercent: 20,

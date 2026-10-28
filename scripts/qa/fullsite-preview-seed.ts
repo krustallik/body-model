@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import { addCalendarDays, enumerateCalendarDates, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
 import { initializeNewModelEpisode, recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
@@ -75,8 +75,8 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
     startAt: Date; endAt: Date; durationMinutes: number; activeEnergyKcal: number;
   }> = [];
   const workIntervals: Array<{ date: string; startAt: Date; endAt: Date; breakMinutes: number; category: string }> = [];
-  const snapshots: Array<Record<string, unknown>> = [];
-  const stepIntervals: Array<Record<string, unknown>> = [];
+  const snapshots: Prisma.HealthSyncSnapshotCreateManyInput[] = [];
+  const stepIntervals: Prisma.HealthActivityIntervalCreateManyInput[] = [];
   const heartRates: Array<Record<string, unknown>> = [];
   const restingHeartRates: Array<Record<string, unknown>> = [];
   const sleepSegments: Array<Record<string, unknown>> = [];
@@ -89,7 +89,7 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
     const isStepperDay = index % 23 === 8 || date === addCalendarDays(finalDate, -1);
     const stepCount = Math.round(6_200 + walkingKm * 720 + (isStepperDay ? 1_300 : 0));
     const health = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date,
         weightKg: 82.4 - index * 0.011 + [0.06, -0.04, 0.02, -0.03, 0.05][index % 5]!,
         bodyFatPercent: index % 7 === 0 ? 21.4 + [0.1, -0.1, 0][index % 3]! : null,
@@ -124,13 +124,13 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
           const intervalStart = new Date(startAt.getTime() + minutes * 60_000);
           const intervalEnd = new Date(startAt.getTime() + (minutes + 6) * 60_000);
           stepIntervals.push({
-            date, metric: "steps", startAt: intervalStart, endAt: intervalEnd,
+            profileId: 1, date, metric: "steps", startAt: intervalStart, endAt: intervalEnd,
             value: steps, sourceFingerprint: `qa-step-${date}-${part}`,
           });
         }
         snapshots.push(
-          { dailyHealthDataId: health.id, date, receivedAt: new Date(startAt.getTime() - 5 * 60_000), timezone: TIME_ZONE, steps: Math.max(0, stepCount - 3_090), rawPayload: { source: SOURCE, kind: "stepper-before" } },
-          { dailyHealthDataId: health.id, date, receivedAt: new Date(endAt.getTime() + 5 * 60_000), timezone: TIME_ZONE, steps: stepCount, rawPayload: { source: SOURCE, kind: "stepper-after" } },
+          { profileId: 1, dailyHealthDataId: health.id, date, receivedAt: new Date(startAt.getTime() - 5 * 60_000), timezone: TIME_ZONE, steps: Math.max(0, stepCount - 3_090), rawPayload: { source: SOURCE, kind: "stepper-before" } },
+          { profileId: 1, dailyHealthDataId: health.id, date, receivedAt: new Date(endAt.getTime() + 5 * 60_000), timezone: TIME_ZONE, steps: stepCount, rawPayload: { source: SOURCE, kind: "stepper-after" } },
         );
       }
     }
@@ -140,8 +140,8 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
       const endAt = localTime(date, 14);
       workIntervals.push({ date, startAt, endAt, breakMinutes: index % 3 === 0 ? 45 : 30, category: index % 4 === 0 ? "manualLight" : "standingLightModerate" });
       snapshots.push(
-        { dailyHealthDataId: health.id, date, receivedAt: startAt, timezone: TIME_ZONE, steps: 900, walkingDistanceKm: 0.65, rawPayload: { source: SOURCE, kind: "work-start" } },
-        { dailyHealthDataId: health.id, date, receivedAt: endAt, timezone: TIME_ZONE, steps: Math.round(stepCount * 0.62), walkingDistanceKm: Number((walkingKm * 0.61).toFixed(2)), rawPayload: { source: SOURCE, kind: "work-end" } },
+        { profileId: 1, dailyHealthDataId: health.id, date, receivedAt: startAt, timezone: TIME_ZONE, steps: 900, walkingDistanceKm: 0.65, rawPayload: { source: SOURCE, kind: "work-start" } },
+        { profileId: 1, dailyHealthDataId: health.id, date, receivedAt: endAt, timezone: TIME_ZONE, steps: Math.round(stepCount * 0.62), walkingDistanceKm: Number((walkingKm * 0.61).toFixed(2)), rawPayload: { source: SOURCE, kind: "work-end" } },
       );
     }
 
@@ -190,7 +190,7 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
 
   const partialDate = addCalendarDays(finalDate, 1);
   const partial = await prisma.dailyHealthData.create({
-    data: {
+    data: { profileId: 1,
       date: partialDate, weightKg: 81.42, bodyFatPercent: null, caloriesKcal: 620,
       proteinG: 38, fatG: null, carbsG: 64, steps: 1_860, activeEnergyKcal: null,
       averageWalkingSpeedKmh: null, walkingDistanceKm: null, strengthTrainingMinutes: null,
@@ -200,10 +200,10 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
   dailyByDate.set(partialDate, partial.id);
 
   if (workIntervals.length) {
-    await prisma.workInterval.createMany({ data: workIntervals.map(({ date, startAt, endAt, category, breakMinutes }) => ({ date, startAt, endAt, timezone: TIME_ZONE, category, breakMinutes })) });
+    await prisma.workInterval.createMany({ data: workIntervals.map(({ date, startAt, endAt, category, breakMinutes }) => ({ profileId: 1, date, startAt, endAt, timezone: TIME_ZONE, category, breakMinutes })) });
   }
-  if (snapshots.length) await prisma.healthSyncSnapshot.createMany({ data: snapshots as never[] });
-  if (stepIntervals.length) await prisma.healthActivityInterval.createMany({ data: stepIntervals as never[] });
+  if (snapshots.length) await prisma.healthSyncSnapshot.createMany({ data: snapshots });
+  if (stepIntervals.length) await prisma.healthActivityInterval.createMany({ data: stepIntervals });
   if (heartRates.length) await prisma.heartRateSample.createMany({ data: heartRates as never[] });
   if (restingHeartRates.length) await prisma.restingHeartRateSample.createMany({ data: restingHeartRates as never[] });
   if (sleepSegments.length) await prisma.sleepSegment.createMany({ data: sleepSegments as never[] });
@@ -212,7 +212,7 @@ async function seedDailyHistory(historyStart: string, finalDate: string, qaNow: 
   for (const [index, row] of workoutRows.entries()) {
     const externalId = `fullsite-${row.type === "Stair Climbing" ? "stepper" : "strength"}-${row.date}-${index}`;
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: dailyByDate.get(row.date)!, externalId,
         sourceIdentity: workoutSourceIdentity({ externalId, type: row.type, startAt: row.startAt, endAt: row.endAt }),
         type: row.type, startAt: row.startAt, endAt: row.endAt, durationMinutes: row.durationMinutes,
@@ -246,7 +246,7 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
   for (const [programIndex, config] of programConfigs.entries()) {
     const program = await prisma.trainingProgram.create({ data: { profileId: 1, name: config.name } });
     const version = await prisma.trainingProgramVersion.create({
-      data: {
+      data: { profileId: 1,
         programId: program.id, versionNumber: 1,
         exercises: { create: config.exercises.map((exercise, index) => ({
           exerciseCatalogId: exercise.id, sortOrder: index, plannedSets: index === 0 ? 4 : 3,
@@ -277,7 +277,7 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
           const catalogRow = program.config.exercises[exerciseIndex]!;
           const isBodyweight = exercise.resistanceType === "BODYWEIGHT";
           return {
-            sourceExerciseCatalogId: exercise.exerciseCatalogId, snapshotExerciseName: catalogRow.name,
+            profileId: 1, sourceExerciseCatalogId: exercise.exerciseCatalogId, snapshotExerciseName: catalogRow.name,
             sortOrder: exercise.sortOrder, plannedSets: exercise.plannedSets,
             resistanceType: exercise.resistanceType, origin: "PLANNED",
             sets: { create: Array.from({ length: exercise.plannedSets }, (_, setIndex) => ({
@@ -306,6 +306,7 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
       status: "ACTIVE", entryMode: "LIVE", matchStatus: "PENDING", matchMethod: null,
       webStartedAt: activeWorkoutStart,
       exercises: { create: activeProgram.version.exercises.slice(0, 3).map((exercise, exerciseIndex) => ({
+        profileId: 1,
         sourceExerciseCatalogId: exercise.exerciseCatalogId,
         snapshotExerciseName: activeProgram.config.exercises[exerciseIndex]!.name,
         sortOrder: exercise.sortOrder, plannedSets: exercise.plannedSets,
@@ -345,8 +346,8 @@ async function main() {
 
   const seeded = await seedDailyHistory(historyStart, finalDate, qaNow);
   const training = await seedProgramsAndSessions(seeded.workouts, qaNow);
-  const episode = await initializeNewModelEpisode({ startDate: episodeStart, timezone: TIME_ZONE, now: qaNow }, prisma);
-  const calculation = await recalculateModelEpisode({ episodeId: episode.id, now: qaNow }, prisma);
+  const episode = await initializeNewModelEpisode({ profileId: 1, startDate: episodeStart, timezone: TIME_ZONE, now: qaNow }, prisma);
+  const calculation = await recalculateModelEpisode({ profileId: 1, episodeId: episode.id, now: qaNow }, prisma);
   await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: historyStart, toDate: seeded.partialDate });
   const v7Rebuild = await rebuildAndPersistPhysiologyForProfileRangeV7({
     profileId: 1, fromDate: historyStart, toDate: seeded.partialDate,

@@ -28,10 +28,10 @@ type CandidateRow = Record<string, unknown>;
 
 type AliasLookup = { where: { profileId: number; OR: Array<{ sourceType: string; sourceId: string }> } };
 type AliasUpsert = { where: { profileId_sourceType_sourceId: AliasRow }; create: AliasRow; update: Partial<AliasRow> };
-type AliasUpdate = { where: { eventId: number }; data: { eventId: number } };
+type AliasUpdate = { where: { profileId: number; eventId: number }; data: { eventId: number } };
 type AliasDelete = { where: { profileId: number; eventId: number; sourceType: string; sourceId?: { notIn: string[] } } };
 type EventLookup = { where: { profileId_logicalEventKey: { profileId: number; logicalEventKey: string } } };
-type EventIdsLookup = { where: { id: { in: number[] } } };
+type EventIdsLookup = { where: { profileId: number; id: { in: number[] } } };
 type EventCreate = { data: {
   profileId: number;
   logicalEventKey: string;
@@ -41,10 +41,10 @@ type EventCreate = { data: {
   modelTimeZone: string;
   inputFingerprint: string;
 } };
-type EventUpdate = { where: { id: number }; data: Partial<EventRow> };
-type EventCas = { where: { id: number; resolutionRevision: number; inputFingerprint: string }; data: Partial<EventRow> };
+type EventUpdate = { where: { profileId_id: { profileId: number; id: number } }; data: Partial<EventRow> };
+type EventCas = { where: { profileId: number; id: number; resolutionRevision: number; inputFingerprint: string }; data: Partial<EventRow> };
 type CandidateUpsert = {
-  where: { eventId_source_sourceIdentity_sourceFingerprint: { eventId: number; source: string; sourceIdentity: string; sourceFingerprint: string } };
+  where: { profileId_eventId_source_sourceIdentity_sourceFingerprint: { profileId: number; eventId: number; source: string; sourceIdentity: string; sourceFingerprint: string } };
   create: CandidateRow;
   update: CandidateRow;
 };
@@ -76,13 +76,13 @@ function database() {
         const found = state.aliases.find((row) => row.profileId === key.profileId
           && row.sourceType === key.sourceType && row.sourceId === key.sourceId);
         if (found) Object.assign(found, query.update);
-        else state.aliases.push({ ...query.create });
+        else state.aliases.push({  ...query.create });
         return found ?? query.create;
       }),
       updateMany: vi.fn(async (query: AliasUpdate) => {
         let count = 0;
         for (const row of state.aliases) {
-          if (row.eventId === query.where.eventId) {
+          if (row.profileId === query.where.profileId && row.eventId === query.where.eventId) {
             row.eventId = query.data.eventId;
             count += 1;
           }
@@ -120,14 +120,16 @@ function database() {
         return row;
       }),
       update: vi.fn(async (query: EventUpdate) => {
-        const row = state.events.find((item) => item.id === query.where.id);
+        const row = state.events.find((item) => item.profileId === query.where.profileId_id.profileId
+          && item.id === query.where.profileId_id.id);
         if (!row) throw new Error("event missing in test database");
         Object.assign(row, query.data);
         return row;
       }),
       updateMany: vi.fn(async (query: EventCas) => {
         if (state.forceCasMiss) return { count: 0 };
-        const row = state.events.find((item) => item.id === query.where.id
+        const row = state.events.find((item) => item.profileId === query.where.profileId
+          && item.id === query.where.id
           && item.resolutionRevision === query.where.resolutionRevision
           && item.inputFingerprint === query.where.inputFingerprint);
         if (!row) return { count: 0 };
@@ -137,8 +139,8 @@ function database() {
     },
     activeEnergyCandidate: {
       upsert: vi.fn(async (query: CandidateUpsert) => {
-        const key = query.where.eventId_source_sourceIdentity_sourceFingerprint;
-        const found = state.candidates.find((row) => row.eventId === key.eventId && row.source === key.source
+        const key = query.where.profileId_eventId_source_sourceIdentity_sourceFingerprint;
+        const found = state.candidates.find((row) => row.profileId === key.profileId && row.eventId === key.eventId && row.source === key.source
           && row.sourceIdentity === key.sourceIdentity && row.sourceFingerprint === key.sourceFingerprint);
         if (found) Object.assign(found, query.update);
         else state.candidates.push({ ...query.create });

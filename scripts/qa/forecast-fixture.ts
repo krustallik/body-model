@@ -41,7 +41,7 @@ async function seedSources(historyStart: string, finalDate: string) {
     const walkingKm = 4.2 + [0, 1.1, 0.4, 1.8, 0.7, 2.2, -0.5][index % 7];
     const strengthMinutes = day === 1 || day === 3 || day === 5 ? 45 : 0;
     const caloriesKcal = 2_330 + [-120, 40, 90, -35, 135, -70, 15][index % 7];
-    await prisma.dailyHealthData.create({ data: {
+    await prisma.dailyHealthData.create({ data: { profileId: 1,
       date,
       weightKg: 82.4 - index * 0.012 + [0.08, -0.03, 0.04, -0.06][index % 4],
       bodyFatPercent: index % 7 === 0 ? 21.2 + [0.1, -0.1, 0][index % 3] : null,
@@ -60,14 +60,14 @@ async function seedSources(historyStart: string, finalDate: string) {
     if (hasWork) {
       const startAt = new Date(`${date}T06:00:00.000Z`);
       const endAt = new Date(`${date}T14:00:00.000Z`);
-      await prisma.workInterval.create({ data: {
+      await prisma.workInterval.create({ data: { profileId: 1,
         date, startAt, endAt, timezone: TIME_ZONE,
         category: index % 4 === 0 ? "manualLight" : "standingLightModerate",
         breakMinutes: index % 3 === 0 ? 45 : 30,
       } });
       await prisma.healthSyncSnapshot.createMany({ data: [
-        { date, receivedAt: startAt, timezone: TIME_ZONE, steps: 1_200, walkingDistanceKm: 0.8, rawPayload: { source: "bodycast-deterministic-forecast-qa" } },
-        { date, receivedAt: endAt, timezone: TIME_ZONE, steps: 5_900, walkingDistanceKm: 4.4, rawPayload: { source: "bodycast-deterministic-forecast-qa" } },
+        { profileId: 1, date, receivedAt: startAt, timezone: TIME_ZONE, steps: 1_200, walkingDistanceKm: 0.8, rawPayload: { source: "bodycast-deterministic-forecast-qa" } },
+        { profileId: 1, date, receivedAt: endAt, timezone: TIME_ZONE, steps: 5_900, walkingDistanceKm: 4.4, rawPayload: { source: "bodycast-deterministic-forecast-qa" } },
       ] });
     }
   }
@@ -92,8 +92,8 @@ async function main() {
   await prisma.profile.create({ data: {
     id: 1, sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"), heightCm: 180,
   } });
-  const episode = await initializeNewModelEpisode({ startDate: episodeStart, timezone: TIME_ZONE, now: QA_NOW }, prisma);
-  let calculation = await recalculateModelEpisode({ episodeId: episode.id, now: QA_NOW }, prisma);
+  const episode = await initializeNewModelEpisode({ profileId: 1, startDate: episodeStart, timezone: TIME_ZONE, now: QA_NOW }, prisma);
+  let calculation = await recalculateModelEpisode({ profileId: 1, episodeId: episode.id, now: QA_NOW }, prisma);
   let recovery: Awaited<ReturnType<typeof recoverModelEpisode>> | null = null;
 
   if (!(["deterministic", "limited-history", "insufficient-donors"] as FixtureState[]).includes(requestedState)) {
@@ -105,7 +105,7 @@ async function main() {
         where: { date: { gt: gapEnd, lte: finalDate } }, data: { weightKg: null },
       });
     }
-    calculation = await recalculateModelEpisode({ episodeId: episode.id, now: QA_NOW }, prisma);
+    calculation = await recalculateModelEpisode({ profileId: 1, episodeId: episode.id, now: QA_NOW }, prisma);
     const qualityConfig = requestedState === "degraded" ? {
       healthyNormalizedEssThreshold: 0.999999,
       degenerateNormalizedEssThreshold: 0.000001,
@@ -128,14 +128,14 @@ async function main() {
       healthyValidParticleFractionThreshold: 0.000002,
       degenerateValidParticleFractionThreshold: 0.000001,
     } : {};
-    recovery = await recoverModelEpisode({
+    recovery = await recoverModelEpisode({ profileId: 1,
       episodeId: episode.id, seed: 15_100_001,
       config: { particleCount: 128, adaptivePilotParticleCount: 128, ...qualityConfig },
       now: QA_NOW,
     }, prisma);
     if (requestedState === "stale") {
       await prisma.dailyHealthData.update({
-        where: { date: finalDate }, data: { caloriesKcal: 2_515 },
+        where: { profileId_date: { profileId: 1, date: finalDate } }, data: { caloriesKcal: 2_515 },
       });
     }
   }

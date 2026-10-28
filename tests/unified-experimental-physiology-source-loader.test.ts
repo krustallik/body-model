@@ -80,9 +80,9 @@ describe("Unified V1 durable source loader", () => {
 
   it("rejects empty or reversed absolute replay intervals", async () => {
     const loader = new UnifiedExperimentalPhysiologySourceLoaderV1(fakeClient() as never);
-    await expect(loader.loadRange({ fromInstant: utc("2065-01-02"), throughInstant: utc("2065-01-01") }))
+    await expect(loader.loadRange({ profileId: 1, fromInstant: utc("2065-01-02"), throughInstant: utc("2065-01-01") }))
       .rejects.toThrow(/absolute replay interval/);
-    await expect(loader.loadRange({ fromInstant: utc("2065-01-01"), throughInstant: utc("2065-01-01") }))
+    await expect(loader.loadRange({ profileId: 1, fromInstant: utc("2065-01-01"), throughInstant: utc("2065-01-01") }))
       .rejects.toThrow(/absolute replay interval/);
   });
 
@@ -92,13 +92,13 @@ describe("Unified V1 durable source loader", () => {
       result: { transientWaterDeltaKg: { point: 0.4 } },
     };
     const v1Loader = new UnifiedExperimentalPhysiologySourceLoaderV1(fakeClient({ transientRows: [legacyRow] }) as never);
-    const v1 = await v1Loader.loadRange({ fromInstant: utc("2065-01-01"), throughInstant: utc("2065-01-02") });
+    const v1 = await v1Loader.loadRange({ profileId: 1, fromInstant: utc("2065-01-01"), throughInstant: utc("2065-01-02") });
     expect(v1.days[0]?.childOutputs.transientWater).toEqual([]);
 
     const incompleteLoader = new UnifiedExperimentalPhysiologySourceLoaderV1(fakeClient({
       completedIds: [11], transientRows: [legacyRow],
     }) as never);
-    await expect(incompleteLoader.loadRange({ fromInstant: utc("2065-01-01"), throughInstant: utc("2065-01-02") }))
+    await expect(incompleteLoader.loadRange({ profileId: 1, fromInstant: utc("2065-01-01"), throughInstant: utc("2065-01-02") }))
       .rejects.toThrow(/incomplete V2 transient-water coverage/);
   });
 
@@ -107,7 +107,7 @@ describe("Unified V1 durable source loader", () => {
       { id: 1, startDate: "2065-01-01", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: null },
       { id: 2, startDate: "2065-01-03", timezone: "Etc/GMT+12", active: true, deactivatedAt: null },
     ] }) as never);
-    const forwardRange = await forward.loadRange({
+    const forwardRange = await forward.loadRange({ profileId: 1,
       fromInstant: new Date("2064-12-31T10:00:00.000Z"), throughInstant: new Date("2065-01-05T12:00:00.000Z"),
     });
     expect(forwardRange.days.map((day) => `${day.modelEpisodeId}|${day.date}`)).toEqual([
@@ -120,7 +120,7 @@ describe("Unified V1 durable source loader", () => {
       { id: 1, startDate: "2065-01-01", timezone: "Etc/GMT+12", active: false, deactivatedAt: null },
       { id: 2, startDate: "2065-01-03", timezone: "Pacific/Kiritimati", active: true, deactivatedAt: null },
     ] }) as never);
-    const reverseRange = await reverse.loadRange({
+    const reverseRange = await reverse.loadRange({ profileId: 1,
       fromInstant: new Date("2065-01-01T12:00:00.000Z"), throughInstant: new Date("2065-01-04T10:00:00.000Z"),
     });
     expect(reverseRange.days.map((day) => `${day.modelEpisodeId}|${day.date}`)).toEqual([
@@ -138,7 +138,7 @@ describe("Unified V1 durable source loader", () => {
       ],
       transientRows: [transientRow({ modelDate: "2065-01-04", eventInstant: event })],
     }) as never);
-    const range = await loader.loadRange({
+    const range = await loader.loadRange({ profileId: 1,
       fromInstant: new Date("2065-01-02T10:00:00.000Z"), throughInstant: new Date("2065-01-04T12:00:00.000Z"),
     });
     expect(range.days.map(({ modelEpisodeId, date, boundaryAt }) => [modelEpisodeId, date, boundaryAt])).toEqual([
@@ -273,7 +273,7 @@ describe("Unified V1 durable source loader", () => {
       episodes: [{ id: 1, startDate: "2065-01-03", timezone: "Pacific/Kiritimati", active: true, deactivatedAt: null }],
       transientRows: [transientRow({ modelDate: "2065-01-04", eventInstant: "2065-01-03T11:00:00.000Z" })],
     }) as never);
-    await expect(loader.loadRange({
+    await expect(loader.loadRange({ profileId: 1,
       fromInstant: new Date("2065-01-03T11:00:00.000Z"), throughInstant: new Date("2065-01-05T10:00:00.000Z"),
     })).rejects.toThrow(/missing episode model-day boundary/);
   });
@@ -284,7 +284,7 @@ describe("Unified V1 durable source loader", () => {
       episodes: [{ id: 1, startDate: "2065-01-03", timezone: "Pacific/Kiritimati", active: true, deactivatedAt: null }],
       transientRows: [transientRow({ modelDate: "2065-01-04", eventInstant: "2065-01-03T10:00:00.000Z" })],
     }) as never);
-    const range = await loader.loadRange({
+    const range = await loader.loadRange({ profileId: 1,
       fromInstant: new Date("2065-01-02T10:00:00.000Z"), throughInstant: new Date("2065-01-04T10:00:00.000Z"),
     });
     expect(range.days[1]?.date).toBe("2065-01-04");

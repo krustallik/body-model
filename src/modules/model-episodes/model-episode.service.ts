@@ -215,10 +215,11 @@ const TRANSACTION_OPTIONS = {
 /** Starts a new auditable episode and deactivates, rather than mutating, the old one. */
 export async function initializeNewModelEpisode(
   input: {
+    profileId: number;
     startDate?: string;
     timezone?: string;
     now?: Date;
-  } = {},
+  },
   client: PrismaClient = prisma,
 ) {
   const timezone = input.timezone ?? DEFAULT_TIME_ZONE;
@@ -230,7 +231,7 @@ export async function initializeNewModelEpisode(
   }
 
   const episode = await client.$transaction(async (transaction) => {
-    const repository = new ModelEpisodeRepository(transaction);
+    const repository = new ModelEpisodeRepository(input.profileId, transaction);
     const [profile, sources] = await Promise.all([
       repository.getProfile(),
       repository.loadSources(addCalendarDays(startDate, -125), startDate, timezone),
@@ -310,12 +311,13 @@ function unchangedActiveEpisodeResult(
 /** Deterministic rebuild; private candidates publish only under the latest source fence. */
 async function recalculateModelEpisodeProduction(
   input: {
+    profileId: number;
     episodeId?: number;
     now?: Date;
     requireDependentStages?: boolean;
     onCandidateProcessed?: () => void | Promise<void>;
     convergenceOwner?: ActiveEnergyConvergenceOwnerToken;
-  } = {},
+  },
   client: PrismaClient = prisma,
 ) {
   let shadowInput: {
@@ -328,7 +330,7 @@ async function recalculateModelEpisodeProduction(
   // transaction, so the long candidate transaction never holds a lifecycle
   // row lock while later waiting for that same profile fence.
   await client.$transaction(async (transaction) => {
-    const repository = new ModelEpisodeRepository(transaction);
+    const repository = new ModelEpisodeRepository(input.profileId, transaction);
     const episode = input.episodeId === undefined
       ? await repository.getActive()
       : await repository.getById(input.episodeId);
@@ -347,7 +349,7 @@ async function recalculateModelEpisodeProduction(
     timeout: 10_000,
   });
   const production = await client.$transaction(async (transaction) => {
-    const repository = new ModelEpisodeRepository(transaction);
+    const repository = new ModelEpisodeRepository(input.profileId, transaction);
     let episode = input.episodeId === undefined
       ? await repository.getActive()
       : await repository.getById(input.episodeId);
@@ -458,7 +460,7 @@ async function recalculateModelEpisodeProduction(
           days: candidateBuiltDays,
         });
         const [currentDiagnostics, currentStatus] = await Promise.all([
-          getModelDiagnostics(transaction),
+          getModelDiagnostics(input.profileId, transaction),
           repository.status(episode.id),
         ]);
         if (!currentStatus) throw new NoActiveModelEpisodeError();
@@ -679,7 +681,7 @@ async function recalculateModelEpisodeProduction(
       ? Prisma.TransactionIsolationLevel.ReadCommitted
       : TRANSACTION_OPTIONS.isolationLevel,
   });
-  const current = production.current ?? await new ModelEpisodeRepository(client).status(production.episodeId);
+  const current = production.current ?? await new ModelEpisodeRepository(input.profileId, client).status(production.episodeId);
   const productionResult = { ...production, current };
   // Post-commit shadow rebuild: preserve the legacy result on failure, but do
   // not publish a response while dependency-relevant rebuilds are still
@@ -724,6 +726,7 @@ async function recalculateModelEpisodeProduction(
  */
 export async function recalculateModelEpisode(
   input: {
+    profileId: number;
     episodeId?: number;
     now?: Date;
     requireDependentStages?: boolean;
@@ -732,12 +735,12 @@ export async function recalculateModelEpisode(
     onCandidateProcessed?: () => void | Promise<void>;
     /** Deterministic integration seam after a committed production pass. */
     afterProductionPassBeforeCandidateRefresh?: () => void | Promise<void>;
-  } = {},
+  },
   client: PrismaClient = prisma,
 ) {
   const publishLifecycleFence = async () => {
     if (input.onLifecycleFenceChanged === undefined) return null;
-    const fence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(1);
+    const fence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(input.profileId);
     if (fence !== null) await input.onLifecycleFenceChanged(fence);
     return fence;
   };
@@ -746,8 +749,8 @@ export async function recalculateModelEpisode(
     await publishLifecycleFence();
     return production;
   }
-  const status = await getModelStatus(input.episodeId, client);
-  const profileId = 1;
+  const status = await getModelStatus(input.profileId, input.episodeId, client);
+  const profileId = input.profileId;
   const lifecycleRepository = new PhysiologyV7PersistenceRepository(client);
   const convergenceBlock = await lifecycleRepository.beginActiveEnergyConvergence({
     profileId,
@@ -838,10 +841,11 @@ export async function recalculateModelEpisode(
 }
 
 export async function getModelStatus(
+  profileId: number,
   episodeId?: number,
   client: PrismaClient = prisma,
 ) {
-  const result = await new ModelEpisodeRepository(client).status(episodeId);
+  const result = await new ModelEpisodeRepository(profileId, client).status(episodeId);
   if (!result) {
     if (episodeId === undefined) throw new NoActiveModelEpisodeError();
     throw new ModelEpisodeNotFoundError();
@@ -850,10 +854,10 @@ export async function getModelStatus(
 }
 
 export async function getModelHistory(
-  query: ModelHistoryQuery,
+  query: ModelHistoryQuery & { profileId: number },
   client: PrismaClient = prisma,
 ) {
-  const result = await new ModelEpisodeRepository(client).history(query);
+  const result = await new ModelEpisodeRepository(query.profileId, client).history(query);
   if (!result) {
     if (query.episodeId === undefined) throw new NoActiveModelEpisodeError();
     throw new ModelEpisodeNotFoundError();

@@ -71,16 +71,16 @@ describe("Stepper create idempotency on isolated PostgreSQL", () => {
       FOR EACH ROW EXECUTE FUNCTION public.test_pause_stepper_operation_insert()
     `);
     try {
-      const original = repository.create(input, operationId);
+      const original = repository.create(profileId, input, operationId);
       await new Promise((resolve) => setTimeout(resolve, 150));
-      await expect(repository.resolveCreateOperation({ operationId })).resolves.toEqual({ state: "NOT_FOUND" });
-      const retry = repository.create(input, operationId);
+      await expect(repository.resolveCreateOperation(profileId, { operationId })).resolves.toEqual({ state: "NOT_FOUND" });
+      const retry = repository.create(profileId, input, operationId);
       const [originalWorkout, canonicalRetry] = await Promise.all([original, retry]);
       workoutId = originalWorkout.id;
       expect(canonicalRetry.id).toBe(originalWorkout.id);
       expect(await prisma.stepperCreateOperation.count({ where: { profileId, operationId } })).toBe(1);
       expect(await prisma.workout.count({ where: { sourceIdentity: `manual:stepper:${operationId}` } })).toBe(1);
-      const canonical = await repository.resolveCreateOperation({ operationId });
+      const canonical = await repository.resolveCreateOperation(profileId, { operationId });
       expect(canonical).toMatchObject({ state: "COMMITTED", workout: { id: originalWorkout.id } });
       const job = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
       createdQueue = true;
@@ -95,7 +95,7 @@ describe("Stepper create idempotency on isolated PostgreSQL", () => {
         acknowledgedAt: null,
       });
 
-      await expect(repository.create({ ...input, durationMinutes: 25 }, operationId))
+      await expect(repository.create(profileId, { ...input, durationMinutes: 25 }, operationId))
         .rejects.toBeInstanceOf(StepperCreateOperationConflictError);
     } finally {
       await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_pause_stepper_operation_insert ON "StepperCreateOperation"');
@@ -105,7 +105,7 @@ describe("Stepper create idempotency on isolated PostgreSQL", () => {
 
   it("recovers a committed create by canonical operation lookup after a simulated lost response", async () => {
     if (workoutId === null) throw new Error("The preceding commit fixture is required.");
-    const resolved = await repository.resolveCreateOperation({ operationId });
+    const resolved = await repository.resolveCreateOperation(profileId, { operationId });
     expect(resolved).toMatchObject({ state: "COMMITTED", workout: { id: workoutId } });
     expect(await prisma.workout.count({ where: { sourceIdentity: `manual:stepper:${operationId}` } })).toBe(1);
   });

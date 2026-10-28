@@ -54,7 +54,7 @@ describe("sleep segment persistence", () => {
       $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
     };
 
-    const repository = new PrismaHealthSyncRepository(client as never);
+    const repository = new PrismaHealthSyncRepository(1, client as never);
     await repository.syncDay(
       {
         date: "2026-09-17",
@@ -80,6 +80,7 @@ describe("sleep segment persistence", () => {
     expect(createMany).toHaveBeenCalledWith({
       data: [
         {
+          profileId: 1,
           startAt: new Date("2026-09-16T22:41:00+02:00"),
           endAt: new Date("2026-09-16T23:10:00+02:00"),
           startOffsetMinutes: 120,
@@ -89,6 +90,7 @@ describe("sleep segment persistence", () => {
           source: "shortcut",
         },
         {
+          profileId: 1,
           startAt: new Date("2026-09-16T23:10:00+02:00"),
           endAt: new Date("2026-09-16T23:46:00+02:00"),
           startOffsetMinutes: 120,

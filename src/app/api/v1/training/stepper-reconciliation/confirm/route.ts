@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { readJson, validationResponse } from "@/modules/days/day.http";
@@ -17,12 +18,17 @@ const ConfirmSchema = z.object({
 });
 
 export async function POST(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = ConfirmSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
   try {
     await confirmStepperReconciliationV1(prisma, {
+      profileId: principal.profileId,
       manualWorkoutId: parsed.data.manualWorkoutId,
       garminWorkoutId: parsed.data.garminWorkoutId,
     });
@@ -31,15 +37,17 @@ export async function POST(request: Request): Promise<Response> {
         ?? `recon-${parsed.data.manualWorkoutId}-${parsed.data.garminWorkoutId}`;
       await activateConfirmedReconciliationVisibilityV1({
         client: prisma,
+        profileId: principal.profileId,
         generationId,
         manualWorkoutId: parsed.data.manualWorkoutId,
         garminWorkoutId: parsed.data.garminWorkoutId,
       });
     }
     await recordExperimentalStepperActiveEnergyShadowsForWorkouts({
-      workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId], profileId: 1,
+      workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId], profileId: principal.profileId,
     });
     const published = await publishActiveEnergyChangesV1({
+      profileId: principal.profileId,
       ...(parsed.data.activateVisibility === true ? {} : { activeEnergyCandidateScope: {
         strengthSessionIds: [],
         workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId],

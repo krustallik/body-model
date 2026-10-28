@@ -28,10 +28,10 @@ async function clean(): Promise<void> {
   });
   const episodeIds = episodes.map(({ id }) => id);
   await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({
-    where: { OR: [{ profileId, date: { in: fixtureDates } }, { modelEpisodeId: { in: episodeIds } }] },
+    where: { OR: [{ profileId, date: { in: fixtureDates } }, { profileId: profileId, modelEpisodeId: { in: episodeIds } }] },
   });
   await prisma.experimentalCessationDetrainingShadow.deleteMany({
-    where: { OR: [{ profileId, date: { in: fixtureDates } }, { modelEpisodeId: { in: episodeIds } }] },
+    where: { OR: [{ profileId, date: { in: fixtureDates } }, { profileId: profileId, modelEpisodeId: { in: episodeIds } }] },
   });
   await prisma.workout.deleteMany({ where: { dailyHealthData: { date: { in: fixtureDates } } } });
   await prisma.dailyModelState.deleteMany({ where: { episodeId: { in: episodeIds } } });
@@ -118,7 +118,7 @@ async function createCompleteModelDay(episodeId: number, date: string): Promise<
 
 async function createHealthDay(date: string, timezone: string, workoutFeedObserved: boolean | null = true) {
   const health = await prisma.dailyHealthData.create({
-    data: {
+    data: { profileId: profileId,
       date,
       weightKg: 80,
       proteinG: 150,
@@ -127,7 +127,7 @@ async function createHealthDay(date: string, timezone: string, workoutFeedObserv
     },
   });
   await prisma.healthSyncSnapshot.create({
-    data: {
+    data: { profileId: profileId,
       dailyHealthDataId: health.id,
       date,
       timezone,
@@ -247,7 +247,7 @@ describe("Relative Muscle episode core", () => {
     await createCompleteModelDay(episode.id, timezoneDate);
     await createCompleteModelDay(episode.id, timezoneNextDate);
     await prisma.workout.create({
-      data: {
+      data: { profileId: profileId,
         dailyHealthDataId: healthDay.id,
         sourceIdentity: "relative-muscle-timezone-boundary-workout",
         type: "Traditional Strength Training",

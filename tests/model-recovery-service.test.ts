@@ -95,7 +95,7 @@ describe("historical recovery application service", () => {
         sourceDay("2026-08-09"), sourceDay("2026-08-10"),
       ]))
       .mockResolvedValueOnce(sources(stableSourceDays({ count: 42, endDate: "2026-08-03" })));
-    const result = await recoverModelEpisode({
+    const result = await recoverModelEpisode({ profileId: 1,
       episodeId: 1, seed: 12, config: { particleCount: 32 }, now,
     }, client);
     expect(engine.recoverHistoricalTrajectories).toHaveBeenCalledWith(expect.objectContaining({
@@ -119,7 +119,7 @@ describe("historical recovery application service", () => {
     const episode = persistedEpisodeFixture("2026-08-01");
     episodes.getActive.mockResolvedValue(episode);
     episodes.loadSources.mockResolvedValue(sources(stableSourceDays({ count: 10, endDate: "2026-08-10" })));
-    await expect(recoverModelEpisode({ seed: 1, now }, client)).resolves.toEqual({
+    await expect(recoverModelEpisode({ profileId: 1, seed: 1, now }, client)).resolves.toEqual({
       status: "not-required", episodeId: 1, recoveryRequired: false,
     });
     expect(recovery.markAllStale).toHaveBeenCalledWith(1);
@@ -129,7 +129,7 @@ describe("historical recovery application service", () => {
   it("returns not-required before a future episode has a completed local day", async () => {
     const episode = persistedEpisodeFixture("2026-08-12");
     episodes.getActive.mockResolvedValue(episode);
-    await expect(recoverModelEpisode({ seed: 1, now }, client)).resolves.toEqual({
+    await expect(recoverModelEpisode({ profileId: 1, seed: 1, now }, client)).resolves.toEqual({
       status: "not-required", episodeId: 1, recoveryRequired: false,
     });
     expect(recovery.markAllStale).toHaveBeenCalledWith(1);
@@ -142,7 +142,7 @@ describe("historical recovery application service", () => {
       .mockResolvedValueOnce(episodeGapSources())
       .mockResolvedValueOnce(sources(stableSourceDays({ count: 42, endDate: "2026-08-03" })));
     engine.recoverHistoricalTrajectories.mockImplementation(() => { throw new Error("all particles invalid"); });
-    await expect(recoverModelEpisode({ episodeId: 1, seed: 1, now }, client))
+    await expect(recoverModelEpisode({ profileId: 1, episodeId: 1, seed: 1, now }, client))
       .rejects.toEqual(expect.objectContaining({
         name: "ModelRecoveryEvidenceError", message: "all particles invalid",
       }));
@@ -154,7 +154,7 @@ describe("historical recovery application service", () => {
   it("returns an empty status when the episode has no recovery run", async () => {
     episodes.getActive.mockResolvedValue(persistedEpisodeFixture("2026-08-01"));
     recovery.latestStatus.mockResolvedValue(null);
-    await expect(getModelRecoveryStatus(undefined, client, now)).resolves.toMatchObject({
+    await expect(getModelRecoveryStatus(1, undefined, client, now)).resolves.toMatchObject({
       episodeId: 1, recovery: null,
     });
     expect(episodes.loadSources).not.toHaveBeenCalled();
@@ -187,7 +187,7 @@ describe("historical recovery application service", () => {
       .mockResolvedValueOnce(donorSources);
     recovery.latestStatus.mockResolvedValue(current);
 
-    const result = await getModelRecoveryStatus(undefined, client, now);
+    const result = await getModelRecoveryStatus(1, undefined, client, now);
     expect(result.recovery).toBe(current);
     expect(recovery.markAllStale).not.toHaveBeenCalled();
   });
@@ -205,22 +205,22 @@ describe("historical recovery application service", () => {
       .mockResolvedValueOnce(sources(stableSourceDays({ count: 42, endDate: "2026-08-03" })));
     recovery.latestStatus.mockResolvedValueOnce(current).mockResolvedValueOnce(stale);
 
-    const result = await getModelRecoveryStatus(undefined, client, now);
+    const result = await getModelRecoveryStatus(1, undefined, client, now);
     expect(recovery.markAllStale).toHaveBeenCalledWith(1);
     expect(result.recovery).toEqual(stale);
   });
 
   it("preserves active-versus-explicit episode not-found semantics", async () => {
     episodes.getActive.mockResolvedValue(null);
-    await expect(recoverModelEpisode({ seed: 1, now }, client))
+    await expect(recoverModelEpisode({ profileId: 1, seed: 1, now }, client))
       .rejects.toBeInstanceOf(NoActiveModelEpisodeError);
     episodes.getById.mockResolvedValue(null);
-    await expect(recoverModelEpisode({ episodeId: 99, seed: 1, now }, client))
+    await expect(recoverModelEpisode({ profileId: 1, episodeId: 99, seed: 1, now }, client))
       .rejects.toBeInstanceOf(ModelEpisodeNotFoundError);
 
-    await expect(getModelRecoveryStatus(undefined, client))
+    await expect(getModelRecoveryStatus(1, undefined, client))
       .rejects.toBeInstanceOf(NoActiveModelEpisodeError);
-    await expect(getModelRecoveryStatus(99, client))
+    await expect(getModelRecoveryStatus(1, 99, client))
       .rejects.toBeInstanceOf(ModelEpisodeNotFoundError);
   });
 });

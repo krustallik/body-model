@@ -4,11 +4,11 @@ import type { RollbackJournalEntryV1, VisibilitySnapshotV1, VisibilityStoreV1 } 
 type StoreClient = PrismaClient | Prisma.TransactionClient;
 
 /** Persists exact visibility changes. It does not activate a production episode. */
-export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 {
+export function prismaVisibilityStoreV1(client: StoreClient, profileId: number): VisibilityStoreV1 {
   return {
     async read(recordId) {
-      const row = await client.workout.findUnique({
-        where: { id: recordId },
+      const row = await client.workout.findFirst({
+        where: { id: recordId, profileId },
         select: {
           id: true,
           hiddenFromHistory: true,
@@ -36,8 +36,8 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
       return snapshot;
     },
     async write(next) {
-      await client.workout.update({
-        where: { id: next.recordId },
+      const changed = await client.workout.updateMany({
+        where: { id: next.recordId, profileId },
         data: {
           hiddenFromHistory: next.hiddenFromHistory,
           syncProtected: next.syncProtected,
@@ -46,11 +46,13 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
           supersededAt: next.supersededByWorkoutId === null ? null : new Date(),
         },
       });
+      if (changed.count !== 1) throw new Error("rollback workout does not belong to profile");
     },
     async appendJournal(generationId, journal) {
       if (journal.length === 0) return;
       await client.activationRollbackEntry.createMany({
         data: journal.map((row) => ({
+          profileId,
           generationId,
           recordKind: row.recordKind,
           recordId: row.recordId,
@@ -63,7 +65,7 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
     },
     async readJournal(generationId) {
       const rows = await client.activationRollbackEntry.findMany({
-        where: { generationId },
+        where: { profileId, generationId },
         orderBy: { id: "asc" },
       });
       return rows.map((row): RollbackJournalEntryV1 => ({

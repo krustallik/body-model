@@ -86,7 +86,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
     expect(response.status).toBe(200);
 
     const stored = await prisma.dailyHealthData.findUniqueOrThrow({
-      where: { date },
+      where: { profileId_date: { profileId: 1, date } },
       include: { workouts: { orderBy: { startAt: "asc" } } },
     });
     expect(stored.workouts).toHaveLength(3);
@@ -100,7 +100,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
   });
 
   it("loads workouts for fresh v6 sources and ignores them on legacy v5 path", async () => {
-    const repository = new ModelEpisodeRepository(prisma);
+    const repository = new ModelEpisodeRepository(1, prisma);
     const sources = await repository.loadSources(date, date);
     expect(sources.workouts).toHaveLength(3);
     expect(sources.workouts?.every((workout) => workout.activeEnergyKcal !== null)).toBe(true);
@@ -148,12 +148,12 @@ describe("v6 workout activity PostgreSQL integration", () => {
 
   it("applies stair snapshot overlap through repository/input-builder and skips weak snapshots", async () => {
     await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
-    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date } });
+    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date } } });
 
     // Strong boundaries within 10 minutes of first stair (08:00–08:20 local / 06:00–06:20Z).
     await prisma.healthSyncSnapshot.createMany({
       data: [
-        {
+        { profileId: 1,
           dailyHealthDataId: day.id,
           date,
           timezone,
@@ -163,7 +163,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
           walkingDistanceKm: 2.0,
           rawPayload: {},
         },
-        {
+        { profileId: 1,
           dailyHealthDataId: day.id,
           date,
           timezone,
@@ -176,7 +176,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
       ],
     });
 
-    const repository = new ModelEpisodeRepository(prisma);
+    const repository = new ModelEpisodeRepository(1, prisma);
     const sources = await repository.loadSources(date, date);
     const withOverlap = buildSimulationDays({
       from: date,
@@ -193,7 +193,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
     await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
     // Weak/missing after boundary: only a too-early before snapshot.
     await prisma.healthSyncSnapshot.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: day.id,
         date,
         timezone,
@@ -226,7 +226,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
   it("keeps legacy Workout rows readable after activeEnergyKcal migration round-trip", async () => {
     await clean();
     const day = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date,
         walkingDistanceKm: 3,
         averageWalkingSpeedKmh: 5,
@@ -261,7 +261,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
       activeEnergyKcal: null,
     });
 
-    const sources = await new ModelEpisodeRepository(prisma).loadSources(date, date);
+    const sources = await new ModelEpisodeRepository(1, prisma).loadSources(date, date);
     expect(sources.workouts).toEqual([expect.objectContaining({
       type: "legacy-spin",
       energyKcal: 220,
@@ -273,7 +273,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
     await cleanStepperV7();
     try {
       const day = await prisma.dailyHealthData.create({
-        data: {
+        data: { profileId: 1,
           date: stepperV7Date,
           weightKg: 80,
           caloriesKcal: 2_400,
@@ -289,7 +289,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
       const startAt = new Date(`${stepperV7Date}T06:00:00.000Z`);
       const endAt = new Date(`${stepperV7Date}T06:20:00.000Z`);
       await prisma.workout.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: day.id,
           type: STAIR_CLIMBING_TYPE,
           startAt,
@@ -306,6 +306,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
       });
       await prisma.healthActivityInterval.createMany({
         data: [300, 350, 400, 450].map((value, index) => ({
+          profileId: 1,
           date: stepperV7Date,
           metric: "steps",
           startAt: new Date(startAt.getTime() + index * 5 * 60_000),
@@ -316,6 +317,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
       });
       await prisma.heartRateSample.createMany({
         data: [110, 120, 130, 140, 150].map((bpm, index) => ({
+          profileId: 1,
           dailyHealthDataId: day.id,
           date: stepperV7Date,
           timestamp: new Date(startAt.getTime() + index * 5 * 60_000),
@@ -324,7 +326,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
         })),
       });
 
-      const sources = await new ModelEpisodeRepository(prisma).loadSources(stepperV7Date, stepperV7Date);
+      const sources = await new ModelEpisodeRepository(1, prisma).loadSources(stepperV7Date, stepperV7Date);
       const [built] = buildSimulationDays({
         from: stepperV7Date,
         to: stepperV7Date,
@@ -364,7 +366,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
     await cleanCrossMidnightStepper();
     try {
       const firstDay = await prisma.dailyHealthData.create({
-        data: {
+        data: { profileId: 1,
           date: crossMidnightStartDate,
           weightKg: 80,
           caloriesKcal: 2_400,
@@ -377,7 +379,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
         },
       });
       await prisma.dailyHealthData.create({
-        data: {
+        data: { profileId: 1,
           date: crossMidnightEndDate,
           weightKg: 80,
           caloriesKcal: 2_400,
@@ -394,7 +396,7 @@ describe("v6 workout activity PostgreSQL integration", () => {
       const workoutEnd = new Date("2042-06-18T00:10:00+02:00");
       const afterEnd = new Date("2042-06-18T00:20:00+02:00");
       await prisma.workout.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: firstDay.id,
           type: STAIR_CLIMBING_TYPE,
           startAt,
@@ -407,16 +409,16 @@ describe("v6 workout activity PostgreSQL integration", () => {
       });
       await prisma.healthActivityInterval.createMany({
         data: [
-          { date: crossMidnightStartDate, metric: "walking-distance-km", startAt: new Date("2042-06-17T23:40:00+02:00"), endAt: startAt, value: 0.1, sourceFingerprint: "cross-midnight-walk-before" },
-          { date: crossMidnightStartDate, metric: "walking-distance-km", startAt, endAt: midnight, value: 0.3, sourceFingerprint: "cross-midnight-walk-first-half" },
-          { date: crossMidnightStartDate, metric: "steps", startAt, endAt: midnight, value: 100, sourceFingerprint: "cross-midnight-steps-first-half" },
-          { date: crossMidnightEndDate, metric: "walking-distance-km", startAt: midnight, endAt: workoutEnd, value: 0.2, sourceFingerprint: "cross-midnight-walk-second-half" },
-          { date: crossMidnightEndDate, metric: "walking-distance-km", startAt: workoutEnd, endAt: afterEnd, value: 0.3, sourceFingerprint: "cross-midnight-walk-after" },
-          { date: crossMidnightEndDate, metric: "steps", startAt: midnight, endAt: workoutEnd, value: 100, sourceFingerprint: "cross-midnight-steps-second-half" },
+          { profileId: 1, date: crossMidnightStartDate, metric: "walking-distance-km", startAt: new Date("2042-06-17T23:40:00+02:00"), endAt: startAt, value: 0.1, sourceFingerprint: "cross-midnight-walk-before" },
+          { profileId: 1, date: crossMidnightStartDate, metric: "walking-distance-km", startAt, endAt: midnight, value: 0.3, sourceFingerprint: "cross-midnight-walk-first-half" },
+          { profileId: 1, date: crossMidnightStartDate, metric: "steps", startAt, endAt: midnight, value: 100, sourceFingerprint: "cross-midnight-steps-first-half" },
+          { profileId: 1, date: crossMidnightEndDate, metric: "walking-distance-km", startAt: midnight, endAt: workoutEnd, value: 0.2, sourceFingerprint: "cross-midnight-walk-second-half" },
+          { profileId: 1, date: crossMidnightEndDate, metric: "walking-distance-km", startAt: workoutEnd, endAt: afterEnd, value: 0.3, sourceFingerprint: "cross-midnight-walk-after" },
+          { profileId: 1, date: crossMidnightEndDate, metric: "steps", startAt: midnight, endAt: workoutEnd, value: 100, sourceFingerprint: "cross-midnight-steps-second-half" },
         ],
       });
 
-      const sources = await new ModelEpisodeRepository(prisma).loadSources(crossMidnightStartDate, crossMidnightEndDate);
+      const sources = await new ModelEpisodeRepository(1, prisma).loadSources(crossMidnightStartDate, crossMidnightEndDate);
       const builtDays = buildSimulationDays({
         from: crossMidnightStartDate,
         to: crossMidnightEndDate,

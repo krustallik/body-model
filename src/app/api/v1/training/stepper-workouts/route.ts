@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
   CreateStepperWorkoutSchema,
@@ -9,14 +10,17 @@ import { z } from "zod";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+
   const parsed = StepperWorkoutListQuerySchema.safeParse(
     Object.fromEntries(new URL(request.url).searchParams),
   );
   if (!parsed.success) return validationResponse(parsed.error);
   try {
     const [workouts, totalCount] = await Promise.all([
-      stepperWorkoutRepository.list(parsed.data),
-      stepperWorkoutRepository.count(),
+      stepperWorkoutRepository.list(principal.profileId, parsed.data),
+      stepperWorkoutRepository.count(principal.profileId),
     ]);
     return Response.json({ workouts, totalCount });
   } catch {
@@ -25,6 +29,10 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = CreateStepperWorkoutSchema.safeParse(body);
@@ -34,7 +42,7 @@ export async function POST(request: Request): Promise<Response> {
   const operationId = z.string().uuid().safeParse(rawOperationId);
   if (!operationId.success) return Response.json({ error: "invalid_idempotency_key" }, { status: 400 });
   try {
-    const workout = await stepperWorkoutRepository.create(parsed.data, operationId.data);
+    const workout = await stepperWorkoutRepository.create(principal.profileId, parsed.data, operationId.data);
     return Response.json({ operationId: operationId.data, state: "COMMITTED", workout }, { status: 201 });
   } catch (error) {
     if (error instanceof Error && error.name === "StepperCreateOperationConflictError") {

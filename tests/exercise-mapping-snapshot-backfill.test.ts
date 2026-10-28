@@ -78,7 +78,7 @@ describe("null muscleMappingSnapshot backfill", () => {
     ]);
     db.strengthSessionExercise.count.mockResolvedValue(9);
 
-    const report = await reportNullMuscleMappingSnapshotBackfill(db as never);
+    const report = await reportNullMuscleMappingSnapshotBackfill(db as never, 1);
     expect(report.mappingVersion).toBe(EXERCISE_MUSCLE_MAPPING_V7_VERSION);
     expect(report.totalNullSnapshotRows).toBe(4);
     expect(report.alreadyMappedRows).toBe(9);
@@ -110,13 +110,13 @@ describe("null muscleMappingSnapshot backfill", () => {
     db.strengthSessionExercise.count.mockResolvedValue(3);
     db.strengthSessionExercise.updateMany.mockResolvedValue({ count: 1 });
 
-    const dryRun = await applyNullMuscleMappingSnapshotBackfill(db as never, { dryRun: true });
+    const dryRun = await applyNullMuscleMappingSnapshotBackfill(db as never, { profileId: 1, dryRun: true });
     expect(dryRun.dryRun).toBe(true);
     expect(dryRun.updatedRows).toBe(0);
     expect(db.strengthSessionExercise.updateMany).not.toHaveBeenCalled();
 
     db.order.length = 0;
-    const applied = await applyNullMuscleMappingSnapshotBackfill(db as never, { dryRun: false });
+    const applied = await applyNullMuscleMappingSnapshotBackfill(db as never, { profileId: 1, dryRun: false });
     expect(applied.dryRun).toBe(false);
     expect(applied.updatedRows).toBe(1);
     expect(db.$transaction).toHaveBeenCalledTimes(1);

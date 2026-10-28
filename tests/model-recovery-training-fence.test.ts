@@ -62,19 +62,19 @@ describe("model recovery status Training currentness fence", () => {
 
   it("refuses a recovery status read that starts during a pending Training generation", async () => {
     state.pending.mockReturnValue(true);
-    await expect(getModelRecoveryStatus()).rejects.toBeInstanceOf(TrainingRefreshVisibilityPendingError);
+    await expect(getModelRecoveryStatus(1)).rejects.toBeInstanceOf(TrainingRefreshVisibilityPendingError);
     expect(state.latestStatus).not.toHaveBeenCalled();
   });
 
   it("refuses a composed recovery read when the Training generation changes", async () => {
     state.fenceChanged.mockResolvedValue(true);
-    await expect(getModelRecoveryStatus()).rejects.toBeInstanceOf(TrainingRefreshVisibilityPendingError);
+    await expect(getModelRecoveryStatus(1)).rejects.toBeInstanceOf(TrainingRefreshVisibilityPendingError);
     expect(state.latestStatus).toHaveBeenCalledOnce();
   });
 
   it("refuses a recovery read while Health or another model source publication is blocked", async () => {
     state.modelBlocks.mockResolvedValue(true);
-    await expect(getModelRecoveryStatus()).rejects.toBeInstanceOf(ModelRefreshVisibilityPendingError);
+    await expect(getModelRecoveryStatus(1)).rejects.toBeInstanceOf(ModelRefreshVisibilityPendingError);
     expect(state.latestStatus).not.toHaveBeenCalled();
   });
 
@@ -82,16 +82,16 @@ describe("model recovery status Training currentness fence", () => {
     state.readModelFence
       .mockResolvedValueOnce({ invalidationGeneration: 3, updatedAt: "2026-10-16T12:00:00.000Z" })
       .mockResolvedValueOnce({ invalidationGeneration: 3, updatedAt: "2026-10-16T12:00:00.001Z" });
-    await expect(getModelRecoveryStatus()).rejects.toBeInstanceOf(ModelRefreshVisibilityPendingError);
+    await expect(getModelRecoveryStatus(1)).rejects.toBeInstanceOf(ModelRefreshVisibilityPendingError);
   });
 
   it("refuses a recovery read when a Health publication block appears during composition", async () => {
     state.modelBlocks.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-    await expect(getModelRecoveryStatus()).rejects.toBeInstanceOf(ModelRefreshVisibilityPendingError);
+    await expect(getModelRecoveryStatus(1)).rejects.toBeInstanceOf(ModelRefreshVisibilityPendingError);
   });
 
   it("returns status when the Training fence remains stable", async () => {
-    await expect(getModelRecoveryStatus()).resolves.toEqual({
+    await expect(getModelRecoveryStatus(1)).resolves.toEqual({
       episodeId: 7,
       deterministicModelVersion: "model-v1",
       recovery: null,

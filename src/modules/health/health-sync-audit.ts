@@ -20,6 +20,7 @@ export type HealthSyncAuditOutcome =
   | "invalid-json"
   | "normalization-error"
   | "validation-error"
+  | "payload-too-large"
   | "internal-error"
   | "body-read-error";
 
@@ -29,6 +30,7 @@ export type HealthSyncAuditOutcome =
  * valid health sync or change its HTTP outcome.
  */
 export async function recordHealthSyncAudit(input: {
+  profileId?: number | null;
   outcome: HealthSyncAuditOutcome;
   httpStatus: number;
   rawBody: string | null;
@@ -40,6 +42,7 @@ export async function recordHealthSyncAudit(input: {
   try {
     await prisma.healthSyncAudit.create({
       data: {
+        profileId: input.profileId ?? null,
         outcome: input.outcome,
         httpStatus: input.httpStatus,
         rawBody: input.rawBody,

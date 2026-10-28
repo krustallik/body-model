@@ -9,7 +9,7 @@ async function main() {
   const mode = process.argv[2] ?? "inspect";
   if (mode === "rollback") {
     await rollbackVisibilityGenerationV1({
-      store: prismaVisibilityStoreV1(prisma),
+      store: prismaVisibilityStoreV1(prisma, 1),
       generationId,
     });
   }

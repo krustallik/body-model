@@ -16,6 +16,7 @@ on:
           - active-energy-unified-v2
           - unified-v4-republication-v1
           - training-mutation-ledger-refresh-queue-v1
+          - auth-multiuser-v1
       confirm_production_preflight:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
         required: true
@@ -108,11 +109,16 @@ jobs:
           NODE
           [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact maintenance/preflight confirmation is required."; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
           if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
             && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
             echo "::error::The nine-migration Training manifest does not accept historical resume evidence."; exit 1;
+          fi
+          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" \
+            && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
+              || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
+            echo "::error::The Auth migration manifest does not accept historical resume evidence."; exit 1;
           fi
           REFRESH_CAPTURE=0
           if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then
@@ -753,7 +759,7 @@ jobs:
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
-          node scripts/production-db-preflight.mjs | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
+          node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
             > "$RUNNER_TEMP/preflight-report.json"
           node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" \
             > "$RUNNER_TEMP/preflight-result.json"
@@ -880,7 +886,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           node scripts/restore-encrypted-postgres-backup.mjs
-          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-base-report.json"
+          node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-base-report.json"
           RESTORED_DATA_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           [[ "$RESTORED_DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated restore logical data fingerprint is malformed."; exit 1; }
           node --input-type=module - "$RUNNER_TEMP/restored-base-report.json" "$RESTORED_DATA_FINGERPRINT" <<'NODE'
@@ -900,7 +906,7 @@ jobs:
             > "$RUNNER_TEMP/execution-integrity.json"
           PRISMA_DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
           DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
-          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
+          node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
           node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"
           node scripts/production-migration-restore-check.mjs --combine \

@@ -12,6 +12,7 @@ import { reconcileHealthUnifiedPublicationBlocksV1, syncHealthData } from "@/mod
 import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "@/modules/health/health.types";
 
 class MemoryRepository implements HealthSyncRepository {
+  readonly profileId = 1;
   readonly days = new Map<string, HealthDayInput>();
   readonly workouts = new Map<string, NonNullable<HealthDayInput["workouts"]>>();
   readonly snapshots: { day: HealthDayInput; rawDay: unknown; metadata: HealthSyncMetadata }[] = [];
@@ -62,7 +63,7 @@ describe("health synchronization service", () => {
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
     };
     const dates = ["2026-08-21", "2026-08-22"];
-    const firstAttemptReady = await reconcileHealthUnifiedPublicationBlocksV1({
+    const firstAttemptReady = await reconcileHealthUnifiedPublicationBlocksV1({ profileId: 1,
       dates,
       tokens: new Map([
         [dates[0]!, { revision: 4, fromDate: dates[0]! }],
@@ -82,7 +83,7 @@ describe("health synchronization service", () => {
 
     lifecycle.blockUnifiedPublication.mockClear();
     lifecycle.clearUnifiedPublicationBlock.mockClear();
-    const retryReady = await reconcileHealthUnifiedPublicationBlocksV1({
+    const retryReady = await reconcileHealthUnifiedPublicationBlocksV1({ profileId: 1,
       dates: [dates[1]!],
       tokens: new Map([[dates[1]!, { revision: 8, fromDate: dates[1]! }]]),
       failedDates: new Set(),
@@ -125,7 +126,7 @@ describe("health synchronization service", () => {
     expect(result).toMatchObject({ received: 3, created: 3, updated: 0 });
     expect(repository.days.size).toBe(3);
     expect(afterHealthSyncMatch).toHaveBeenCalledTimes(3);
-    expect(afterHealthSyncMatch).toHaveBeenNthCalledWith(2, "2026-08-22", { timezone: "Europe/Bratislava" });
+    expect(afterHealthSyncMatch).toHaveBeenNthCalledWith(2, "2026-08-22", { profileId: 1, timezone: "Europe/Bratislava" });
   });
 
   it("creates and updates body composition and walking metrics without duplicating the day", async () => {
@@ -199,7 +200,7 @@ describe("health synchronization service", () => {
     expect(result).toMatchObject({ status: "ok", received: 1 });
     expect(repository.days.size).toBe(0);
     expect(repository.snapshots).toHaveLength(0);
-    expect(afterHealthSyncMatch).toHaveBeenCalledWith("2026-08-21", { timezone: "Europe/Bratislava" });
+    expect(afterHealthSyncMatch).toHaveBeenCalledWith("2026-08-21", { profileId: 1, timezone: "Europe/Bratislava" });
   });
 
   it("passes explicit sync metadata and preserves the raw snapshot", async () => {
@@ -282,7 +283,7 @@ describe("health synchronization service", () => {
     const repository = new MemoryRepository();
     afterHealthSyncMatch.mockClear();
     await syncHealthData({ days: [{ date: "2026-08-21" }], timezone: "Europe/Kyiv" }, repository);
-    expect(afterHealthSyncMatch).toHaveBeenCalledWith("2026-08-21", { timezone: "Europe/Kyiv" });
+    expect(afterHealthSyncMatch).toHaveBeenCalledWith("2026-08-21", { profileId: 1, timezone: "Europe/Kyiv" });
 
     afterHealthSyncMatch.mockRejectedValueOnce(new Error("matcher boom"));
     await expect(syncHealthData({ days: [{ date: "2026-08-22" }] }, repository)).resolves.toMatchObject({

@@ -6,6 +6,7 @@ import {
   WorkIntervalIdParamsSchema,
 } from "@/modules/work-intervals/work-interval.schema";
 import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 
 async function parseId(params: Promise<{ id: string }>): Promise<number | Response> {
   const parsed = WorkIntervalIdParamsSchema.safeParse(await params);
@@ -16,6 +17,9 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
   if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const id = await parseId(params);
   if (id instanceof Response) return id;
@@ -24,7 +28,7 @@ export async function PATCH(
   const parsed = UpdateWorkIntervalSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
   try {
-    const interval = await workIntervalRepository.update(id, parsed.data);
+    const interval = await workIntervalRepository.update(principal.profileId, id, parsed.data);
     return interval
       ? Response.json({ interval })
       : Response.json({ error: "not_found" }, { status: 404 });
@@ -40,11 +44,14 @@ export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(_request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(_request)) return originRejected();
   if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const id = await parseId(params);
   if (id instanceof Response) return id;
   try {
-    return await workIntervalRepository.delete(id)
+    return await workIntervalRepository.delete(principal.profileId, id)
       ? new Response(null, { status: 204 })
       : Response.json({ error: "not_found" }, { status: 404 });
   } catch {

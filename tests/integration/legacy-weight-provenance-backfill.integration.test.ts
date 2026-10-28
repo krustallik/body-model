@@ -35,6 +35,7 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
     }, profileId);
     let sessionId: number | null = null;
     const sampleIds: number[] = [];
+    let otherProfileId: number | null = null;
     try {
       const session = await service.startSession(program.id, profileId, "Europe/Bratislava");
       sessionId = session.id;
@@ -61,7 +62,7 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
       })).currentSnapshotRevision;
 
       const legacy = await client.healthMetricSample.create({
-        data: {
+        data: { profileId: profileId,
           date: localDate,
           metric: "weight-kg",
           source: null,
@@ -72,7 +73,7 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
       });
       sampleIds.push(legacy.id);
       const alreadyMarked = await client.healthMetricSample.create({
-        data: {
+        data: { profileId: profileId,
           date: "2010-02-01",
           metric: "weight-kg",
           source: "apple-health-shortcut",
@@ -82,7 +83,7 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
       });
       sampleIds.push(alreadyMarked.id);
       const nonWeight = await client.healthMetricSample.create({
-        data: {
+        data: { profileId: profileId,
           date: localDate,
           metric: "step-count",
           source: null,
@@ -92,6 +93,19 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
       });
       sampleIds.push(nonWeight.id);
       const legacyCreatedAt = legacy.createdAt;
+      const otherProfile = await client.profile.create({ data: { locale: "en" } });
+      otherProfileId = otherProfile.id;
+      const otherProfileSample = await client.healthMetricSample.create({
+        data: {
+          profileId: otherProfile.id,
+          date: localDate,
+          metric: "weight-kg",
+          source: null,
+          timestamp: new Date("2010-01-15T10:30:00.000Z"),
+          value: 91.2,
+        },
+      });
+      sampleIds.push(otherProfileSample.id);
 
       const reviewed = await summarizeLegacyWeightProvenanceBackfill(client);
       expect(reviewed).toEqual({ count: 1, minDate: localDate, maxDate: localDate });
@@ -114,6 +128,7 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
       });
       expect(await client.healthMetricSample.findUniqueOrThrow({ where: { id: alreadyMarked.id } })).toEqual(alreadyMarked);
       expect(await client.healthMetricSample.findUniqueOrThrow({ where: { id: nonWeight.id } })).toEqual(nonWeight);
+      expect(await client.healthMetricSample.findUniqueOrThrow({ where: { id: otherProfileSample.id } })).toEqual(otherProfileSample);
       expect((await client.strengthDiarySession.findUniqueOrThrow({
         where: { id: session.id }, select: { currentSnapshotRevision: true },
       })).currentSnapshotRevision).toBe(originalPointer);
@@ -146,6 +161,7 @@ describe("legacy Apple weight provenance PostgreSQL correction", () => {
       if (sampleIds.length > 0) await client.healthMetricSample.deleteMany({ where: { id: { in: sampleIds } } });
       if (sessionId !== null) await client.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       await client.trainingProgram.deleteMany({ where: { id: program.id } });
+      if (otherProfileId !== null) await client.profile.delete({ where: { id: otherProfileId } });
     }
   }, 60_000);
 });

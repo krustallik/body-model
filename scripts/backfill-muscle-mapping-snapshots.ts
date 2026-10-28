@@ -16,9 +16,9 @@ async function main(): Promise<void> {
   const prisma = new PrismaClient();
   try {
     const report = apply
-      ? await applyNullMuscleMappingSnapshotBackfill(prisma, { dryRun: false })
+      ? await applyNullMuscleMappingSnapshotBackfill(prisma, { profileId: 1, dryRun: false })
       : {
-          ...(await reportNullMuscleMappingSnapshotBackfill(prisma)),
+          ...(await reportNullMuscleMappingSnapshotBackfill(prisma, 1)),
           updatedRows: 0,
           dryRun: true,
         };

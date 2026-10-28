@@ -452,31 +452,70 @@ jobs:
           BODYCAST_DYNAMIC_MIGRATION_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: node scripts/ci/programless-session-migration-postgres-smoke.mjs
 
-      - name: Rehearse the exact Training manifest from the 65-migration baseline
+      - name: Rehearse the exact Auth manifest from the pinned 74-migration baseline
         env:
-          BASELINE_SHA: 35c556772759ea03c2728de921c1825f454d59c2
+          BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd
           DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: |
           set -Eeuo pipefail
-          baseline_root="$RUNNER_TEMP/bodycast-training-nine-baseline"
+          baseline_root="$RUNNER_TEMP/bodycast-auth-74-baseline"
           git fetch --no-tags https://github.com/krustallik/body-model.git "$BASELINE_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$BASELINE_SHA"
           mkdir -p "$baseline_root"
           git archive "$BASELINE_SHA" prisma/schema.prisma prisma/migrations | tar -x -C "$baseline_root"
           baseline_count="$(find "$baseline_root/prisma/migrations" -mindepth 2 -maxdepth 2 -name migration.sql -type f | wc -l | tr -d ' ')"
-          test "$baseline_count" = 65
+          test "$baseline_count" = 74
+          auth_database_url='postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_auth_migration_test'
+          psql "$DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 --command='CREATE DATABASE bodycast_auth_migration_test'
+          export DATABASE_URL="$auth_database_url"
+          export BODYCAST_TEST_DATABASE_URL="$auth_database_url"
           npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"
           applied_before="$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
             --command='SELECT count(*) FROM public."_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL')"
-          test "$applied_before" = 65
+          test "$applied_before" = 74
+          psql "$DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO public."Profile" ("id", "sex", "dateOfBirth", "heightCm", "createdAt", "updatedAt")
+          VALUES (1, 'female', DATE '1990-01-01', 170.00, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+          SQL
           node scripts/production-migration-preflight.mjs --verify-release-tree \
-            --manifest training-mutation-ledger-refresh-queue-v1 --repository "$GITHUB_WORKSPACE"
+            --manifest auth-multiuser-v1 --repository "$GITHUB_WORKSPACE"
+          topology_json="$(node --input-type=module <<'NODE'
+          process.stdout.write(JSON.stringify({
+            schemaVersion: 1,
+            contract: "bodycast-compose-internal-db-single-writer-v1",
+            ready: true,
+            blockers: [],
+            observedAt: new Date().toISOString(),
+            app: { name: "bodycast-app-prod", state: "absent", restartPolicy: null },
+            database: { name: "bodycast-db-prod", state: "running", health: "healthy", publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+            backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-db-prod"] },
+            caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+            routeFile: { verified: true, maintenanceResponse: true, containsReverseProxy: false, sha256: "a".repeat(64) },
+          }));
+          NODE
+          )"
+          node scripts/production-db-preflight.mjs --manifest auth-multiuser-v1 \
+            | PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+              --set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json" > "$RUNNER_TEMP/bodycast-auth-preflight-report.json"
+          fingerprint="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          node --input-type=module - "$RUNNER_TEMP/bodycast-auth-preflight-report.json" "$fingerprint" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [reportPath, fingerprint] = process.argv.slice(2);
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Isolated baseline data fingerprint is malformed.');
+          report.logicalDataFingerprint = fingerprint;
+          writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
+          NODE
+          node scripts/production-migration-preflight.mjs --preflight \
+            --manifest auth-multiuser-v1 --release-sha "$GITHUB_SHA" \
+            --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-auth-preflight-report.json"
           npx prisma migrate deploy --schema prisma/schema.prisma
-          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+          node scripts/production-db-preflight.mjs --manifest auth-multiuser-v1 \
+            | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
             --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-training-postflight.json"
           set +e
           node scripts/production-migration-preflight.mjs --postflight \
-            --manifest training-mutation-ledger-refresh-queue-v1 \
+            --manifest auth-multiuser-v1 \
             --report "$RUNNER_TEMP/bodycast-training-postflight.json" \
             --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA"
           postflight_status=$?
@@ -484,18 +523,18 @@ jobs:
           if [ "$postflight_status" -ne 0 ]; then
             node --input-type=module - "$RUNNER_TEMP/bodycast-training-postflight.json" <<'NODE'
           import { readFileSync } from 'node:fs';
-          import { TRAINING_MUTATION_LEDGER_MANIFEST } from './scripts/production-migration-manifests.mjs';
+          import { AUTH_MULTIUSER_MANIFEST } from './scripts/production-migration-manifests.mjs';
           const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
           const names = [
-            'UnifiedPublicationBlock_source_check',
-            'StepperCreateOperation_payloadVersion_check',
-            'StepperCreateOperation_state_check',
-            'StepperCreateOperation_result_check',
+            'User_email_key',
+            'Profile_userId_fkey',
+            'Workout_profileId_fkey',
+            'HealthSyncSnapshot_profileId_dailyHealthDataId_fkey',
           ];
           for (const name of names) {
             const object = report.objects?.find((candidate) => candidate.name === name);
-            const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name]
-              ?? TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureIncludes[name]
+            const expected = AUTH_MULTIUSER_MANIFEST.postflightSignatureEquals[name]
+              ?? AUTH_MULTIUSER_MANIFEST.postflightSignatureIncludes[name]
               ?? null;
             process.stdout.write(`[schema-signature-diagnostic] ${JSON.stringify({ name, present: object?.present ?? false, kind: object?.kind ?? null, actual: object?.signature ?? null, expected })}\n`);
           }

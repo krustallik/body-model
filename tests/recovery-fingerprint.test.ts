@@ -38,7 +38,7 @@ describe("recovery invalidation fingerprints", () => {
     expect(recoverySourceFingerprint({ episode, days: built(2_600), donorDays: [] }))
       .not.toBe(baseline);
     expect(recoverySourceFingerprint({
-      episode: { ...episode, activityCalibration: 1.05 },
+      episode: {  ...episode, activityCalibration: 1.05 },
       days: built(2_500),
       donorDays: [],
     })).not.toBe(baseline);

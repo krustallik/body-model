@@ -124,7 +124,7 @@ describe("model episode repository mapping", () => {
   });
 
   it("maps profile, active episode, explicit episode, and absence", async () => {
-    const repository = new ModelEpisodeRepository(client);
+    const repository = new ModelEpisodeRepository(1, client);
     db.profile.findUnique.mockResolvedValue(null);
     await expect(repository.getProfile()).resolves.toBeNull();
     db.profile.findUnique.mockResolvedValue({
@@ -165,7 +165,7 @@ describe("model episode repository mapping", () => {
       postGapObservationDates: ["2026-08-22"],
     })]);
 
-    const status = await new ModelEpisodeRepository(client).status();
+    const status = await new ModelEpisodeRepository(1, client).status();
     expect(status).toMatchObject({
       productionCurrent: false,
       latestModeledDate: null,
@@ -184,7 +184,7 @@ describe("model episode repository mapping", () => {
     db.dailyModelState.findMany.mockResolvedValue([{
       date: "2026-08-20", status: "complete", updatedAt: new Date("2026-08-21T00:00:00Z"),
     }]);
-    const history = await new ModelEpisodeRepository(client).history({ limit: 10, offset: 0 });
+    const history = await new ModelEpisodeRepository(1, client).history({ limit: 10, offset: 0 });
     expect(history).toMatchObject({
       days: [],
       unknownIntervals: [],
@@ -200,7 +200,7 @@ describe("model episode repository mapping", () => {
     db.dailyModelState.count.mockResolvedValue(1);
     db.dailyModelState.findFirst.mockResolvedValue({ date: "2026-08-22" });
 
-    const repository = new ModelEpisodeRepository(client);
+    const repository = new ModelEpisodeRepository(1, client);
     await expect(repository.status()).resolves.toMatchObject({
       productionCurrent: false,
       latestModeledDate: null,
@@ -232,7 +232,7 @@ describe("model episode repository mapping", () => {
     db.heartRateSample.findMany.mockResolvedValue([]);
     db.strengthDiarySession.findMany.mockResolvedValue([]);
     db.stepperReconciliationCandidate.findMany.mockResolvedValue([]);
-    const result = await new ModelEpisodeRepository(client)
+    const result = await new ModelEpisodeRepository(1, client)
       .loadSources("2026-08-01", "2026-08-22");
     expect(result.days[0]).toMatchObject({
       bodyFatPercent: 20, walkingDistanceKm: 5.1, strengthTrainingMinutes: 0,
@@ -242,7 +242,7 @@ describe("model episode repository mapping", () => {
   });
 
   it("deactivates and creates a fully frozen prepared episode", async () => {
-    const repository = new ModelEpisodeRepository(client);
+    const repository = new ModelEpisodeRepository(1, client);
     const prepared = prepareEpisodeInitialization({
       profile: modelProfile,
       days: stableSourceDays(),
@@ -265,18 +265,18 @@ describe("model episode repository mapping", () => {
   });
 
   it("persists initialization estimate separately from the applied correction", async () => {
-    const repository = new ModelEpisodeRepository(client);
+    const repository = new ModelEpisodeRepository(1, client);
     const base = prepareEpisodeInitialization({ profile: modelProfile,
       days: stableSourceDays(), startDate: "2026-08-22" });
     db.modelEpisode.create.mockResolvedValue(record());
-    await repository.createPrepared({ ...base, initialPersonalOffsetKcalPerDay: -345,
+    await repository.createPrepared({  ...base, initialPersonalOffsetKcalPerDay: -345,
       appliedPersonalOffsetKcalPerDay: 0, initializationStatus: "weak",
       initializationApplicationReason: "weak-estimate-not-applied" });
     expect(db.modelEpisode.create.mock.calls.at(-1)?.[0].data).toMatchObject({
       initialPersonalOffsetKcalPerDay: -345, personalOffsetKcalPerDay: 0,
       calibrationStatus: "insufficient-history", initializationStatus: "weak",
     });
-    await repository.createPrepared({ ...base, initialPersonalOffsetKcalPerDay: 150,
+    await repository.createPrepared({  ...base, initialPersonalOffsetKcalPerDay: 150,
       appliedPersonalOffsetKcalPerDay: 150, initializationStatus: "strong",
       initializationApplicationReason: "strong-estimate-applied" });
     expect(db.modelEpisode.create.mock.calls.at(-1)?.[0].data).toMatchObject({
@@ -339,7 +339,7 @@ describe("model episode repository mapping", () => {
         weightFilterVarianceKg2: 0.25,
       }],
     };
-    const repository = new ModelEpisodeRepository(client);
+    const repository = new ModelEpisodeRepository(1, client);
     await repository.persistCalculation(3, calculation);
     expect(db.dailyModelState.deleteMany).toHaveBeenCalledWith({
       where: { episodeId: 3, date: { notIn: ["2026-08-22"] } },
@@ -383,7 +383,7 @@ describe("model episode repository mapping", () => {
         recoveryRequired: true,
       }],
     };
-    await new ModelEpisodeRepository(client).persistCalculation(
+    await new ModelEpisodeRepository(1, client).persistCalculation(
       3,
       calculation,
       "bodycast-physiology-v4",
@@ -419,7 +419,7 @@ describe("model episode repository mapping", () => {
         id: 2, startDate: "2026-09-05", lastUnknownDate: "2026-09-07", endDate: null,
       }),
     ]);
-    const status = await new ModelEpisodeRepository(client).status(3);
+    const status = await new ModelEpisodeRepository(1, client).status(3);
     expect(status).toMatchObject({
       continuityStatus: "awaiting-recovery",
       lastResolvedDate: "2026-08-22",
@@ -452,7 +452,7 @@ describe("model episode repository mapping", () => {
         postGapObservationDates: { malformed: true },
       }),
     ]);
-    const history = await new ModelEpisodeRepository(client).history({
+    const history = await new ModelEpisodeRepository(1, client).history({
       from: "2026-08-31", to: "2026-08-31", limit: 90, offset: 0,
     });
     expect(history).toMatchObject({
@@ -480,7 +480,7 @@ describe("model episode repository mapping", () => {
         ],
       }),
     ]);
-    const history = await new ModelEpisodeRepository(client).history({
+    const history = await new ModelEpisodeRepository(1, client).history({
       episodeId: 3, from: "2026-08-01", to: "2026-08-15", limit: 90, offset: 0,
     });
     expect(history?.days).toHaveLength(3);
@@ -503,7 +503,7 @@ describe("model episode repository mapping", () => {
       dynamicRmrKcalPerDay: 1_690,
       energyExpenditureKcal: 2_450,
     });
-    const repository = new ModelEpisodeRepository(client);
+    const repository = new ModelEpisodeRepository(1, client);
     await expect(repository.status()).resolves.toMatchObject({
       episodeId: 3,
       daysModeled: 10,

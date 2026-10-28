@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { prisma } from "@/lib/db/prisma";
 import { carryUnifiedUncertaintyV1, transitionUnifiedExperimentalPhysiologyV1, type UnifiedChildTransitionsV1 } from "@/model/unified-experimental-physiology-v1/transition";
 import { buildUnifiedEnergyLedgerV1 } from "@/model/unified-experimental-physiology-v1/energy-ledger";
@@ -518,7 +519,7 @@ export function unifiedRangeToken(profileId: number, fromInstant: string, throug
 }
 
 export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
-  profileId?: number;
+  profileId: number;
   client?: PrismaClient;
   fromDate?: string;
   toDate?: string;
@@ -530,7 +531,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   if (input.fromDate && input.toDate && input.toDate < input.fromDate) {
     throw new RangeError("toDate must not precede fromDate");
   }
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const client = input.client ?? prisma;
   const episodeRows = await client.modelEpisode.findMany({
     where: { profileId },

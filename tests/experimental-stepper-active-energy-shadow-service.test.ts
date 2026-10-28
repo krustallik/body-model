@@ -133,7 +133,7 @@ describe("Stepper active-energy shadow writer", () => {
   it("keeps missing body mass unavailable and publishes only the device fallback candidate", async () => {
     prepareQueries({ stepCount: 600 });
 
-    await recordExperimentalStepperActiveEnergyShadow({ workoutId: 44 });
+    await recordExperimentalStepperActiveEnergyShadow({ profileId: 1, workoutId: 44 });
 
     const persisted = mocks.tx.experimentalStepperActiveEnergyShadow.upsert.mock.calls[0]![0].create.result;
     expect(persisted).toMatchObject({ availability: "unavailable", unavailableReason: "missing-body-mass", estimatedActiveKcal: null });
@@ -198,7 +198,9 @@ describe("Stepper active-energy shadow writer", () => {
     await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates: ["2026-10-09"], profileId: 7 });
 
     expect(mocks.prisma.workout.findUnique).toHaveBeenCalledTimes(1);
-    expect(mocks.prisma.workout.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 44, hiddenFromHistory: false } }));
+    expect(mocks.prisma.workout.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: { profileId_id: { profileId: 7, id: 44 }, hiddenFromHistory: false },
+    }));
     expect(mocks.tx.experimentalStepperActiveEnergyShadow.upsert).toHaveBeenCalledOnce();
   });
 
@@ -206,19 +208,20 @@ describe("Stepper active-energy shadow writer", () => {
     prepareQueries();
     mocks.prisma.workout.findUnique.mockResolvedValue(null);
 
-    await recordExperimentalStepperActiveEnergyShadowsForWorkouts({ workoutIds: [52, 44, 52, 8] });
+    await recordExperimentalStepperActiveEnergyShadowsForWorkouts({ profileId: 1, workoutIds: [52, 44, 52, 8] });
 
-    expect(mocks.prisma.workout.findUnique.mock.calls.map(([query]) => query.where.id)).toEqual([8, 44, 52]);
+    expect(mocks.prisma.workout.findUnique.mock.calls.map(([query]) => query.where.profileId_id.id)).toEqual([8, 44, 52]);
+    expect(mocks.prisma.workout.findUnique.mock.calls.every(([query]) => query.where.profileId_id.profileId === 1)).toBe(true);
     expect(mocks.tx.experimentalStepperActiveEnergyShadow.upsert).not.toHaveBeenCalled();
   });
 
   it("does not create a shadow for a missing or non-stepper workout", async () => {
     mocks.prisma.workout.findUnique.mockResolvedValueOnce(null);
-    await recordExperimentalStepperActiveEnergyShadow({ workoutId: 404 });
+    await recordExperimentalStepperActiveEnergyShadow({ profileId: 1, workoutId: 404 });
     expect(mocks.tx.experimentalStepperActiveEnergyShadow.upsert).not.toHaveBeenCalled();
 
     mocks.prisma.workout.findUnique.mockResolvedValueOnce(workout({ type: "Running" }));
-    await recordExperimentalStepperActiveEnergyShadow({ workoutId: 45 });
+    await recordExperimentalStepperActiveEnergyShadow({ profileId: 1, workoutId: 45 });
     expect(mocks.tx.experimentalStepperActiveEnergyShadow.upsert).not.toHaveBeenCalled();
     expect(mocks.persistResolution).not.toHaveBeenCalled();
   });

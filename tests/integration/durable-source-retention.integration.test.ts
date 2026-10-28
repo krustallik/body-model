@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
@@ -8,6 +9,7 @@ import { calculateEpisodeHistory } from "@/modules/model-episodes/episode-calcul
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { persistedEpisodeFixture } from "../model-episode-fixtures";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
@@ -47,6 +49,7 @@ async function cleanFixtureDates(dates: string[]): Promise<void> {
   if (dates.length === 0) return;
   const sorted = [...dates].sort();
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: dates } } });
+  await prisma.healthMetricSample.deleteMany({ where: { date: { in: dates } } });
   await prisma.workInterval.deleteMany({ where: { date: { in: dates } } });
   await prisma.heartRateSample.deleteMany({ where: { date: { in: dates } } });
   await prisma.restingHeartRateSample.deleteMany({ where: { date: { in: dates } } });
@@ -62,8 +65,8 @@ async function cleanFixtureDates(dates: string[]): Promise<void> {
 }
 
 describe("durable source retention PostgreSQL", () => {
-  const repository = new PrismaHealthSyncRepository(prisma);
-  const episodeRepository = new ModelEpisodeRepository(prisma);
+  const repository = new PrismaHealthSyncRepository(1, prisma);
+  const episodeRepository = new ModelEpisodeRepository(1, prisma);
 
   beforeAll(async () => {
     const existing = await prisma.dailyHealthData.findMany({
@@ -89,7 +92,7 @@ describe("durable source retention PostgreSQL", () => {
     await cleanFixtureDates([oldDate]);
 
     const day = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date: oldDate,
         caloriesKcal: 2_400,
         proteinG: 140,
@@ -124,7 +127,7 @@ describe("durable source retention PostgreSQL", () => {
     });
 
     await prisma.healthSyncSnapshot.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: day.id,
         date: oldDate,
         timezone,
@@ -136,7 +139,7 @@ describe("durable source retention PostgreSQL", () => {
       },
     });
     await prisma.workInterval.create({
-      data: {
+      data: { profileId: 1,
         date: oldDate,
         startAt: new Date(`${oldDate}T08:00:00.000Z`),
         endAt: new Date(`${oldDate}T16:00:00.000Z`),
@@ -195,7 +198,7 @@ describe("durable source retention PostgreSQL", () => {
     await cleanFixtureDates([stairDate]);
 
     const day = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date: stairDate,
         walkingDistanceKm: 5.0,
         averageWalkingSpeedKmh: 5.0,
@@ -238,7 +241,7 @@ describe("durable source retention PostgreSQL", () => {
     });
 
     await prisma.workInterval.create({
-      data: {
+      data: { profileId: 1,
         date: stairDate,
         startAt: new Date(`${stairDate}T09:00:00+02:00`),
         endAt: new Date(`${stairDate}T17:00:00+02:00`),
@@ -250,7 +253,7 @@ describe("durable source retention PostgreSQL", () => {
 
     await prisma.healthSyncSnapshot.createMany({
       data: [
-        {
+        { profileId: 1,
           dailyHealthDataId: day.id,
           date: stairDate,
           timezone,
@@ -260,7 +263,7 @@ describe("durable source retention PostgreSQL", () => {
           walkingDistanceKm: 2.0,
           rawPayload: {},
         },
-        {
+        { profileId: 1,
           dailyHealthDataId: day.id,
           date: stairDate,
           timezone,
@@ -270,7 +273,7 @@ describe("durable source retention PostgreSQL", () => {
           walkingDistanceKm: 2.6,
           rawPayload: {},
         },
-        {
+        { profileId: 1,
           dailyHealthDataId: day.id,
           date: stairDate,
           timezone,
@@ -333,7 +336,7 @@ describe("durable source retention PostgreSQL", () => {
           strengthTrainingMinutes: 0,
           rawPayload: { source: "durable-test-c", index },
           ...(index % 10 === 0
-            ? {
+            ? { profileId: 1,
                 workouts: {
                   create: [{
                     type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
@@ -349,11 +352,11 @@ describe("durable source retention PostgreSQL", () => {
                   }],
                 },
               }
-            : {}),
+            : { profileId: 1,}),
         },
       });
       await prisma.healthSyncSnapshot.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: day.id,
           date,
           timezone,
@@ -366,7 +369,7 @@ describe("durable source retention PostgreSQL", () => {
       });
       if (index % 6 === 0) {
         await prisma.workInterval.create({
-          data: {
+          data: { profileId: 1,
             date,
             startAt: new Date(`${date}T08:00:00.000Z`),
             endAt: new Date(`${date}T16:00:00.000Z`),
@@ -452,7 +455,7 @@ describe("durable source retention PostgreSQL", () => {
     await cleanFixtureDates([date]);
 
     const day = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: 1,
         date,
         caloriesKcal: 2_000,
         rawPayload: { source: "durable-test-d" },
@@ -490,6 +493,17 @@ describe("durable source retention PostgreSQL", () => {
         bpm: 58,
       },
     });
+    await prisma.healthMetricSample.create({
+      data: {
+        profileId: 1,
+        dailyHealthDataId: day.id,
+        date,
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date(`${date}T06:30:00.000Z`),
+        value: 89.4,
+      },
+    });
     await prisma.sleepSegment.create({
       data: {
         profileId: 1,
@@ -511,18 +525,43 @@ describe("durable source retention PostgreSQL", () => {
       where: { startAt: new Date(`${date}T23:00:00.000Z`) },
     })).toBe(1);
 
-    // Explicit application delete (History day delete) removes workouts then day;
-    // HR SetNulls and sleep remains.
-    await deleteDailyHealthRows(prisma, [date]);
+    // Explicit application delete detaches only the optional day pointer and
+    // preserves every source observation and its provenance.
+    const metricBefore = await prisma.healthMetricSample.findFirstOrThrow({ where: { date } });
+    const heartRateBefore = await prisma.heartRateSample.findFirstOrThrow({ where: { date } });
+    const restingHeartRateBefore = await prisma.restingHeartRateSample.findFirstOrThrow({ where: { date } });
+    await expect(new DailyMetricRepository(1, prisma, null).delete(date))
+      .resolves.toMatchObject({ deleted: true, modelPublicationStatus: "not-run" });
     expect(await prisma.workout.count({
       where: { dailyHealthData: { date } },
     })).toBe(0);
     expect(await prisma.dailyHealthData.count({ where: { date } })).toBe(0);
     expect(await prisma.heartRateSample.count({ where: { date } })).toBe(1);
-    expect(await prisma.heartRateSample.findFirst({ where: { date } }))
-      .toMatchObject({ dailyHealthDataId: null });
-    expect(await prisma.restingHeartRateSample.findFirst({ where: { date } }))
-      .toMatchObject({ dailyHealthDataId: null });
+    expect(await prisma.healthMetricSample.findFirstOrThrow({ where: { id: metricBefore.id } }))
+      .toMatchObject({ ...metricBefore, dailyHealthDataId: null });
+    expect(await prisma.heartRateSample.findFirstOrThrow({ where: { id: heartRateBefore.id } }))
+      .toMatchObject({
+        id: heartRateBefore.id,
+        profileId: heartRateBefore.profileId,
+        date: heartRateBefore.date,
+        timestamp: heartRateBefore.timestamp,
+        bpm: heartRateBefore.bpm,
+        source: heartRateBefore.source,
+        createdAt: heartRateBefore.createdAt,
+        dailyHealthDataId: null,
+      });
+    expect(await prisma.restingHeartRateSample.findFirstOrThrow({ where: { id: restingHeartRateBefore.id } }))
+      .toMatchObject({
+        id: restingHeartRateBefore.id,
+        profileId: restingHeartRateBefore.profileId,
+        date: restingHeartRateBefore.date,
+        timestamp: restingHeartRateBefore.timestamp,
+        bpm: restingHeartRateBefore.bpm,
+        source: restingHeartRateBefore.source,
+        createdAt: restingHeartRateBefore.createdAt,
+        dailyHealthDataId: null,
+      });
+    await clearUnifiedPublicationBlockFixtures(prisma, [{ profileId: 1, source: "day", sourceKey: date }]);
     expect(await prisma.sleepSegment.count({
       where: { startAt: new Date(`${date}T23:00:00.000Z`) },
     })).toBe(1);

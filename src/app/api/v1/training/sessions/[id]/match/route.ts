@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
   ManualMatchSchema,
@@ -12,6 +13,10 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const routeParams = SessionIdParamsSchema.safeParse(await params);
   if (!routeParams.success) return validationResponse(routeParams.error);
 
@@ -22,7 +27,7 @@ export async function POST(
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const session = await trainingService.manualMatch(routeParams.data.id, parsed.data);
+    const session = await trainingService.manualMatch(routeParams.data.id, parsed.data, principal.profileId);
     return Response.json({ session });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

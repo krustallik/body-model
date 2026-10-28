@@ -406,7 +406,7 @@ describe("active production release entrypoints", () => {
     const restoreEnd = workflow.indexOf("      - name: Create preflight evidence bundle", restoreStart);
     const restoreStep = workflow.slice(restoreStart, restoreEnd);
     const prismaDeploy = restoreStep.indexOf('DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma');
-    const postflightProbe = restoreStep.indexOf('node scripts/production-db-preflight.mjs | psql "$DATABASE_URL"', prismaDeploy);
+    const postflightProbe = restoreStep.indexOf('node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL"', prismaDeploy);
 
     expect(restoreStart).toBeGreaterThanOrEqual(0);
     expect(restoreEnd).toBeGreaterThan(restoreStart);

@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { prisma } from "@/lib/db/prisma";
 import {
   persistUnifiedShadowCandidateV1,
@@ -43,9 +44,9 @@ function readGlycogenShadow(result: unknown): {
  */
 export async function recordExperimentalGlycogenAssociatedWaterShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
 
   const [

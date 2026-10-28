@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { syncHealthData, recordHealthSyncAudit } = vi.hoisted(() => ({
+const { syncHealthData, recordHealthSyncAudit, getProfilePrincipal, enforceAuthRequestLimit } = vi.hoisted(() => ({
   syncHealthData: vi.fn(),
   recordHealthSyncAudit: vi.fn().mockResolvedValue(undefined),
+  getProfilePrincipal: vi.fn(),
+  enforceAuthRequestLimit: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("@/modules/health/health.service", () => ({ syncHealthData }));
 vi.mock("@/modules/health/health-sync-audit", () => ({ recordHealthSyncAudit }));
+vi.mock("@/modules/auth/access", () => ({ getProfilePrincipal, enforceAuthRequestLimit }));
+vi.mock("@/modules/health/health.repository", () => ({
+  healthSyncRepositoryForProfile: (profileId: number) => ({ profileId }),
+}));
 
 import { POST } from "@/app/api/v1/health/sync/route";
 
@@ -22,6 +28,12 @@ describe("POST /api/v1/health/sync", () => {
   beforeEach(() => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.IOS_SHORTCUT_API_KEY = apiKey;
+    getProfilePrincipal.mockImplementation(async (request: Request) => (
+      request.headers.get("x-api-key") === apiKey
+        ? { profileId: 1, userId: null, method: "legacy-shortcut" }
+        : null
+    ));
+    enforceAuthRequestLimit.mockResolvedValue(null);
     syncHealthData.mockReset();
     recordHealthSyncAudit.mockReset();
     recordHealthSyncAudit.mockResolvedValue(undefined);
@@ -54,7 +66,7 @@ describe("POST /api/v1/health/sync", () => {
     await expect(response.json()).resolves.toEqual(result);
     expect(syncHealthData).toHaveBeenCalledWith(
       { days: [{ date: "2026-08-21", steps: 10000 }] },
-      undefined,
+      expect.objectContaining({ profileId: 1 }),
       [{ date: "2026-08-21", steps: 10000 }],
       undefined,
       undefined,
@@ -293,7 +305,7 @@ describe("POST /api/v1/health/sync", () => {
       steps: 10234,
       averageWalkingSpeedKmh: 4.72,
       walkingDistanceKm: 7.35,
-    }] }, undefined, [originalDay], undefined, undefined, { deferDependentRefresh: true });
+    }] }, expect.objectContaining({ profileId: 1 }), [originalDay], undefined, undefined, { deferDependentRefresh: true });
   });
 
   it.each([
@@ -310,7 +322,7 @@ describe("POST /api/v1/health/sync", () => {
     expect(response.status).toBe(200);
     expect(syncHealthData).toHaveBeenCalledWith(
       { days: [{ date: "2026-08-22", strengthTrainingMinutes: expected }] },
-      undefined,
+      expect.objectContaining({ profileId: 1 }),
       [originalDay],
       undefined,
       undefined,
@@ -339,7 +351,7 @@ describe("POST /api/v1/health/sync", () => {
     expect(response.status).toBe(200);
     expect(syncHealthData).toHaveBeenCalledWith(
       { days: [{ date: "2026-08-21", strengthTrainingMinutes: 75 }] },
-      undefined,
+      expect.objectContaining({ profileId: 1 }),
       [originalDay],
       undefined,
       undefined,

@@ -1,3 +1,4 @@
+import { getSessionPrincipal } from "@/modules/auth/access";
 import { validationResponse } from "@/modules/days/day.http";
 import { ProgramIdParamsSchema } from "@/modules/training/training.schema";
 import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
@@ -8,11 +9,14 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, context: Ctx): Promise<Response> {
+  const principal = await getSessionPrincipal(_request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+
   const params = ProgramIdParamsSchema.safeParse(await context.params);
   if (!params.success) return validationResponse(params.error);
 
   try {
-    const versions = await trainingService.listProgramVersions(params.data.id);
+    const versions = await trainingService.listProgramVersions(params.data.id, principal.profileId);
     return Response.json({ versions });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

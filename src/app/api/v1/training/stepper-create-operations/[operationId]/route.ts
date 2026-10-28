@@ -1,3 +1,4 @@
+import { getSessionPrincipal } from "@/modules/auth/access";
 import { z } from "zod";
 import { stepperWorkoutRepository } from "@/modules/training/stepper-workout.repository";
 
@@ -7,6 +8,9 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ operationId: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+
   const { operationId: rawOperationId } = await params;
   const parsed = z.string().uuid().safeParse(rawOperationId);
   if (!parsed.success) return Response.json({ error: "invalid_operation_id" }, { status: 400 });
@@ -14,7 +18,7 @@ export async function GET(
   const parsedDigest = z.string().regex(/^[a-f0-9]{64}$/).safeParse(payloadDigest);
   if (!parsedDigest.success) return Response.json({ error: "invalid_payload_digest" }, { status: 400 });
   try {
-    const result = await stepperWorkoutRepository.resolveCreateOperation({
+    const result = await stepperWorkoutRepository.resolveCreateOperation(principal.profileId, {
       operationId: parsed.data,
       payloadDigest: parsedDigest.data,
     });

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import {
   estimateExperimentalStepperGlycogenDemandV1,
   EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION,
@@ -20,12 +21,12 @@ import { persistUnifiedShadowCandidateV1, readUnifiedSourceFenceV1 } from "@/mod
  */
 export async function recordExperimentalStepperGlycogenDemandShadow(input: {
   workoutId: number;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
   const workout = await prisma.workout.findUnique({
-    where: { id: input.workoutId, hiddenFromHistory: false },
+    where: { profileId_id: { profileId, id: input.workoutId }, hiddenFromHistory: false },
     select: {
       id: true,
       type: true,
@@ -43,10 +44,12 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
 
   const [snapshots, stepIntervals, heartRateSamples] = await Promise.all([
     prisma.healthSyncSnapshot.findMany({
+      where: { profileId },
       select: { id: true, receivedAt: true, syncedAt: true, steps: true },
     }),
     prisma.healthActivityInterval.findMany({
       where: {
+        profileId,
         metric: "steps",
         startAt: { lt: workout.endAt },
         endAt: { gt: workout.startAt },
@@ -138,7 +141,7 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
     expectedFence: sourceFence,
     persist: async (tx) => {
       const current = await tx.workout.findFirst({
-        where: { id: workout.id, hiddenFromHistory: false },
+        where: { id: workout.id, profileId, hiddenFromHistory: false },
         select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, dailyHealthData: { select: { weightKg: true } } },
       });
       if (!current || current.startAt.toISOString() !== startAt || current.endAt.toISOString() !== endAt
@@ -146,8 +149,8 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
           || current.activeEnergyKcal !== workout.activeEnergyKcal) {
         throw new Error("stepper glycogen candidate sources changed before persistence");
       }
-      const existing = await tx.experimentalStepperGlycogenDemandShadow.findUnique({
-        where: { workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true },
+      const existing = await tx.experimentalStepperGlycogenDemandShadow.findFirst({
+        where: { profileId, workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true },
       });
       if (existing?.sourceFingerprint === sourceFingerprint
           && existing.modelRevision === EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION) return false;
@@ -163,11 +166,11 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
 
 export async function recordExperimentalStepperGlycogenDemandShadowsForLocalDate(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const workouts = await prisma.workout.findMany({
-    where: { hiddenFromHistory: false, dailyHealthData: { date: input.date } },
+    where: { profileId, hiddenFromHistory: false, dailyHealthData: { date: input.date } },
     select: { id: true, type: true },
   });
   const stairWorkoutIds = new Set<number>();
@@ -196,7 +199,7 @@ export async function recordExperimentalStepperGlycogenDemandShadowsForLocalDate
       expectedFence,
       persist: async (tx) => {
         const current = await tx.workout.findFirst({
-          where: { id: workoutId, dailyHealthData: { date: input.date } },
+          where: { profileId, id: workoutId, dailyHealthData: { date: input.date } },
           select: { type: true, hiddenFromHistory: true },
         });
         if (current && !current.hiddenFromHistory

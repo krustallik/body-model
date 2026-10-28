@@ -143,7 +143,7 @@ describe("forecast application service", () => {
     repositories.loadSources.mockResolvedValue(sources([
       sourceDay("2026-08-22"), sourceDay("2026-08-23"),
     ]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient());
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient());
     expect(result.status).toBe("ok");
     expect(result.initialStateQuality).toBe("deterministic");
     expect("dates" in result && result.dates).toHaveLength(7);
@@ -153,7 +153,7 @@ describe("forecast application service", () => {
 
   it("returns a typed V2 block when the current production glycogen row is explicitly null", async () => {
     repositories.loadSources.mockResolvedValue(sources([sourceDay("2026-08-22"), sourceDay("2026-08-23")]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient({
       state: {
         glycogen: { physicalAvailability: "blocked", physicalKg: null, physicalProvenance: "current-production-null" },
         glycogenWater: { physicalKg: null },
@@ -169,7 +169,7 @@ describe("forecast application service", () => {
 
   it("keeps current production glycogen zero and its associated water zero", async () => {
     repositories.loadSources.mockResolvedValue(sources([sourceDay("2026-08-22"), sourceDay("2026-08-23")]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient({
       state: {
         glycogen: { physicalAvailability: "available", physicalKg: 0, physicalProvenance: "production-daily-model-state" },
         glycogenWater: { physicalKg: 0 },
@@ -185,7 +185,7 @@ describe("forecast application service", () => {
   });
 
   it("does not fall through to V1 when V4 is not current", async () => {
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient({
       lifecycle: {
         unifiedTargetRevision: "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics",
         unifiedRolloutEpoch: 0,
@@ -203,7 +203,7 @@ describe("forecast application service", () => {
     repositories.loadSources.mockResolvedValue(sources([
       sourceDay("2026-08-22"), sourceDay("2026-08-23"),
     ]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient({
       lifecycle: { staleFromDate: "2026-08-21" },
     }));
     expect(result).toMatchObject({
@@ -213,7 +213,7 @@ describe("forecast application service", () => {
   });
 
   it("blocks when the stale marker intersects the active episode history", async () => {
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient({
       lifecycle: { staleFromDate: episode.startDate },
     }));
     expect(result).toMatchObject({
@@ -225,7 +225,7 @@ describe("forecast application service", () => {
 
   it("returns awaiting explicitly when an unresolved gap has no current recovery", async () => {
     repositories.loadSources.mockResolvedValue(sources([sourceDay("2026-08-22")]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient());
     expect(result).toMatchObject({
       status: "initial-state-unavailable",
       initialStateQuality: "awaiting",
@@ -237,7 +237,7 @@ describe("forecast application service", () => {
     repositories.loadCurrentEnsemble.mockResolvedValue({
       algorithmVersion: "bodycast-recovery-v3", status: "degenerate", ensemble: [],
     });
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient());
     expect(result).toMatchObject({
       status: "initial-state-unreliable",
       initialStateQuality: "degenerate",
@@ -284,7 +284,7 @@ describe("forecast application service", () => {
         } },
       ],
     });
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient());
     expect(result.status).toBe("degraded");
     expect(result.initialStateQuality).toBe("degraded");
     expect("diagnostics" in result && result.diagnostics.startingParticleCount).toBe(2);
@@ -292,7 +292,7 @@ describe("forecast application service", () => {
 
   it("accepts a current recovered ensemble without degrading forecast quality", async () => {
     mockConditionedRecovery("recovered");
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
+    const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient());
     expect(result.status).toBe("ok");
     expect(result.initialStateQuality).toBe("recovered");
     expect("diagnostics" in result && result.diagnostics.startingParticleCount).toBe(2);
@@ -300,7 +300,7 @@ describe("forecast application service", () => {
 
   it("blocks a conditioned recovery with a stale source fingerprint", async () => {
     mockConditionedRecovery("recovered", { sourceFingerprint: "stale-source" });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
+    expect(await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
   });
 
@@ -308,12 +308,12 @@ describe("forecast application service", () => {
     mockConditionedRecovery("recovered", {
       ensemble: [{ particleIndex: 0, normalizedWeight: 0, state: episode.initialState }],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
+    expect(await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
     mockConditionedRecovery("recovered", {
       ensemble: [{ particleIndex: 0, normalizedWeight: -1, state: episode.initialState }],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
+    expect(await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
     mockConditionedRecovery("recovered", {
       ensemble: [{ particleIndex: 0, normalizedWeight: 1, state: {
@@ -321,7 +321,7 @@ describe("forecast application service", () => {
         extracellularFluidDeviationLiters: null,
       } }],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
+    expect(await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
   });
 
@@ -332,7 +332,7 @@ describe("forecast application service", () => {
       latestRecoveredDate: "2026-08-26", config: DEFAULT_RECOVERY_CONFIG,
       sourceFingerprint: "old", ensemble: [],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
+    expect(await forecastModelEpisode({ profileId: 1, ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
   });
 
@@ -340,7 +340,7 @@ describe("forecast application service", () => {
     repositories.loadSources.mockResolvedValue(sources([
       sourceDay("2026-08-22"), sourceDay("2026-08-23"),
     ]));
-    const result = await forecastModelEpisode({
+    const result = await forecastModelEpisode({ profileId: 1,
       ...fixedRequest,
       scenario: { ...fixedRequest.scenario, mode: "target-centered" as const },
       now,
@@ -374,7 +374,7 @@ describe("forecast application service", () => {
         breakMinutes: 30,
       }],
     });
-    const result = await forecastModelEpisode({
+    const result = await forecastModelEpisode({ profileId: 1,
       ...fixedRequest,
       scenario: {
         mode: "recent-behavior" as const,
@@ -396,7 +396,7 @@ describe("forecast application service", () => {
     repositories.loadSources.mockResolvedValue(sources([
       sourceDay("2026-08-22"), sourceDay("2026-08-23"),
     ]));
-    const result = await forecastModelEpisode({
+    const result = await forecastModelEpisode({ profileId: 1,
       ...fixedRequest,
       scenario: {
         mode: "target-centered" as const,
@@ -418,7 +418,7 @@ describe("forecast application service", () => {
       sourceDay("2026-08-22", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
       sourceDay("2026-08-23", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
     ]));
-    const result = await forecastModelEpisode({
+    const result = await forecastModelEpisode({ profileId: 1,
       ...fixedRequest,
       scenario: { mode: "recent-behavior", minimumDonorDays: 14 },
       now,
@@ -441,7 +441,7 @@ describe("forecast application service", () => {
       sourceDay("2026-08-22", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
       sourceDay("2026-08-23", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
     ]));
-    const result = await forecastModelEpisode({
+    const result = await forecastModelEpisode({ profileId: 1,
       ...fixedRequest,
       scenario: { mode: "recent-behavior", minimumDonorDays: 14 },
       now,
@@ -455,10 +455,10 @@ describe("forecast application service", () => {
 
   it("distinguishes no active episode from a missing requested episode", async () => {
     repositories.getActive.mockResolvedValue(null);
-    await expect(forecastModelEpisode({ ...fixedRequest, now }, forecastClient()))
+    await expect(forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient()))
       .rejects.toMatchObject({ name: "NoActiveModelEpisodeError" });
     repositories.getById.mockResolvedValue(null);
-    await expect(forecastModelEpisode({ ...fixedRequest, episodeId: 999, now }, forecastClient()))
+    await expect(forecastModelEpisode({ profileId: 1, ...fixedRequest, episodeId: 999, now }, forecastClient()))
       .rejects.toMatchObject({ name: "ModelEpisodeNotFoundError" });
   });
 });

@@ -53,6 +53,7 @@ type MockDb = {
     delete: ReturnType<typeof vi.fn>;
   };
   workout: {
+    findFirst: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
   };
@@ -102,6 +103,7 @@ function buildDb(): MockDb {
       delete: vi.fn(),
     },
     workout: {
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       findUnique: vi.fn(),
     },
@@ -292,7 +294,7 @@ describe("canonical Strength active-energy reads", () => {
       },
     }]);
 
-    const session = await new TrainingRepository(db as never).getSession(50);
+    const session = await new TrainingRepository(db as never).getSession(50, 1);
 
     expect(db.activeEnergyEventAlias.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
@@ -342,7 +344,7 @@ describe("TrainingService programs", () => {
       },
     });
 
-    await expect(service.getSetForSession(50, 900)).resolves.toEqual({
+    await expect(service.getSetForSession(50, 900, 1)).resolves.toEqual({
       id: 900,
       sessionExerciseId: 501,
       setNumber: 2,
@@ -408,7 +410,7 @@ describe("TrainingService programs", () => {
     const serviceWithFailedShadow = new TrainingService(prisma, repository as never, failShadows);
 
     try {
-      const result = await serviceWithFailedShadow.manualMatch(50, { workoutId: 77 });
+      const result = await serviceWithFailedShadow.manualMatch(50, { workoutId: 77 }, 1);
       expect(result.status).toBe(SESSION_STATUS.COMPLETED);
       expect(failShadows).not.toHaveBeenCalled();
       expect(invalidate).not.toHaveBeenCalled();
@@ -507,7 +509,7 @@ describe("TrainingService programs", () => {
         { catalogId: 2, plannedSets: 4, resistanceType: RESISTANCE.RESISTANCE_BAND },
         { catalogId: 3, plannedSets: 3, resistanceType: RESISTANCE.BODYWEIGHT },
       ],
-    });
+    }, 1);
 
     expect(program.currentVersionNumber).toBe(1);
     expect(program.exercises.map((e) => e.order)).toEqual([0, 1, 2]);
@@ -562,7 +564,7 @@ describe("TrainingService programs", () => {
         { catalogId: 2, plannedSets: 2, resistanceType: RESISTANCE.RESISTANCE_BAND, order: 0 },
         { catalogId: 1, plannedSets: 4, resistanceType: RESISTANCE.EXTERNAL_WEIGHT, order: 1 },
       ],
-    });
+    }, 1);
 
     expect(updated.currentVersionNumber).toBe(2);
     expect(updated.exercises.map((e) => ({ catalogId: e.catalogId, plannedSets: e.plannedSets, order: e.order }))).toEqual([
@@ -585,7 +587,7 @@ describe("TrainingService programs", () => {
       });
     db.trainingProgram.update.mockResolvedValue({});
 
-    const archived = await service.archiveProgram(10);
+    const archived = await service.archiveProgram(10, 1);
     expect(archived.archivedAt).toBe("2026-09-17T12:00:00.000Z");
     expect(db.trainingProgram.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ archivedAt: expect.any(Date) }),
@@ -645,7 +647,7 @@ describe("TrainingService snapshot immutability", () => {
     });
 
     db.strengthDiarySession.findFirst.mockResolvedValue(snapshotted);
-    const session = await service.getSession(50);
+    const session = await service.getSession(50, 1);
     expect(session?.programVersionNumber).toBe(1);
     expect(session?.exercises.map((e) => e.plannedSets)).toEqual([3, 3]);
     expect(session?.exercises.map((e) => e.snapshotExerciseName)).toEqual([
@@ -669,7 +671,7 @@ describe("TrainingService live session", () => {
 
   it("enforces one ACTIVE session", async () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(sessionDetail());
-    await expect(service.startSession(10)).rejects.toBeInstanceOf(ActiveSessionExistsError);
+    await expect(service.startSession(10, 1)).rejects.toBeInstanceOf(ActiveSessionExistsError);
   });
 
   it("starts a session by snapshotting current program exercises", async () => {
@@ -711,7 +713,7 @@ describe("TrainingService live session", () => {
     });
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
 
-    const session = await service.startSession(10);
+    const session = await service.startSession(10, 1);
     expect(session.status).toBe(SESSION_STATUS.ACTIVE);
     expect(session.exercises).toHaveLength(3);
     expect(db.strengthDiarySession.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -789,7 +791,7 @@ describe("TrainingService live session", () => {
       updatedAt: new Date("2026-09-17T16:10:00Z"),
     });
 
-    const created = await service.createSet(50, 501, { reps: 12, weightKg: 30 });
+    const created = await service.createSet(50, 501, { reps: 12, weightKg: 30 }, 1);
     expect(created.weightKg).toBe(30);
     expect(created.bandNominalResistanceKg).toBeNull();
 
@@ -819,7 +821,7 @@ describe("TrainingService live session", () => {
       updatedAt: new Date("2026-09-17T16:12:00Z"),
     });
 
-    const updated = await service.updateSet(50, 900, { reps: 10, weightKg: 32.5 });
+    const updated = await service.updateSet(50, 900, { reps: 10, weightKg: 32.5 }, 1);
     expect(updated.reps).toBe(10);
     expect(updated.weightKg).toBe(32.5);
 
@@ -837,7 +839,7 @@ describe("TrainingService live session", () => {
       },
     });
     db.strengthSet.delete.mockResolvedValue({});
-    await service.deleteSet(50, 900);
+    await service.deleteSet(50, 900, 1);
     expect(db.strengthSet.delete).toHaveBeenCalledWith({ where: { id: 900 } });
   });
 
@@ -853,7 +855,7 @@ describe("TrainingService live session", () => {
       reps: 10,
       weightKg: null,
       loadAccountingOverride: { additionalLoadKg: 1e308 },
-    })).rejects.toBeInstanceOf(SetValidationError);
+    }, 1)).rejects.toBeInstanceOf(SetValidationError);
     expect(db.strengthSet.create).not.toHaveBeenCalled();
 
     db.strengthSet.findFirst.mockResolvedValue({
@@ -876,7 +878,7 @@ describe("TrainingService live session", () => {
     });
     await expect(service.updateSet(50, 900, {
       loadAccountingOverride: { assistanceLoadKg: 2_000.01 },
-    })).rejects.toBeInstanceOf(SetValidationError);
+    }, 1)).rejects.toBeInstanceOf(SetValidationError);
     expect(db.strengthSet.update).not.toHaveBeenCalled();
   });
 
@@ -915,7 +917,7 @@ describe("TrainingService live session", () => {
       ...data,
     }));
 
-    const updated = await service.updateSet(50, 900, { rir: 3, comment: "after" });
+    const updated = await service.updateSet(50, 900, { rir: 3, comment: "after" }, 1);
 
     expect(updated).toMatchObject({
       rir: 3,
@@ -962,14 +964,14 @@ describe("TrainingService live session", () => {
       updatedAt: new Date("2026-09-17T16:10:00Z"),
     });
 
-    const created = await service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 1 });
+    const created = await service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 1 }, 1);
     expect(created.rir).toBe(1);
     expect(db.strengthSet.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ rir: 1 }),
     }));
 
     await expect(
-      service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 11 }),
+      service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 11 }, 1),
     ).rejects.toBeInstanceOf(SetValidationError);
 
     db.strengthSet.findFirst.mockResolvedValue({
@@ -998,7 +1000,7 @@ describe("TrainingService live session", () => {
       updatedAt: new Date("2026-09-17T16:12:00Z"),
     });
 
-    const edited = await service.updateSet(50, 901, { rir: 0 });
+    const edited = await service.updateSet(50, 901, { rir: 0 }, 1);
     expect(edited.rir).toBe(0);
 
     db.strengthSet.findFirst.mockResolvedValue({
@@ -1027,7 +1029,7 @@ describe("TrainingService live session", () => {
       updatedAt: new Date("2026-09-17T16:13:00Z"),
     });
 
-    const cleared = await service.updateSet(50, 901, { rir: null });
+    const cleared = await service.updateSet(50, 901, { rir: null }, 1);
     expect(cleared.rir).toBeNull();
   });
 
@@ -1040,8 +1042,8 @@ describe("TrainingService live session", () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(completed);
     db.workout.findMany.mockResolvedValue([]);
 
-    const first = await service.finishSession(50);
-    const second = await service.finishSession(50);
+    const first = await service.finishSession(50, 1);
+    const second = await service.finishSession(50, 1);
     expect(first.status).toBe(SESSION_STATUS.COMPLETED);
     expect(first.matchStatus).toBe(MATCH_STATUS.PENDING);
     expect(second.matchStatus).toBe(MATCH_STATUS.PENDING);
@@ -1071,7 +1073,7 @@ describe("TrainingService live session", () => {
       stalePublication,
     );
 
-    const result = await serviceWithStalePublication.finishSession(50);
+    const result = await serviceWithStalePublication.finishSession(50, 1);
 
     expect(result.status).toBe(SESSION_STATUS.COMPLETED);
     expect(repository.materializeAccounting).toHaveBeenCalledTimes(2);
@@ -1127,6 +1129,9 @@ describe("TrainingService matching cases", () => {
         status: SESSION_STATUS.COMPLETED,
         webEndedAt: new Date("2026-09-17T17:18:00Z"),
       }))
+      // applyMatchResult reads the scoped session inside its transaction,
+      // then finishSession reloads the committed DTO.
+      .mockResolvedValueOnce(matched)
       .mockResolvedValueOnce(matched);
     db.workout.findMany.mockResolvedValue([{
       id: 77,
@@ -1140,7 +1145,7 @@ describe("TrainingService matching cases", () => {
     }]);
     db.strengthDiarySession.update.mockResolvedValue({});
 
-    const result = await service.finishSession(50);
+    const result = await service.finishSession(50, 1);
     expect(result.matchStatus).toBe(MATCH_STATUS.MATCHED);
     expect(result.matchMethod).toBe(MATCH_METHOD.AUTO);
     expect(result.matchedWorkoutId).toBe(77);
@@ -1188,7 +1193,7 @@ describe("TrainingService matching cases", () => {
     }]);
     db.strengthDiarySession.update.mockResolvedValue({});
 
-    await service.afterHealthSyncMatch("2026-09-17", { timezone: "UTC" });
+    await service.afterHealthSyncMatch("2026-09-17", { profileId: 1, timezone: "UTC" });
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         matchStatus: MATCH_STATUS.MATCHED,
@@ -1225,7 +1230,7 @@ describe("TrainingService matching cases", () => {
     Object.defineProperty(serviceWithProductionDependencies, "refreshRelativeMuscleAfterEventChange", {
       value: relativeRefresh,
     });
-    await expect(serviceWithProductionDependencies.afterHealthSyncMatch("2026-09-17", { timezone: "UTC" }))
+    await expect(serviceWithProductionDependencies.afterHealthSyncMatch("2026-09-17", { profileId: 1, timezone: "UTC" }))
       .resolves.toBe(true);
     expect(strengthShadow).not.toHaveBeenCalled();
     expect(relativeRefresh).not.toHaveBeenCalled();
@@ -1245,7 +1250,7 @@ describe("TrainingService matching cases", () => {
     }]);
     db.strengthDiarySession.update.mockResolvedValue({});
 
-    await service.finishSession(50);
+    await service.finishSession(50, 1);
     expect(db.strengthDiarySession.update).not.toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ matchStatus: MATCH_STATUS.MATCHED }),
     }));
@@ -1278,7 +1283,7 @@ describe("TrainingService matching cases", () => {
       matchedDiarySession: null,
     }]);
 
-    await service.afterHealthSyncMatch("2026-09-17", { timezone: "UTC" });
+    await service.afterHealthSyncMatch("2026-09-17", { profileId: 1, timezone: "UTC" });
     // Query already excludes MANUAL; no auto overwrite update for MATCHED MANUAL.
     expect(db.strengthDiarySession.update).not.toHaveBeenCalled();
   });
@@ -1289,7 +1294,7 @@ describe("TrainingService matching cases", () => {
       webEndedAt: new Date("2026-09-17T17:18:00Z"),
       matchStatus: MATCH_STATUS.AMBIGUOUS,
     }));
-    db.workout.findUnique.mockResolvedValue({
+    db.workout.findFirst.mockResolvedValue({
       id: 77,
       type: "Traditional Strength Training",
       startAt: new Date("2026-09-17T16:04:00Z"),
@@ -1297,7 +1302,7 @@ describe("TrainingService matching cases", () => {
       matchedDiarySession: { id: 51 },
     });
 
-    await expect(service.manualMatch(50, { workoutId: 77 })).rejects.toBeInstanceOf(
+    await expect(service.manualMatch(50, { workoutId: 77 }, 1)).rejects.toBeInstanceOf(
       WorkoutAlreadyMatchedError,
     );
   });
@@ -1331,7 +1336,7 @@ describe("TrainingService matching cases", () => {
       matchedDiarySession: { id: 50 },
     }]);
 
-    const again = await service.finishSession(50);
+    const again = await service.finishSession(50, 1);
     expect(again.matchedWorkoutId).toBe(77);
     expect(db.strengthDiarySession.update).not.toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ matchedWorkoutId: 77 }),
@@ -1352,7 +1357,7 @@ describe("TrainingService matching cases", () => {
     db.workout.findMany.mockResolvedValue([]);
     db.strengthDiarySession.update.mockResolvedValue({});
 
-    const result = await service.finishSession(50);
+    const result = await service.finishSession(50, 1);
     expect(result.matchStatus).toBe(MATCH_STATUS.PENDING);
     expect(result.matchMethod).toBeNull();
   });
@@ -1400,7 +1405,7 @@ describe("TrainingService matching cases", () => {
       ],
     }));
 
-    const session = await service.getSession(50);
+    const session = await service.getSession(50, 1);
     expect(session?.webStartedAt).toBe("2026-09-17T16:02:00.000Z");
     expect(session?.exercises[0]?.sets[0]?.weightKg).toBe(30);
     expect(session?.exercises[0]?.sets[0]?.rir).toBeNull();
@@ -1425,7 +1430,7 @@ describe("TrainingService matching cases", () => {
       ]),
     };
     const isolated = new TrainingService({} as never, repo as never);
-    await expect(isolated.listMatchCandidates(42)).resolves.toEqual([
+    await expect(isolated.listMatchCandidates(42, 1)).resolves.toEqual([
       expect.objectContaining({ id: 12 }),
     ]);
   });

@@ -6,6 +6,9 @@ const modelServices = vi.hoisted(() => ({
   recalculateModelEpisode: vi.fn(),
   initializeNewModelEpisode: vi.fn(),
 }));
+const authAccess = vi.hoisted(() => ({
+  getSessionPrincipal: vi.fn().mockResolvedValue({ profileId: 1, userId: "user-1", method: "session" }),
+}));
 const recoveryServices = vi.hoisted(() => ({ recoverModelEpisode: vi.fn() }));
 const v7Persistence = vi.hoisted(() => ({
   readDay: vi.fn(),
@@ -18,6 +21,7 @@ const trainingRefresh = vi.hoisted(() => ({
   trainingRefreshWorkerOwnsGeneration: vi.fn(),
 }));
 vi.mock("@/modules/model-episodes/model-episode.service", () => modelServices);
+vi.mock("@/modules/auth/access", () => authAccess);
 vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
   rebuildUnifiedExperimentalPhysiologyStateV1: unifiedState.rebuild,
@@ -49,6 +53,7 @@ function actionRequest(action: string) {
 describe("forecast context route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 1, userId: "user-1", method: "session" });
     trainingRefresh.readTrainingRefreshVisibilityFence.mockResolvedValue(null);
     trainingRefresh.isTrainingRefreshPending.mockReturnValue(false);
     trainingRefresh.trainingRefreshWorkerOwnsGeneration.mockResolvedValue(false);
@@ -80,9 +85,15 @@ describe("forecast context route", () => {
       }],
       unknownIntervals: [],
     });
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/forecast/context"));
     expect(response.status).toBe(200);
-    expect(modelServices.getModelHistory).toHaveBeenCalledWith({ from: "2026-06-26", to: "2026-08-24", limit: 60, offset: 0 });
+    expect(modelServices.getModelHistory).toHaveBeenCalledWith({
+      profileId: 1,
+      from: "2026-06-26",
+      to: "2026-08-24",
+      limit: 60,
+      offset: 0,
+    });
     const body = await response.json();
     expect(body).toMatchObject({
       history: [{
@@ -117,7 +128,7 @@ describe("forecast context route", () => {
     modelServices.getModelHistory.mockResolvedValue({ days: [], unknownIntervals: [] });
     trainingRefresh.trainingRefreshFenceChanged.mockResolvedValue(true);
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/forecast/context"));
 
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "training_refresh_pending" });
@@ -134,7 +145,7 @@ describe("forecast context route", () => {
     });
     trainingRefresh.isTrainingRefreshPending.mockReturnValue(true);
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/forecast/context"));
 
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "training_refresh_pending" });
@@ -149,7 +160,7 @@ describe("forecast context route", () => {
         timezone: "Europe/Bratislava",
       });
       modelServices.getModelHistory.mockResolvedValue({ days: [], unknownIntervals: [] });
-      const response = await GET();
+      const response = await GET(new Request("http://localhost/api/forecast/context"));
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
         latestCompletedLocalDate: "2026-09-29",
@@ -161,9 +172,9 @@ describe("forecast context route", () => {
 
   it("maps a missing active model and unexpected failures", async () => {
     modelServices.getModelStatus.mockRejectedValueOnce(new NoActiveModelEpisodeError());
-    expect((await GET()).status).toBe(404);
+    expect((await GET(new Request("http://localhost/api/forecast/context"))).status).toBe(404);
     modelServices.getModelStatus.mockRejectedValueOnce(new Error("private"));
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/forecast/context"));
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "context_failed" });
   });
@@ -172,6 +183,7 @@ describe("forecast context route", () => {
 describe("forecast recovery and recalculation route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 1, userId: "user-1", method: "session" });
     modelServices.getModelStatus.mockResolvedValue({ productionCurrent: false, latestModeledDate: null });
   });
 
@@ -179,10 +191,10 @@ describe("forecast recovery and recalculation route", () => {
     expect((await POST(actionRequest("unknown"))).status).toBe(400);
     recoveryServices.recoverModelEpisode.mockResolvedValue({ quality: "healthy" });
     expect((await POST(actionRequest("recover"))).status).toBe(200);
-    expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledWith({ seed: 20_260_824 });
+    expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledWith({ profileId: 1, seed: 20_260_824 });
     modelServices.recalculateModelEpisode.mockResolvedValue({ status: "complete" });
     expect((await POST(actionRequest("recalculate"))).status).toBe(200);
-    expect(modelServices.recalculateModelEpisode).toHaveBeenCalledWith({});
+    expect(modelServices.recalculateModelEpisode).toHaveBeenCalledWith({ profileId: 1 });
     expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledTimes(1);
     modelServices.initializeNewModelEpisode.mockResolvedValue({
       id: 12,
@@ -197,8 +209,8 @@ describe("forecast recovery and recalculation route", () => {
       modelVersion: "bodycast-physiology-v5",
       startDate: "2026-09-15",
     });
-    expect(modelServices.initializeNewModelEpisode).toHaveBeenCalledWith({});
-    expect(modelServices.recalculateModelEpisode).toHaveBeenLastCalledWith({});
+    expect(modelServices.initializeNewModelEpisode).toHaveBeenCalledWith({ profileId: 1 });
+    expect(modelServices.recalculateModelEpisode).toHaveBeenLastCalledWith({ profileId: 1 });
   });
 
   it("runs recovery automatically after recalculate when a gap remains", async () => {
@@ -215,6 +227,7 @@ describe("forecast recovery and recalculation route", () => {
     const response = await POST(actionRequest("recalculate"));
     expect(response.status).toBe(200);
     expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledWith({
+      profileId: 1,
       seed: 20_260_824,
       episodeId: 20,
     });

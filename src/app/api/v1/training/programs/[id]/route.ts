@@ -1,3 +1,5 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
+
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
   ProgramIdParamsSchema,
@@ -12,11 +14,13 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(_request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const parsed = ProgramIdParamsSchema.safeParse(await params);
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const program = await trainingService.getProgram(parsed.data.id);
+    const program = await trainingService.getProgram(parsed.data.id, principal.profileId);
     return program
       ? Response.json({ program })
       : Response.json({ error: "not_found" }, { status: 404 });
@@ -29,6 +33,9 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
   const routeParams = ProgramIdParamsSchema.safeParse(await params);
   if (!routeParams.success) return validationResponse(routeParams.error);
 
@@ -39,7 +46,7 @@ export async function PATCH(
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const program = await trainingService.updateProgram(routeParams.data.id, parsed.data);
+    const program = await trainingService.updateProgram(routeParams.data.id, parsed.data, principal.profileId);
     return Response.json({ program });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

@@ -70,12 +70,14 @@ function resolved(input: CreateWorkIntervalInput | PersistedWorkIntervalInput) {
 
 async function assertNoOverlap(
   transaction: Prisma.TransactionClient,
+  profileId: number,
   startAt: Date,
   endAt: Date,
   excludedId?: number,
 ): Promise<void> {
   const overlap = await transaction.workInterval.findFirst({
     where: {
+      profileId,
       startAt: { lt: endAt },
       endAt: { gt: startAt },
       ...(excludedId ? { id: { not: excludedId } } : {}),
@@ -90,34 +92,34 @@ function isExclusionViolation(error: unknown): boolean {
     && (error.code === "P2004" || error.code === "P2010");
 }
 
-async function invalidateWorkSources(transaction: Prisma.TransactionClient, dates: string[]): Promise<void> {
+async function invalidateWorkSources(transaction: Prisma.TransactionClient, profileId: number, dates: string[]): Promise<void> {
   // loadSources includes two calendar days of occupational context. Preserve
   // that boundary even when the interval and model use different timezones.
-  if (await transaction.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 }, select: { profileId: true } })) {
-    await new PhysiologyV7PersistenceRepository(transaction).invalidate(1, addCalendarDays([...dates].sort()[0]!, -2));
+  if (await transaction.physiologyV7Lifecycle.findUnique({ where: { profileId }, select: { profileId: true } })) {
+    await new PhysiologyV7PersistenceRepository(transaction).invalidate(profileId, addCalendarDays([...dates].sort()[0]!, -2));
   }
 }
 
 export class WorkIntervalRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async list(date?: string): Promise<WorkIntervalDto[]> {
+  async list(profileId: number, date?: string): Promise<WorkIntervalDto[]> {
     const records = await this.client.workInterval.findMany({
-      where: date ? { date } : undefined,
+      where: { profileId, ...(date ? { date } : {}) },
       orderBy: [{ startAt: "asc" }, { id: "asc" }],
       select: workIntervalSelect,
     });
     return records.map(toDto);
   }
 
-  async create(input: CreateWorkIntervalInput): Promise<WorkIntervalDto> {
-    const data = resolved(input);
+  async create(profileId: number, input: CreateWorkIntervalInput): Promise<WorkIntervalDto> {
+    const data = { ...resolved(input), profileId };
     try {
       const record = await this.client.$transaction(async (transaction) => {
-        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
-        await assertNoOverlap(transaction, data.startAt, data.endAt);
+        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
+        await assertNoOverlap(transaction, profileId, data.startAt, data.endAt);
         const created = await transaction.workInterval.create({ data, select: workIntervalSelect });
-        await invalidateWorkSources(transaction, [data.date]);
+        await invalidateWorkSources(transaction, profileId, [data.date]);
         return created;
       });
       return toDto(record);
@@ -127,12 +129,12 @@ export class WorkIntervalRepository {
     }
   }
 
-  async update(id: number, patch: UpdateWorkIntervalInput): Promise<WorkIntervalDto | null> {
+  async update(profileId: number, id: number, patch: UpdateWorkIntervalInput): Promise<WorkIntervalDto | null> {
     try {
       const record = await this.client.$transaction(async (transaction) => {
-        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
-        const current = await transaction.workInterval.findUnique({
-          where: { id }, select: workIntervalSelect,
+        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
+        const current = await transaction.workInterval.findFirst({
+          where: { id, profileId }, select: workIntervalSelect,
         });
         if (!current) return null;
         const currentDto = toDto(current);
@@ -144,10 +146,13 @@ export class WorkIntervalRepository {
           category: patch.category ?? currentDto.category,
           breakMinutes: patch.breakMinutes ?? currentDto.breakMinutes,
         });
-        const data = resolved(merged);
-        await assertNoOverlap(transaction, data.startAt, data.endAt, id);
-        const updated = await transaction.workInterval.update({ where: { id }, data, select: workIntervalSelect });
-        await invalidateWorkSources(transaction, [current.date, data.date]);
+        const data = { ...resolved(merged), profileId };
+        await assertNoOverlap(transaction, profileId, data.startAt, data.endAt, id);
+        const changed = await transaction.workInterval.updateMany({ where: { id, profileId }, data });
+        if (changed.count !== 1) return null;
+        const updated = await transaction.workInterval.findFirst({ where: { id, profileId }, select: workIntervalSelect });
+        if (!updated) return null;
+        await invalidateWorkSources(transaction, profileId, [current.date, data.date]);
         return updated;
       });
       return record ? toDto(record) : null;
@@ -157,13 +162,13 @@ export class WorkIntervalRepository {
     }
   }
 
-  async delete(id: number): Promise<boolean> {
+  async delete(profileId: number, id: number): Promise<boolean> {
     return this.client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
-      const current = await transaction.workInterval.findUnique({ where: { id }, select: { date: true } });
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
+      const current = await transaction.workInterval.findFirst({ where: { id, profileId }, select: { date: true } });
       if (!current) return false;
-      const deleted = (await transaction.workInterval.deleteMany({ where: { id } })).count > 0;
-      if (deleted) await invalidateWorkSources(transaction, [current.date]);
+      const deleted = (await transaction.workInterval.deleteMany({ where: { id, profileId } })).count > 0;
+      if (deleted) await invalidateWorkSources(transaction, profileId, [current.date]);
       return deleted;
     });
   }

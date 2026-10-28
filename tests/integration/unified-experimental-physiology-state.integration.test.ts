@@ -19,7 +19,7 @@ import { invalidateUnifiedRelativeMuscleSuffixV1, rebuildUnifiedExperimentalPhys
 import * as unifiedStateService from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
-import { healthSyncRepository } from "@/modules/health/health.repository";
+import { healthSyncRepositoryForProfile } from "@/modules/health/health.repository";
 import { syncHealthData } from "@/modules/health/health.service";
 import { processNextHealthSyncRefreshJob } from "@/modules/health/health-sync-refresh-worker";
 import * as glycogenStateShadowService from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
@@ -188,7 +188,7 @@ async function clean(): Promise<void> {
     await prisma.healthSyncSnapshot.deleteMany({ where: { id: { in: fixtureSnapshotIds } } });
   }
   await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({
-    where: { OR: [{ profileId, date: { in: allDates } }, { modelEpisodeId: { in: fixtureEpisodes.map(({ id }) => id) } }] },
+    where: { OR: [{ profileId, date: { in: allDates } }, { profileId: profileId, modelEpisodeId: { in: fixtureEpisodes.map(({ id }) => id) } }] },
   });
   await prisma.unifiedExperimentalPhysiologyState.deleteMany({ where: { profileId, date: { in: allDates } } });
   await prisma.experimentalGlycogenStateShadow.deleteMany({ where: { profileId, date: { in: allDates } } });
@@ -261,12 +261,12 @@ async function seed(input: {
     create: { id: profileId, sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"), heightCm: 180 },
     update: {},
   });
-  const episode = await prisma.modelEpisode.create({ data: { ...episodeData, timezone: input.timezone ?? episodeData.timezone } });
+  const episode = await prisma.modelEpisode.create({ data: {  ...episodeData, timezone: input.timezone ?? episodeData.timezone } });
   episodeId = episode.id;
   const order = input.order ?? dates;
   for (const [index, date] of order.entries()) {
     const health = await prisma.dailyHealthData.create({
-      data: {
+      data: { profileId: profileId,
         date,
         weightKg: 80 - index * 0.1,
         bodyFatPercent: 20,
@@ -308,7 +308,7 @@ async function seed(input: {
     if (input.withWorkouts && index === 0) {
       await prisma.workout.createMany({
         data: [
-          {
+          { profileId: profileId,
             dailyHealthDataId: health.id,
             externalId: "unified-strength-1",
             sourceIdentity: "ext:unified-strength-1",
@@ -318,7 +318,7 @@ async function seed(input: {
             durationMinutes: 60,
             activeEnergyKcal: 500,
           },
-          {
+          { profileId: profileId,
             dailyHealthDataId: health.id,
             externalId: "unified-stepper-1",
             sourceIdentity: "ext:unified-stepper-1",
@@ -338,7 +338,7 @@ async function seed(input: {
 async function addFutureDay(): Promise<void> {
   const episode = await prisma.modelEpisode.findFirstOrThrow({ where: { profileId, baselineDerivationMethod: fixtureMethod } });
   const health = await prisma.dailyHealthData.create({
-    data: {
+    data: { profileId: profileId,
       date: futureDate,
       weightKg: 79.7,
       bodyFatPercent: 20,
@@ -413,7 +413,7 @@ async function syncHealthWeightThroughService(
   const rawDay = { ...day, __bodycastFixture: healthSnapshotFixtureTag };
   return syncHealthData(
     { timezone: "Europe/Bratislava", days: [day] },
-    healthSyncRepository,
+    healthSyncRepositoryForProfile(profileId, prisma),
     [rawDay],
     new Date(receivedAt),
     undefined,
@@ -472,7 +472,7 @@ async function seedUnmodeledHealthWeightRefresh(withDayBlock: boolean): Promise<
       // Jan 4 is still in progress at fixtureNow: persist its source and
       // publish only the existing partial-quality Unified source-day state,
       // never a production DailyModelState for an incomplete local day.
-  await prisma.dailyHealthData.create({ data: {
+  await prisma.dailyHealthData.create({ data: { profileId: profileId,
     date: futureDate, weightKg: 79.7, caloriesKcal: 2_200,
     proteinG: 160, fatG: 70, carbsG: 230, steps: 7_000,
     walkingDistanceKm: 5, workoutFeedObserved: true, rawPayload: {},
@@ -1012,7 +1012,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     vi.setSystemTime(fixtureNow);
     try {
       await seedUnmodeledHealthWeightRefresh(withDayBlock);
-      const rawBefore = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: futureDate } });
+      const rawBefore = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: futureDate } } });
       await runOneTrainingRefreshAttempt(profileId);
       const job = await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } });
       expect(job.completedGeneration).toBe(job.requestedGeneration);
@@ -1020,7 +1020,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(await prisma.trainingSourceChange.count({ where: { profileId, acknowledgedAt: null } })).toBe(0);
       expect(await prisma.unifiedPublicationBlock.count({ where: { profileId } })).toBe(0);
       expect(await prisma.dailyModelState.count({ where: { episodeId: episodeId!, date: futureDate } })).toBe(0);
-      await expect(getModelStatus(episodeId!, prisma)).resolves.toMatchObject({
+      await expect(getModelStatus(profileId, episodeId!, prisma)).resolves.toMatchObject({
         productionCurrent: true, latestModeledDate: dates[2],
       });
       await expect(prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
@@ -1032,7 +1032,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       await expect(prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
         where: { profileId_date: { profileId, date: futureDate } },
       })).resolves.toMatchObject({ date: futureDate });
-      expect(await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: futureDate } })).toEqual(rawBefore);
+      expect(await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: futureDate } } })).toEqual(rawBefore);
       // A duplicate poll is a no-op, without another journal/event revision.
       await expect(processNextTrainingRefreshJob()).resolves.toBe(false);
       expect(await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId } })).toEqual(job);
@@ -1176,7 +1176,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
     await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
 
-    await healthSyncRepository.syncDay(
+    await healthSyncRepositoryForProfile(profileId, prisma).syncDay(
       { date: dates[1]!, weightKg: 79.4, caloriesKcal: 2_200, proteinG: 160, fatG: 70, carbsG: 220 },
       { date: dates[1]!, __bodycastFixture: healthSnapshotFixtureTag },
       { timezone: "Europe/Bratislava", receivedAt: new Date(`${dates[1]}T15:00:00.000Z`), syncedAt: null },
@@ -1225,10 +1225,10 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     ]);
     expect(await prisma.healthSyncSnapshot.count({ where: { date: dates[1] } })).toBe(beforeSnapshotCount + 2);
     expect(Number((await prisma.dailyHealthData.findUniqueOrThrow({
-      where: { date: dates[1] }, select: { weightKg: true },
+      where: { profileId_date: { profileId: profileId, date: dates[1] } }, select: { weightKg: true },
     })).weightKg)).toBe(79.5);
     const persistedHealth = await prisma.dailyHealthData.findUniqueOrThrow({
-      where: { date: dates[1] }, select: { id: true, updatedAt: true },
+      where: { profileId_date: { profileId: profileId, date: dates[1] } }, select: { id: true, updatedAt: true },
     });
     const glycogen = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
       where: { profileId_date: { profileId, date: dates[1]! } }, select: { result: true },
@@ -1588,7 +1588,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const originalPublication = activeEnergyPublication.publishActiveEnergyChangesV1;
     const productionFence: { value: { invalidationGeneration: number; updatedAt: string } | null } = { value: null };
     const publicationCall = vi.spyOn(activeEnergyPublication, "publishActiveEnergyChangesV1")
-      .mockImplementationOnce(async (input = {}) => originalPublication({
+      .mockImplementationOnce(async (input = { profileId: profileId,}) => originalPublication({
         ...input,
         onLifecycleFenceChanged: (fence) => {
           productionFence.value = fence;
@@ -1648,9 +1648,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       data: { latestModeledDate: dates[2] },
     });
 
-    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] }, select: { id: true } });
+    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[2] } }, select: { id: true } });
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: profileId,
         dailyHealthDataId: day.id,
         sourceIdentity: `${fixtureMethod}-candidate-self-invalidation`,
         type: "Stair Climbing",
@@ -1668,10 +1668,10 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         await prisma.experimentalStepperActiveEnergyShadow.deleteMany({ where: { workoutId: workout.id } });
         await stepperActiveEnergyShadowService.recordExperimentalStepperActiveEnergyShadow({
           workoutId: workout.id,
-          profileId: candidateProfileId,
+
           ...(options?.onLifecycleFenceChanged === undefined
-            ? {}
-            : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
+            ? { profileId: profileId,}
+            : { profileId: profileId, onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
         });
         throw new Error("injected later candidate refresh failure after committed shadow self-invalidation");
       });
@@ -1781,9 +1781,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       name: `${fixtureMethod}-retrospective-retry`,
       exercises: [{ catalogId: exercise.id, plannedSets: 1, resistanceType: RESISTANCE.EXTERNAL_WEIGHT }],
     }, profileId);
-    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[1] }, select: { id: true } });
+    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[1] } }, select: { id: true } });
     const workout = await prisma.workout.create({
-      data: {
+      data: { profileId: profileId,
         dailyHealthDataId: day.id,
         sourceIdentity: `${fixtureMethod}-retrospective-retry`,
         type: "Traditional Strength Training",
@@ -1956,7 +1956,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
           };
           const result = await syncHealthData(
             { timezone: "Europe/Bratislava", days: [day] },
-            healthSyncRepository,
+            healthSyncRepositoryForProfile(profileId, prisma),
             [{ ...day, __bodycastFixture: healthSnapshotFixtureTag }],
             new Date(`${dates[1]}T18:01:00.000Z`),
             undefined,
@@ -2094,9 +2094,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         name: `${fixtureMethod}-met-fallback-freshness`,
         exercises: [{ catalogId: exercise.id, plannedSets: 1, resistanceType: RESISTANCE.EXTERNAL_WEIGHT }],
       }, profileId);
-      const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] }, select: { id: true } });
+      const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[2] } }, select: { id: true } });
       const workout = await prisma.workout.create({
-        data: {
+        data: { profileId: profileId,
           dailyHealthDataId: day.id,
           sourceIdentity: `${fixtureMethod}-linked-strength-met-fallback`,
           type: "Traditional Strength Training",
@@ -2150,7 +2150,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(healthResult).toMatchObject({ status: "ok", modelPublicationStatus: "stale" });
 
       expect(Number((await prisma.dailyHealthData.findUniqueOrThrow({
-        where: { date: dates[2] }, select: { weightKg: true },
+        where: { profileId_date: { profileId: profileId, date: dates[2] } }, select: { weightKg: true },
       })).weightKg)).toBe(70);
       const pendingHealth = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId } });
       expect(pendingHealth.completedGeneration).toBeLessThan(pendingHealth.requestedGeneration);
@@ -2175,7 +2175,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       const resolutionBeforeEquivalentReplay = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
         where: { id: alias.eventId }, select: { resolutionRevision: true },
       });
-      await expect(publishActiveEnergyChangesV1({ now: new Date(`${futureDate}T14:00:00.000Z`) })).resolves.toBe(true);
+      await expect(publishActiveEnergyChangesV1({ profileId: profileId, now: new Date(`${futureDate}T14:00:00.000Z`) })).resolves.toBe(true);
       const resolutionAfterEquivalentReplay = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
         where: { id: alias.eventId }, select: { resolutionRevision: true },
       });
@@ -2243,7 +2243,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(fixtureNow);
     try {
-      const dayRepository = new DailyMetricRepository();
+      const dayRepository = new DailyMetricRepository(profileId);
       await dayRepository.update(dates[1]!, { weightKg: 79.4, caloriesKcal: 2_150, proteinG: 155, fatG: 68, carbsG: 205 });
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1 });
 
@@ -2260,7 +2260,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       };
       const importedStepperSync = await syncHealthData(
         { timezone: "Europe/Bratislava", days: [importedStepperDay] },
-        healthSyncRepository,
+        healthSyncRepositoryForProfile(profileId, prisma),
         [{ ...importedStepperDay, __bodycastFixture: healthSnapshotFixtureTag }],
         new Date(`${dates[2]}T09:00:00.000Z`),
         undefined,
@@ -2274,7 +2274,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({ where: { workoutId: stepper.id } }))
         .not.toBeNull();
       const stepperRepository = new StepperWorkoutRepository();
-      await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({ deleted: true });
+      await expect(stepperRepository.delete(profileId, stepper.id)).resolves.toMatchObject({ deleted: true });
       await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({ where: { workoutId: stepper.id } }))
         .toBeNull();
@@ -2302,7 +2302,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       const boundaryDay = { date: futureDate, workouts: [boundaryWorkout] };
       await syncHealthData(
         { timezone: "Europe/Bratislava", days: [boundaryDay] },
-        healthSyncRepository,
+        healthSyncRepositoryForProfile(profileId, prisma),
         [{ ...boundaryDay, __bodycastFixture: healthSnapshotFixtureTag }],
         new Date(`${dates[2]}T23:35:00.000Z`),
         undefined,
@@ -2631,7 +2631,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const firstDay = { date: dates[1]!, steps: 1_000, carbsG: 0, workouts: [workout] };
     await syncHealthData(
       { timezone: "Europe/Bratislava", days: [firstDay] },
-      healthSyncRepository,
+      healthSyncRepositoryForProfile(profileId, prisma),
       [{ ...firstDay, __bodycastFixture: healthSnapshotFixtureTag }],
       new Date(`${dates[1]}T07:50:00.000Z`),
       undefined,
@@ -2640,7 +2640,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const secondDay = { date: dates[1]!, steps: 3_000, carbsG: 0, workouts: [workout] };
     await syncHealthData(
       { timezone: "Europe/Bratislava", days: [secondDay] },
-      healthSyncRepository,
+      healthSyncRepositoryForProfile(profileId, prisma),
       [{ ...secondDay, __bodycastFixture: healthSnapshotFixtureTag }],
       new Date(`${dates[1]}T08:30:00.000Z`),
       undefined,
@@ -2668,7 +2668,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const correctedDay = { ...secondDay, workouts: [{ ...workout, type: "Running" }] };
     const corrected = await syncHealthData(
       { timezone: "Europe/Bratislava", days: [correctedDay] },
-      healthSyncRepository,
+      healthSyncRepositoryForProfile(profileId, prisma),
       [{ ...correctedDay, __bodycastFixture: healthSnapshotFixtureTag }],
       new Date(`${dates[1]}T08:40:00.000Z`),
       undefined,
@@ -2715,7 +2715,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       const secondDay = { date: dates[2]!, weightKg: 79.25, caloriesKcal: 2_190, proteinG: 159, fatG: 69, carbsG: 219 };
       const syncResult = await syncHealthData(
         { timezone: "Europe/Bratislava", days: [firstDay, secondDay] },
-        healthSyncRepository,
+        healthSyncRepositoryForProfile(profileId, prisma),
         [
           { ...firstDay, __bodycastFixture: healthSnapshotFixtureTag },
           { ...secondDay, __bodycastFixture: healthSnapshotFixtureTag },
@@ -2742,7 +2742,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     // A later unrelated day write must not erase the failed Health refresh
     // fence or publish over the stale child dependency.
-    const dayRepository = new DailyMetricRepository();
+    const dayRepository = new DailyMetricRepository(profileId);
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(fixtureNow);
     try {
@@ -2765,7 +2765,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       orderBy: { sourceKey: "asc" },
       select: { sourceKey: true },
     })).toEqual([{ sourceKey: dates[1] }]);
-    expect(Number((await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] }, select: { weightKg: true } })).weightKg))
+    expect(Number((await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[2] } }, select: { weightKg: true } })).weightKg))
       .toBe(79.2);
     expect(isUnifiedGenerationCurrentV1(blocked)).toBe(false);
 
@@ -2791,7 +2791,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       } finally {
         failFinalHealthPublication.mockRestore();
       }
-      expect(await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] }, select: { weightKg: true } }))
+      expect(await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[2] } }, select: { weightKg: true } }))
         .toMatchObject({ weightKg: 79.05 });
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "health", sourceKey: dates[2]! } },
@@ -2855,7 +2855,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await verifyAndPublishUnifiedV3Postflight({ profileId });
     await activateAndReplayUnifiedV4({ profileId });
     const before = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
-    const dayRepository = new DailyMetricRepository();
+    const dayRepository = new DailyMetricRepository(profileId);
 
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(fixtureNow);
@@ -2882,7 +2882,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
         failAfterFenceClear.mockRestore();
       }
 
-      expect(await prisma.dailyHealthData.findUnique({ where: { date: dates[2]! } })).toBeNull();
+      expect(await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: profileId, date: dates[2]! } } })).toBeNull();
       const restoredFence = await prisma.unifiedPublicationBlock.findUniqueOrThrow({
         where: { profileId_source_sourceKey: { profileId, source: "day", sourceKey: dates[2]! } },
       });
@@ -2927,7 +2927,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     vi.setSystemTime(fixtureNow);
     try {
     const stepperRepository = new StepperWorkoutRepository();
-    const stepper = await stepperRepository.create({
+    const stepper = await stepperRepository.create(profileId, {
       startAt: `${dates[1]}T00:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
     });
     const createChange = await prisma.trainingSourceChange.findFirstOrThrow({
@@ -2940,7 +2940,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({
       where: { workoutId: stepper.id }, select: { workoutId: true },
     })).toEqual({ workoutId: stepper.id });
-    await expect(stepperRepository.update(stepper.id, {
+    await expect(stepperRepository.update(profileId, stepper.id, {
       startAt: `${dates[2]}T00:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
     })).resolves.toMatchObject({ id: stepper.id, modelPublicationStatus: "stale" });
     const failFirstStateReplay = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
@@ -2998,12 +2998,12 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     vi.setSystemTime(fixtureNow);
     try {
     const stepperRepository = new StepperWorkoutRepository();
-    const stepper = await stepperRepository.create({
+    const stepper = await stepperRepository.create(profileId, {
       startAt: `${dates[1]}T08:00:00.000Z`, durationMinutes: 20, manualStepCount: 1_500,
     });
     deletedFixtureStepperSourceKeys.add(String(stepper.id));
     await runTrainingRefreshToCompletion(profileId);
-    await expect(stepperRepository.delete(stepper.id)).resolves.toMatchObject({ deleted: true });
+    await expect(stepperRepository.delete(profileId, stepper.id)).resolves.toMatchObject({ deleted: true });
     const failFirstStateReplay = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
       .mockRejectedValueOnce(new Error("fixture stepper delete shadow failure"));
     try {
@@ -3022,11 +3022,11 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     })).toBeNull();
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1 });
 
-    const secondStepper = await stepperRepository.create({
+    const secondStepper = await stepperRepository.create(profileId, {
       startAt: `${dates[2]}T09:00:00.000Z`, durationMinutes: 15, manualStepCount: 900,
     });
     deletedFixtureStepperSourceKeys.add(String(secondStepper.id));
-    await expect(stepperRepository.delete(secondStepper.id)).resolves.toMatchObject({ deleted: true });
+    await expect(stepperRepository.delete(profileId, secondStepper.id)).resolves.toMatchObject({ deleted: true });
     await runOneTrainingRefreshAttempt(profileId, {
       afterProgressStage: async (_job, stage) => {
         if (stage === "unified-publication") throw new Error("fixture final stepper-delete publication failure");
@@ -3058,7 +3058,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(fixtureNow);
     const stepperRepository = new StepperWorkoutRepository();
-    const created = await stepperRepository.create({
+    const created = await stepperRepository.create(profileId, {
       startAt: `${dates[1]}T09:30:00.000Z`, durationMinutes: 20, manualStepCount: 1_300,
     });
     deletedFixtureStepperSourceKeys.add(String(created.id));
@@ -3097,7 +3097,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const startAt = `${dates[1]}T09:15:00.000Z`;
     const input = { startAt, durationMinutes: 25, manualStepCount: 1_600 };
     const stepperRepository = new StepperWorkoutRepository();
-    const created = await stepperRepository.create(input);
+    const created = await stepperRepository.create(profileId, input);
     const failFirstReplay = vi.spyOn(glycogenStateShadowService, "recordExperimentalGlycogenStateShadow")
       .mockRejectedValueOnce(new Error("fixture stepper create shadow failure"));
     try {
@@ -3121,7 +3121,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow("Unified V4 is current");
 
     try {
-      await expect(stepperRepository.update(committed.id, input)).resolves.toMatchObject({ id: committed.id });
+      await expect(stepperRepository.update(profileId, committed.id, input)).resolves.toMatchObject({ id: committed.id });
       await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.unifiedPublicationBlock.findUnique({
         where: { profileId_source_sourceKey: { profileId, source: "stepper", sourceKey: String(committed.id) } },
@@ -3164,7 +3164,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       const day = { date: futureDate, weightKg: 79.5, caloriesKcal: 2_180, proteinG: 158, fatG: 68, carbsG: 218 };
       const result = await syncHealthData(
         { timezone: "Europe/Bratislava", days: [day] },
-        healthSyncRepository,
+        healthSyncRepositoryForProfile(profileId, prisma),
         [{ ...day, __bodycastFixture: healthSnapshotFixtureTag }],
         new Date(`${futureDate}T18:00:00.000Z`),
         undefined,
@@ -3227,7 +3227,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       })).toEqual(healthFence);
 
       const stepperRepository = new StepperWorkoutRepository();
-      const stepper = await stepperRepository.create({
+      const stepper = await stepperRepository.create(profileId, {
         startAt: `${dates[2]}T08:00:00.000Z`, durationMinutes: 20, manualStepCount: 1_200,
       });
       deletedFixtureStepperSourceKeys.add(String(stepper.id));
@@ -3437,12 +3437,12 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     await prisma.unifiedExperimentalPhysiologyState.upsert({
       where: { profileId_date: { profileId, date: dates[0] } },
-      create: { ...legacy, sourceFingerprint: "old-app-updated" },
+      create: {  ...legacy, sourceFingerprint: "old-app-updated" },
       update: { sourceFingerprint: "old-app-updated" },
     });
     await prisma.unifiedExperimentalPhysiologyState.upsert({
       where: { profileId_date: { profileId, date: dates[1] } },
-      create: { ...legacy, date: dates[1], sourceFingerprint: "old-app-created" },
+      create: {  ...legacy, date: dates[1], sourceFingerprint: "old-app-created" },
       update: { sourceFingerprint: "old-app-created" },
     });
     expect(await prisma.unifiedExperimentalPhysiologyState.findMany({
@@ -3482,7 +3482,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     } });
     const dailyDataByDate = new Map<string, number>();
     for (const [index, date] of dateLineDates.entries()) {
-      const health = await prisma.dailyHealthData.create({ data: {
+      const health = await prisma.dailyHealthData.create({ data: { profileId: profileId,
         date,
         weightKg: 80 - index * 0.1,
         bodyFatPercent: 20,
@@ -3520,7 +3520,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       }
     }
     const program = await prisma.trainingProgram.create({ data: { profileId, name: `${fixtureMethod}-date-line-program` } });
-    const programVersion = await prisma.trainingProgramVersion.create({ data: { programId: program.id, versionNumber: 1 } });
+    const programVersion = await prisma.trainingProgramVersion.create({ data: { profileId: profileId, programId: program.id, versionNumber: 1 } });
     await prisma.trainingProgram.update({ where: { id: program.id }, data: { currentVersionId: programVersion.id } });
     const eventAt = new Date(`${dateLineDates[2]}T11:00:00.000Z`);
     const session = await prisma.strengthDiarySession.create({ data: {
@@ -3701,7 +3701,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[0] } },
       select: { updatedAt: true, resultFingerprint: true },
     });
-    await prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { carbsG: 310 } });
+    await prisma.dailyHealthData.update({ where: { profileId_date: { profileId: profileId, date: dates[1] } }, data: { carbsG: 310 } });
     await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[1], toDate: dates[2] });
     const prefixAfter = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
@@ -3713,7 +3713,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     await clean();
     await seed();
-    await prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { carbsG: 310 } });
+    await prisma.dailyHealthData.update({ where: { profileId_date: { profileId: profileId, date: dates[1] } }, data: { carbsG: 310 } });
     await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     expect(trajectory(await rows(dates[1], dates[2]))).toEqual(suffix);
@@ -3726,7 +3726,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[0] } },
       select: { updatedAt: true, resultFingerprint: true },
     });
-    await prisma.dailyHealthData.delete({ where: { date: dates[1] } });
+    await prisma.dailyHealthData.delete({ where: { profileId_date: { profileId: profileId, date: dates[1] } } });
     await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[1], toDate: dates[2] });
     const prefixAfter = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
@@ -3738,7 +3738,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     await clean();
     await seed();
-    await prisma.dailyHealthData.delete({ where: { date: dates[1] } });
+    await prisma.dailyHealthData.delete({ where: { profileId_date: { profileId: profileId, date: dates[1] } } });
     await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     expect(trajectory(await rows(dates[1], dates[2]))).toEqual(suffix);

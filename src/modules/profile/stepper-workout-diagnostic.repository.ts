@@ -5,9 +5,9 @@ import { buildStepperWorkoutDiagnosticV7, type StepperWorkoutDiagnosticV7 } from
 export class StepperWorkoutDiagnosticRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async get(workoutId: number): Promise<StepperWorkoutDiagnosticV7 | null | undefined> {
+  async get(workoutId: number, profileId: number): Promise<StepperWorkoutDiagnosticV7 | null | undefined> {
     const workout = await this.client.workout.findFirst({
-      where: { id: workoutId, hiddenFromHistory: false },
+      where: { id: workoutId, profileId, hiddenFromHistory: false },
       select: {
         id: true,
         type: true,
@@ -21,10 +21,12 @@ export class StepperWorkoutDiagnosticRepository {
     if (workout === null) return undefined;
     const [snapshots, stepIntervals, heartRateSamples] = await Promise.all([
       this.client.healthSyncSnapshot.findMany({
+        where: { profileId },
         select: { id: true, receivedAt: true, syncedAt: true, steps: true },
       }),
       this.client.healthActivityInterval.findMany({
         where: {
+          profileId,
           metric: "steps",
           startAt: { lt: workout.endAt },
           endAt: { gt: workout.startAt },
@@ -33,7 +35,7 @@ export class StepperWorkoutDiagnosticRepository {
         orderBy: [{ startAt: "asc" }, { id: "asc" }],
       }),
       this.client.heartRateSample.findMany({
-        where: { timestamp: { gte: workout.startAt, lte: workout.endAt } },
+        where: { profileId, timestamp: { gte: workout.startAt, lte: workout.endAt } },
         select: { timestamp: true, bpm: true, source: true }, orderBy: { timestamp: "asc" },
       }),
     ]);

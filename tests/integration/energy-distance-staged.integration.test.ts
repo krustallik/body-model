@@ -4,6 +4,7 @@ import { calculateDynamicDailyExpenditure } from "@/model/dynamic-daily-expendit
 import { createDynamicRmrParameters } from "@/model/dynamic-rmr";
 import type { BodyCompositionState } from "@/model/body-composition/state";
 import { syncHealthData } from "@/modules/health/health.service";
+import { healthSyncRepositoryForProfile } from "@/modules/health/health.repository";
 import { STAIR_CLIMBING_TYPE, TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { buildSimulationDays, eligibleHistoricalDonors } from "@/modules/model-episodes/simulation-input-builder";
@@ -35,7 +36,7 @@ import { inventoryFullHistoryRawInputs } from "@/modules/model-episodes/full-his
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
 const prisma = new PrismaClient({ datasourceUrl: requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL) });
-const repository = new ModelEpisodeRepository(prisma);
+const repository = new ModelEpisodeRepository(1, prisma);
 const steppers = new StepperWorkoutRepository(prisma);
 const version = "bodycast-physiology-v7+selection-v1";
 const programName = "energy-distance-e2e";
@@ -100,8 +101,8 @@ function spend(events: NonNullable<ReturnType<typeof buildSimulationDays>[number
 
 async function day(date: string, weightKg: number | null, steps: number | null = null) {
   return prisma.dailyHealthData.upsert({
-    where: { date },
-    create: {
+    where: { profileId_date: { profileId: 1, date: date } },
+    create: { profileId: 1,
       date,
       weightKg,
       steps,
@@ -170,9 +171,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
       update: {},
       create: { id: 1, sex: "male", dateOfBirth: new Date("1990-05-10"), heightCm: 180 },
     });
-    const exercise = await prisma.exerciseCatalog.create({ data: { name: exerciseName } });
+    const exercise = await prisma.exerciseCatalog.create({ data: { profileId: 1, name: exerciseName } });
     const program = await prisma.trainingProgram.create({
-      data: {
+      data: { profileId: 1,
         name: programName,
         versions: {
           create: {
@@ -195,7 +196,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
   it("carries saved web, matched, manual, distance, and mass records into staged expenditure", async () => {
     await day("2091-04-01", 81);
     await prisma.healthMetricSample.create({
-      data: {
+      data: { profileId: 1,
         date: "2091-04-01",
         metric: "weight-kg",
         source: "apple-health-shortcut",
@@ -204,7 +205,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const web = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId,
         programVersionId: versionId,
         status: "COMPLETED",
@@ -240,7 +241,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
     await day("2091-04-02", 81);
     const active = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId,
         programVersionId: versionId,
         status: "ACTIVE",
@@ -250,7 +251,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     await prisma.experimentalStrengthEnergyShadow.create({
-      data: {
+      data: { profileId: 1,
         sessionId: active.id,
         sourceFingerprint: "e2e-active",
         modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
@@ -261,7 +262,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
     const matchedDay = await day("2091-04-03", 81);
     await prisma.healthMetricSample.create({
-      data: {
+      data: { profileId: 1,
         date: "2091-04-03",
         metric: "weight-kg",
         source: "apple-health-shortcut",
@@ -270,7 +271,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const garmin = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: matchedDay.id,
         sourceIdentity: "ext:e2e-strength",
         externalId: "e2e-strength",
@@ -282,7 +283,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const matched = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId,
         programVersionId: versionId,
         status: "COMPLETED",
@@ -317,13 +318,13 @@ describe("staged energy and distance PostgreSQL integration", () => {
     const matchedKcal = (matchedShadow.result as { estimatedActiveKcal: number | null }).estimatedActiveKcal;
     expect(matchedKcal).toBeGreaterThan(0);
 
-    const manual = await steppers.create({
+    const manual = await steppers.create(1, {
       startAt: "2091-04-04T09:00:00.000+02:00",
       durationMinutes: 60,
       manualStepCount: 2000,
       manualActiveEnergyKcal: 150,
     });
-    await prisma.dailyHealthData.update({ where: { date: "2091-04-04" }, data: { steps: 8000, weightKg: 81, caloriesKcal: 2500, proteinG: 150, fatG: 70, carbsG: 250, averageWalkingSpeedKmh: 5, walkingDistanceKm: 0, strengthTrainingMinutes: 0, workoutFeedObserved: true } });
+    await prisma.dailyHealthData.update({ where: { profileId_date: { profileId: 1, date: "2091-04-04" } }, data: { steps: 8000, weightKg: 81, caloriesKcal: 2500, proteinG: 150, fatG: 70, carbsG: 250, averageWalkingSpeedKmh: 5, walkingDistanceKm: 0, strengthTrainingMinutes: 0, workoutFeedObserved: true } });
     await syncHealthData({
       timezone: "Europe/Bratislava",
       days: [{
@@ -343,7 +344,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
           activeEnergyKcal: 400,
         }],
       }],
-    });
+    }, healthSyncRepositoryForProfile(1, prisma));
     const refreshedWebAccounting = await training.refreshSessionAccounting(
       web.id,
       1,
@@ -351,12 +352,12 @@ describe("staged energy and distance PostgreSQL integration", () => {
     );
     expect(refreshedWebAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81 });
     await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: web.id, profileId: 1 });
-    const persisted = await persistStepperReconciliationV1(prisma, {
+    const persisted = await persistStepperReconciliationV1(prisma, { profileId: 1,
       from: "2091-04-04",
       to: "2091-04-04",
       synchronizedSteps: 8000,
     });
-    const again = await persistStepperReconciliationV1(prisma, {
+    const again = await persistStepperReconciliationV1(prisma, { profileId: 1,
       from: "2091-04-04",
       to: "2091-04-04",
       synchronizedSteps: 8000,
@@ -375,8 +376,8 @@ describe("staged energy and distance PostgreSQL integration", () => {
     const distanceDay = await day("2091-04-05", 81);
     await prisma.healthActivityInterval.createMany({
       data: [
-        { date: "2091-04-05", metric: "walking-distance-km", startAt: new Date("2091-04-05T06:00:00.000Z"), endAt: new Date("2091-04-05T08:00:00.000Z"), value: 10, sourceFingerprint: "e2e-distance-long" },
-        { date: "2091-04-05", metric: "walking-distance-km", startAt: new Date("2091-04-05T06:10:00.000Z"), endAt: new Date("2091-04-05T06:30:00.000Z"), value: 2, sourceFingerprint: "e2e-distance-short" },
+        { profileId: 1, date: "2091-04-05", metric: "walking-distance-km", startAt: new Date("2091-04-05T06:00:00.000Z"), endAt: new Date("2091-04-05T08:00:00.000Z"), value: 10, sourceFingerprint: "e2e-distance-long" },
+        { profileId: 1, date: "2091-04-05", metric: "walking-distance-km", startAt: new Date("2091-04-05T06:10:00.000Z"), endAt: new Date("2091-04-05T06:30:00.000Z"), value: 2, sourceFingerprint: "e2e-distance-short" },
       ],
     });
     await prisma.dailyHealthData.update({ where: { id: distanceDay.id }, data: { walkingDistanceKm: null } });
@@ -385,12 +386,12 @@ describe("staged energy and distance PostgreSQL integration", () => {
     await prisma.dailyHealthData.update({ where: { id: ledgerDay.id }, data: { walkingDistanceKm: 4 } });
     await prisma.healthActivityInterval.createMany({
       data: [
-        { date: "2091-04-06", metric: "walking-distance-km", startAt: new Date("2091-04-06T06:00:00.000Z"), endAt: new Date("2091-04-06T08:00:00.000Z"), value: 4, sourceFingerprint: "e2e-ledger-distance" },
-        { date: "2091-04-06", metric: "steps", startAt: new Date("2091-04-06T06:00:00.000Z"), endAt: new Date("2091-04-06T08:00:00.000Z"), value: 2000, sourceFingerprint: "e2e-ledger-steps" },
+        { profileId: 1, date: "2091-04-06", metric: "walking-distance-km", startAt: new Date("2091-04-06T06:00:00.000Z"), endAt: new Date("2091-04-06T08:00:00.000Z"), value: 4, sourceFingerprint: "e2e-ledger-distance" },
+        { profileId: 1, date: "2091-04-06", metric: "steps", startAt: new Date("2091-04-06T06:00:00.000Z"), endAt: new Date("2091-04-06T08:00:00.000Z"), value: 2000, sourceFingerprint: "e2e-ledger-steps" },
       ],
     });
     await prisma.workInterval.create({
-      data: {
+      data: { profileId: 1,
         date: "2091-04-06",
         startAt: new Date("2091-04-06T06:00:00.000Z"),
         endAt: new Date("2091-04-06T07:00:00.000Z"),
@@ -400,7 +401,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: ledgerDay.id,
         sourceIdentity: "ext:e2e-ledger-stair",
         externalId: "e2e-ledger-stair",
@@ -414,7 +415,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
     await day("2091-04-07", 81);
     await prisma.healthMetricSample.create({
-      data: {
+      data: { profileId: 1,
         date: "2091-04-07",
         metric: "weight-kg",
         source: "apple-health-shortcut",
@@ -423,7 +424,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const known = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId, programVersionId: versionId, status: "COMPLETED", entryMode: "LIVE",
         webStartedAt: new Date("2091-04-07T07:00:00.000Z"),
         webEndedAt: new Date("2091-04-07T08:00:00.000Z"),
@@ -454,7 +455,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     expect(knownKcal).toBeGreaterThan(0);
     const knownKcalValue = knownKcal as number;
     await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId, programVersionId: versionId, status: "COMPLETED", entryMode: "LIVE",
         webStartedAt: new Date("2091-04-07T09:00:00.000Z"),
         webEndedAt: new Date("2091-04-07T10:00:00.000Z"),
@@ -564,7 +565,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     await day(strengthDate, 81);
     await day(stepperDate, 81, 8_000);
     await prisma.healthMetricSample.create({
-      data: {
+      data: { profileId: 1,
         date: strengthDate,
         metric: "weight-kg",
         source: "apple-health-shortcut",
@@ -572,9 +573,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
         value: 81,
       },
     });
-    const strengthHealth = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: strengthDate } });
+    const strengthHealth = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: strengthDate } } });
     const strengthWorkout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: strengthHealth.id,
         sourceIdentity: "ext:e2e-materialize-strength",
         externalId: "e2e-materialize-strength",
@@ -587,7 +588,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const strengthSession = await prisma.strengthDiarySession.create({
-      data: {
+      data: { profileId: 1,
         programId,
         programVersionId: versionId,
         status: "COMPLETED",
@@ -621,9 +622,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
       `legacy-materialization-strength-${strengthSession.id}`,
     );
 
-    const stepperHealth = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: stepperDate } });
+    const stepperHealth = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: stepperDate } } });
     const manualWorkout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: stepperHealth.id,
         sourceIdentity: "manual:stepper:e2e-materialize-stepper",
         type: STAIR_CLIMBING_TYPE,
@@ -635,7 +636,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const deviceWorkout = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: stepperHealth.id,
         sourceIdentity: "ext:e2e-materialize-stepper",
         externalId: "e2e-materialize-stepper",
@@ -668,6 +669,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
     await prisma.healthActivityInterval.createMany({
       data: [400, 350, 450, 400].map((value, index) => ({
+        profileId: 1,
         date: stepperDate,
         metric: "steps",
         startAt: new Date(stepperStart.getTime() + index * 5 * 60_000),
@@ -853,7 +855,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     const sampleAt = new Date("2091-04-08T06:30:00.000Z");
     await day(date, 81);
     await prisma.healthMetricSample.create({
-      data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: sampleAt, value: 81 },
+      data: { profileId: 1, date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: sampleAt, value: 81 },
     });
     const prepared = prepareEpisodeInitialization({
       profile: modelProfile,
@@ -884,7 +886,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
     try {
       const session = await prisma.strengthDiarySession.create({
-        data: {
+        data: { profileId: 1,
           programId,
           programVersionId: versionId,
           status: "COMPLETED",
@@ -979,7 +981,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
   it("replays loaded source days and rolls visibility back exactly", async () => {
     const hiddenDay = await day("2091-04-09", 80);
     const hidden = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: hiddenDay.id,
         sourceIdentity: "ext:e2e-hidden",
         type: STAIR_CLIMBING_TYPE,
@@ -1010,9 +1012,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
     expect(interrupted.resumeAt).toBe("2091-04-02");
 
-    const store = prismaVisibilityStoreV1(prisma);
+    const store = prismaVisibilityStoreV1(prisma, 1);
     const garminCanonical = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: hiddenDay.id,
         sourceIdentity: "ext:e2e-garmin-canonical",
         type: STAIR_CLIMBING_TYPE,
@@ -1025,7 +1027,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const manualAudit = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: hiddenDay.id,
         sourceIdentity: "manual:stepper:e2e-audit",
         type: STAIR_CLIMBING_TYPE,
@@ -1040,7 +1042,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
       },
     });
     const confirmedGroup = await prisma.stepperReconciliationGroup.create({
-      data: {
+      data: { profileId: 1,
         status: "confirmed",
         policyVersion: "bodycast-stepper-reconciliation-v1",
         localDate: "2091-04-09",
@@ -1104,7 +1106,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     };
     const reconstruction = await reconstructSelectionHistoryV1({
       repository,
-      episode: { ...episode, modelVersion: version, active: false },
+      episode: {  ...episode, modelVersion: version, active: false },
       from: "2091-04-01",
       to: "2091-04-07",
     });
@@ -1113,7 +1115,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     expect(reconstruction.donorEligibleDates).not.toContain("2091-04-07");
     const stale = await reconstructSelectionHistoryV1({
       repository,
-      episode: { ...episode, modelVersion: version, active: false },
+      episode: {  ...episode, modelVersion: version, active: false },
       from: "2091-04-01",
       to: "2091-04-01",
       expectedSourceRevision: "not-current",
@@ -1192,7 +1194,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     const rolled = await rollbackSelectionEpisodeActivationV1({
       client: prisma,
       repository,
-      episode: { ...persistedEpisode!, modelVersion: version },
+      episode: {  ...persistedEpisode!, modelVersion: version },
       from: "2091-04-01",
       to: "2091-04-07",
       generationId: "e2e-episode-activation",
@@ -1231,14 +1233,14 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
 
   it("confirms one-to-one matching and rejects remaining candidates", async () => {
     await day("2091-05-01", 80, 10_000);
-    const manual = await steppers.create({
+    const manual = await steppers.create(1, {
       startAt: "2091-05-01T09:00:00.000+02:00",
       durationMinutes: 60,
       manualStepCount: 2000,
       manualActiveEnergyKcal: 300,
     });
     await prisma.dailyHealthData.update({
-      where: { date: "2091-05-01" },
+      where: { profileId_date: { profileId: 1, date: "2091-05-01" } },
       data: { steps: 10_000, weightKg: 80, caloriesKcal: 2500, proteinG: 150, fatG: 70, carbsG: 250, averageWalkingSpeedKmh: 5, walkingDistanceKm: 0, strengthTrainingMinutes: 0, workoutFeedObserved: true },
     });
     await syncHealthData({
@@ -1260,11 +1262,11 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
           activeEnergyKcal: 400,
         }],
       }],
-    });
+    }, healthSyncRepositoryForProfile(1, prisma));
     const garmin = await prisma.workout.findFirstOrThrow({
       where: { externalId: "recon-e2e-garmin" },
     });
-    await persistStepperReconciliationV1(prisma, {
+    await persistStepperReconciliationV1(prisma, { profileId: 1,
       from: "2091-05-01",
       to: "2091-05-01",
       synchronizedSteps: 10_000,
@@ -1281,7 +1283,7 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
       data: { endAt: new Date("2091-05-01T07:50:00.000Z"), durationMinutes: 50 },
     });
     const beforeReevaluation = await lifecycleFreshness();
-    await persistStepperReconciliationV1(prisma, {
+    await persistStepperReconciliationV1(prisma, { profileId: 1,
       from: "2091-05-01",
       to: "2091-05-01",
       synchronizedSteps: 10_000,
@@ -1292,7 +1294,7 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
     expect(afterReevaluation?.staleFromDate).not.toBeNull();
 
     const beforeConfirm = await lifecycleFreshness();
-    await confirmStepperReconciliationV1(prisma, {
+    await confirmStepperReconciliationV1(prisma, { profileId: 1,
       manualWorkoutId: manual.id,
       garminWorkoutId: garmin.id,
     });
@@ -1317,7 +1319,7 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
     const { activateConfirmedReconciliationVisibilityV1, rollbackActivationGenerationV1 } = await import(
       "@/modules/model-episodes/selection-v1-episode-ops"
     );
-    await activateConfirmedReconciliationVisibilityV1({
+    await activateConfirmedReconciliationVisibilityV1({ profileId: 1,
       client: prisma,
       generationId: "recon-e2e-activation",
       manualWorkoutId: manual.id,
@@ -1328,20 +1330,20 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
     expect(afterActivationManual.hiddenFromHistory).toBe(true);
     expect(afterActivationManual.supersededByWorkoutId).toBe(garmin.id);
     expect(afterActivationGarmin.hiddenFromHistory).toBe(false);
-    await rollbackActivationGenerationV1({ client: prisma, generationId: "recon-e2e-activation" });
+    await rollbackActivationGenerationV1({ profileId: 1, client: prisma, generationId: "recon-e2e-activation" });
     const rolledManual = await prisma.workout.findUniqueOrThrow({ where: { id: manual.id } });
     expect(rolledManual.hiddenFromHistory).toBe(false);
     expect(rolledManual.supersededByWorkoutId).toBeNull();
 
-    const otherManual = await steppers.create({
+    const otherManual = await steppers.create(1, {
       startAt: "2091-05-01T11:00:00.000+02:00",
       durationMinutes: 60,
       manualStepCount: 1500,
       manualActiveEnergyKcal: 200,
     });
-    const otherDay = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: "2091-05-01" } });
+    const otherDay = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: 1, date: "2091-05-01" } } });
     const otherGarmin = await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: otherDay.id,
         sourceIdentity: "ext:recon-e2e-garmin-2",
         externalId: "recon-e2e-garmin-2",
@@ -1352,7 +1354,7 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
         activeEnergyKcal: 250,
       },
     });
-    await persistStepperReconciliationV1(prisma, {
+    await persistStepperReconciliationV1(prisma, { profileId: 1,
       from: "2091-05-01",
       to: "2091-05-01",
       synchronizedSteps: 10_000,
@@ -1361,7 +1363,7 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
       where: { manualWorkoutId: otherManual.id, garminWorkoutId: otherGarmin.id },
     });
     const beforeReject = await lifecycleFreshness();
-    await rejectStepperReconciliationV1(prisma, { groupId: other.groupId });
+    await rejectStepperReconciliationV1(prisma, { profileId: 1, groupId: other.groupId });
     const afterReject = await lifecycleFreshness();
     expect(afterReject?.invalidationGeneration ?? 0)
       .toBeGreaterThan(beforeReject?.invalidationGeneration ?? 0);
@@ -1380,13 +1382,13 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
     // together if the caller aborts that transaction.
     const rollbackDate = "2091-05-02";
     const rollbackDay = await day(rollbackDate, 80, 10_000);
-    await steppers.create({
+    await steppers.create(1, {
       startAt: "2091-05-02T09:00:00.000+02:00",
       durationMinutes: 60,
       manualStepCount: 2_000,
     });
     await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: rollbackDay.id,
         sourceIdentity: "ext:recon-e2e-rollback-garmin",
         externalId: "recon-e2e-rollback-garmin",
@@ -1399,7 +1401,7 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
     });
     const beforeRollback = await lifecycleFreshness();
     await expect(prisma.$transaction(async (transaction) => {
-      await persistStepperReconciliationV1(transaction, { from: rollbackDate, to: rollbackDate });
+      await persistStepperReconciliationV1(transaction, { profileId: 1, from: rollbackDate, to: rollbackDate });
       throw new Error("rollback reconciliation write");
     })).rejects.toThrow("rollback reconciliation write");
     const afterRollback = await lifecycleFreshness();

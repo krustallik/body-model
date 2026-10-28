@@ -3,8 +3,6 @@ import { prisma } from "@/lib/db/prisma";
 import type { ProfileInput } from "./profile.schema";
 import type { ProfileDto } from "./profile.types";
 
-const SINGLETON_PROFILE_ID = 1;
-
 const profileSelect = {
   id: true,
   locale: true,
@@ -20,7 +18,8 @@ const profileSelect = {
 
 type ProfileRecord = Prisma.ProfileGetPayload<{ select: typeof profileSelect }>;
 
-function calendarDate(value: Date): string {
+function calendarDate(value: Date | null): string | null {
+  if (!value) return null;
   return value.toISOString().slice(0, 10);
 }
 
@@ -30,7 +29,7 @@ function toDto(record: ProfileRecord): ProfileDto {
     locale: record.locale as ProfileDto["locale"],
     sex: record.sex as ProfileDto["sex"],
     dateOfBirth: calendarDate(record.dateOfBirth),
-    heightCm: record.heightCm.toNumber(),
+    heightCm: record.heightCm?.toNumber() ?? null,
     targetWeightKg: record.targetWeightKg?.toNumber() ?? null,
     targetDate: record.targetDate ? calendarDate(record.targetDate) : null,
     autoAdvanceExercises: record.autoAdvanceExercises ?? false,
@@ -46,15 +45,15 @@ function asDatabaseDate(value: string): Date {
 export class ProfileRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async get(): Promise<ProfileDto | null> {
+  async get(profileId: number): Promise<ProfileDto | null> {
     const record = await this.client.profile.findUnique({
-      where: { id: SINGLETON_PROFILE_ID },
+      where: { id: profileId },
       select: profileSelect,
     });
     return record ? toDto(record) : null;
   }
 
-  async upsert(input: ProfileInput): Promise<ProfileDto> {
+  async update(profileId: number, input: ProfileInput): Promise<ProfileDto> {
     const profileData = {
       locale: input.locale,
       sex: input.sex,
@@ -70,15 +69,9 @@ export class ProfileRepository {
         ? { targetDate: input.targetDate === null ? null : asDatabaseDate(input.targetDate) }
         : {}),
     };
-    const record = await this.client.profile.upsert({
-      where: { id: SINGLETON_PROFILE_ID },
-      create: {
-        id: SINGLETON_PROFILE_ID,
-        ...profileData,
-        targetWeightKg: input.targetWeightKg ?? null,
-        targetDate: input.targetDate ? asDatabaseDate(input.targetDate) : null,
-      },
-      update: { ...profileData, ...legacyGoalUpdate },
+    const record = await this.client.profile.update({
+      where: { id: profileId },
+      data: { ...profileData, ...legacyGoalUpdate },
       select: profileSelect,
     });
     return toDto(record);

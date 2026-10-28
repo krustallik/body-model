@@ -2,8 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { clearUnifiedPublicationBlockFixtures } from "./clear-unified-publication-blocks";
 
 /**
- * Intentional test cleanup: workouts must be removed before DailyHealthData
- * because Workout.onDelete is Restrict (durable source protection).
+ * Intentional Profile 1 test cleanup: remove workouts, detach optional raw-row
+ * pointers, then remove the daily projection while retaining source evidence.
  */
 export async function deleteDailyHealthRows(
   client: PrismaClient,
@@ -11,8 +11,14 @@ export async function deleteDailyHealthRows(
 ): Promise<void> {
   const dateList = Array.isArray(dates) ? [...dates] : [dates];
   if (dateList.length === 0) return;
+  const fixtureDays = await client.dailyHealthData.findMany({
+    where: { profileId: 1, date: { in: dateList } },
+    select: { id: true },
+  });
+  const dayIds = fixtureDays.map(({ id }) => id);
+  if (dayIds.length === 0) return;
   const fixtureWorkouts = await client.workout.findMany({
-    where: { dailyHealthData: { date: { in: dateList } } },
+    where: { profileId: 1, dailyHealthDataId: { in: dayIds } },
     select: { id: true },
   });
   await clearUnifiedPublicationBlockFixtures(client, [
@@ -27,7 +33,23 @@ export async function deleteDailyHealthRows(
     })),
   ]);
   await client.workout.deleteMany({
-    where: { dailyHealthData: { date: { in: dateList } } },
+    where: { profileId: 1, dailyHealthDataId: { in: dayIds } },
   });
-  await client.dailyHealthData.deleteMany({ where: { date: { in: dateList } } });
+  await client.healthSyncSnapshot.updateMany({
+    where: { profileId: 1, dailyHealthDataId: { in: dayIds } },
+    data: { dailyHealthDataId: null },
+  });
+  await client.healthMetricSample.updateMany({
+    where: { profileId: 1, dailyHealthDataId: { in: dayIds } },
+    data: { dailyHealthDataId: null },
+  });
+  await client.heartRateSample.updateMany({
+    where: { profileId: 1, dailyHealthDataId: { in: dayIds } },
+    data: { dailyHealthDataId: null },
+  });
+  await client.restingHeartRateSample.updateMany({
+    where: { profileId: 1, dailyHealthDataId: { in: dayIds } },
+    data: { dailyHealthDataId: null },
+  });
+  await client.dailyHealthData.deleteMany({ where: { profileId: 1, id: { in: dayIds } } });
 }

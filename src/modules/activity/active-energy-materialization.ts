@@ -11,6 +11,7 @@ import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import type { ActiveEnergyConvergenceOwnerToken } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { TrainingRepository } from "@/modules/training/training.repository";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import {
   historicalBodyweightSourceChangeMayAffectSessionV1,
   recordExperimentalStrengthEnergyShadow,
@@ -92,7 +93,7 @@ export async function invalidateActiveEnergyResolutionDatesV1(
 }
 
 export async function materializeActiveEnergyCandidatesV1(
-  profileId = 1,
+  profileId: number,
   options: {
     candidateScope?: ActiveEnergyCandidateScopeV1;
     activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
@@ -106,6 +107,7 @@ export async function materializeActiveEnergyCandidatesV1(
   convergenceCandidateCount: number;
   changedDates: string[];
 }> {
+  profileId = requireProfileId(profileId);
   const before = await readResolutionSnapshot(profileId);
   const candidateScope = options.candidateScope;
   const [sessions, workouts] = await Promise.all([
@@ -120,6 +122,7 @@ export async function materializeActiveEnergyCandidatesV1(
     }),
     prisma.workout.findMany({
       where: {
+        profileId,
         hiddenFromHistory: false,
         ...(candidateScope === undefined ? {} : { id: { in: [...new Set(candidateScope.workoutIds)] } }),
       },
@@ -173,7 +176,7 @@ async function recordUnmatchedStrengthWorkoutV1(input: {
   activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
 }): Promise<void> {
   const workout = await prisma.workout.findFirst({
-    where: { id: input.workoutId, hiddenFromHistory: false, matchedDiarySession: null },
+    where: { profileId: input.profileId, id: input.workoutId, hiddenFromHistory: false, matchedDiarySession: null },
     select: {
       id: true, type: true, sourceIdentity: true, startAt: true, endAt: true,
       durationMinutes: true, activeEnergyKcal: true, manualActiveEnergyKcal: true, updatedAt: true,
@@ -231,7 +234,7 @@ async function recordUnmatchedStrengthWorkoutV1(input: {
   const occurrenceAt = workout.startAt;
   const validateSource = async (tx: Prisma.TransactionClient) => {
     const [currentWorkout, currentEpisodes, currentLifecycle] = await Promise.all([
-      tx.workout.findUnique({ where: { id: workout.id }, select: { type: true, sourceIdentity: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, manualActiveEnergyKcal: true, updatedAt: true, hiddenFromHistory: true, matchedDiarySession: { select: { id: true } } } }),
+      tx.workout.findUnique({ where: { profileId_id: { profileId: input.profileId, id: workout.id } }, select: { type: true, sourceIdentity: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, manualActiveEnergyKcal: true, updatedAt: true, hiddenFromHistory: true, matchedDiarySession: { select: { id: true } } } }),
       tx.modelEpisode.findMany({ where: { profileId: input.profileId }, select: { id: true, startDate: true, timezone: true, modelVersion: true, active: true, latestModeledDate: true }, orderBy: [{ startDate: "asc" }, { id: "asc" }] }),
       tx.physiologyV7Lifecycle.findUnique({ where: { profileId: input.profileId }, select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true } }),
     ]);
@@ -330,7 +333,7 @@ export async function refreshCandidatesAfterProductionV1(
       orderBy: { id: "asc" },
     }),
     prisma.workout.findMany({
-      where: { hiddenFromHistory: false },
+      where: { profileId, hiddenFromHistory: false },
       select: {
         id: true,
         type: true,

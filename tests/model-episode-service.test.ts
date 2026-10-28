@@ -83,7 +83,7 @@ describe("model episode application service", () => {
   });
 
   it("initializes yesterday in Bratislava and atomically deactivates the old episode", async () => {
-    const result = await initializeNewModelEpisode({
+    const result = await initializeNewModelEpisode({ profileId: 1,
       now: new Date("2026-08-23T10:00:00.000Z"),
     }, client);
     expect(repository.loadSources).toHaveBeenCalledWith("2026-04-19", "2026-08-22", "Europe/Bratislava");
@@ -106,7 +106,7 @@ describe("model episode application service", () => {
       })),
       snapshots: [], workIntervals: [], workouts: [],
     });
-    const result = await initializeNewModelEpisode({
+    const result = await initializeNewModelEpisode({ profileId: 1,
       now: new Date("2026-08-23T10:00:00.000Z"),
     }, client);
     expect(repository.deactivateActive).toHaveBeenCalledOnce();
@@ -118,7 +118,7 @@ describe("model episode application service", () => {
   });
 
   it("rejects a current or future local start date before database work", async () => {
-    await expect(initializeNewModelEpisode({
+    await expect(initializeNewModelEpisode({ profileId: 1,
       startDate: "2026-08-23",
       now: new Date("2026-08-23T10:00:00.000Z"),
     }, client)).rejects.toEqual(new EpisodeInitializationError("start-date-not-complete"));
@@ -134,7 +134,7 @@ describe("model episode application service", () => {
       workIntervals: [],
     });
     repository.status.mockResolvedValue({ episodeId: episode.id });
-    const result = await recalculateModelEpisode({
+    const result = await recalculateModelEpisode({ profileId: 1,
       now: new Date("2026-08-22T10:00:00.000Z"),
     }, client);
     expect(repository.loadSources).toHaveBeenCalledWith("2026-04-18", "2026-08-21", "Europe/Bratislava");
@@ -188,7 +188,7 @@ describe("model episode application service", () => {
       episodeId: 8, daysModeled: 16, productionCurrent: true, productionDirtyFromDate: null,
     });
 
-    const result = await recalculateModelEpisode({
+    const result = await recalculateModelEpisode({ profileId: 1,
       now: new Date("2026-09-16T18:00:00.000Z"),
     }, client);
 
@@ -236,7 +236,7 @@ describe("model episode application service", () => {
       episodeId: 9, daysModeled: 3, productionCurrent: true, productionDirtyFromDate: null,
     });
 
-    const result = await recalculateModelEpisode({
+    const result = await recalculateModelEpisode({ profileId: 1,
       now: new Date("2026-09-17T10:00:00.000Z"),
     }, client);
 
@@ -250,7 +250,7 @@ describe("model episode application service", () => {
     const episode = persistedEpisodeFixture("2026-08-23");
     repository.getById.mockResolvedValue(episode);
     repository.status.mockResolvedValue(null);
-    const result = await recalculateModelEpisode({
+    const result = await recalculateModelEpisode({ profileId: 1,
       episodeId: episode.id,
       now: new Date("2026-08-22T10:00:00.000Z"),
     }, client);
@@ -292,7 +292,7 @@ describe("model episode application service", () => {
       ...persistedEpisodeFixture("2026-08-24"),
       modelVersion: "bodycast-physiology-v5",
     });
-    const first = await recalculateModelEpisode({
+    const first = await recalculateModelEpisode({ profileId: 1,
       now: new Date("2026-08-29T18:00:00.000Z"),
     }, client);
     expect(repository.createPrepared).toHaveBeenCalledWith(
@@ -307,7 +307,7 @@ describe("model episode application service", () => {
       id: 11,
       modelVersion: "bodycast-physiology-v7",
     });
-    const second = await recalculateModelEpisode({
+    const second = await recalculateModelEpisode({ profileId: 1,
       now: new Date("2026-08-29T18:05:00.000Z"),
     }, client);
     expect(repository.createPrepared).not.toHaveBeenCalled();
@@ -325,7 +325,7 @@ describe("model episode application service", () => {
       days: [sourceDay("2026-08-20")], snapshots: [], workIntervals: [],
     });
     repository.status.mockResolvedValue({ episodeId: episode.id });
-    await recalculateModelEpisode({
+    await recalculateModelEpisode({ profileId: 1,
       episodeId: episode.id,
       now: new Date("2026-08-21T10:00:00.000Z"),
     }, client);
@@ -341,24 +341,24 @@ describe("model episode application service", () => {
 
   it("distinguishes no active episode from an unknown explicit episode", async () => {
     repository.getActive.mockResolvedValue(null);
-    await expect(recalculateModelEpisode({}, client))
+    await expect(recalculateModelEpisode({ profileId: 1,}, client))
       .rejects.toBeInstanceOf(NoActiveModelEpisodeError);
     repository.getById.mockResolvedValue(null);
-    await expect(recalculateModelEpisode({ episodeId: 999 }, client))
+    await expect(recalculateModelEpisode({ profileId: 1, episodeId: 999 }, client))
       .rejects.toBeInstanceOf(ModelEpisodeNotFoundError);
   });
 
   it("returns status/history DTOs and preserves their not-found semantics", async () => {
     repository.status.mockResolvedValue({ episodeId: 1 });
-    await expect(getModelStatus(undefined, client)).resolves.toEqual({ episodeId: 1 });
+    await expect(getModelStatus(1, undefined, client)).resolves.toEqual({ episodeId: 1 });
     repository.status.mockResolvedValue(null);
-    await expect(getModelStatus(undefined, client)).rejects
+    await expect(getModelStatus(1, undefined, client)).rejects
       .toBeInstanceOf(NoActiveModelEpisodeError);
-    await expect(getModelStatus(9, client)).rejects
+    await expect(getModelStatus(1, 9, client)).rejects
       .toBeInstanceOf(ModelEpisodeNotFoundError);
 
     repository.history.mockResolvedValue({ episodeId: 1, days: [] });
-    const query = { limit: 90, offset: 0 };
+    const query = { profileId: 1, limit: 90, offset: 0 };
     await expect(getModelHistory(query, client)).resolves.toEqual({
       episodeId: 1, days: [], limit: 90, offset: 0,
     });

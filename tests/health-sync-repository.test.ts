@@ -38,11 +38,13 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
       findUnique: vi.fn().mockResolvedValue(null),
     },
     dailyHealthData: {
-      findUnique: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
-        Promise.resolve(existingDates.includes(where.date) ? { date: where.date, weightKg: null } : null),
+      findUnique: vi.fn().mockImplementation(({ where }: { where: { profileId_date: { profileId: number; date: string } } }) => {
+        const date = where.profileId_date.date;
+        return Promise.resolve(existingDates.includes(date) ? { date, weightKg: null } : null);
+      },
       ),
-      upsert: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
-        Promise.resolve({ id: where.date === "2026-08-21" ? 21 : 22, weightKg: null }),
+      upsert: vi.fn().mockImplementation(({ where }: { where: { profileId_date: { profileId: number; date: string } } }) =>
+        Promise.resolve({ id: where.profileId_date.date === "2026-08-21" ? 21 : 22, weightKg: null }),
       ),
       update: vi.fn().mockResolvedValue({}),
     },
@@ -83,7 +85,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
   const client = {
     $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) => callback(transaction)),
   } as unknown as PrismaClient;
-  return { repository: new PrismaHealthSyncRepository(client), transaction };
+  return { repository: new PrismaHealthSyncRepository(1, client), transaction };
 }
 
 describe("Prisma health synchronization repository", () => {
@@ -135,7 +137,7 @@ describe("Prisma health synchronization repository", () => {
     );
     expect(transaction.healthMetricSample.upsert).toHaveBeenCalledTimes(2);
     expect(transaction.healthMetricSample.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { metric_timestamp: { metric: "weight-kg", timestamp: new Date("2026-09-17T05:00:00.000Z") } },
+      where: { profileId_metric_timestamp: { profileId: 1, metric: "weight-kg", timestamp: new Date("2026-09-17T05:00:00.000Z") } },
       create: expect.objectContaining({
         dailyHealthDataId: 22, date: "2026-09-17", value: 81.4,
         source: "apple-health-shortcut",
@@ -160,7 +162,7 @@ describe("Prisma health synchronization repository", () => {
       },
     });
     expect(transaction.healthActivityInterval.deleteMany).toHaveBeenCalledWith({
-      where: { date: "2026-09-19", metric: "walking-distance-km" },
+      where: { profileId: 1, date: "2026-09-19", metric: "walking-distance-km" },
     });
     expect(transaction.healthActivityInterval.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({ metric: "steps", value: 60, sourceFingerprint: expect.stringContaining("steps|") })],
@@ -171,11 +173,11 @@ describe("Prisma health synchronization repository", () => {
       skipDuplicates: true,
     });
     expect(transaction.dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { date: "2026-09-19" },
+      where: { profileId_date: { profileId: 1, date: "2026-09-19" } },
       data: { steps: 60 },
     }));
     expect(transaction.dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { date: "2026-09-19" },
+      where: { profileId_date: { profileId: 1, date: "2026-09-19" } },
       data: { walkingDistanceKm: 0.5 },
     }));
   });
@@ -191,7 +193,7 @@ describe("Prisma health synchronization repository", () => {
       },
     });
     expect(transaction.healthActivityInterval.deleteMany).toHaveBeenCalledWith({
-      where: { date: "2026-09-19", metric: "walking-distance-km" },
+      where: { profileId: 1, date: "2026-09-19", metric: "walking-distance-km" },
     });
     expect(transaction.healthActivityInterval.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({
@@ -320,7 +322,7 @@ describe("Prisma health synchronization repository", () => {
         ],
     });
     expect(transaction.workout.findMany).toHaveBeenCalledWith({
-      where: { dailyHealthDataId: 21 },
+      where: { profileId: 1, dailyHealthDataId: 21 },
       select: expect.objectContaining({
         id: true,
         sourceIdentity: true,
@@ -412,7 +414,7 @@ describe("Prisma health synchronization repository", () => {
       }],
     });
     expect(transaction.workout.update).toHaveBeenCalledWith({
-      where: { id: 77 },
+      where: { profileId_id: { profileId: 1, id: 77 } },
       data: expect.objectContaining({
         sourceIdentity: "ext:apple-1",
         activeEnergyKcal: 360,
@@ -447,7 +449,7 @@ describe("Prisma health synchronization repository", () => {
     await repository.syncDay({ date: "2026-08-21" });
     expect(transaction.workout.findMany).toHaveBeenCalledTimes(1);
     expect(transaction.workout.findMany).toHaveBeenCalledWith({
-      where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
+      where: { profileId: 1, hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
       select: { id: true, startAt: true, endAt: true },
     });
     expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
@@ -478,7 +480,7 @@ describe("Prisma health synchronization repository", () => {
     );
     expect(transaction.workout.findMany).toHaveBeenCalledTimes(1);
     expect(transaction.workout.findMany).toHaveBeenCalledWith({
-      where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
+      where: { profileId: 1, hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
       select: { id: true, startAt: true, endAt: true },
     });
     expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
@@ -493,7 +495,7 @@ describe("Prisma health synchronization repository", () => {
 
   it("propagates transaction failures", async () => {
     const client = { $transaction: vi.fn().mockRejectedValue(new Error("rollback")) } as unknown as PrismaClient;
-    const repository = new PrismaHealthSyncRepository(client);
+    const repository = new PrismaHealthSyncRepository(1, client);
     await expect(repository.syncDay({ date: "2026-08-21" })).rejects.toThrow("rollback");
   });
 
@@ -505,7 +507,7 @@ describe("Prisma health synchronization repository", () => {
       dailyHealthData,
       $transaction: vi.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
     } as unknown as PrismaClient;
-    const repository = new PrismaHealthSyncRepository(client);
+    const repository = new PrismaHealthSyncRepository(1, client);
     await expect(repository.pruneOlderThan("2026-08-17")).resolves.toEqual({
       cutoffDate: "2026-08-17",
       deletedDays: 0,

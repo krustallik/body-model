@@ -257,10 +257,10 @@ function blockedV2(input: {
 export type ForecastModelEpisodeInternalResult = ForecastInternalArtifacts | ForecastBlockedResult;
 
 export async function forecastModelEpisodeWithInternalArtifacts(
-  request: ForecastModelRequest & { now?: Date },
+  request: ForecastModelRequest & { profileId: number; now?: Date },
   client: PrismaClient = prisma,
 ): Promise<ForecastModelEpisodeInternalResult> {
-  const episodes = new ModelEpisodeRepository(client);
+  const episodes = new ModelEpisodeRepository(request.profileId, client);
   const recoveryRepository = new ModelRecoveryRepository(client);
   const episode = request.episodeId === undefined
     ? await episodes.getActive() : await episodes.getById(request.episodeId);
@@ -558,7 +558,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
 }
 
 export async function forecastModelEpisode(
-  request: ForecastModelRequest & { now?: Date },
+  request: ForecastModelRequest & { profileId: number; now?: Date },
   client: PrismaClient = prisma,
 ): Promise<ForecastResult | ForecastBlockedResult> {
   const result = await forecastModelEpisodeWithInternalArtifacts(request, client);

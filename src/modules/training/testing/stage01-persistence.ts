@@ -75,6 +75,7 @@ function programExerciseRows(
 ) {
   return fixture.programVersions.flatMap((version) => version.plannedExercises.map((exercise, index) => ({
     id: fixtureProgramExerciseId(version.programId, version.versionNumber, index),
+    profileId: fixture.profiles[0]!.id,
     programVersionId: version.id,
     exerciseCatalogId: catalogIdMap.get(exercise.exerciseCatalogId) ?? (() => { throw new Error("Stage 01 catalog identity could not be resolved."); })(),
     sortOrder: exercise.sortOrder,
@@ -85,9 +86,10 @@ function programExerciseRows(
   })));
 }
 
-function fixtureSessionExerciseRows(exercises: Stage01ExerciseFixture[], sessionId: number, catalogIdMap: ReadonlyMap<number, number>) {
+function fixtureSessionExerciseRows(exercises: Stage01ExerciseFixture[], sessionId: number, profileId: number, catalogIdMap: ReadonlyMap<number, number>) {
   return exercises.map((exercise) => ({
     id: exercise.id,
+    profileId,
     sessionId,
     sourceExerciseCatalogId: catalogIdMap.get(exercise.sourceExerciseCatalogId) ?? (() => { throw new Error("Stage 01 session catalog identity could not be resolved."); })(),
     snapshotExerciseName: exercise.snapshotExerciseName,
@@ -118,11 +120,11 @@ function fixtureSetRows(fixture: ReturnType<typeof createTrainingHistoryStage01F
 }
 
 function profileSignature(row: {
-  id: number; sex: string; dateOfBirth: Date; heightCm: Prisma.Decimal; targetWeightKg: Prisma.Decimal | null;
+  id: number; sex: string | null; dateOfBirth: Date | null; heightCm: Prisma.Decimal | null; targetWeightKg: Prisma.Decimal | null;
   targetDate: Date | null; locale: string; autoAdvanceExercises: boolean; createdAt: Date; updatedAt: Date;
 }): string {
   return rowSignature([
-    row.id, row.sex, dateOnly(row.dateOfBirth), Number(row.heightCm), row.targetWeightKg === null ? null : Number(row.targetWeightKg),
+    row.id, row.sex, row.dateOfBirth ? dateOnly(row.dateOfBirth) : null, row.heightCm === null ? null : Number(row.heightCm), row.targetWeightKg === null ? null : Number(row.targetWeightKg),
     row.targetDate ? dateOnly(row.targetDate) : null, row.locale, row.autoAdvanceExercises, iso(row.createdAt), iso(row.updatedAt),
   ]);
 }
@@ -143,7 +145,7 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
   const profileIds = fixture.profiles.map((row) => row.id);
   const catalogIdMap = await fixtureCatalogIdMap(tx, fixture);
   const plannedRows = programExerciseRows(fixture, catalogIdMap);
-  const sessionExerciseRows = fixture.sessions.flatMap((session) => fixtureSessionExerciseRows(session.exercises, session.id, catalogIdMap));
+  const sessionExerciseRows = fixture.sessions.flatMap((session) => fixtureSessionExerciseRows(session.exercises, session.id, session.profileId, catalogIdMap));
   const setRows = fixtureSetRows(fixture);
   const sessionRows = fixture.sessions.map((session) => ({
     id: session.id,
@@ -170,6 +172,7 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
   }));
   const programVersionRows = fixture.programVersions.map((version) => ({
     id: version.id,
+    profileId: fixture.profiles[0]!.id,
     programId: version.programId,
     versionNumber: version.versionNumber,
     createdAt: new Date(version.createdAt),
@@ -188,6 +191,7 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
   }));
   const workoutRows = fixture.workouts.map((workout) => ({
     ...workout,
+    profileId: fixture.profiles[0]!.id,
     startAt: new Date(workout.startAt),
     endAt: new Date(workout.endAt),
     supersededByWorkoutId: null,
@@ -208,11 +212,11 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
     }),
     tx.trainingProgramVersion.findMany({
       where: { OR: [{ id: { in: programVersionIds } }, { programId: { in: programIds } }] },
-      select: { id: true, programId: true, versionNumber: true, createdAt: true },
+      select: { id: true, profileId: true, programId: true, versionNumber: true, createdAt: true },
     }),
     tx.programExercise.findMany({
       where: { OR: [{ id: { in: plannedRows.map((row) => row.id) } }, { programVersionId: { in: programVersionIds } }, { exerciseCatalogId: { in: catalogIds } }] },
-      select: { id: true, programVersionId: true, exerciseCatalogId: true, sortOrder: true, plannedSets: true, resistanceType: true, createdAt: true, updatedAt: true },
+      select: { id: true, profileId: true, programVersionId: true, exerciseCatalogId: true, sortOrder: true, plannedSets: true, resistanceType: true, createdAt: true, updatedAt: true },
     }),
     tx.strengthDiarySession.findMany({
       where: { OR: [{ id: { in: sessionIds } }, { programId: { in: programIds } }, { programVersionId: { in: programVersionIds } }, { matchedWorkoutId: { in: workoutIds } }] },
@@ -230,8 +234,8 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
       where: { OR: [{ id: { in: setRows.map((row) => row.id) } }, { sessionExerciseId: { in: sessionExerciseIds } }] },
       select: { id: true, sessionExerciseId: true, setNumber: true, reps: true, weightKg: true, bandNominalResistanceKg: true, rir: true, comment: true, completedAt: true, createdAt: true, updatedAt: true },
     }),
-    tx.workout.findMany({ where: { OR: [{ id: { in: workoutIds } }, { supersededByWorkoutId: { in: workoutIds } }] }, select: { id: true, dailyHealthDataId: true, externalId: true, sourceIdentity: true, type: true, startAt: true, endAt: true, durationMinutes: true, energyKcal: true, activeEnergyKcal: true, syncProtected: true, hiddenFromHistory: true, manualStepCount: true, manualActiveEnergyKcal: true, supersededByWorkoutId: true, supersededAt: true, supersessionReason: true, createdAt: true, updatedAt: true } }),
-    tx.dailyHealthData.findMany({ where: { id: { in: dailyIds } }, select: { id: true, date: true, weightKg: true, bodyFatPercent: true, caloriesKcal: true, proteinG: true, fatG: true, carbsG: true, steps: true, activeEnergyKcal: true, averageWalkingSpeedKmh: true, walkingDistanceKm: true, strengthTrainingMinutes: true, workoutFeedObserved: true, rawPayload: true, createdAt: true, updatedAt: true } }),
+    tx.workout.findMany({ where: { profileId: { in: profileIds }, OR: [{ id: { in: workoutIds } }, { supersededByWorkoutId: { in: workoutIds } }] }, select: { id: true, profileId: true, dailyHealthDataId: true, externalId: true, sourceIdentity: true, type: true, startAt: true, endAt: true, durationMinutes: true, energyKcal: true, activeEnergyKcal: true, syncProtected: true, hiddenFromHistory: true, manualStepCount: true, manualActiveEnergyKcal: true, supersededByWorkoutId: true, supersededAt: true, supersessionReason: true, createdAt: true, updatedAt: true } }),
+    tx.dailyHealthData.findMany({ where: { profileId: { in: profileIds }, id: { in: dailyIds } }, select: { id: true, profileId: true, date: true, weightKg: true, bodyFatPercent: true, caloriesKcal: true, proteinG: true, fatG: true, carbsG: true, steps: true, activeEnergyKcal: true, averageWalkingSpeedKmh: true, walkingDistanceKm: true, strengthTrainingMinutes: true, workoutFeedObserved: true, rawPayload: true, createdAt: true, updatedAt: true } }),
   ]);
 
   const profileCreatedFlags = dailyHealth.map((row) => {
@@ -259,12 +263,12 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
     (row) => rowSignature([row.id, row.profileId, row.name, row.archivedAt, row.currentVersionId, iso(row.createdAt), iso(row.updatedAt)]),
   );
   assertFixtureOwnedRows("TrainingProgramVersion", versions, programVersionRows,
-    (row) => rowSignature([row.id, row.programId, row.versionNumber, iso(row.createdAt)]),
-    (row) => rowSignature([row.id, row.programId, row.versionNumber, iso(row.createdAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.programId, row.versionNumber, iso(row.createdAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.programId, row.versionNumber, iso(row.createdAt)]),
   );
   assertFixtureOwnedRows("ProgramExercise", programExercises, plannedRows,
-    (row) => rowSignature([row.id, row.programVersionId, row.exerciseCatalogId, row.sortOrder, row.plannedSets, row.resistanceType, iso(row.createdAt), iso(row.updatedAt)]),
-    (row) => rowSignature([row.id, row.programVersionId, row.exerciseCatalogId, row.sortOrder, row.plannedSets, row.resistanceType, iso(row.createdAt), iso(row.updatedAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.programVersionId, row.exerciseCatalogId, row.sortOrder, row.plannedSets, row.resistanceType, iso(row.createdAt), iso(row.updatedAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.programVersionId, row.exerciseCatalogId, row.sortOrder, row.plannedSets, row.resistanceType, iso(row.createdAt), iso(row.updatedAt)]),
   );
   assertFixtureOwnedRows("StrengthDiarySession", sessions, sessionRows,
     (row) => rowSignature([row.id, row.profileId, row.programId, row.programVersionId, row.status, row.entryMode, iso(row.webStartedAt), iso(row.webEndedAt), row.revision, row.matchedWorkoutId, row.matchStatus, row.matchMethod, iso(row.matchedAt), iso(row.createdAt), iso(row.updatedAt)]),
@@ -283,11 +287,12 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
     (row) => rowSignature([row.id, row.sessionExerciseId, row.setNumber, row.reps, row.weightKg, row.bandNominalResistanceKg, row.rir, row.comment, iso(row.completedAt), iso(row.createdAt), iso(row.updatedAt)]),
   );
   assertFixtureOwnedRows("Workout", workouts, workoutRows,
-    (row) => rowSignature([row.id, row.dailyHealthDataId, row.externalId, row.sourceIdentity, row.type, iso(row.startAt), iso(row.endAt), row.durationMinutes, row.energyKcal, row.activeEnergyKcal, row.syncProtected, row.hiddenFromHistory, row.manualStepCount, row.manualActiveEnergyKcal, row.supersededByWorkoutId, iso(row.supersededAt), row.supersessionReason, iso(row.createdAt), iso(row.updatedAt)]),
-    (row) => rowSignature([row.id, row.dailyHealthDataId, row.externalId, row.sourceIdentity, row.type, iso(row.startAt), iso(row.endAt), row.durationMinutes, row.energyKcal, row.activeEnergyKcal, row.syncProtected, row.hiddenFromHistory, row.manualStepCount, row.manualActiveEnergyKcal, row.supersededByWorkoutId, iso(row.supersededAt), row.supersessionReason, iso(row.createdAt), iso(row.updatedAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.dailyHealthDataId, row.externalId, row.sourceIdentity, row.type, iso(row.startAt), iso(row.endAt), row.durationMinutes, row.energyKcal, row.activeEnergyKcal, row.syncProtected, row.hiddenFromHistory, row.manualStepCount, row.manualActiveEnergyKcal, row.supersededByWorkoutId, iso(row.supersededAt), row.supersessionReason, iso(row.createdAt), iso(row.updatedAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.dailyHealthDataId, row.externalId, row.sourceIdentity, row.type, iso(row.startAt), iso(row.endAt), row.durationMinutes, row.energyKcal, row.activeEnergyKcal, row.syncProtected, row.hiddenFromHistory, row.manualStepCount, row.manualActiveEnergyKcal, row.supersededByWorkoutId, iso(row.supersededAt), row.supersessionReason, iso(row.createdAt), iso(row.updatedAt)]),
   );
   const dailyRows = fixture.dailyHealthRows.map((row) => ({
     ...row,
+    profileId: fixture.profiles[0]!.id,
     bodyFatPercent: null,
     caloriesKcal: null,
     proteinG: null,
@@ -302,8 +307,8 @@ async function assertCleanupOwnership(tx: Prisma.TransactionClient, fixture: Ret
     updatedAt: new Date(`${row.date}T00:00:00.000Z`),
   }));
   assertFixtureOwnedRows("DailyHealthData", dailyHealth, dailyRows,
-    (row) => rowSignature([row.id, row.date, row.weightKg, row.bodyFatPercent?.toString() ?? null, row.caloriesKcal, row.proteinG, row.fatG, row.carbsG, row.steps, row.activeEnergyKcal, row.averageWalkingSpeedKmh?.toString() ?? null, row.walkingDistanceKm?.toString() ?? null, row.strengthTrainingMinutes?.toString() ?? null, row.workoutFeedObserved, stableJson(row.rawPayload), iso(row.createdAt), iso(row.updatedAt)]),
-    (row) => rowSignature([row.id, row.date, row.weightKg, row.bodyFatPercent, row.caloriesKcal, row.proteinG, row.fatG, row.carbsG, row.steps, row.activeEnergyKcal, row.averageWalkingSpeedKmh, row.walkingDistanceKm, row.strengthTrainingMinutes, row.workoutFeedObserved, stableJson(row.rawPayload), iso(row.createdAt), iso(row.updatedAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.date, row.weightKg, row.bodyFatPercent?.toString() ?? null, row.caloriesKcal, row.proteinG, row.fatG, row.carbsG, row.steps, row.activeEnergyKcal, row.averageWalkingSpeedKmh?.toString() ?? null, row.walkingDistanceKm?.toString() ?? null, row.strengthTrainingMinutes?.toString() ?? null, row.workoutFeedObserved, stableJson(row.rawPayload), iso(row.createdAt), iso(row.updatedAt)]),
+    (row) => rowSignature([row.id, row.profileId, row.date, row.weightKg, row.bodyFatPercent, row.caloriesKcal, row.proteinG, row.fatG, row.carbsG, row.steps, row.activeEnergyKcal, row.averageWalkingSpeedKmh, row.walkingDistanceKm, row.strengthTrainingMinutes, row.workoutFeedObserved, stableJson(row.rawPayload), iso(row.createdAt), iso(row.updatedAt)]),
   );
 
   const stageOwnedRows = catalogs.length + programs.length + versions.length + programExercises.length + sessions.length + changes.length + sessionExercises.length + sets.length + workouts.length;
@@ -385,7 +390,8 @@ async function cleanupWithinTransaction(tx: Prisma.TransactionClient) {
 
   let deletedDailyHealthRows = 0;
   for (const fixtureDay of fixture.dailyHealthRows) {
-    const day = await tx.dailyHealthData.findUnique({ where: { id: fixtureDay.id } });
+    const profileId = fixture.profiles[0]!.id;
+    const day = await tx.dailyHealthData.findUnique({ where: { profileId_id: { profileId, id: fixtureDay.id } } });
     if (!day) continue;
     if (day.date !== fixtureDay.date || typeof day.rawPayload !== "object" || day.rawPayload === null || Array.isArray(day.rawPayload)
       || day.rawPayload.fixtureNamespace !== FIXTURE_MARKER || day.rawPayload.fixtureProfileId !== fixture.profiles[0]?.id) {
@@ -399,7 +405,7 @@ async function cleanupWithinTransaction(tx: Prisma.TransactionClient) {
       tx.healthMetricSample.count({ where: { dailyHealthDataId: day.id } }),
     ]);
     if (workouts + heartRates + restingHeartRates + syncSnapshots + metricSamples === 0) {
-      const deleted = await tx.dailyHealthData.deleteMany({ where: { id: day.id, date: fixtureDay.date } });
+      const deleted = await tx.dailyHealthData.deleteMany({ where: { profileId, id: day.id, date: fixtureDay.date } });
       deletedDailyHealthRows += deleted.count;
     }
   }
@@ -450,7 +456,7 @@ export async function seedStage01Namespace(prisma: PrismaClient) {
     const fixture = createTrainingHistoryStage01FixtureV1();
     const ownedCatalogs = fixture.catalogExercises.filter((row) => row.fixtureOwned);
 
-    const dateConflicts = await tx.dailyHealthData.findMany({ where: { date: { in: fixture.dailyHealthRows.map((row) => row.date) } }, select: { date: true } });
+    const dateConflicts = await tx.dailyHealthData.findMany({ where: { profileId: fixture.profiles[0]!.id, date: { in: fixture.dailyHealthRows.map((row) => row.date) } }, select: { date: true } });
     if (dateConflicts.length > 0) throw new Error("Stage 01 fixture dates collide with non-fixture DailyHealthData rows.");
 
     const catalogIdMap = await fixtureCatalogIdMap(tx, fixture);
@@ -492,6 +498,7 @@ export async function seedStage01Namespace(prisma: PrismaClient) {
     })) });
     await tx.trainingProgramVersion.createMany({ data: fixture.programVersions.map((version) => ({
       id: version.id,
+      profileId: fixture.profiles[0]!.id,
       programId: version.programId,
       versionNumber: version.versionNumber,
       createdAt: new Date(version.createdAt),
@@ -503,6 +510,7 @@ export async function seedStage01Namespace(prisma: PrismaClient) {
     }
     await tx.dailyHealthData.createMany({ data: fixture.dailyHealthRows.map((row) => ({
       id: row.id,
+      profileId: fixture.profiles[0]!.id,
       date: row.date,
       weightKg: row.weightKg,
       steps: row.steps,
@@ -513,6 +521,7 @@ export async function seedStage01Namespace(prisma: PrismaClient) {
     })) });
     await tx.workout.createMany({ data: fixture.workouts.map((workout) => ({
       id: workout.id,
+      profileId: fixture.profiles[0]!.id,
       dailyHealthDataId: workout.dailyHealthDataId,
       externalId: workout.externalId,
       sourceIdentity: workout.sourceIdentity,
@@ -550,7 +559,7 @@ export async function seedStage01Namespace(prisma: PrismaClient) {
       ...change,
       createdAt: new Date(change.createdAt),
     })) });
-    const exerciseRows = fixture.sessions.flatMap((session) => fixtureSessionExerciseRows(session.exercises, session.id, catalogIdMap));
+    const exerciseRows = fixture.sessions.flatMap((session) => fixtureSessionExerciseRows(session.exercises, session.id, session.profileId, catalogIdMap));
     if (exerciseRows.length > 0) await tx.strengthSessionExercise.createMany({ data: exerciseRows });
     const setRows = fixture.sessions.flatMap((session) => session.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
       id: set.id,

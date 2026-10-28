@@ -3,7 +3,7 @@ import {
   ModelEpisodeNotFoundError,
   NoActiveModelEpisodeError,
 } from "@/modules/model-episodes/model-episode.errors";
-import { modelAuthorizationError } from "@/modules/model-episodes/model-http";
+import { modelPrincipal } from "@/modules/model-episodes/model-http";
 import { RecoveryStatusQuerySchema } from "@/modules/model-recovery/model-recovery.schema";
 import {
   getModelRecoveryStatus,
@@ -14,14 +14,14 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request): Promise<Response> {
-  const unauthorized = modelAuthorizationError(request);
-  if (unauthorized) return unauthorized;
+  const principal = await modelPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const parsed = RecoveryStatusQuerySchema.safeParse(
     Object.fromEntries(new URL(request.url).searchParams),
   );
   if (!parsed.success) return validationResponse(parsed.error);
   try {
-    return Response.json(await getModelRecoveryStatus(parsed.data.episodeId));
+    return Response.json(await getModelRecoveryStatus(principal.profileId, parsed.data.episodeId));
   } catch (error) {
     if (error instanceof TrainingRefreshVisibilityPendingError) {
       return Response.json({ error: "training_refresh_pending" }, { status: 503 });

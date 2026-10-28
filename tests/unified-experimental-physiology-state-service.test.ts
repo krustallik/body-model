@@ -385,7 +385,7 @@ describe("Unified V2 rebuild publication", () => {
   });
 
   it("rejects reversed date ranges before reading or writing state", async () => {
-    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1,
       fromDate: "2026-10-03",
       toDate: "2026-10-02",
     })).rejects.toThrow(RangeError);
@@ -395,7 +395,7 @@ describe("Unified V2 rebuild publication", () => {
 
   it("fails closed when there is no episode or production generation is stale", async () => {
     mocks.prisma.modelEpisode.findMany.mockResolvedValueOnce([]);
-    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({})).rejects.toThrow(ProductionPublicationUnavailableError);
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1,})).rejects.toThrow(ProductionPublicationUnavailableError);
 
     mocks.prisma.modelEpisode.findMany.mockResolvedValue([{
       id: 9, startDate: "2026-10-01", timezone: "UTC", active: true, deactivatedAt: null,
@@ -405,7 +405,7 @@ describe("Unified V2 rebuild publication", () => {
       productionPublishedGeneration: 5,
       productionStaleFromDate: "2026-10-01",
     });
-    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({})).rejects.toThrow(ProductionPublicationUnavailableError);
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1,})).rejects.toThrow(ProductionPublicationUnavailableError);
     expect(mocks.rebuildTransient).not.toHaveBeenCalled();
     expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).not.toHaveBeenCalled();
   });
@@ -416,7 +416,7 @@ describe("Unified V2 rebuild publication", () => {
       .mockResolvedValueOnce(publication)
       .mockResolvedValueOnce({ ...publication, invalidationGeneration: 6, productionPublishedGeneration: 5 });
 
-    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({})).rejects.toThrow();
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1,})).rejects.toThrow();
     expect(mocks.loadRange).not.toHaveBeenCalled();
     expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).not.toHaveBeenCalled();
   });

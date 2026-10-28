@@ -20,6 +20,7 @@ import {
   readTrainingRefreshVisibilityFence,
   trainingRefreshFenceChanged,
 } from "@/modules/training/training-refresh-queue";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 
 export type TrainingDayFactRange = { from?: string; to?: string };
 
@@ -207,11 +208,14 @@ function diarySource(
 }
 
 export class TrainingDayFactRepository {
-  constructor(private readonly client: PrismaClient = prisma) {}
+  private readonly profileId: number;
+  constructor(profileId: number, private readonly client: PrismaClient = prisma) {
+    this.profileId = requireProfileId(profileId);
+  }
 
   async list(range: TrainingDayFactRange = {}): Promise<TrainingDayFact[]> {
-    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, 1);
-    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, 1);
+    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, this.profileId);
+    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, this.profileId);
     // Episode timezone can differ from the browser/default timezone. Query a
     // UTC envelope wide enough to include every event whose episode-local
     // date may fall in the requested date-only range, then filter by that
@@ -234,7 +238,7 @@ export class TrainingDayFactRepository {
 
     const [workouts, diarySessions] = await Promise.all([
       readClient.workout?.findMany ? this.client.workout.findMany({
-        where: timeFilter,
+        where: { profileId: this.profileId, ...timeFilter },
         select: {
           id: true,
           sourceIdentity: true,
@@ -280,6 +284,7 @@ export class TrainingDayFactRepository {
       }) : Promise.resolve([]),
       readClient.strengthDiarySession?.findMany ? this.client.strengthDiarySession.findMany({
         where: {
+          profileId: this.profileId,
           entryMode: "LIVE",
           matchedWorkoutId: null,
           webStartedAt: diaryTimeFilter,
@@ -320,7 +325,7 @@ export class TrainingDayFactRepository {
 
     const episodes = readClient.modelEpisode?.findMany
       ? await this.client.modelEpisode.findMany({
-        where: { profileId: 1 },
+        where: { profileId: this.profileId },
         select: { id: true, startDate: true, timezone: true, active: true },
         orderBy: [{ startDate: "asc" }, { id: "asc" }],
       })
@@ -328,7 +333,7 @@ export class TrainingDayFactRepository {
 
     const energyAliases = workouts.length + diarySessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
       where: {
-        profileId: 1,
+        profileId: this.profileId,
         OR: [
           ...(workouts.length === 0 ? [] : [{ sourceType: "workout", sourceId: { in: workouts.map((row) => String(row.id)) } }]),
           ...(diarySessions.length === 0 ? [] : [{ sourceType: "strength-session", sourceId: { in: diarySessions.map((row) => String(row.id)) } }]),
@@ -364,6 +369,7 @@ export class TrainingDayFactRepository {
     const weightRows = readClient.dailyHealthData?.findMany && earliest !== undefined
       ? await this.client.dailyHealthData.findMany({
         where: {
+          profileId: this.profileId,
           weightKg: { not: null },
           OR: [
             { date: { in: sortedDates } },
@@ -390,7 +396,7 @@ export class TrainingDayFactRepository {
     ];
     const massReferences = await readActiveEnergyMassReferencesV1(this.client, {
       sessionIds: allSessionIds,
-      profileId: 1,
+      profileId: this.profileId,
     });
 
     const facts = resolveTrainingDayFacts({
@@ -424,8 +430,8 @@ export class TrainingDayFactRepository {
     const visibleFacts = facts.filter(({ date }) => (!range.from || date >= range.from) && (!range.to || date <= range.to));
     const refreshPending = convergenceFence?.active === true
       || isTrainingRefreshPending(trainingFence)
-      || await trainingRefreshFenceChanged(this.client, 1, trainingFence)
-      || await activeEnergyConvergenceFenceChanged(this.client, 1, convergenceFence);
+      || await trainingRefreshFenceChanged(this.client, this.profileId, trainingFence)
+      || await activeEnergyConvergenceFenceChanged(this.client, this.profileId, convergenceFence);
     if (!refreshPending) return visibleFacts;
     return visibleFacts.map((fact) => ({
       ...fact,
@@ -442,5 +448,3 @@ export class TrainingDayFactRepository {
     return (await this.list({ from: date, to: date }))[0] ?? emptyTrainingDayFact(date);
   }
 }
-
-export const trainingDayFactRepository = new TrainingDayFactRepository();

@@ -3,6 +3,8 @@ import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episod
 import { buildGoalPlanningRequest, defaultGoalForm } from "@/modules/model-goal-planning/goal-planning-ui";
 
 const services = vi.hoisted(() => ({ solve: vi.fn(), serialize: vi.fn() }));
+const authAccess = vi.hoisted(() => ({ getSessionPrincipal: vi.fn() }));
+vi.mock("@/modules/auth/access", () => authAccess);
 vi.mock("@/modules/model-target-solver/model-target-solver.service", () => ({ solveModelEpisodeTarget: services.solve }));
 vi.mock("@/modules/model-goal-planning/goal-planning", async (original) => {
   const actual = await original<typeof import("@/modules/model-goal-planning/goal-planning")>();
@@ -17,7 +19,11 @@ const validBody = built.request;
 function request(body: unknown) { return new Request("http://localhost/api/goal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
 
 describe("goal planning application route", () => {
-  beforeEach(() => { vi.clearAllMocks(); services.serialize.mockReturnValue({ status: "solved", forecast: { dates: [] } }); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 1, userId: "user-1", method: "session" });
+    services.serialize.mockReturnValue({ status: "solved", forecast: { dates: [] } });
+  });
 
   it("validates and delegates without exposing solver configuration controls", async () => {
     expect((await POST(request({ goal: {} }))).status).toBe(400);
@@ -25,6 +31,7 @@ describe("goal planning application route", () => {
     const response = await POST(request(validBody));
     expect(response.status).toBe(200);
     expect(services.solve).toHaveBeenCalledWith(expect.objectContaining({ goal: validBody.goal, seed: 20_260_824,
+      profileId: 1,
       control: { type: "daily-calorie-center", constraints: validBody.constraints,
         nutritionAdjustmentPolicy: { type: "proportional-template" } } }));
     expect(services.solve.mock.calls[0][0]).not.toHaveProperty("solverConfig");
@@ -53,5 +60,30 @@ describe("goal planning application route", () => {
     const response = await POST(request(validBody));
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "goal_planning_failed" });
+  });
+
+  it("allows goal solving for different Profiles concurrently", async () => {
+    let resolveBothEntered!: () => void;
+    let resolveFirstEntered!: () => void;
+    const bothEntered = new Promise<void>((resolve) => { resolveBothEntered = resolve; });
+    const firstEntered = new Promise<void>((resolve) => { resolveFirstEntered = resolve; });
+    const resolvers = new Map<number, (value: { status: string }) => void>();
+    services.solve.mockImplementation((input: { profileId: number }) => new Promise((resolve) => {
+      resolvers.set(input.profileId, resolve);
+      if (resolvers.size === 1) resolveFirstEntered();
+      if (resolvers.size === 2) resolveBothEntered();
+    }));
+
+    authAccess.getSessionPrincipal.mockResolvedValueOnce({ profileId: 101, userId: "user-a", method: "session" });
+    const first = POST(request(validBody));
+    await firstEntered;
+    authAccess.getSessionPrincipal.mockResolvedValueOnce({ profileId: 202, userId: "user-b", method: "session" });
+    const second = POST(request(validBody));
+    await bothEntered;
+    expect([...resolvers.keys()].sort()).toEqual([101, 202]);
+    resolvers.get(101)?.({ status: "solved" });
+    resolvers.get(202)?.({ status: "solved" });
+    const responses = await Promise.all([first, second]);
+    expect(responses.map(({ status }) => status)).toEqual([200, 200]);
   });
 });

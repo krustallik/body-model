@@ -1,10 +1,10 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
 import {
-  DEFAULT_TRAINING_PROFILE_ID,
   ENTRY_MODE,
   EXERCISE_ORIGIN,
   MATCH_METHOD,
@@ -244,7 +244,7 @@ async function recordExperimentalStrengthShadows(input: {
   // Keep production current before rebuilding dependent shadows, but defer
   // Unified publication until this full shadow chain has completed.
   const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
-    recalculateActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+    recalculateActiveEnergyChangesV1({ profileId: input.profileId, activeEnergyCandidateScope: {
       strengthSessionIds: [currentSession.id],
       workoutIds: currentSession.matchedWorkoutId === null ? [] : [currentSession.matchedWorkoutId],
     } }));
@@ -338,7 +338,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   const initialBlockToken = refresh.publicationBlockToken;
   if (!input.productionAlreadyRebuilt) {
     const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
-      recalculateActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+      recalculateActiveEnergyChangesV1({ profileId: input.profileId, activeEnergyCandidateScope: {
         strengthSessionIds: [input.sessionId],
         workoutIds: session.matchedWorkoutId === null ? [] : [session.matchedWorkoutId],
       } }));
@@ -428,7 +428,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
 /** Refreshes each affected strength session through the full dependency/fence lifecycle after a weight-source edit. */
 export async function recordExperimentalStrengthShadowsForWeightDate(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
   refreshHistoricalAsOfFallback?: boolean;
 }): Promise<number[]> {
   return recordExperimentalStrengthShadowsForWeightDates({
@@ -440,9 +440,9 @@ export async function recordExperimentalStrengthShadowsForWeightDate(input: {
 /** Materialize every affected candidate before one shared Health batch replay. */
 export async function recordExperimentalStrengthShadowsForWeightDates(input: {
   dates: readonly { date: string; weightSourceChanged?: boolean }[];
-  profileId?: number;
+  profileId: number;
 }): Promise<number[]> {
-  const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  const profileId = input.profileId;
   const sessions = new Map<number, { refreshAccounting: boolean; healthDate: string }>();
   for (const date of input.dates) {
     const ids = await listExperimentalStrengthEnergySessionsForWeightDate({
@@ -466,7 +466,7 @@ export async function recordExperimentalStrengthShadowsForWeightDates(input: {
       affectedWorkoutIds.add(refreshed.session.matchedWorkoutId);
     }
   }
-  const production = await recalculateActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+  const production = await recalculateActiveEnergyChangesV1({ profileId, activeEnergyCandidateScope: {
     strengthSessionIds: [...sessions.keys()],
     workoutIds: [...affectedWorkoutIds],
   } });
@@ -660,7 +660,7 @@ export class TrainingService {
 
   async getSetCreateOperation(
     operationId: string,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     payloadDigest?: string,
   ) {
     return this.repo.resolveSetCreateOperation({ profileId, operationId, payloadDigest });
@@ -696,7 +696,7 @@ export class TrainingService {
       fromInstant: input.fromInstant,
     });
     if (dirty === null) throw new Error("deleted completed training session has no resolvable model-day boundary");
-    const production = await recalculateActiveEnergyChangesV1();
+    const production = await recalculateActiveEnergyChangesV1({ profileId: input.profileId });
     if (production === null) throw new Error("production shadows are unavailable after completed training deletion");
     const refreshFromDate = input.blockToken.fromDate < dirty.modelDate
       ? input.blockToken.fromDate
@@ -724,7 +724,7 @@ export class TrainingService {
     return this.unifiedPublicationStatus(input.profileId);
   }
 
-  listCatalog(options?: { includeInactive?: boolean; profileId?: number }) {
+  listCatalog(options: { includeInactive?: boolean; profileId: number }) {
     return this.repo.listCatalog({
       profileId: options?.profileId,
       activeOnly: !options?.includeInactive,
@@ -734,7 +734,7 @@ export class TrainingService {
   async updateCatalogLoadAccountingConfig(
     catalogId: number,
     input: UpdateCatalogLoadAccountingConfigInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<void> {
     const [catalog] = await this.repo.findCatalogByIds([catalogId], profileId);
     if (!catalog) throw new CatalogExerciseNotFoundError();
@@ -773,17 +773,17 @@ export class TrainingService {
     }
   }
 
-  listPrograms(options?: { includeArchived?: boolean; profileId?: number }) {
+  listPrograms(options: { includeArchived?: boolean; profileId: number }) {
     return this.repo.listPrograms(options);
   }
 
-  getProgram(programId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  getProgram(programId: number, profileId: number) {
     return this.repo.getProgram(programId, profileId);
   }
 
   async createProgram(
     input: CreateProgramInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<TrainingProgramDto> {
     const ordered = normalizeProgramExercises(input.exercises);
     const snapshotted = await this.snapshotProgramExerciseConfigs(ordered, profileId);
@@ -797,7 +797,7 @@ export class TrainingService {
   async updateProgram(
     programId: number,
     input: UpdateProgramInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<TrainingProgramDto> {
     const existing = await this.repo.getProgram(programId, profileId);
     if (!existing) throw new ProgramNotFoundError();
@@ -819,23 +819,23 @@ export class TrainingService {
     return updated;
   }
 
-  async archiveProgram(programId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async archiveProgram(programId: number, profileId: number) {
     const archived = await this.repo.archiveProgram(programId, profileId);
     if (!archived) throw new ProgramNotFoundError();
     return archived;
   }
 
-  async getActiveSession(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async getActiveSession(profileId: number) {
     await this.finalizeInactiveSessions(profileId);
     return this.repo.getActiveSession(profileId);
   }
 
-  async getSession(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID, options: { readOnly?: boolean } = {}) {
+  async getSession(sessionId: number, profileId: number, options: { readOnly?: boolean } = {}) {
     if (!options.readOnly) await this.finalizeInactiveSessions(profileId);
     return this.repo.getSession(sessionId, profileId);
   }
 
-  async getSetForSession(sessionId: number, setId: number, profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<StrengthSetDto | null> {
+  async getSetForSession(sessionId: number, setId: number, profileId: number): Promise<StrengthSetDto | null> {
     const set = await this.repo.findSetForSession(setId, sessionId, profileId);
     if (!set) return null;
     return {
@@ -856,7 +856,7 @@ export class TrainingService {
 
   async materializeSessionAccounting(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     idempotencyKey?: string,
   ) {
     const revision = await this.repo.materializeAccounting({
@@ -869,7 +869,7 @@ export class TrainingService {
 
   async refreshSessionAccounting(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     idempotencyKey?: string,
   ) {
     const revision = await this.repo.materializeAccounting({
@@ -883,7 +883,7 @@ export class TrainingService {
   async updateSessionAccountingContext(
     sessionId: number,
     input: { effectiveAccountingAt?: string; timeZone?: string },
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ) {
     if (input.timeZone !== undefined && !isValidTimeZone(input.timeZone)) {
       throw new SetValidationError("invalid session accounting timezone");
@@ -925,7 +925,7 @@ export class TrainingService {
 
   async startSession(
     programId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     accountingTimeZone?: string,
   ): Promise<StrengthSessionDto> {
     await this.finalizeInactiveSessions(profileId);
@@ -971,7 +971,7 @@ export class TrainingService {
   }
 
   async startDynamicSession(
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     accountingTimeZone?: string,
   ): Promise<StrengthSessionDto> {
     await this.finalizeInactiveSessions(profileId);
@@ -998,9 +998,10 @@ export class TrainingService {
   }
 
   listHistoricalStrengthWorkouts(
-    query: Partial<HistoricalWorkoutsQuery> = {},
+    query: Partial<HistoricalWorkoutsQuery> & { profileId: number },
   ): Promise<HistoricalStrengthWorkoutDto[]> {
     return this.repo.listHistoricalStrengthWorkouts({
+      profileId: requireProfileId(query.profileId),
       limit: query.limit,
       offset: query.offset,
       cursor: query.cursor,
@@ -1008,13 +1009,13 @@ export class TrainingService {
     });
   }
 
-  countHistoricalStrengthWorkouts(onlyMissingDiary = false): Promise<number> {
-    return this.repo.countHistoricalStrengthWorkouts({ onlyMissingDiary });
+  countHistoricalStrengthWorkouts(profileId: number, onlyMissingDiary = false): Promise<number> {
+    return this.repo.countHistoricalStrengthWorkouts({ profileId: requireProfileId(profileId), onlyMissingDiary });
   }
 
   async listProgramVersions(
     programId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<ProgramVersionSummaryDto[]> {
     const versions = await this.repo.listProgramVersions(programId, profileId);
     if (!versions) throw new ProgramNotFoundError();
@@ -1029,7 +1030,7 @@ export class TrainingService {
    */
   async createSessionFromWorkout(
     input: CreateFromWorkoutInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const { session } = await this.createOrGetSessionFromWorkout(input, profileId);
     return session;
@@ -1037,7 +1038,7 @@ export class TrainingService {
 
   async bulkCreateSessionsFromWorkouts(
     input: BulkCreateFromWorkoutsInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<BulkCreateFromWorkoutsResult> {
     const result: BulkCreateFromWorkoutsResult = {
       sessions: [],
@@ -1075,7 +1076,7 @@ export class TrainingService {
     input: CreateFromWorkoutInput,
     profileId: number,
   ): Promise<{ session: StrengthSessionDto; created: boolean }> {
-    const workout = await this.repo.findWorkoutById(input.workoutId);
+    const workout = await this.repo.findWorkoutById(input.workoutId, profileId);
     if (!workout) throw new WorkoutNotFoundError();
     if (!isStrengthWorkout(workout.type)) throw new WorkoutNotEligibleError();
 
@@ -1138,7 +1139,7 @@ export class TrainingService {
   async changeSessionProgram(
     sessionId: number,
     input: ChangeSessionProgramInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1200,7 +1201,7 @@ export class TrainingService {
   async addSessionExercise(
     sessionId: number,
     input: CreateSessionExerciseInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1230,6 +1231,7 @@ export class TrainingService {
     }
 
     await this.repo.addSessionExercise({
+      profileId,
       sessionId,
       sourceExerciseCatalogId: catalog.id,
       snapshotExerciseName: catalog.name,
@@ -1249,7 +1251,7 @@ export class TrainingService {
     sessionId: number,
     exerciseId: number,
     input: UpdateSessionExerciseInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1278,6 +1280,7 @@ export class TrainingService {
     }
 
     await this.repo.updateSessionExercise({
+      profileId,
       sessionId,
       exerciseId,
       plannedSets: input.plannedSets,
@@ -1296,7 +1299,7 @@ export class TrainingService {
     sessionId: number,
     exerciseId: number,
     input: DeleteSessionExerciseInput = {},
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1310,6 +1313,7 @@ export class TrainingService {
     if (exercise.sets.length > 0 && !input.confirm) throw new ExerciseHasSetsError();
 
     await this.repo.deleteSessionExercise({
+      profileId,
       sessionId,
       exerciseId,
       orderedExerciseIds: session.exercises.map((item) => item.id),
@@ -1321,7 +1325,7 @@ export class TrainingService {
   async reorderSessionExercises(
     sessionId: number,
     input: ReorderSessionExercisesInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1336,6 +1340,7 @@ export class TrainingService {
     if (!isCompletePermutation) throw new SessionExerciseNotFoundError();
 
     await this.repo.reorderSessionExercises({
+      profileId,
       sessionId,
       orderedExerciseIds: requested,
     });
@@ -1347,7 +1352,7 @@ export class TrainingService {
     sessionId: number,
     exerciseId: number,
     input: CreateSetInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     operationId?: string,
   ): Promise<StrengthSetDto> {
     const resolvedOperationId = operationId ?? randomUUID();
@@ -1447,7 +1452,7 @@ export class TrainingService {
     sessionId: number,
     setId: number,
     input: UpdateSetInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSetDto> {
     const existing = await this.repo.findSetForSession(setId, sessionId, profileId);
     if (!existing) throw new SetNotFoundError();
@@ -1521,7 +1526,7 @@ export class TrainingService {
   async deleteSet(
     sessionId: number,
     setId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<{ deleted: true }> {
     const existing = await this.repo.findSetForSession(setId, sessionId, profileId);
     if (!existing) {
@@ -1544,7 +1549,7 @@ export class TrainingService {
   async getExerciseHistory(
     sessionId: number,
     exerciseId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ) {
     const exercise = await this.repo.findSessionExercise(sessionId, exerciseId, profileId);
     if (!exercise) throw new SessionExerciseNotFoundError();
@@ -1558,7 +1563,7 @@ export class TrainingService {
 
   async finishSession(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1599,7 +1604,7 @@ export class TrainingService {
 
   async cancelSession(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1607,7 +1612,7 @@ export class TrainingService {
     if (session.status !== SESSION_STATUS.ACTIVE) {
       throw new SessionNotFoundError();
     }
-    await this.repo.markSessionCancelled(sessionId, new Date());
+    await this.repo.markSessionCancelled(sessionId, new Date(), profileId);
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     return refreshed;
@@ -1619,7 +1624,7 @@ export class TrainingService {
    */
   async deleteDiarySession(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<{ matchedWorkoutId: number | null }> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1631,24 +1636,24 @@ export class TrainingService {
     return { matchedWorkoutId };
   }
 
-  listRecentSessions(options?: { limit?: number; offset?: number; profileId?: number }) {
+  listRecentSessions(options: { limit?: number; offset?: number; profileId: number }) {
     return this.repo.listRecentSessions(options);
   }
 
-  countRecentSessions(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  countRecentSessions(profileId: number) {
     return this.repo.countRecentSessions(profileId);
   }
 
-  listMatchAttention(options: { limit?: number; offset?: number; profileId?: number } = {}) {
+  listMatchAttention(options: { limit?: number; offset?: number; profileId: number }) {
     return this.repo.listMatchAttention({
-      profileId: options.profileId ?? DEFAULT_TRAINING_PROFILE_ID,
+      profileId: requireProfileId(options.profileId),
       limit: options.limit,
       offset: options.offset,
       longPendingBefore: new Date(Date.now() - MATCH_THRESHOLDS.longPendingMs),
     });
   }
 
-  countMatchAttention(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  countMatchAttention(profileId: number) {
     return this.repo.countMatchAttention({
       profileId,
       longPendingBefore: new Date(Date.now() - MATCH_THRESHOLDS.longPendingMs),
@@ -1657,7 +1662,7 @@ export class TrainingService {
 
   async listMatchCandidates(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<MatchCandidateDto[]> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1667,6 +1672,7 @@ export class TrainingService {
     const startAt = new Date(session.webStartedAt);
     const endAt = new Date(session.webEndedAt ?? session.webStartedAt);
     const rows = await this.repo.findWorkoutsNearInterval({
+      profileId,
       startAt,
       endAt,
       padMs: MATCH_THRESHOLDS.maxStartDeltaMs,
@@ -1683,7 +1689,7 @@ export class TrainingService {
   async manualMatch(
     sessionId: number,
     input: ManualMatchInput,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
@@ -1692,6 +1698,7 @@ export class TrainingService {
     }
     if (input.workoutId === null) {
       await this.repo.applyMatchResult({
+        profileId,
         sessionId,
         matchStatus: MATCH_STATUS.UNMATCHED,
         matchMethod: MATCH_METHOD.MANUAL,
@@ -1699,7 +1706,7 @@ export class TrainingService {
         matchedAt: new Date(),
       });
     } else {
-      const workout = await this.repo.findWorkoutById(input.workoutId);
+      const workout = await this.repo.findWorkoutById(input.workoutId, profileId);
       if (!workout) throw new WorkoutNotEligibleError("workout not found");
       if (
         canonicalizeWorkoutType(workout.type).classification !== "traditional-strength-training"
@@ -1712,6 +1719,7 @@ export class TrainingService {
 
       try {
         await this.repo.applyMatchResult({
+          profileId,
           sessionId,
           matchStatus: MATCH_STATUS.MATCHED,
           matchMethod: MATCH_METHOD.MANUAL,
@@ -1737,9 +1745,9 @@ export class TrainingService {
    */
   async afterHealthSyncMatch(
     date: string,
-    options: { profileId?: number; timezone?: string } = {},
+    options: { profileId: number; timezone?: string },
   ): Promise<boolean> {
-    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(options.profileId);
     const timezone = options.timezone ?? DEFAULT_TIME_ZONE;
     const windowStart = localDateTimeToInstant(date, "00:00", timezone);
     const nextDay = new Date(windowStart.getTime() + 24 * 60 * 60_000);
@@ -1766,7 +1774,7 @@ export class TrainingService {
 
   private async tryAutoMatchSession(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     deadlineMode: TrainingRefreshDeadlineMode = "training-debounce",
   ): Promise<void> {
     const session = await this.repo.getSession(sessionId, profileId);
@@ -1783,6 +1791,7 @@ export class TrainingService {
     if (!(endAt > startAt)) return;
 
     const rows = await this.repo.findWorkoutsNearInterval({
+      profileId,
       startAt,
       endAt,
       padMs: MATCH_THRESHOLDS.maxStartDeltaMs,
@@ -1803,6 +1812,7 @@ export class TrainingService {
     if (result.kind === "MATCH" && result.workoutId != null) {
       try {
         await this.repo.applyMatchResult({
+          profileId,
           sessionId,
           matchStatus: MATCH_STATUS.MATCHED,
           matchMethod: MATCH_METHOD.AUTO,
@@ -1813,6 +1823,7 @@ export class TrainingService {
       } catch (error) {
         if (isUniqueViolation(error)) {
           await this.repo.applyMatchResult({
+            profileId,
             sessionId,
             matchStatus: MATCH_STATUS.AMBIGUOUS,
             matchMethod: null,
@@ -1829,6 +1840,7 @@ export class TrainingService {
 
     if (result.kind === "AMBIGUOUS") {
       await this.repo.applyMatchResult({
+        profileId,
         sessionId,
         matchStatus: MATCH_STATUS.AMBIGUOUS,
         matchMethod: null,
@@ -1842,6 +1854,7 @@ export class TrainingService {
     // NO_MATCH: stay PENDING (waiting for delayed Garmin). Never auto-UNMATCHED.
     if (session.matchStatus !== MATCH_STATUS.PENDING || session.matchedWorkoutId != null) {
       await this.repo.applyMatchResult({
+        profileId,
         sessionId,
         matchStatus: MATCH_STATUS.PENDING,
         matchMethod: null,
@@ -1901,7 +1914,7 @@ export class TrainingService {
       session.status !== SESSION_STATUS.COMPLETED
       && session.status !== SESSION_STATUS.CANCELLED
     ) return undefined;
-    const revision = await this.repo.incrementSessionRevision(session.id);
+    const revision = await this.repo.incrementSessionRevision(session.id, profileId);
     noteTrainingSourceChange({
       sessionId: session.id,
       revision,

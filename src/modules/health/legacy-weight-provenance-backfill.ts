@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { invalidateStepperMassDependenciesInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 
 export const LEGACY_WEIGHT_PROVENANCE_BACKFILL_WHERE = {
+  profileId: 1,
   metric: "weight-kg",
   source: null,
 } satisfies Prisma.HealthMetricSampleWhereInput;

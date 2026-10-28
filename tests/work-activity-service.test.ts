@@ -50,7 +50,7 @@ function clientFixture(options: { missingDay?: boolean; useReceivedAt?: boolean 
 
 describe("daily work activity orchestration", () => {
   it("uses sync timestamps, subtracts work walking, and combines work activity once", async () => {
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, clientFixture());
     expect(result.snapshotTimestampPolicy).toBe("syncedAt-or-receivedAt");
@@ -85,7 +85,7 @@ describe("daily work activity orchestration", () => {
       walkingDistanceKm: new Prisma.Decimal("5.1"),
       averageWalkingSpeedKmh: new Prisma.Decimal("5.2"),
     });
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, client as unknown as PrismaClient);
     expect(result.activity).toMatchObject({
@@ -105,7 +105,7 @@ describe("daily work activity orchestration", () => {
       { metric: "walking-distance-km", startAt: new Date("2026-08-23T07:45:00Z"), endAt: new Date("2026-08-23T08:15:00Z"), value: new Prisma.Decimal("0.3") },
       { metric: "walking-distance-km", startAt: new Date("2026-08-23T08:15:00Z"), endAt: new Date("2026-08-23T16:15:00Z"), value: new Prisma.Decimal("2.4") },
     ]);
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, client as unknown as PrismaClient);
     expect(result.walking.intervals[0]).toMatchObject({
@@ -126,7 +126,7 @@ describe("daily work activity orchestration", () => {
       category: "standingLight",
       breakMinutes: null,
     }]);
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, client as unknown as PrismaClient);
     expect(result.occupationalIntervals[0]).toMatchObject({
@@ -138,14 +138,14 @@ describe("daily work activity orchestration", () => {
   });
 
   it("falls back to server receivedAt when the iPhone sent no explicit sync time", async () => {
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, clientFixture({ useReceivedAt: true }));
     expect(result.walking.workWalkingDistanceKm).toBeCloseTo(2.5, 12);
   });
 
   it("returns unavailable activity when the daily aggregate is missing", async () => {
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, clientFixture({ missingDay: true }));
     expect(result.walking.outsideWorkWalkingDistanceKm).toBeNull();
@@ -157,7 +157,7 @@ describe("daily work activity orchestration", () => {
       healthSyncSnapshot: { findMany: ReturnType<typeof vi.fn> };
     };
     client.healthSyncSnapshot.findMany.mockResolvedValue([]);
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, client as unknown as PrismaClient);
     expect(result.occupationalIntervals[0]).toMatchObject({
@@ -181,7 +181,7 @@ describe("daily work activity orchestration", () => {
       { receivedAt: new Date("2026-08-23T22:00:00Z"), syncedAt: null,
         steps: 7_200, walkingDistanceKm: new Prisma.Decimal("5.1") },
     ]);
-    const result = await estimateWorkActivityForDay({
+    const result = await estimateWorkActivityForDay({ profileId: 1,
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, client as unknown as PrismaClient);
     expect(result.walking.workWalkingDistanceKm).toBe(0);
@@ -192,7 +192,7 @@ describe("daily work activity orchestration", () => {
   });
 
   it("derives RMR from profile and daily weight for the UI endpoint", async () => {
-    const result = await getWorkActivityDiagnosticsForDay("2026-08-23", clientFixture());
+    const result = await getWorkActivityDiagnosticsForDay("2026-08-23", 1, clientFixture());
     expect(result.unavailableReason).toBeNull();
     expect(result.diagnostics?.date).toBe("2026-08-23");
     expect(result.diagnostics?.activity).not.toBeNull();
@@ -204,10 +204,10 @@ describe("daily work activity orchestration", () => {
     };
     missingProfile.profile.findUnique.mockResolvedValue(null);
     await expect(getWorkActivityDiagnosticsForDay(
-      "2026-08-23", missingProfile as unknown as PrismaClient,
-    )).resolves.toMatchObject({ diagnostics: null, unavailableReason: "profile-or-weight-missing" });
+      "2026-08-23", 1, missingProfile as unknown as PrismaClient,
+    )).resolves.toMatchObject({ diagnostics: null, unavailableReason: "profile-physiology-or-weight-missing" });
     await expect(getWorkActivityDiagnosticsForDay(
-      "2026-08-23", clientFixture({ missingDay: true }),
-    )).resolves.toMatchObject({ diagnostics: null, unavailableReason: "profile-or-weight-missing" });
+      "2026-08-23", 1, clientFixture({ missingDay: true }),
+    )).resolves.toMatchObject({ diagnostics: null, unavailableReason: "profile-physiology-or-weight-missing" });
   });
 });

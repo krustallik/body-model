@@ -16,25 +16,29 @@ import { forecastQaNow } from "../qa-now";
 import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
 import { ActiveEnergyConvergenceBusyError } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { getSessionPrincipal } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
 const FORECAST_ACTIONS = new Set(["recover", "recalculate", "initialize"]);
 const DEFAULT_RECOVERY_SEED = 20_260_824;
 
-async function recalculateThenRecover(now?: Date) {
-  const result = await recalculateModelEpisode(now ? { now } : {});
+async function recalculateThenRecover(profileId: number, now?: Date) {
+  const result = await recalculateModelEpisode({ profileId, ...(now ? { now } : {}) });
   const {
     activeEnergyModelChangedDays: _activeEnergyModelChangedDays,
     sourceReplayChanged: _sourceReplayChanged,
     ...responseResult
   } = result;
+  void _activeEnergyModelChangedDays;
+  void _sourceReplayChanged;
   let response: typeof responseResult & { recovery?: unknown } = responseResult;
   if (result.recoveryRequired) {
     try {
       const recovery = await recoverModelEpisode({
         seed: DEFAULT_RECOVERY_SEED,
         episodeId: result.episodeId,
+        profileId,
         ...(now ? { now } : {}),
       });
       response = { ...responseResult, recovery };
@@ -54,12 +58,12 @@ async function recalculateThenRecover(now?: Date) {
   }
 
   try {
-    const current = await getModelStatus(result.episodeId);
+    const current = await getModelStatus(profileId, result.episodeId);
     if (!current.productionCurrent || current.latestModeledDate === null) {
       return { ...response, modelPublicationStatus: "stale" as const };
     }
     await rebuildUnifiedExperimentalPhysiologyStateV1({
-      profileId: 1,
+      profileId,
       fromDate: current.episodeStartDate,
       toDate: current.latestModeledDate,
     });
@@ -74,26 +78,28 @@ async function recalculateThenRecover(now?: Date) {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const action = (body as { action?: unknown }).action;
   if (typeof action !== "string" || !FORECAST_ACTIONS.has(action)) {
     return Response.json({ error: "invalid_action" }, { status: 400 });
   }
-  const release = tryAcquireOperation(action);
+  const release = tryAcquireOperation(`${action}:${principal.profileId}`);
   if (!release) return Response.json({ error: "operation_in_progress" }, { status: 429, headers: { "Retry-After": "1" } });
   try {
     const now = forecastQaNow();
     if (action === "recover") {
-      return Response.json(await recoverModelEpisode({ seed: DEFAULT_RECOVERY_SEED, ...(now ? { now } : {}) }));
+      return Response.json(await recoverModelEpisode({ profileId: principal.profileId, seed: DEFAULT_RECOVERY_SEED, ...(now ? { now } : {}) }));
     }
     if (action === "initialize") {
-      const episode = await initializeNewModelEpisode(now ? { now } : {});
+      const episode = await initializeNewModelEpisode({ profileId: principal.profileId, ...(now ? { now } : {}) });
       // Initialization creates the active episode and freezes its assumptions;
       // immediately materialize the available history so Diagnostics is
       // populated on the same click, including insufficient-history bootstrap
       // episodes.
-      await recalculateModelEpisode(now ? { now } : {});
+      await recalculateModelEpisode({ profileId: principal.profileId, ...(now ? { now } : {}) });
       return Response.json({
         status: "ok",
         episodeId: episode.id,
@@ -101,7 +107,7 @@ export async function POST(request: Request): Promise<Response> {
         startDate: episode.startDate,
       });
     }
-    return Response.json(await recalculateThenRecover(now));
+    return Response.json(await recalculateThenRecover(principal.profileId, now));
   } catch (error) {
     if (error instanceof ActiveEnergyConvergenceBusyError) {
       return Response.json({ error: "model_refresh_pending" }, { status: 503, headers: { "Retry-After": "3" } });

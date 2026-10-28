@@ -21,10 +21,14 @@ fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 
 [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
   || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-  || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]] \
+  || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
+  || "$MANIFEST_ID" == "auth-multiuser-v1" ]] \
   || fail "a closed reviewed manifest id is required."
 if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "${BODYCAST_MIGRATION_EXECUTION_MODE:-standard}" != "standard" ]]; then
   fail "the Training mutation ledger manifest accepts standard exact-SHA execution only."
+fi
+if [[ "$MANIFEST_ID" == "auth-multiuser-v1" && "${BODYCAST_MIGRATION_EXECUTION_MODE:-standard}" != "standard" ]]; then
+  fail "the Auth migration manifest accepts standard exact-SHA execution only."
 fi
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_SHA must be a full lowercase commit SHA."
 [[ "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ \
@@ -134,7 +138,7 @@ printf '%s\n' "$IMAGE_RESULT"
 
 # Refresh a read-only report only after canonical fetch and image byte verification.
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
   > "$CONTEXT_DIR/live-report.json"
 
 # Re-evaluate the live full pending set and signed provenance immediately before DDL.
@@ -142,7 +146,7 @@ GUARD_RECEIPT="$CONTEXT_DIR/final-guard-receipt.json"
 # Re-sample PostgreSQL sessions and host topology immediately before the DDL
 # boundary. The signed preflight is verified, but never reused as the final drain.
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
   > "$CONTEXT_DIR/live-report-final.json"
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]]; then
@@ -232,7 +236,7 @@ read_bodycast_release_marker || fail "the guarded Prisma handoff did not leave a
 
 # The postflight is read-only and must match the rehearsed encrypted-backup restore.
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
   > "$CONTEXT_DIR/live-report-postflight.json"
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \

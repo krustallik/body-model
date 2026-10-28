@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { prisma } from "@/lib/db/prisma";
 import {
   persistUnifiedShadowCandidateV1,
@@ -30,14 +31,14 @@ function depletionFromShadowResult(result: unknown): number | null {
  */
 export async function recordExperimentalGlycogenRepletionShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
 
   const [health, latestGlycogen, strengthShadows, stepperShadows] = await Promise.all([
     prisma.dailyHealthData.findUnique({
-      where: { date: input.date },
+      where: { profileId_date: { profileId, date: input.date } },
       select: { carbsG: true, proteinG: true, activeEnergyKcal: true },
     }),
     prisma.dailyModelState.findFirst({

@@ -3,7 +3,7 @@ import {
   ModelEpisodeNotFoundError,
   NoActiveModelEpisodeError,
 } from "@/modules/model-episodes/model-episode.errors";
-import { modelAuthorizationError } from "@/modules/model-episodes/model-http";
+import { modelPrincipal } from "@/modules/model-episodes/model-http";
 import { ForecastScenarioEvidenceError } from "@/modules/model-forecast/model-forecast.errors";
 import { ForecastModelRequestSchema } from "@/modules/model-forecast/model-forecast.schema";
 import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
@@ -11,14 +11,14 @@ import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.se
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
-  const unauthorized = modelAuthorizationError(request);
-  if (unauthorized) return unauthorized;
+  const principal = await modelPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = ForecastModelRequestSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
   try {
-    return Response.json(await forecastModelEpisode(parsed.data));
+    return Response.json(await forecastModelEpisode({ ...parsed.data, profileId: principal.profileId }));
   } catch (error) {
     if (error instanceof NoActiveModelEpisodeError) {
       return Response.json({ error: "no_active_episode" }, { status: 404 });

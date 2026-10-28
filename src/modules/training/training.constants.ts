@@ -87,7 +87,7 @@ export const SEEDED_EXERCISE_NAMES = CANONICAL_EXERCISE_IDENTITIES.map(
   (exercise) => exercise.displayName,
 );
 
-export const DEFAULT_TRAINING_PROFILE_ID = 1;
+
 
 /**
  * ENGINEERING ASSUMPTION — NOT SCIENTIFIC PARAMETER

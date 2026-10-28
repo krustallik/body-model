@@ -59,7 +59,19 @@ function fixture() {
   const strengthDiarySession = {
     findMany: vi.fn().mockResolvedValue([]),
   };
-  const healthMetricSample = { count: vi.fn().mockResolvedValue(0) };
+  const healthMetricSample = {
+    count: vi.fn().mockResolvedValue(0),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+  };
+  const healthSyncSnapshot = { updateMany: vi.fn().mockResolvedValue({ count: 0 }) };
+  const heartRateSample = {
+    findMany: vi.fn().mockResolvedValue([]),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+  };
+  const restingHeartRateSample = {
+    findMany: vi.fn().mockResolvedValue([]),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+  };
   const activeEnergyEventAlias = { findMany: vi.fn().mockResolvedValue([]) };
   const physiologyV7Lifecycle = {
     findUnique: vi.fn().mockResolvedValue({ profileId: 1 }),
@@ -78,6 +90,9 @@ function fixture() {
     workout,
     strengthDiarySession,
     healthMetricSample,
+    healthSyncSnapshot,
+    heartRateSample,
+    restingHeartRateSample,
     activeEnergyEventAlias,
     physiologyV7Lifecycle,
     unifiedPublicationBlock,
@@ -85,6 +100,9 @@ function fixture() {
       dailyHealthData,
       workout,
       healthMetricSample,
+      healthSyncSnapshot,
+      heartRateSample,
+      restingHeartRateSample,
       activeEnergyEventAlias,
       physiologyV7Lifecycle,
       unifiedPublicationBlock,
@@ -94,10 +112,14 @@ function fixture() {
   } as unknown as PrismaClient;
   const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue("current") };
   return {
-    repository: new DailyMetricRepository(client, shadowReplayer),
+    repository: new DailyMetricRepository(1, client, shadowReplayer),
     dailyHealthData,
     workout,
+    healthMetricSample,
     strengthDiarySession,
+    healthSyncSnapshot,
+    heartRateSample,
+    restingHeartRateSample,
     client,
     unifiedPublicationBlock,
     shadowReplayer,
@@ -126,7 +148,7 @@ describe("DailyMetricRepository", () => {
       blockUnifiedPublication: vi.fn(),
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
     } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
-    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle, {
+    await expect(replayProductionDailyMetricShadowsV1(1, "2026-08-22", lifecycle, {
       weightSourceChanged: true, affectedWorkoutIds: [420],
     })).resolves.toBe("current");
 
@@ -139,6 +161,7 @@ describe("DailyMetricRepository", () => {
       "publish",
     ]);
     expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({
+      profileId: 1,
       activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [420] },
     });
     expect(lifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledWith({
@@ -158,11 +181,12 @@ describe("DailyMetricRepository", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
     } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
 
-    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle, { affectedWorkoutIds: [] })).resolves.toBe("current");
+    await expect(replayProductionDailyMetricShadowsV1(1, "2026-08-22", lifecycle, { affectedWorkoutIds: [] })).resolves.toBe("current");
 
     expect(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow).not.toHaveBeenCalled();
     expect(strengthTraining.recordExperimentalStrengthShadowsForWeightDate).not.toHaveBeenCalled();
     expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({
+      profileId: 1,
       activeEnergyCandidateScope: { strengthSessionIds: [], workoutIds: [] },
     });
   });
@@ -180,15 +204,15 @@ describe("DailyMetricRepository", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
     } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
 
-    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle, {
+    await expect(replayProductionDailyMetricShadowsV1(1, "2026-08-22", lifecycle, {
       weightSourceChanged: true,
     })).resolves.toBe("current");
 
     expect(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow)
-      .toHaveBeenCalledWith({ measurementDates: ["2026-08-22"] });
+      .toHaveBeenCalledWith({ profileId: 1, measurementDates: ["2026-08-22"] });
     expect(strengthTraining.recordExperimentalStrengthShadowsForWeightDate)
-      .toHaveBeenCalledWith({ date: "2026-08-22", refreshHistoricalAsOfFallback: true });
-    expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({});
+      .toHaveBeenCalledWith({ profileId: 1, date: "2026-08-22", refreshHistoricalAsOfFallback: true });
+    expect(activeEnergyPublication.publishActiveEnergyChangesV1).toHaveBeenCalledWith({ profileId: 1 });
   });
 
   it("restores the day retry fence when publication fails and shared block state becomes unreadable", async () => {
@@ -201,7 +225,7 @@ describe("DailyMetricRepository", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
     } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
 
-    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle)).rejects.toThrow("publication failed");
+    await expect(replayProductionDailyMetricShadowsV1(1, "2026-08-22", lifecycle)).rejects.toThrow("publication failed");
 
     expect(lifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
       profileId: 1, fromDate: "2026-08-21", source: "day", sourceKey: "2026-08-22",
@@ -217,7 +241,7 @@ describe("DailyMetricRepository", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
     } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
 
-    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle)).rejects.toThrow("block read failed");
+    await expect(replayProductionDailyMetricShadowsV1(1, "2026-08-22", lifecycle)).rejects.toThrow("block read failed");
 
     expect(lifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
       profileId: 1, fromDate: "2026-08-21", source: "day", sourceKey: "2026-08-22",
@@ -229,7 +253,7 @@ describe("DailyMetricRepository", () => {
     const days = await repository.list({ from: "2026-08-01", to: "2026-08-22", limit: 30, offset: 0, includeTrainingDays: true });
 
     expect(dailyHealthData.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { date: { gte: "2026-08-01", lte: "2026-08-22" } },
+      where: { profileId: 1, date: { gte: "2026-08-01", lte: "2026-08-22" } },
       orderBy: { date: "desc" },
       take: 30,
       skip: 0,
@@ -448,7 +472,7 @@ describe("DailyMetricRepository", () => {
     const { repository, dailyHealthData, unifiedPublicationBlock } = fixture();
     await repository.create({ date: record.date, caloriesKcal: null, steps: 0 });
     expect(dailyHealthData.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: { date: record.date, caloriesKcal: null, steps: 0, rawPayload: { source: "manual" } },
+      data: { profileId: 1, date: record.date, caloriesKcal: null, steps: 0, rawPayload: { source: "manual" } },
     }));
     expect(unifiedPublicationBlock.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { profileId_source_sourceKey: { profileId: 1, source: "day", sourceKey: record.date } },
@@ -459,6 +483,7 @@ describe("DailyMetricRepository", () => {
     const { repository, dailyHealthData } = fixture();
     await expect(repository.latestUpdatedAt()).resolves.toBe("2026-08-22T10:00:00.000Z");
     expect(dailyHealthData.findFirst).toHaveBeenCalledWith({
+      where: { profileId: 1 },
       orderBy: { updatedAt: "desc" },
       select: { updatedAt: true },
     });
@@ -475,11 +500,11 @@ describe("DailyMetricRepository", () => {
     const { repository, dailyHealthData, shadowReplayer } = fixture();
     await repository.update(record.date, { weightKg: 88.5, proteinG: null });
     expect(dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 42 },
+      where: { profileId_id: { profileId: 1, id: 42 } },
       data: { weightKg: 88.5, proteinG: null },
     }));
     expect(dailyHealthData.update.mock.calls[0]?.[0].data).not.toHaveProperty("rawPayload");
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(1, record.date, {
       weightSourceChanged: false, affectedWorkoutIds: [],
     });
   });
@@ -547,7 +572,7 @@ describe("DailyMetricRepository", () => {
         sourceIdentity: expect.stringMatching(/^manual:history:/),
       }),
     }));
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(1, record.date, {
       weightSourceChanged: false, affectedWorkoutIds: [100],
     });
   });
@@ -596,7 +621,7 @@ describe("DailyMetricRepository", () => {
     await repository.update(record.date, { steps: record.steps });
 
     expect(dailyHealthData.update).not.toHaveBeenCalled();
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(1, record.date, {
       weightSourceChanged: true,
       affectedWorkoutIds: undefined,
     });
@@ -634,12 +659,14 @@ describe("DailyMetricRepository", () => {
     });
 
     expect(workout.update).toHaveBeenCalledTimes(1);
-    expect(workout.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 12 } }));
+    expect(workout.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { profileId_id: { profileId: 1, id: 12 } },
+    }));
     expect(activeEnergyInvalidation.invalidateWorkoutEnergyInTransactionV1).toHaveBeenCalledWith(expect.objectContaining({
       workoutIds: [12],
       staleMatchingAliasesOnly: true,
     }));
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(1, record.date, {
       weightSourceChanged: false, affectedWorkoutIds: [12],
     });
   });
@@ -653,16 +680,35 @@ describe("DailyMetricRepository", () => {
   });
 
   it("deletes workouts explicitly before deleting the day row", async () => {
-    const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
+    const {
+      repository, dailyHealthData, workout, healthMetricSample, healthSyncSnapshot,
+      heartRateSample, restingHeartRateSample, shadowReplayer,
+    } = fixture();
     dailyHealthData.findUnique.mockResolvedValueOnce({
       ...record,
       id: 42,
       workouts: [{ id: 100, startAt: new Date("2026-08-22T10:00:00.000Z"), endAt: new Date("2026-08-22T10:45:00.000Z") }],
     });
     await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
-    expect(workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 42 } });
-    expect(dailyHealthData.delete).toHaveBeenCalledWith({ where: { id: 42 } });
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, {
+    expect(workout.deleteMany).toHaveBeenCalledWith({ where: { profileId: 1, dailyHealthDataId: 42 } });
+    expect(healthSyncSnapshot.updateMany).toHaveBeenCalledWith({
+      where: { profileId: 1, dailyHealthDataId: 42 },
+      data: { dailyHealthDataId: null },
+    });
+    expect(healthSyncSnapshot.updateMany.mock.invocationCallOrder[0]!).toBeLessThan(
+      dailyHealthData.delete.mock.invocationCallOrder[0]!,
+    );
+    for (const sampleTable of [healthMetricSample, heartRateSample, restingHeartRateSample]) {
+      expect(sampleTable.updateMany).toHaveBeenCalledWith({
+        where: { profileId: 1, dailyHealthDataId: 42 },
+        data: { dailyHealthDataId: null },
+      });
+      expect(sampleTable.updateMany.mock.invocationCallOrder[0]!).toBeLessThan(
+        dailyHealthData.delete.mock.invocationCallOrder[0]!,
+      );
+    }
+    expect(dailyHealthData.delete).toHaveBeenCalledWith({ where: { profileId_id: { profileId: 1, id: 42 } } });
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(1, record.date, {
       weightSourceChanged: true, affectedWorkoutIds: [100],
     });
   });
@@ -680,6 +726,6 @@ describe("DailyMetricRepository", () => {
     await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
 
     expect(dailyHealthData.delete).toHaveBeenCalledTimes(1);
-    expect(shadowReplayer.replayFrom).toHaveBeenNthCalledWith(2, record.date, { weightSourceChanged: true });
+    expect(shadowReplayer.replayFrom).toHaveBeenNthCalledWith(2, 1, record.date, { weightSourceChanged: true });
   });
 });

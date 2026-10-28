@@ -93,16 +93,16 @@ async function seed(options: { equalAbsoluteStart?: boolean; staleInactiveAfterA
       { startDate: "2073-01-01", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: boundaryInstant },
       { startDate: boundaryDate, timezone: "Etc/GMT+12", active: true, deactivatedAt: null },
     ];
-  for (const episodeStart of episodeStarts) await client.modelEpisode.create({ data: { ...episode, ...episodeStart } });
+  for (const episodeStart of episodeStarts) await client.modelEpisode.create({ data: {  ...episode, ...episodeStart } });
   const eventBoundary = options.equalAbsoluteStart ? equalStartInstant : boundaryInstant;
   const program = await client.trainingProgram.create({ data: { profileId, name: `${marker}-program` } });
-  const version = await client.trainingProgramVersion.create({ data: { programId: program.id, versionNumber: 1 } });
+  const version = await client.trainingProgramVersion.create({ data: { profileId: profileId, programId: program.id, versionNumber: 1 } });
   await client.trainingProgram.update({ where: { id: program.id }, data: { currentVersionId: version.id } });
   const health = await client.dailyHealthData.create({
-    data: { date: boundaryDate, rawPayload: {}, weightKg: 80, workoutFeedObserved: true },
+    data: { profileId: profileId, date: boundaryDate, rawPayload: {}, weightKg: 80, workoutFeedObserved: true },
   });
   const matchedWorkout = await client.workout.create({
-    data: {
+    data: { profileId: profileId,
       dailyHealthDataId: health.id,
       sourceIdentity: `${marker}:matched-workout`,
       externalId: `${marker}-external`,

@@ -38,7 +38,7 @@ function spend(events: NonNullable<ReturnType<typeof buildSimulationDays>[number
 }
 
 async function main() {
-  const repository = new ModelEpisodeRepository(prisma);
+  const repository = new ModelEpisodeRepository(1, prisma);
   const sources = await repository.loadSources("2026-09-23", "2026-09-23");
   const built = buildSimulationDays({
     from: "2026-09-23",

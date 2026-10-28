@@ -11,12 +11,12 @@ import { goalHorizonDays } from "./goal-date";
 import type { TargetSolverRequest } from "./target-solver.types";
 
 export async function solveModelEpisodeTarget(
-  request: TargetSolverRequest & { now?: Date },
+  request: TargetSolverRequest & { profileId: number; now?: Date },
   client: PrismaClient = prisma,
 ) {
-  const { now, ...requestBody } = request;
+  const { now, profileId, ...requestBody } = request;
   const parsed = TargetSolverRequestSchema.parse(requestBody) as TargetSolverRequest;
-  const episodes = new ModelEpisodeRepository(client);
+  const episodes = new ModelEpisodeRepository(profileId, client);
   const episode = parsed.episodeId === undefined
     ? await episodes.getActive() : await episodes.getById(parsed.episodeId);
   if (!episode) {
@@ -30,6 +30,7 @@ export async function solveModelEpisodeTarget(
     horizonDays,
     evaluateForecast: async ({ scenario, pathCount }) => {
       const evaluation = await forecastModelEpisodeWithInternalArtifacts({
+        profileId,
         episodeId: parsed.episodeId,
         horizonDays,
         seed: parsed.seed,

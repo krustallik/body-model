@@ -1,7 +1,7 @@
 import { recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
 
 async function main() {
-  const result = await recalculateModelEpisode({ episodeId: 567 });
+  const result = await recalculateModelEpisode({ profileId: 1, episodeId: 567 });
   console.log(JSON.stringify({
     daysPersisted: result.daysPersisted,
     completeDays: result.completeDays,

@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import { EXPERIMENTAL_FFM_RETENTION_V1_REVISION } from "@/model/physiology-v7/experimental-ffm-retention-v1";
 import { EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION } from "@/model/physiology-v7/experimental-glycogen-associated-water-v1";
@@ -140,7 +141,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
   constructor(private readonly client: PrismaClient | Prisma.TransactionClient = prisma) {}
 
   async loadRange(input: {
-    profileId?: number;
+    profileId: number;
     fromInstant: Date;
     throughInstant: Date;
   }): Promise<UnifiedDurableRangeEvidenceV1> {
@@ -149,7 +150,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
         || input.throughInstant.getTime() <= input.fromInstant.getTime()) {
       throw new RangeError("Unified absolute replay interval is invalid");
     }
-    const profileId = input.profileId ?? 1;
+    const profileId = requireProfileId(input.profileId);
     const episodeRows = await this.client.modelEpisode.findMany({
       where: { profileId },
       orderBy: [{ startDate: "asc" }, { id: "asc" }],
@@ -177,7 +178,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
       return model === undefined ? Promise.resolve([]) : query();
     };
     const dailyRows = await this.client.dailyHealthData.findMany({
-      where: { date: { gte: fromDate, lte: toDate } },
+      where: { profileId, date: { gte: fromDate, lte: toDate } },
       orderBy: { date: "asc" },
       select: {
         id: true, date: true, updatedAt: true, weightKg: true, bodyFatPercent: true,
@@ -190,7 +191,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
     const diaryDateRange = { gte: diaryFrom, lt: diaryTo };
     const [workoutRows, diaryRows, activityRows, snapshots, hr, restingHr, sleep, production, slowTissueRows, glycogenRows, glycogenWaterRows, transientWaterRows, relativeMuscleDeltaRows, relativeMuscleCessationRows, completedStrengthIds] = await Promise.all([
       this.client.workout.findMany({
-        where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: addCalendarDays(fromDate, -2), lte: addCalendarDays(toDate, 2) } } },
+        where: { profileId, hiddenFromHistory: false, dailyHealthData: { date: { gte: addCalendarDays(fromDate, -2), lte: addCalendarDays(toDate, 2) } } },
         orderBy: [{ dailyHealthData: { date: "asc" } }, { startAt: "asc" }, { id: "asc" }],
         select: {
           id: true, type: true, startAt: true, endAt: true, durationMinutes: true,
@@ -226,8 +227,8 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
         orderBy: [{ id: "asc" }],
         select: { id: true, status: true, entryMode: true, revision: true, effectiveAccountingAt: true, webStartedAt: true, webEndedAt: true, matchedWorkoutId: true, createdAt: true, updatedAt: true, matchedWorkout: { select: { startAt: true, dailyHealthData: { select: { date: true } } } } },
       }),
-      this.client.healthActivityInterval.findMany({ where: { metric: "steps", date: { gte: fromDate, lte: toDate } }, orderBy: [{ startAt: "asc" }, { id: "asc" }], select: { id: true, date: true, startAt: true, endAt: true, value: true } }),
-      this.client.healthSyncSnapshot.findMany({ where: { date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true } }),
+      this.client.healthActivityInterval.findMany({ where: { profileId, metric: "steps", date: { gte: fromDate, lte: toDate } }, orderBy: [{ startAt: "asc" }, { id: "asc" }], select: { id: true, date: true, startAt: true, endAt: true, value: true } }),
+      this.client.healthSyncSnapshot.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true } }),
       this.client.heartRateSample.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, select: { date: true } }),
       this.client.restingHeartRateSample.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, select: { date: true } }),
       this.client.sleepSegment.findMany({ where: { profileId }, select: { endAt: true } }),

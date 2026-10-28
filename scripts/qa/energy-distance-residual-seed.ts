@@ -34,8 +34,8 @@ function assertSafeDatabaseUrl(url: string): void {
 
 async function upsertDay(date: string, weightKg: number, extras: Record<string, unknown> = {}) {
   return prisma.dailyHealthData.upsert({
-    where: { date },
-    create: {
+    where: { profileId_date: { profileId: 1, date: date } },
+    create: { profileId: 1,
       date,
       weightKg,
       caloriesKcal: 2400,
@@ -94,7 +94,7 @@ async function seedPendingAndAmbiguous(today: string) {
   const ambiguousDay = await upsertDay(ambiguousDate, 81, { scenario: "ambiguous-pair" });
 
   const pendingManual = await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: pendingDay.id,
       sourceIdentity: `${MANUAL_STEPPER_SOURCE_PREFIX}residual-pending`,
       externalId: "residual-pending-manual",
@@ -110,7 +110,7 @@ async function seedPendingAndAmbiguous(today: string) {
     },
   });
   const pendingGarmin = await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: pendingDay.id,
       sourceIdentity: "ext:residual-pending-garmin",
       externalId: "residual-pending-garmin",
@@ -125,7 +125,7 @@ async function seedPendingAndAmbiguous(today: string) {
   });
 
   const ambiguousManual = await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: ambiguousDay.id,
       sourceIdentity: `${MANUAL_STEPPER_SOURCE_PREFIX}residual-ambiguous`,
       externalId: "residual-ambiguous-manual",
@@ -141,7 +141,7 @@ async function seedPendingAndAmbiguous(today: string) {
     },
   });
   await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: ambiguousDay.id,
       sourceIdentity: "ext:residual-ambiguous-garmin-a",
       externalId: "residual-ambiguous-garmin-a",
@@ -155,7 +155,7 @@ async function seedPendingAndAmbiguous(today: string) {
     },
   });
   await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: ambiguousDay.id,
       sourceIdentity: "ext:residual-ambiguous-garmin-b",
       externalId: "residual-ambiguous-garmin-b",
@@ -169,12 +169,12 @@ async function seedPendingAndAmbiguous(today: string) {
     },
   });
 
-  await persistStepperReconciliationV1(prisma, {
+  await persistStepperReconciliationV1(prisma, { profileId: 1,
     from: pendingDate,
     to: pendingDate,
     synchronizedSteps: 9000,
   });
-  await persistStepperReconciliationV1(prisma, {
+  await persistStepperReconciliationV1(prisma, { profileId: 1,
     from: ambiguousDate,
     to: ambiguousDate,
     synchronizedSteps: 9000,
@@ -193,7 +193,7 @@ async function seedIncompleteCoverageForecast(today: string) {
   const incompleteDate = addCalendarDays(today, -3);
   const day = await upsertDay(incompleteDate, 81, { scenario: "incomplete-coverage" });
   await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: day.id,
       sourceIdentity: "ext:residual-known-200",
       externalId: "residual-known-200",
@@ -206,7 +206,7 @@ async function seedIncompleteCoverageForecast(today: string) {
     },
   });
   await prisma.workout.create({
-    data: {
+    data: { profileId: 1,
       dailyHealthDataId: day.id,
       sourceIdentity: "ext:residual-unknown-energy",
       externalId: "residual-unknown-energy",
@@ -226,13 +226,13 @@ async function seedIncompleteCoverageForecast(today: string) {
     const row = await upsertDay(date, 81 - offset * 0.01, { scenario: "forecast-history" });
     if (offset % 7 === 0 || (recent && offset % 3 === 0)) {
       await prisma.dailyHealthData.update({
-        where: { date },
+        where: { profileId_date: { profileId: 1, date } },
         data: { bodyFatPercent: 21.5 + (offset % 5) * 0.1 },
       });
     }
     if (offset % 3 === 0) {
       await prisma.workout.create({
-        data: {
+        data: { profileId: 1,
           dailyHealthDataId: row.id,
           sourceIdentity: `ext:residual-hist-${date}`,
           externalId: `residual-hist-${date}`,
@@ -263,14 +263,14 @@ async function ensureEpisode(startDate: string) {
   });
   const active = await prisma.modelEpisode.findFirst({ where: { active: true } });
   if (active) {
-    await recalculateModelEpisode({ episodeId: active.id });
+    await recalculateModelEpisode({ profileId: 1, episodeId: active.id });
     return active.id;
   }
-  const created = await initializeNewModelEpisode({
+  const created = await initializeNewModelEpisode({ profileId: 1,
     startDate,
     timezone: TIME_ZONE,
   });
-  await recalculateModelEpisode({ episodeId: created.id });
+  await recalculateModelEpisode({ profileId: 1, episodeId: created.id });
   return created.id;
 }
 

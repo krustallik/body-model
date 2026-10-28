@@ -28,7 +28,6 @@ import {
 } from "./training-refresh-worker-context";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 
-const PROFILE_ID = 1;
 const POLL_INTERVAL_MS = 1_000;
 const LEASE_DURATION_SECONDS = 300;
 const LEASE_HEARTBEAT_MS = 30_000;
@@ -134,54 +133,69 @@ async function resolveDirtyDate(job: ClaimedTrainingRefreshJob): Promise<string>
 
 async function claimNextTrainingRefreshJob(): Promise<ClaimedTrainingRefreshJob | null> {
   const leaseToken = randomUUID();
-  return prisma.$transaction(async (tx) => {
-    // Match source writers' lock order: profile advisory lock, then job row.
-    await new PhysiologyV7PersistenceRepository(tx).lockProfile(PROFILE_ID);
-    const rows = await tx.$queryRaw<QueueJobRow[]>`
-      SELECT "profileId", "requestedGeneration", "dirtyFromDate", "dirtyToDate",
-        "affectedSessionIds", "attemptCount", "leaseToken"
-      FROM "TrainingRefreshJob"
-      WHERE "profileId" = ${PROFILE_ID}
-        AND "requestedGeneration" > "completedGeneration"
-        AND "dueAt" <= clock_timestamp()
-        AND "nextAttemptAt" <= clock_timestamp()
-        AND ("leaseUntil" IS NULL OR "leaseUntil" <= clock_timestamp())
-      FOR UPDATE SKIP LOCKED
-    `;
-    const row = rows[0];
-    if (!row) return null;
-    const claimed = await tx.$queryRaw<QueueJobRow[]>`
-      UPDATE "TrainingRefreshJob"
-      SET "leaseToken" = ${leaseToken},
-          "leaseUntil" = clock_timestamp() + (${LEASE_DURATION_SECONDS} * INTERVAL '1 second'),
-          "attemptCount" = "attemptCount" + 1,
-          "lastAttemptAt" = clock_timestamp(),
-          "lastProgressStage" = 'claimed',
-          "lastProgressAt" = clock_timestamp(),
-          "updatedAt" = clock_timestamp()
-      WHERE "profileId" = ${PROFILE_ID}
-        AND "requestedGeneration" = ${row.requestedGeneration}
-        AND "requestedGeneration" > "completedGeneration"
-        AND "dueAt" <= clock_timestamp()
-        AND "nextAttemptAt" <= clock_timestamp()
-        AND ("leaseUntil" IS NULL OR "leaseUntil" <= clock_timestamp())
-      RETURNING "profileId", "requestedGeneration", "dirtyFromDate", "dirtyToDate",
-        "affectedSessionIds", "attemptCount", "leaseToken"
-    `;
-    const claimedRow = claimed[0];
-    if (!claimedRow) return null;
-    const sourceChanges = await readTrainingSourceChanges(tx, claimedRow.profileId, claimedRow.requestedGeneration);
-    return {
-      profileId: claimedRow.profileId,
-      requestedGeneration: claimedRow.requestedGeneration,
-      dirtyFromDate: claimedRow.dirtyFromDate,
-      dirtyToDate: claimedRow.dirtyToDate,
-      affectedSessionIds: claimedRow.affectedSessionIds,
-      attemptCount: claimedRow.attemptCount,
-      leaseToken,
-      sourceChanges,
-    };
-  }, { maxWait: 10_000, timeout: 15_000 });
+  const candidates = await prisma.$queryRaw<Array<{ profileId: number }>>`
+    SELECT "profileId"
+    FROM "TrainingRefreshJob"
+    WHERE "requestedGeneration" > "completedGeneration"
+      AND "dueAt" <= clock_timestamp()
+      AND "nextAttemptAt" <= clock_timestamp()
+      AND ("leaseUntil" IS NULL OR "leaseUntil" <= clock_timestamp())
+    ORDER BY "dueAt" ASC, "profileId" ASC
+    LIMIT 32
+  `;
+  for (const candidate of candidates) {
+    const claimedJob = await prisma.$transaction(async (tx) => {
+      // Keep the established writer lock order: one profile lock, then its job row.
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(candidate.profileId);
+      const rows = await tx.$queryRaw<QueueJobRow[]>`
+        SELECT "profileId", "requestedGeneration", "dirtyFromDate", "dirtyToDate",
+          "affectedSessionIds", "attemptCount", "leaseToken"
+        FROM "TrainingRefreshJob"
+        WHERE "profileId" = ${candidate.profileId}
+          AND "requestedGeneration" > "completedGeneration"
+          AND "dueAt" <= clock_timestamp()
+          AND "nextAttemptAt" <= clock_timestamp()
+          AND ("leaseUntil" IS NULL OR "leaseUntil" <= clock_timestamp())
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      `;
+      const row = rows[0];
+      if (!row) return null;
+      const claimed = await tx.$queryRaw<QueueJobRow[]>`
+        UPDATE "TrainingRefreshJob"
+        SET "leaseToken" = ${leaseToken},
+            "leaseUntil" = clock_timestamp() + (${LEASE_DURATION_SECONDS} * INTERVAL '1 second'),
+            "attemptCount" = "attemptCount" + 1,
+            "lastAttemptAt" = clock_timestamp(),
+            "lastProgressStage" = 'claimed',
+            "lastProgressAt" = clock_timestamp(),
+            "updatedAt" = clock_timestamp()
+        WHERE "profileId" = ${candidate.profileId}
+          AND "requestedGeneration" = ${row.requestedGeneration}
+          AND "requestedGeneration" > "completedGeneration"
+          AND "dueAt" <= clock_timestamp()
+          AND "nextAttemptAt" <= clock_timestamp()
+          AND ("leaseUntil" IS NULL OR "leaseUntil" <= clock_timestamp())
+        RETURNING "profileId", "requestedGeneration", "dirtyFromDate", "dirtyToDate",
+          "affectedSessionIds", "attemptCount", "leaseToken"
+      `;
+      const claimedRow = claimed[0];
+      if (!claimedRow) return null;
+      const sourceChanges = await readTrainingSourceChanges(tx, claimedRow.profileId, claimedRow.requestedGeneration);
+      return {
+        profileId: claimedRow.profileId,
+        requestedGeneration: claimedRow.requestedGeneration,
+        dirtyFromDate: claimedRow.dirtyFromDate,
+        dirtyToDate: claimedRow.dirtyToDate,
+        affectedSessionIds: claimedRow.affectedSessionIds,
+        attemptCount: claimedRow.attemptCount,
+        leaseToken,
+        sourceChanges,
+      };
+    }, { maxWait: 10_000, timeout: 15_000 });
+    if (claimedJob) return claimedJob;
+  }
+  return null;
 }
 
 /**
@@ -241,7 +255,7 @@ export async function reconcileLegacyStepperPublicationBlocksForRecovery(): Prom
       if (journal) return { recovered: false, workoutStillExists: null };
 
       const workout = await tx.workout.findUnique({
-        where: { id: workoutId },
+        where: { profileId_id: { profileId: candidate.profileId, id: workoutId } },
         select: {
           startAt: true,
           endAt: true,
@@ -556,6 +570,7 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
 
   await markTrainingRefreshProgress(job, "active-energy-production-convergence", hooks);
   const production = await recalculateActiveEnergyChangesV1({
+    profileId: job.profileId,
     requireDependentStages: true,
     ...(candidateScope === undefined ? {} : { activeEnergyCandidateScope: candidateScope }),
     onLifecycleFenceChanged: async () => {
@@ -567,7 +582,7 @@ async function rebuildClaimedGeneration(job: ClaimedTrainingRefreshJob, hooks: T
   });
   if (production === null) {
     const [current, lifecycle, ownsGeneration] = await Promise.all([
-      getModelStatus(),
+      getModelStatus(job.profileId),
       prisma.physiologyV7Lifecycle.findUnique({
         where: { profileId: job.profileId },
         select: {

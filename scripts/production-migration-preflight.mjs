@@ -481,8 +481,10 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (missingObjectsBefore.length) blockers.push(`Required pre-migration schema objects are missing: ${missingObjectsBefore.join(", ")}.`);
   const wrongObjectsBefore = Object.entries(manifest.requiredObjectSignatureIncludes ?? {}).filter(([name, fragment]) => {
     const object = objectMap.get(name);
+    const signature = canonicalInventorySignature(object);
     return object?.present !== true || typeof object.signature !== "string"
-      || !normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
+      || typeof signature !== "string"
+      || !normalizeObjectSignature(signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (wrongObjectsBefore.length) blockers.push(`Required pre-migration schema signatures differ from the reviewed baseline: ${wrongObjectsBefore.join(", ")}.`);
   const wrongExactObjectsBefore = Object.entries(manifest.requiredObjectSignatureEquals ?? {}).filter(([name, expected]) => {
@@ -493,8 +495,10 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (wrongExactObjectsBefore.length) blockers.push(`Required exact pre-migration schema signatures differ from the reviewed baseline: ${wrongExactObjectsBefore.join(", ")}.`);
   const changedObjectsBefore = Object.entries(manifest.requiredObjectSignatureExcludes ?? {}).filter(([name, fragment]) => {
     const object = objectMap.get(name);
+    const signature = canonicalInventorySignature(object);
     return object?.present !== true || typeof object.signature !== "string"
-      || normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
+      || typeof signature !== "string"
+      || normalizeObjectSignature(signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (changedObjectsBefore.length) blockers.push(`Required pre-migration schema objects already contain target migration changes: ${changedObjectsBefore.join(", ")}.`);
 

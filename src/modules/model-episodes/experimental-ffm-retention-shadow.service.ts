@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { prisma } from "@/lib/db/prisma";
 import {
   EXPERIMENTAL_FFM_RETENTION_V1_REVISION,
@@ -14,13 +15,13 @@ import { persistUnifiedShadowCandidateV1, readUnifiedSourceFenceV1 } from "./phy
  */
 export async function recordExperimentalFfmRetentionShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
   const [health, modelState, priorFat] = await Promise.all([
     prisma.dailyHealthData.findUnique({
-      where: { date: input.date },
+      where: { profileId_date: { profileId, date: input.date } },
       select: { proteinG: true, weightKg: true },
     }),
     prisma.dailyModelState.findFirst({
@@ -68,7 +69,7 @@ export async function recordExperimentalFfmRetentionShadow(input: {
     expectedFence: sourceFence,
     persist: async (tx) => {
       const currentHealth = await tx.dailyHealthData.findUnique({
-        where: { date: input.date },
+        where: { profileId_date: { profileId, date: input.date } },
         select: { proteinG: true, weightKg: true },
       });
       if (currentHealth?.proteinG !== health?.proteinG || currentHealth?.weightKg !== health?.weightKg) {

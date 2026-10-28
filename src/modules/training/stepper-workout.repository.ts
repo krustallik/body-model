@@ -171,11 +171,12 @@ function workoutDates(input: StepperWorkoutInput) {
 
 async function earliestAffectedDateV1(
   transaction: Prisma.TransactionClient,
+  profileId: number,
   sourceDates: readonly string[],
   eventInstants: readonly Date[],
 ): Promise<string> {
   const episodes = await transaction.modelEpisode.findMany({
-    where: { profileId: 1 },
+    where: { profileId },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true },
   });
@@ -191,12 +192,14 @@ async function earliestAffectedDateV1(
 
 async function attachReconciliation(
   client: PrismaClient | import("@prisma/client").Prisma.TransactionClient,
+  profileId: number,
   workouts: StepperWorkoutDto[],
 ): Promise<StepperWorkoutDto[]> {
   if (workouts.length === 0) return workouts;
   const ids = workouts.map((workout) => workout.id);
   const links = await client.stepperReconciliationCandidate.findMany({
     where: {
+      profileId,
       group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
       OR: [{ manualWorkoutId: { in: ids } }, { garminWorkoutId: { in: ids } }],
     },
@@ -232,21 +235,21 @@ async function attachReconciliation(
 export class StepperWorkoutRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async list(options: { limit?: number; offset?: number } = {}): Promise<StepperWorkoutDto[]> {
-    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, 1);
-    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, 1);
+  async list(profileId: number, options: { limit?: number; offset?: number } = {}): Promise<StepperWorkoutDto[]> {
+    const trainingFence = await readTrainingRefreshVisibilityFence(this.client, profileId);
+    const convergenceFence = await readActiveEnergyConvergenceVisibilityFence(this.client, profileId);
     const rows = await this.client.workout.findMany({
-      where: { type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
+      where: { profileId, type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
       orderBy: [{ startAt: "desc" }, { id: "desc" }],
       take: options.limit ?? 100,
       ...(options.offset !== undefined ? { skip: Math.min(options.offset, 1_000_000) } : {}),
       select: stepperSelect,
     });
-    const workouts = await attachReconciliation(this.client, rows.map(toDto));
+    const workouts = await attachReconciliation(this.client, profileId, rows.map(toDto));
     if (convergenceFence?.active === true
         || isTrainingRefreshPending(trainingFence)
-        || await trainingRefreshFenceChanged(this.client, 1, trainingFence)
-        || await activeEnergyConvergenceFenceChanged(this.client, 1, convergenceFence)) {
+        || await trainingRefreshFenceChanged(this.client, profileId, trainingFence)
+        || await activeEnergyConvergenceFenceChanged(this.client, profileId, convergenceFence)) {
       return workouts.map((workout) => ({
         ...workout,
         selectedActiveEnergyKcal: null,
@@ -258,33 +261,34 @@ export class StepperWorkoutRepository {
     return workouts;
   }
 
-  count(): Promise<number> {
+  count(profileId: number): Promise<number> {
     return this.client.workout.count({
       where: {
+        profileId,
         type: { equals: STEPPER_TYPE, mode: "insensitive" },
         hiddenFromHistory: false,
       },
     });
   }
 
-  async create(input: StepperWorkoutInput, operationId?: string): Promise<StepperWorkoutDto> {
+  async create(profileId: number, input: StepperWorkoutInput, operationId?: string): Promise<StepperWorkoutDto> {
     const { startAt, endAt, date } = workoutDates(input);
     const sourceKey = `${MANUAL_STEPPER_SOURCE_PREFIX}${operationId ?? randomUUID()}`;
     const payloadDigest = stepperCreatePayloadDigest(input);
     const outcome = await this.client.$transaction(async (transaction) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
-      await lifecycle.lockProfile(1);
+      await lifecycle.lockProfile(profileId);
       if (operationId !== undefined) {
         const inserted = await transaction.$queryRaw<Array<{ operationId: string }>>`
           INSERT INTO "StepperCreateOperation" (
             "profileId", "operationId", "payloadVersion", "payloadDigest", "state", "createdAt", "updatedAt"
-          ) VALUES (1, ${operationId}, 1, ${payloadDigest}, 'PENDING', clock_timestamp(), clock_timestamp())
+          ) VALUES (${profileId}, ${operationId}, 1, ${payloadDigest}, 'PENDING', clock_timestamp(), clock_timestamp())
           ON CONFLICT ("profileId", "operationId") DO NOTHING
           RETURNING "operationId"
         `;
         if (inserted.length === 0) {
           const existing = await transaction.stepperCreateOperation.findUnique({
-            where: { profileId_operationId: { profileId: 1, operationId } },
+            where: { profileId_operationId: { profileId, operationId } },
             select: { payloadDigest: true, state: true, workoutId: true },
           });
           if (!existing) throw new Error("Stepper create operation conflict was not readable after serialization.");
@@ -296,13 +300,14 @@ export class StepperWorkoutRepository {
         }
       }
       const day = await transaction.dailyHealthData.upsert({
-        where: { date },
-        create: { date, rawPayload: { source: "manual-stepper-training" } },
+        where: { profileId_date: { profileId, date } },
+        create: { profileId, date, rawPayload: { source: "manual-stepper-training" } },
         update: {},
         select: { id: true },
       });
       const created = await transaction.workout.create({
         data: {
+          profileId,
           dailyHealthDataId: day.id,
           sourceIdentity: sourceKey,
           type: STEPPER_TYPE,
@@ -321,19 +326,19 @@ export class StepperWorkoutRepository {
       // delete, and retry operations, so a failed post-commit refresh remains
       // recoverable through the same durable fence.
       await new PhysiologyV7PersistenceRepository(transaction).blockUnifiedPublication({
-        profileId: 1,
-        fromDate: await earliestAffectedDateV1(transaction, [date], [startAt]),
+        profileId,
+        fromDate: await earliestAffectedDateV1(transaction, profileId, [date], [startAt]),
         source: "stepper",
         sourceKey: String(created.id),
       });
       await invalidateWorkoutEnergyInTransactionV1({
-        tx: transaction, profileId: 1, workoutIds: [created.id], affectedInstants: [startAt, endAt],
+        tx: transaction, profileId, workoutIds: [created.id], affectedInstants: [startAt, endAt],
         staleMatchingAliasesOnly: true,
       });
-      const reconciliation = await persistStepperReconciliationV1(transaction, { from: date, to: date });
-      const modelDate = await earliestAffectedDateV1(transaction, [], [startAt]);
+      const reconciliation = await persistStepperReconciliationV1(transaction, { profileId, from: date, to: date });
+      const modelDate = await earliestAffectedDateV1(transaction, profileId, [], [startAt]);
       await enqueueTrainingSourceChangeInTransaction(transaction, {
-        profileId: 1,
+        profileId,
         operationKind: "stepper_workout_create",
         affectedSessionIds: [],
         affectedWorkoutIds: [...new Set([created.id, ...reconciliation.affectedWorkoutIds])],
@@ -350,44 +355,47 @@ export class StepperWorkoutRepository {
       });
       if (operationId !== undefined) {
         await transaction.stepperCreateOperation.update({
-          where: { profileId_operationId: { profileId: 1, operationId } },
+          where: { profileId_operationId: { profileId, operationId } },
           data: { workoutId: created.id, state: "COMMITTED" },
         });
       }
       return { kind: "created" as const, workoutId: created.id };
     });
     if (outcome.kind === "tombstoned" || outcome.workoutId === null) throw new StepperCreateOperationTombstonedError();
-    const refreshed = await this.client.workout.findUnique({ where: { id: outcome.workoutId }, select: stepperSelect });
+    const refreshed = await this.client.workout.findUnique({
+      where: { profileId_id: { profileId, id: outcome.workoutId } },
+      select: stepperSelect,
+    });
     if (!refreshed || refreshed.hiddenFromHistory) throw new StepperCreateOperationTombstonedError();
-    const [dto] = await attachReconciliation(this.client, refreshed ? [toDto(refreshed)] : []);
+    const [dto] = await attachReconciliation(this.client, profileId, refreshed ? [toDto(refreshed)] : []);
     return { ...dto!, modelPublicationStatus: this.client === prisma ? "stale" : "not-run" };
   }
 
-  async resolveCreateOperation(input: { operationId: string; payloadDigest?: string }): Promise<StepperCreateOperationResolution> {
+  async resolveCreateOperation(profileId: number, input: { operationId: string; payloadDigest?: string }): Promise<StepperCreateOperationResolution> {
     const operation = await this.client.stepperCreateOperation.findUnique({
-      where: { profileId_operationId: { profileId: 1, operationId: input.operationId } },
+      where: { profileId_operationId: { profileId, operationId: input.operationId } },
       select: { payloadDigest: true, state: true, workoutId: true },
     });
     if (!operation) return { state: "NOT_FOUND" };
     if (input.payloadDigest !== undefined && operation.payloadDigest !== input.payloadDigest) return { state: "CONFLICT" };
     if (operation.state === "TOMBSTONED" || operation.workoutId === null) return { state: "TOMBSTONED" };
     const workout = await this.client.workout.findUnique({
-      where: { id: operation.workoutId },
+      where: { profileId_id: { profileId, id: operation.workoutId } },
       select: stepperSelect,
     });
     if (!workout || workout.hiddenFromHistory) {
       return { state: "TOMBSTONED" };
     }
-    const [dto] = await attachReconciliation(this.client, [toDto(workout)]);
+    const [dto] = await attachReconciliation(this.client, profileId, [toDto(workout)]);
     return dto ? { state: "COMMITTED", workout: dto } : { state: "TOMBSTONED" };
   }
 
-  async update(id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
+  async update(profileId: number, id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
     const { startAt, endAt, date } = workoutDates(input);
     const outcome = await this.client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
       const existing = await transaction.workout.findFirst({
-        where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
+        where: { profileId, id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
         select: {
           id: true, sourceIdentity: true, dailyHealthDataId: true, externalId: true,
           dailyHealthData: { select: { date: true } },
@@ -410,9 +418,10 @@ export class StepperWorkoutRepository {
         return { id, changed: false as const };
       }
       await new PhysiologyV7PersistenceRepository(transaction).blockUnifiedPublication({
-        profileId: 1,
+        profileId,
         fromDate: await earliestAffectedDateV1(
           transaction,
+          profileId,
           [existing.dailyHealthData.date, date],
           [existing.startAt, startAt],
         ),
@@ -420,8 +429,8 @@ export class StepperWorkoutRepository {
         sourceKey: String(id),
       });
       const day = await transaction.dailyHealthData.upsert({
-        where: { date },
-        create: { date, rawPayload: { source: "manual-stepper-training" } },
+        where: { profileId_date: { profileId, date } },
+        create: { profileId, date, rawPayload: { source: "manual-stepper-training" } },
         update: {},
         select: { id: true },
       });
@@ -430,6 +439,7 @@ export class StepperWorkoutRepository {
         // later Apple Health replay is absorbed by this hidden tombstone.
         await transaction.workout.create({
           data: {
+            profileId,
             dailyHealthDataId: existing.dailyHealthDataId,
             externalId: existing.externalId,
             sourceIdentity: existing.sourceIdentity,
@@ -445,7 +455,7 @@ export class StepperWorkoutRepository {
         });
       }
       const updated = await transaction.workout.update({
-        where: { id },
+        where: { profileId_id: { profileId, id } },
         data: {
           dailyHealthDataId: day.id,
           startAt,
@@ -458,7 +468,7 @@ export class StepperWorkoutRepository {
         select: stepperSelect,
       });
       const linked = await transaction.strengthDiarySession.findFirst({
-        where: { matchedWorkoutId: id },
+        where: { profileId, matchedWorkoutId: id },
         select: { id: true, effectiveAccountingAt: true, accountingTimeZone: true, accountingTimeZoneProvenance: true, webStartedAt: true, createdAt: true },
       });
       if (linked) {
@@ -469,7 +479,7 @@ export class StepperWorkoutRepository {
           const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
           const nextLocalDate = instantToLocalDateTime(startAt, timeZone).date;
           await transaction.strengthDiarySession.update({
-            where: { id: linked.id },
+            where: { profileId_id: { profileId, id: linked.id } },
             data: {
               effectiveAccountingAt: startAt,
               ...(previousLocalDate === nextLocalDate ? {} : {
@@ -491,23 +501,23 @@ export class StepperWorkoutRepository {
       }
       const reconcileFrom = existing.dailyHealthData.date < date ? existing.dailyHealthData.date : date;
       const reconcileTo = existing.dailyHealthData.date > date ? existing.dailyHealthData.date : date;
-      const reconciliation = await persistStepperReconciliationV1(transaction, { from: reconcileFrom, to: reconcileTo });
+      const reconciliation = await persistStepperReconciliationV1(transaction, { profileId, from: reconcileFrom, to: reconcileTo });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction,
-        profileId: 1,
+        profileId,
         workoutIds: [id],
         affectedInstants: [existing.startAt, existing.endAt, startAt, endAt],
         staleMatchingAliasesOnly: true,
       });
       const episodes = await transaction.modelEpisode.findMany({
-        where: { profileId: 1 },
+        where: { profileId },
         orderBy: [{ startDate: "asc" }, { id: "asc" }],
         select: { id: true, startDate: true, timezone: true, active: true },
       });
       const oldModelDate = episodeTimeContextForInstantV1(episodes, existing.startAt).date;
       const newModelDate = episodeTimeContextForInstantV1(episodes, startAt).date;
       await enqueueTrainingSourceChangeInTransaction(transaction, {
-        profileId: 1,
+        profileId,
         operationKind: "stepper_workout_update",
         affectedSessionIds: linked === null ? [] : [linked.id],
         affectedWorkoutIds: [...new Set([id, ...reconciliation.affectedWorkoutIds])],
@@ -523,29 +533,32 @@ export class StepperWorkoutRepository {
       return { id: updated.id, changed: true as const };
     });
     if (outcome === null) return null;
-    const refreshed = await this.client.workout.findUnique({ where: { id: outcome.id }, select: stepperSelect });
+    const refreshed = await this.client.workout.findUnique({
+      where: { profileId_id: { profileId, id: outcome.id } },
+      select: stepperSelect,
+    });
     if (!refreshed) return null;
-    const [dto] = await attachReconciliation(this.client, [toDto(refreshed)]);
+    const [dto] = await attachReconciliation(this.client, profileId, [toDto(refreshed)]);
     return dto ? { ...dto, modelPublicationStatus: this.client === prisma && outcome.changed ? "stale" : "not-run" } : null;
   }
 
-  async delete(id: number): Promise<StepperWorkoutDeleteResult> {
+  async delete(profileId: number, id: number): Promise<StepperWorkoutDeleteResult> {
     const outcome = await this.client.$transaction(async (transaction) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
-      await lifecycle.lockProfile(1);
+      await lifecycle.lockProfile(profileId);
       const existing = await transaction.workout.findFirst({
-        where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, matchedDiarySession: { is: null }, hiddenFromHistory: false },
+        where: { profileId, id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, matchedDiarySession: { is: null }, hiddenFromHistory: false },
         select: { id: true, sourceIdentity: true, startAt: true, endAt: true, dailyHealthData: { select: { date: true } } },
       });
       if (!existing) {
-        const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "stepper", sourceKey: String(id) });
+        const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId, source: "stepper", sourceKey: String(id) });
         if (token === null) return { shouldRefresh: false as const, sourceDate: null, eventAt: null };
         const hidden = await transaction.workout.findFirst({
-          where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" } },
+          where: { profileId, id, type: { equals: STEPPER_TYPE, mode: "insensitive" } },
           select: { startAt: true, dailyHealthData: { select: { date: true } } },
         });
         await enqueueTrainingSourceChangeInTransaction(transaction, {
-          profileId: 1,
+          profileId,
           operationKind: "stepper_workout_delete_recovery",
           affectedSessionIds: [],
           affectedWorkoutIds: [id],
@@ -566,35 +579,35 @@ export class StepperWorkoutRepository {
       }
       const isManual = existing.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX);
       const changed = isManual
-        ? await transaction.workout.deleteMany({ where: { id } })
-        : await transaction.workout.updateMany({ where: { id }, data: { syncProtected: true, hiddenFromHistory: true } });
+        ? await transaction.workout.deleteMany({ where: { profileId, id } })
+        : await transaction.workout.updateMany({ where: { profileId, id }, data: { syncProtected: true, hiddenFromHistory: true } });
       if (changed.count !== 1) return { shouldRefresh: false as const, sourceDate: null, eventAt: null };
       if (isManual) {
         await transaction.stepperCreateOperation.updateMany({
-          where: { profileId: 1, workoutId: id, state: "COMMITTED" },
+          where: { profileId, workoutId: id, state: "COMMITTED" },
           data: { state: "TOMBSTONED" },
         });
       }
       if (!isManual) {
         // Hidden Health rows remain durable source records, but their derived
         // glycogen demand must stop contributing to the visible model state.
-        await transaction.experimentalStepperGlycogenDemandShadow.deleteMany({ where: { workoutId: id } });
+        await transaction.experimentalStepperGlycogenDemandShadow.deleteMany({ where: { profileId, workoutId: id } });
       }
       const date = existing.dailyHealthData.date;
       await lifecycle.blockUnifiedPublication({
-        profileId: 1,
-        fromDate: await earliestAffectedDateV1(transaction, [date], [existing.startAt]),
+        profileId,
+        fromDate: await earliestAffectedDateV1(transaction, profileId, [date], [existing.startAt]),
         source: "stepper",
         sourceKey: String(id),
       });
       await invalidateWorkoutEnergyInTransactionV1({
-        tx: transaction, profileId: 1, workoutIds: [id], affectedInstants: [existing.startAt, existing.endAt],
+        tx: transaction, profileId, workoutIds: [id], affectedInstants: [existing.startAt, existing.endAt],
         staleMatchingAliasesOnly: true,
       });
-      const reconciliation = await persistStepperReconciliationV1(transaction, { from: date, to: date });
-      const modelDate = await earliestAffectedDateV1(transaction, [], [existing.startAt]);
+      const reconciliation = await persistStepperReconciliationV1(transaction, { profileId, from: date, to: date });
+      const modelDate = await earliestAffectedDateV1(transaction, profileId, [], [existing.startAt]);
       await enqueueTrainingSourceChangeInTransaction(transaction, {
-        profileId: 1,
+        profileId,
         operationKind: "stepper_workout_delete",
         affectedSessionIds: [],
         affectedWorkoutIds: [...new Set([id, ...reconciliation.affectedWorkoutIds])],

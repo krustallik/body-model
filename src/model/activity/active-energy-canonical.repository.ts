@@ -80,7 +80,7 @@ export async function persistActiveEnergyCanonicalResolutionV1(
     const eventIds = [...new Set(aliasEvents.map((row) => row.eventId))];
     const [logicalEvent, aliasedEvents] = await Promise.all([
       tx.activeEnergyCanonicalEvent.findUnique({ where: { profileId_logicalEventKey: { profileId: input.profileId, logicalEventKey: input.logicalEventKey } } }),
-      eventIds.length === 0 ? Promise.resolve([]) : tx.activeEnergyCanonicalEvent.findMany({ where: { id: { in: eventIds } } }),
+      eventIds.length === 0 ? Promise.resolve([]) : tx.activeEnergyCanonicalEvent.findMany({ where: { profileId: input.profileId, id: { in: eventIds } } }),
     ]);
     // Prefer the canonical logical key when it already exists, otherwise keep
     // the oldest aliased row as the stable identity during matched-source merge.
@@ -95,7 +95,7 @@ export async function persistActiveEnergyCanonicalResolutionV1(
       });
     } else {
       event = await tx.activeEnergyCanonicalEvent.update({
-        where: { id: event.id },
+        where: { profileId_id: { profileId: input.profileId, id: event.id } },
         data: {
           logicalEventKey: input.logicalEventKey, eventKind: input.eventKind, occurrenceAt: input.occurrenceAt,
           modelDate: input.modelDate, modelTimeZone: input.modelTimeZone, inputFingerprint: input.inputFingerprint,
@@ -106,9 +106,9 @@ export async function persistActiveEnergyCanonicalResolutionV1(
     // Merge aliases from formerly separate diary/workout identities onto one
     // event, retaining the old event and its immutable resolution history.
     for (const otherId of [...new Set([...eventIds, ...(logicalEvent ? [logicalEvent.id] : [])])].filter((id) => id !== event.id)) {
-      await tx.activeEnergyEventAlias.updateMany({ where: { eventId: otherId }, data: { eventId: event.id } });
+      await tx.activeEnergyEventAlias.updateMany({ where: { profileId: input.profileId, eventId: otherId }, data: { eventId: event.id } });
       await tx.activeEnergyCanonicalEvent.update({
-        where: { id: otherId },
+        where: { profileId_id: { profileId: input.profileId, id: otherId } },
         data: { isStale: true, supersededByEventId: event.id },
       });
     }
@@ -135,8 +135,8 @@ export async function persistActiveEnergyCanonicalResolutionV1(
     for (const candidate of input.candidates) {
       const valueKcal = validKcal(candidate.valueKcal);
       await tx.activeEnergyCandidate.upsert({
-        where: { eventId_source_sourceIdentity_sourceFingerprint: { eventId: event.id, source: candidate.source, sourceIdentity: candidate.sourceIdentity, sourceFingerprint: candidate.sourceFingerprint } },
-        create: { eventId: event.id, source: candidate.source, sourceIdentity: candidate.sourceIdentity, sourceFingerprint: candidate.sourceFingerprint, availability: valueKcal === null ? "unavailable" : "available", valueKcal, provenance: candidate.provenance as Prisma.InputJsonValue },
+        where: { profileId_eventId_source_sourceIdentity_sourceFingerprint: { profileId: input.profileId, eventId: event.id, source: candidate.source, sourceIdentity: candidate.sourceIdentity, sourceFingerprint: candidate.sourceFingerprint } },
+        create: { profileId: input.profileId, eventId: event.id, source: candidate.source, sourceIdentity: candidate.sourceIdentity, sourceFingerprint: candidate.sourceFingerprint, availability: valueKcal === null ? "unavailable" : "available", valueKcal, provenance: candidate.provenance as Prisma.InputJsonValue },
         update: { availability: valueKcal === null ? "unavailable" : "available", valueKcal, provenance: candidate.provenance as Prisma.InputJsonValue },
       });
     }
@@ -161,7 +161,7 @@ export async function persistActiveEnergyCanonicalResolutionV1(
     if (event.currentResolutionFingerprint === resolutionFingerprint) {
       if (event.isStale) {
         await tx.activeEnergyCanonicalEvent.updateMany({
-          where: { id: event.id, resolutionRevision: event.resolutionRevision, inputFingerprint: input.inputFingerprint },
+        where: { profileId: input.profileId, id: event.id, resolutionRevision: event.resolutionRevision, inputFingerprint: input.inputFingerprint },
           data: { isStale: false },
         });
       }
@@ -169,7 +169,7 @@ export async function persistActiveEnergyCanonicalResolutionV1(
     }
     const nextRevision = event.resolutionRevision + 1;
     const update = await tx.activeEnergyCanonicalEvent.updateMany({
-      where: { id: event.id, resolutionRevision: event.resolutionRevision, inputFingerprint: input.inputFingerprint },
+      where: { profileId: input.profileId, id: event.id, resolutionRevision: event.resolutionRevision, inputFingerprint: input.inputFingerprint },
       data: {
         resolutionRevision: nextRevision, currentResolutionFingerprint: resolutionFingerprint,
         currentSource: source, currentKcal: valueKcal, currentProvenance: provenance as Prisma.InputJsonValue,
@@ -179,7 +179,7 @@ export async function persistActiveEnergyCanonicalResolutionV1(
     if (update.count !== 1) throw new Error("active-energy canonical resolution CAS failed");
     await tx.activeEnergyResolutionRevision.create({
       data: {
-        eventId: event.id, revision: nextRevision, resolutionFingerprint, source, valueKcal,
+        profileId: input.profileId, eventId: event.id, revision: nextRevision, resolutionFingerprint, source, valueKcal,
         provenance: provenance as Prisma.InputJsonValue,
       },
     });

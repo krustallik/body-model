@@ -84,7 +84,7 @@ function createClient(input: {
       upsertDates.push(query.create.date);
       const existing = rows.find((row) => dateMatches(row, query.where));
       if (existing) Object.assign(existing, query.update);
-      else rows.push({ ...query.create });
+      else rows.push({  ...query.create });
       return existing ?? query.create;
     }),
   });

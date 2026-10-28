@@ -36,7 +36,7 @@ function fixture(current: ReturnType<typeof assignment> | null = null) {
 describe("StepperEquipmentRepository", () => {
   it("creates the first explicitly effective MS100 assignment without inventing prior history", async () => {
     const { repository, transaction } = fixture();
-    await expect(repository.configureMs100("2026-09-01T00:00:00.000Z")).resolves.toMatchObject({
+    await expect(repository.configureMs100(1, "2026-09-01T00:00:00.000Z")).resolves.toMatchObject({
       id: 2,
       machineFamily: "DOMYOS_MS100",
       configuration: "fixed",
@@ -51,10 +51,10 @@ describe("StepperEquipmentRepository", () => {
 
   it("closes the open assignment and creates a new version at a later effective instant", async () => {
     const { repository, transaction } = fixture(assignment(1, firstEffectiveFrom));
-    await repository.configureMs100("2026-09-10T00:00:00.000Z");
+    await repository.configureMs100(1, "2026-09-10T00:00:00.000Z");
 
     expect(transaction.stepperEquipmentAssignment.update).toHaveBeenCalledWith({
-      where: { id: 1 },
+      where: { profileId: 1, id: 1 },
       data: { effectiveTo: new Date("2026-09-10T00:00:00.000Z") },
     });
     expect(transaction.stepperEquipmentAssignment.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -64,7 +64,7 @@ describe("StepperEquipmentRepository", () => {
 
   it("rejects a retroactive replacement before changing assignment history", async () => {
     const { repository, transaction } = fixture(assignment(1, firstEffectiveFrom));
-    await expect(repository.configureMs100("2026-09-01T00:00:00.000Z"))
+    await expect(repository.configureMs100(1, "2026-09-01T00:00:00.000Z"))
       .rejects.toThrow("effectiveFrom must be later");
     expect(transaction.stepperEquipmentAssignment.update).not.toHaveBeenCalled();
     expect(transaction.stepperEquipmentAssignment.create).not.toHaveBeenCalled();

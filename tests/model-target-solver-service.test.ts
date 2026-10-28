@@ -79,7 +79,7 @@ describe("model target solver application service", () => {
   });
 
   it("converts the local goal date to a 30-day horizon and uses search/final path counts", async () => {
-    const result = await solveModelEpisodeTarget({ ...request, now }, {} as never);
+    const result = await solveModelEpisodeTarget({ profileId: 1, ...request, now }, {} as never);
     expect(result.status).toBe("solved");
     expect("goal" in result && result.goal.horizonDays).toBe(30);
     expect(mocks.forecast.mock.calls.every(([input]) => input.seed === 17 && input.horizonDays === 30)).toBe(true);
@@ -94,7 +94,7 @@ describe("model target solver application service", () => {
         terminalPhysiologicalBodyWeightSamplesKg: Array.from({ length: input.config.pathCount },
           () => forecast.dates.at(-1)!.physiologicalBodyWeightKg.median) };
     });
-    const result = await solveModelEpisodeTarget({ ...request, now }, {} as never);
+    const result = await solveModelEpisodeTarget({ profileId: 1, ...request, now }, {} as never);
     expect("quality" in result && result.quality.initialStateQuality).toBe("degraded");
     expect("recoveryVersion" in result && result.recoveryVersion).toBe("bodycast-recovery-v3");
   });
@@ -102,12 +102,12 @@ describe("model target solver application service", () => {
   it("propagates awaiting and does not invent a starting state", async () => {
     mocks.forecast.mockResolvedValue({ status: "initial-state-unavailable", initialStateQuality: "awaiting",
       reason: "stale recovery", modelVersion: episode.modelVersion, forecastVersion: "bodycast-forecast-v1", recoveryVersion: null });
-    const result = await solveModelEpisodeTarget({ ...request, now }, {} as never);
+    const result = await solveModelEpisodeTarget({ profileId: 1, ...request, now }, {} as never);
     expect(result).toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting", reason: "stale recovery" });
   });
 
   it("rejects a non-future goal before evaluating Forecast", async () => {
-    await expect(solveModelEpisodeTarget({ ...request, goal: { ...request.goal, goalDate: "2026-08-23" }, now }, {} as never))
+    await expect(solveModelEpisodeTarget({ profileId: 1, ...request, goal: { ...request.goal, goalDate: "2026-08-23" }, now }, {} as never))
       .rejects.toThrow(/after/);
     expect(mocks.forecast).not.toHaveBeenCalled();
   });

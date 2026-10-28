@@ -19,6 +19,7 @@ function decimalToNumber(value: Prisma.Decimal | null): number | null {
 
 export async function estimateWorkActivityForDay(
   input: {
+    profileId: number;
     date: string;
     weightKg: number;
     rmrKcalPerDay: number;
@@ -28,14 +29,14 @@ export async function estimateWorkActivityForDay(
 ) {
   const [rawDay, rawSnapshots, intervals, rawActivityIntervals] = await Promise.all([
     client.dailyHealthData.findUnique({
-      where: { date: input.date },
+      where: { profileId_date: { profileId: input.profileId, date: input.date } },
       select: {
         walkingDistanceKm: true,
         averageWalkingSpeedKmh: true,
       },
     }),
     client.healthSyncSnapshot.findMany({
-      where: { date: input.date },
+      where: { profileId: input.profileId, date: input.date },
       orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
       select: {
         receivedAt: true,
@@ -45,12 +46,13 @@ export async function estimateWorkActivityForDay(
       },
     }),
     client.workInterval.findMany({
-      where: { date: input.date },
+      where: { profileId: input.profileId, date: input.date },
       orderBy: [{ startAt: "asc" }, { id: "asc" }],
       select: { id: true, startAt: true, endAt: true, category: true, breakMinutes: true },
     }),
     client.healthActivityInterval.findMany({
       where: {
+        profileId: input.profileId,
         date: input.date,
         metric: { in: ["steps", "walking-distance-km"] },
       },
@@ -143,23 +145,25 @@ export async function estimateWorkActivityForDay(
 
 export async function getWorkActivityDiagnosticsForDay(
   date: string,
+  profileId: number,
   client: PrismaClient = prisma,
 ) {
   const [profile, day] = await Promise.all([
     client.profile.findUnique({
-      where: { id: 1 },
+      where: { id: profileId },
       select: { sex: true, dateOfBirth: true, heightCm: true },
     }),
     client.dailyHealthData.findUnique({
-      where: { date },
+      where: { profileId_date: { profileId, date } },
       select: { weightKg: true },
     }),
   ]);
-  if (!profile || day?.weightKg === 0 || day?.weightKg === null || day?.weightKg === undefined) {
+  if (!profile || profile.dateOfBirth === null || profile.heightCm === null
+      || day?.weightKg === 0 || day?.weightKg === null || day?.weightKg === undefined) {
     return {
       date,
       diagnostics: null,
-      unavailableReason: "profile-or-weight-missing" as const,
+      unavailableReason: "profile-physiology-or-weight-missing" as const,
     };
   }
   const ageYears = calculateAge(profile.dateOfBirth.toISOString().slice(0, 10), date);
@@ -172,6 +176,7 @@ export async function getWorkActivityDiagnosticsForDay(
   return {
     date,
     diagnostics: await estimateWorkActivityForDay({
+      profileId,
       date,
       weightKg: day.weightKg,
       rmrKcalPerDay,

@@ -71,6 +71,7 @@ describe("full-history raw-input inventory PostgreSQL", () => {
     });
     await prisma.healthMetricSample.createMany({
       data: Array.from({ length: sampleCount }, (_, index) => ({
+        profileId: 1,
         date: "2098-01-01",
         metric: `${metricPrefix}${index}`,
         source: "isolated-preservation-fixture",

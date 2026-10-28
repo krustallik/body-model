@@ -65,14 +65,14 @@ describe("model diagnostics Training currentness fence", () => {
     fence.read.mockResolvedValue({ requestedGeneration: 5, completedGeneration: 4 });
     fence.pending.mockReturnValue(true);
 
-    await expect(getModelDiagnostics({} as never)).rejects.toBeInstanceOf(TrainingRefreshPendingDiagnosticsError);
+    await expect(getModelDiagnostics(1)).rejects.toBeInstanceOf(TrainingRefreshPendingDiagnosticsError);
     expect(repositories.buildDiagnosticsDto).not.toHaveBeenCalled();
   });
 
   it("fails closed when the generation changes during deterministic and recovery reads", async () => {
     fence.changed.mockResolvedValue(true);
 
-    await expect(getModelDiagnostics({} as never)).rejects.toBeInstanceOf(TrainingRefreshPendingDiagnosticsError);
+    await expect(getModelDiagnostics(1)).rejects.toBeInstanceOf(TrainingRefreshPendingDiagnosticsError);
     expect(repositories.loadEvidence).toHaveBeenCalled();
     expect(repositories.latestStatus).toHaveBeenCalled();
     expect(repositories.buildDiagnosticsDto).not.toHaveBeenCalled();

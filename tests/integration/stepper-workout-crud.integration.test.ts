@@ -12,7 +12,7 @@ const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
 process.env.DATABASE_URL = databaseUrl;
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const stepperWorkouts = new StepperWorkoutRepository(prisma);
-const healthSync = new PrismaHealthSyncRepository(prisma);
+const healthSync = new PrismaHealthSyncRepository(1, prisma);
 const dates = ["2042-03-15", "2042-03-16"];
 const fixtureStepperSourceKeys = new Set<string>();
 let priorTrainingRefreshState: {
@@ -73,7 +73,7 @@ describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => 
 
   it("creates manual workouts and preserves edited or deleted Health workouts across sync", async () => {
     const input: StepperWorkoutInput = { startAt: "2042-03-15T08:00:00.000Z", durationMinutes: 20 };
-    const created = await stepperWorkouts.create(input);
+    const created = await stepperWorkouts.create(1, input);
     fixtureStepperSourceKeys.add(String(created.id));
     expect(created).toMatchObject({ type: "Stair Climbing", durationMinutes: 20, activeEnergyKcal: null, source: "manual" });
     const row = await prisma.workout.findUniqueOrThrow({ where: { id: created.id } });
@@ -84,7 +84,7 @@ describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => 
     const beforeNoOpChanges = await prisma.trainingSourceChange.count({
       where: { profileId: 1, affectedWorkoutIds: { has: created.id } },
     });
-    await expect(stepperWorkouts.update(created.id, input)).resolves.toMatchObject({
+    await expect(stepperWorkouts.update(1, created.id, input)).resolves.toMatchObject({
       id: created.id, modelPublicationStatus: "not-run",
     });
     expect(await prisma.trainingRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } }))
@@ -99,7 +99,7 @@ describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => 
     }, { date: dates[0], workouts: [{ type: "Stair Climbing", startAt: "2042-03-15T09:00:00.000Z" }] }, syncMeta("2042-03-15T12:00:00.000Z"));
     const synced = await prisma.workout.findFirstOrThrow({ where: { externalId: "synced-stair" } });
     fixtureStepperSourceKeys.add(String(synced.id));
-    const healthEdited = await stepperWorkouts.update(synced.id, { startAt: "2042-03-15T10:30:00.000Z", durationMinutes: 25 });
+    const healthEdited = await stepperWorkouts.update(1, synced.id, { startAt: "2042-03-15T10:30:00.000Z", durationMinutes: 25 });
     expect(healthEdited).toMatchObject({ id: synced.id, source: "health", syncProtected: true, editable: true, durationMinutes: 25 });
 
     await healthSync.syncDay({
@@ -114,7 +114,7 @@ describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => 
     const afterEmptyFeed = await prisma.workout.findMany({ where: { dailyHealthData: { date: dates[0] } }, orderBy: { startAt: "asc" } });
     expect(afterEmptyFeed.map((workout) => workout.id)).toEqual([created.id, synced.id]);
 
-    await expect(stepperWorkouts.delete(synced.id)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "not-run" });
+    await expect(stepperWorkouts.delete(1, synced.id)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "not-run" });
     const hidden = await prisma.workout.findUniqueOrThrow({ where: { id: synced.id } });
     expect(hidden).toMatchObject({ syncProtected: true, hiddenFromHistory: true });
     await healthSync.syncDay({
@@ -122,14 +122,14 @@ describe("stepper CRUD and Apple Health sync protection with PostgreSQL", () => 
       workouts: [{ externalId: "synced-stair", type: "Stair Climbing", startAt: "2042-03-15T09:00:00.000Z", endAt: "2042-03-15T09:10:00.000Z", durationMinutes: 10, activeEnergyKcal: 65 }],
     }, { date: dates[0], workouts: [{ type: "Stair Climbing", startAt: "2042-03-15T09:00:00.000Z" }] }, syncMeta("2042-03-15T13:30:00.000Z"));
     expect(await prisma.workout.findUniqueOrThrow({ where: { id: synced.id } })).toMatchObject({ hiddenFromHistory: true, syncProtected: true });
-    expect((await stepperWorkouts.list()).some((workout) => workout.id === synced.id)).toBe(false);
+    expect((await stepperWorkouts.list(1)).some((workout) => workout.id === synced.id)).toBe(false);
 
-    const moved = await stepperWorkouts.update(created.id, { startAt: "2042-03-16T10:00:00.000Z", durationMinutes: 35 });
+    const moved = await stepperWorkouts.update(1, created.id, { startAt: "2042-03-16T10:00:00.000Z", durationMinutes: 35 });
     expect(moved).toMatchObject({ id: created.id, durationMinutes: 35, source: "manual" });
     const movedRow = await prisma.workout.findUniqueOrThrow({ where: { id: created.id }, include: { dailyHealthData: { select: { date: true } } } });
     expect(movedRow.dailyHealthData.date).toBe(dates[1]);
 
-    await expect(stepperWorkouts.delete(created.id)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "not-run" });
-    expect(await stepperWorkouts.update(created.id, input)).toBeNull();
+    await expect(stepperWorkouts.delete(1, created.id)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "not-run" });
+    expect(await stepperWorkouts.update(1, created.id, input)).toBeNull();
   });
 });

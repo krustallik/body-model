@@ -133,7 +133,7 @@ async function productionSnapshot(episodeId: number) {
 }
 
 async function forecast(episodeId: number) {
-  return forecastModelEpisode({
+  return forecastModelEpisode({ profileId: profileId,
     episodeId,
     horizonDays: 2,
     seed: 1601,
@@ -176,6 +176,7 @@ async function seed() {
   const episode = await prisma.modelEpisode.create({ data: episodeData(dates[0]) });
   await prisma.dailyHealthData.createMany({
     data: dates.map((date, index) => ({
+      profileId,
       date,
       weightKg: extremeWeights[index],
       bodyFatPercent: extremeBodyFatPercents[index],
@@ -245,13 +246,13 @@ describe("fat weight shadow v1 with PostgreSQL", () => {
     await rebuildFatWeightShadowV1(request);
     const first = await shadowRows();
     await prisma.dailyHealthData.update({
-      where: { date: dates[0] }, data: { weightKg: 42, bodyFatPercent: 48 },
+      where: { profileId_date: { profileId: profileId, date: dates[0] } }, data: { weightKg: 42, bodyFatPercent: 48 },
     });
     await prisma.dailyHealthData.update({
-      where: { date: dates[1] }, data: { weightKg: 41, bodyFatPercent: 49 },
+      where: { profileId_date: { profileId: profileId, date: dates[1] } }, data: { weightKg: 41, bodyFatPercent: 49 },
     });
     await prisma.dailyHealthData.update({
-      where: { date: dates[2] }, data: { weightKg: 40, bodyFatPercent: 50 },
+      where: { profileId_date: { profileId: profileId, date: dates[2] } }, data: { weightKg: 40, bodyFatPercent: 50 },
     });
     await rebuildFatWeightShadowV1(request);
     const second = await shadowRows();

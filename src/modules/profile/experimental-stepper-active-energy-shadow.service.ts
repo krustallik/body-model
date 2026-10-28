@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
@@ -119,14 +120,15 @@ async function loadStepperModelMassContextV1(
  */
 export async function recordExperimentalStepperActiveEnergyShadow(input: {
   workoutId: number;
-  profileId?: number;
+  profileId: number;
   activeEnergyConvergenceOwner?: ActiveEnergyConvergenceOwnerToken;
   /** Return the exact lifecycle fence committed with a shadow-triggered invalidation. */
   onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void | Promise<void>;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const reconciliationCandidates = await prisma.stepperReconciliationCandidate.findMany({
     where: {
+      profileId,
       OR: [{ manualWorkoutId: input.workoutId }, { garminWorkoutId: input.workoutId }],
       group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
     },
@@ -167,7 +169,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         ? group.provisionalWorkoutId ?? reconciliation?.manualWorkoutId ?? input.workoutId
         : groupWorkoutIds[0] ?? input.workoutId;
   const workout = await prisma.workout.findUnique({
-    where: { id: representativeWorkoutId, hiddenFromHistory: false },
+    where: { profileId_id: { profileId, id: representativeWorkoutId }, hiddenFromHistory: false },
     select: {
       id: true,
       type: true,
@@ -183,7 +185,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
   });
   if (workout === null) return;
   const groupWorkouts = groupWorkoutIds.length === 0 ? [workout] : await prisma.workout.findMany({
-    where: { id: { in: groupWorkoutIds }, hiddenFromHistory: false },
+    where: { profileId, id: { in: groupWorkoutIds }, hiddenFromHistory: false },
     select: {
       id: true, type: true, startAt: true, endAt: true, durationMinutes: true,
       activeEnergyKcal: true, manualActiveEnergyKcal: true, manualStepCount: true,
@@ -214,11 +216,13 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
 
   const [snapshots, stepIntervals, heartRateSamples, timestampedWeights, dailyWeights, modelMassContext] = await Promise.all([
     prisma.healthSyncSnapshot.findMany({
+      where: { profileId },
       orderBy: [{ date: "asc" }, { id: "asc" }],
       select: { id: true, receivedAt: true, syncedAt: true, steps: true },
     }),
     prisma.healthActivityInterval.findMany({
       where: {
+        profileId,
         metric: "steps",
         startAt: { lt: workout.endAt },
         endAt: { gt: workout.startAt },
@@ -235,12 +239,12 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       orderBy: { timestamp: "asc" },
     }),
     prisma.healthMetricSample.findMany({
-      where: { metric: "weight-kg", source: "apple-health-shortcut", timestamp: { gte: observedStart, lt: observedEnd } },
+      where: { profileId, metric: "weight-kg", source: "apple-health-shortcut", timestamp: { gte: observedStart, lt: observedEnd } },
       select: { id: true, date: true, timestamp: true, value: true, createdAt: true },
       orderBy: [{ timestamp: "asc" }, { id: "asc" }],
     }),
     prisma.dailyHealthData.findMany({
-      where: { date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } },
+      where: { profileId, date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } },
       select: { date: true, weightKg: true },
       orderBy: { date: "asc" },
     }),
@@ -421,7 +425,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     candidates,
     validateSource: async (tx) => {
       const currentWorkout = await tx.workout.findUnique({
-        where: { id: workout.id },
+        where: { profileId_id: { profileId, id: workout.id } },
         select: { id: true, type: true, sourceIdentity: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, manualActiveEnergyKcal: true, manualStepCount: true, updatedAt: true },
       });
       if (currentWorkout === null) return false;
@@ -429,7 +433,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       let currentMembers: typeof groupWorkouts = [currentWorkout];
       if (group !== null) {
         const currentGroup = await tx.stepperReconciliationGroup.findUnique({
-          where: { id: group.id },
+          where: { profileId_id: { profileId, id: group.id } },
           select: {
             id: true, status: true, evaluationRevision: true, provisionalWorkoutId: true, sourceRevision: true,
             candidates: {
@@ -449,7 +453,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         const memberIds = [...new Set(activePairs.flatMap((pair) => [pair.manualWorkoutId, pair.garminWorkoutId]))].sort((a, b) => a - b);
         if (JSON.stringify(memberIds) !== JSON.stringify(groupWorkoutIds)) return false;
         currentMembers = await tx.workout.findMany({
-          where: { id: { in: memberIds }, hiddenFromHistory: false },
+          where: { profileId, id: { in: memberIds }, hiddenFromHistory: false },
           select: { id: true, type: true, sourceIdentity: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, manualActiveEnergyKcal: true, manualStepCount: true, updatedAt: true },
           orderBy: { id: "asc" },
         });
@@ -464,11 +468,11 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         };
       }
       const [currentSnapshots, currentIntervals, currentHr, currentTimestampedWeights, currentDailyWeights, currentEpisodeRows] = await Promise.all([
-        tx.healthSyncSnapshot.findMany({ orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, receivedAt: true, syncedAt: true, steps: true } }),
-        tx.healthActivityInterval.findMany({ where: { metric: "steps", startAt: { lt: workout.endAt }, endAt: { gt: workout.startAt } }, select: { id: true, startAt: true, endAt: true, value: true }, orderBy: [{ startAt: "asc" }, { id: "asc" }] }),
+        tx.healthSyncSnapshot.findMany({ where: { profileId }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, receivedAt: true, syncedAt: true, steps: true } }),
+        tx.healthActivityInterval.findMany({ where: { profileId, metric: "steps", startAt: { lt: workout.endAt }, endAt: { gt: workout.startAt } }, select: { id: true, startAt: true, endAt: true, value: true }, orderBy: [{ startAt: "asc" }, { id: "asc" }] }),
         tx.heartRateSample.findMany({ where: { profileId, timestamp: { gte: workout.startAt, lte: workout.endAt } }, select: { timestamp: true, bpm: true, source: true }, orderBy: { timestamp: "asc" } }),
-        tx.healthMetricSample.findMany({ where: { metric: "weight-kg", source: "apple-health-shortcut", timestamp: { gte: observedStart, lt: observedEnd } }, select: { id: true, date: true, timestamp: true, value: true, createdAt: true }, orderBy: [{ timestamp: "asc" }, { id: "asc" }] }),
-        tx.dailyHealthData.findMany({ where: { date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } }, select: { date: true, weightKg: true }, orderBy: { date: "asc" } }),
+        tx.healthMetricSample.findMany({ where: { profileId, metric: "weight-kg", source: "apple-health-shortcut", timestamp: { gte: observedStart, lt: observedEnd } }, select: { id: true, date: true, timestamp: true, value: true, createdAt: true }, orderBy: [{ timestamp: "asc" }, { id: "asc" }] }),
+        tx.dailyHealthData.findMany({ where: { profileId, date: { gte: fromDate, lte: throughDate }, weightKg: { not: null } }, select: { date: true, weightKg: true }, orderBy: { date: "asc" } }),
         tx.modelEpisode.findMany({
           where: { profileId },
           select: {
@@ -542,9 +546,9 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
 
 export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<number[]> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const workouts = await prisma.workout.findMany({
     where: {
       hiddenFromHistory: false,
@@ -563,9 +567,9 @@ export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(i
 
 export async function recordExperimentalStepperActiveEnergyShadowsForWorkouts(input: {
   workoutIds: readonly number[];
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   for (const workoutId of [...new Set(input.workoutIds)].sort((left, right) => left - right)) {
     await recordExperimentalStepperActiveEnergyShadow({ workoutId, profileId });
   }
@@ -574,9 +578,9 @@ export async function recordExperimentalStepperActiveEnergyShadowsForWorkouts(in
 export async function recordExperimentalStepperActiveEnergyShadowsForMassWindow(input: {
   measurementDates?: readonly string[];
   measurementInstants?: readonly Date[];
-  profileId?: number;
+  profileId: number;
 }): Promise<number[]> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const episodes = await prisma.modelEpisode.findMany({
     where: { profileId },
     select: {
@@ -589,7 +593,7 @@ export async function recordExperimentalStepperActiveEnergyShadowsForMassWindow(
   const measurementInstants = input.measurementInstants ?? [];
   if (measurementDates.length === 0 && measurementInstants.length === 0) return [];
   const workouts = await prisma.workout.findMany({
-    where: { hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
+    where: { profileId, hiddenFromHistory: false, type: { equals: "Stair Climbing", mode: "insensitive" } },
     select: { id: true, startAt: true },
   });
   const refreshedWorkoutIds: number[] = [];

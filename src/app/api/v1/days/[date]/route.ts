@@ -1,8 +1,9 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import { DuplicateWorkoutError } from "@/modules/days/day.errors";
-import { dailyMetricRepository } from "@/modules/days/day.repository";
+import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { DailyMetricDateParamsSchema, UpdateDailyMetricSchema } from "@/modules/days/day.schema";
 import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,9 @@ async function parseDate(params: Promise<{ date: string }>): Promise<string | Re
 
 export async function PATCH(request: Request, { params }: RouteContext<"/api/v1/days/[date]">): Promise<Response> {
   if (isLocalDemoMode()) return localDemoReadOnlyResponse();
+  if (!isTrustedOrigin(request)) return originRejected();
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const date = await parseDate(params);
   if (date instanceof Response) return date;
 
@@ -23,7 +27,7 @@ export async function PATCH(request: Request, { params }: RouteContext<"/api/v1/
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const day = await dailyMetricRepository.update(date, parsed.data);
+    const day = await new DailyMetricRepository(principal.profileId).update(date, parsed.data);
     return day
       ? Response.json({ day })
       : Response.json({ error: "not_found" }, { status: 404 });
@@ -35,13 +39,16 @@ export async function PATCH(request: Request, { params }: RouteContext<"/api/v1/
   }
 }
 
-export async function DELETE(_request: Request, { params }: RouteContext<"/api/v1/days/[date]">): Promise<Response> {
+export async function DELETE(request: Request, { params }: RouteContext<"/api/v1/days/[date]">): Promise<Response> {
   if (isLocalDemoMode()) return localDemoReadOnlyResponse();
+  if (!isTrustedOrigin(request)) return originRejected();
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const date = await parseDate(params);
   if (date instanceof Response) return date;
 
   try {
-    const result = await dailyMetricRepository.delete(date);
+    const result = await new DailyMetricRepository(principal.profileId).delete(date);
     return result.deleted
       ? new Response(null, {
         status: 204,

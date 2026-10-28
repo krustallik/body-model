@@ -35,7 +35,7 @@ describe("work interval CRUD with PostgreSQL", () => {
     }));
     expect(invalidBreak.status).toBe(400);
     await expect(prisma.workInterval.create({
-      data: {
+      data: { profileId: 1,
         date,
         startAt: new Date("2040-02-01T15:00:00.000Z"),
         endAt: new Date("2040-02-01T19:00:00.000Z"),

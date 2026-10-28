@@ -212,7 +212,7 @@ describe("multidimensional diagnostic composition", () => {
 
   it("does not display the episode's stale latest date when no current prefix exists", () => {
     const result = buildDiagnosticsDto({
-      episode: { ...episode(), latestModeledDate: "2026-10-15" },
+      episode: {  ...episode(), latestModeledDate: "2026-10-15" },
       status: {
         ...status(false),
         productionCurrent: false,

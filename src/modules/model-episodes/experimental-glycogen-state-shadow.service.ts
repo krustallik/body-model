@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
@@ -107,7 +108,7 @@ async function loadDayInputs(client: DbClient, profileId: number, date: string, 
 }> {
   const [health, strengthShadows, stepperShadows] = await Promise.all([
     client.dailyHealthData.findUnique({
-      where: { date },
+      where: { profileId_date: { profileId, date } },
       select: {
         id: true,
         updatedAt: true,
@@ -212,7 +213,7 @@ function glycogenCoverage(day: Awaited<ReturnType<typeof loadDayInputs>>): Recor
  * Delayed sync / replay with the same day inputs reproduces the same trajectory.
  */
 export async function rebuildExperimentalGlycogenStateShadows(input: {
-  profileId?: number;
+  profileId: number;
   fromDate: string;
   toDate: string;
   /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
@@ -222,7 +223,7 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
   /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
   onCandidateCommitted?: (event: { date: string; attempt: number }) => Promise<void>;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   if (input.toDate < input.fromDate) {
     throw new RangeError("toDate must be ≥ fromDate");
   }
@@ -361,10 +362,10 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
  */
 export async function recordExperimentalGlycogenStateShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
   onCandidateCommitted?: (date: string) => Promise<void>;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const last = await prisma.dailyHealthData.findFirst({
     where: { date: { gte: input.date } },
     orderBy: { date: "desc" },

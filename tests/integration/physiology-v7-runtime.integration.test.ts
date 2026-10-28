@@ -94,7 +94,7 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
     });
     for (const [index, date] of dates.entries()) {
       await prisma.dailyHealthData.create({
-        data: {
+        data: { profileId: profileId,
           date,
           weightKg: 80 - index * 0.1,
           bodyFatPercent: 20,
@@ -114,7 +114,8 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
     const legacyEnd = new Date("2049-06-01T17:00:00.000Z");
     await prisma.workout.create({
       data: {
-        dailyHealthData: { connect: { date: dates[0] } },
+        profile: { connect: { id: profileId } },
+        dailyHealthData: { connect: { profileId_date: { profileId, date: dates[0] } } },
         externalId: "v7-legacy",
         sourceIdentity: workoutSourceIdentity({
           externalId: "v7-legacy",
@@ -150,7 +151,8 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
     const strengthEnd = new Date("2049-06-01T23:15:00.000Z");
     const strengthWorkout = await prisma.workout.create({
       data: {
-        dailyHealthData: { connect: { date: dates[1] } },
+        profile: { connect: { id: profileId } },
+        dailyHealthData: { connect: { profileId_date: { profileId, date: dates[1] } } },
         externalId: "v7-midnight-strength",
         sourceIdentity: workoutSourceIdentity({
           externalId: "v7-midnight-strength",
@@ -190,7 +192,8 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
     const stairEnd = new Date("2049-06-03T06:10:00.000Z");
     await prisma.workout.create({
       data: {
-        dailyHealthData: { connect: { date: dates[2] } },
+        profile: { connect: { id: profileId } },
+        dailyHealthData: { connect: { profileId_date: { profileId, date: dates[2] } } },
         externalId: "v7-stepper",
         sourceIdentity: workoutSourceIdentity({
           externalId: "v7-stepper",
@@ -207,8 +210,8 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
     });
     await prisma.healthSyncSnapshot.createMany({
       data: [
-        {
-          dailyHealthDataId: (await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] } })).id,
+        { profileId: profileId,
+          dailyHealthDataId: (await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[2] } } })).id,
           date: dates[2],
           receivedAt: new Date("2049-06-03T05:55:00.000Z"),
           syncedAt: new Date("2049-06-03T05:55:00.000Z"),
@@ -216,8 +219,8 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
           steps: 5_000,
           rawPayload: {},
         },
-        {
-          dailyHealthDataId: (await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] } })).id,
+        { profileId: profileId,
+          dailyHealthDataId: (await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: dates[2] } } })).id,
           date: dates[2],
           receivedAt: new Date("2049-06-03T06:15:00.000Z"),
           syncedAt: new Date("2049-06-03T06:15:00.000Z"),
@@ -277,7 +280,7 @@ describe("v7 production rebuild from durable PostgreSQL sources", () => {
       .toBe(true);
 
     await prisma.dailyHealthData.update({
-      where: { date: dates[1] },
+      where: { profileId_date: { profileId: profileId, date: dates[1] } },
       data: { carbsG: 275 },
     });
     const corrected = await runtime.rebuildProfileRange(request);

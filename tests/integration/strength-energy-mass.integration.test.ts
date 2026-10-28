@@ -19,7 +19,7 @@ const started = new Date("2094-10-22T12:40:00.000Z");
 
 async function sample(value = 81, timestamp = new Date("2094-10-22T05:00:00.000Z")) {
   const row = await prisma.healthMetricSample.create({
-    data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp, value },
+    data: { profileId: 1, date, metric: "weight-kg", source: "apple-health-shortcut", timestamp, value },
   });
   sampleIds.push(row.id);
   return row;
@@ -128,7 +128,7 @@ describe("independent Strength energy mass on isolated PostgreSQL", () => {
     expect(firstShadow.sourceFingerprint).toBe(stableSha256(
       `${stableSha256(estimatorResult)}|${String(persistedResult.inputFingerprint)}`,
     ));
-    const sources = await new ModelEpisodeRepository(prisma).loadSources(date, date);
+    const sources = await new ModelEpisodeRepository(1, prisma).loadSources(date, date);
     expect(sources.webOnlyStrengthSessions?.find(({ sessionId }) => sessionId === row.id)?.bodyCastEstimateFresh).toBe(true);
     await prisma.experimentalStrengthEnergyShadow.update({
       where: { sessionId: row.id },

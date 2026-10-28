@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
@@ -143,14 +144,14 @@ function currentFormulaFingerprint() {
  * adopted into an episode implicitly.
  */
 export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
-  profileId?: number;
+  profileId: number;
   fromDate?: string;
   fromInstant?: Date;
   client?: PrismaClient;
   onCandidateProcessed?: () => Promise<void> | void;
 }): Promise<void> {
   const client = input.client ?? prisma;
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const trainingWorker = getTrainingRefreshWorkerLease();
   try {
     await client.$transaction(async (transaction) => {
@@ -263,10 +264,12 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
   const eventRowsStart = partitions[0]!.startAt;
   const [healthRows, snapshots, dailyStates, workouts, sessions] = await Promise.all([
     client.dailyHealthData.findMany({
+      where: { profileId },
       orderBy: { date: "asc" },
       select: { id: true, date: true, updatedAt: true, weightKg: true, proteinG: true, workoutFeedObserved: true },
     }),
     client.healthSyncSnapshot.findMany({
+      where: { profileId },
       orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
       select: { id: true, date: true, receivedAt: true, timezone: true },
     }),
@@ -276,7 +279,7 @@ async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
       select: { id: true, episodeId: true, date: true, status: true, modelVersion: true, energyBalanceKcal: true, updatedAt: true },
     }),
     client.workout.findMany({
-      where: { hiddenFromHistory: false, startAt: { gte: eventRowsStart } },
+      where: { profileId, hiddenFromHistory: false, startAt: { gte: eventRowsStart } },
       orderBy: [{ startAt: "asc" }, { id: "asc" }],
       select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, updatedAt: true },
     }),

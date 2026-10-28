@@ -62,6 +62,7 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
     sessionId = session.id;
     const exercise = await prisma.strengthSessionExercise.create({
       data: {
+        profileId,
         sessionId: session.id,
         snapshotExerciseName: "Synthetic pull-up",
         sortOrder: 0,
@@ -222,6 +223,7 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
 
     const validationExercise = await prisma.strengthSessionExercise.create({
       data: {
+        profileId,
         sessionId: session.id,
         snapshotExerciseName: "Synthetic validation transition",
         sortOrder: 20,
@@ -368,7 +370,7 @@ describe("Training post-commit publication recovery on isolated PostgreSQL", () 
     const alternate = exercise.resistanceType === RESISTANCE.RESISTANCE_BAND
       ? RESISTANCE.EXTERNAL_WEIGHT
       : RESISTANCE.RESISTANCE_BAND;
-    await expect(repository.updateSessionExercise({
+    await expect(repository.updateSessionExercise({ profileId: profileId,
       sessionId, exerciseId: exercise.id, resistanceType: alternate,
       expectedAccountingInputRevision: before.accountingInputRevision,
       orderedExerciseIds: before.exercises.map(({ id }) => id),

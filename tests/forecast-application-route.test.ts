@@ -5,7 +5,9 @@ const services = vi.hoisted(() => ({
   getModelStatus: vi.fn(),
   recalculateModelEpisode: vi.fn(),
 }));
+const authAccess = vi.hoisted(() => ({ getSessionPrincipal: vi.fn() }));
 const trainingFence = vi.hoisted(() => ({ read: vi.fn(), pending: vi.fn() }));
+vi.mock("@/modules/auth/access", () => authAccess);
 vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 vi.mock("@/modules/training/training-refresh-queue", () => ({
   readTrainingRefreshVisibilityFence: trainingFence.read,
@@ -29,6 +31,7 @@ function request(body: unknown) { return new Request("http://localhost/api/forec
 describe("forecast application route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 1, userId: "user-1", method: "session" });
     services.getModelStatus.mockResolvedValue({ daysModeled: 28, latestModeledDate: "2026-08-24" });
     trainingFence.read.mockResolvedValue({ requestedGeneration: 1, completedGeneration: 1 });
     trainingFence.pending.mockReturnValue(false);
@@ -38,7 +41,7 @@ describe("forecast application route", () => {
     expect((await POST(request({ horizonDays: 0 }))).status).toBe(400);
     services.forecastModelEpisode.mockResolvedValue({ status: "ok", dates: [] });
     expect((await POST(request(validBody))).status).toBe(200);
-    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...validBody, seed: 20_260_824 });
+    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...validBody, profileId: 1, seed: 20_260_824 });
     expect(services.recalculateModelEpisode).not.toHaveBeenCalled();
   });
 
@@ -47,8 +50,8 @@ describe("forecast application route", () => {
     services.recalculateModelEpisode.mockResolvedValue({ status: "ok", daysPersisted: 28 });
     services.forecastModelEpisode.mockResolvedValue({ status: "ok", dates: [] });
     expect((await POST(request(validBody))).status).toBe(200);
-    expect(services.recalculateModelEpisode).toHaveBeenCalledWith({});
-    expect(services.forecastModelEpisode).toHaveBeenCalled();
+    expect(services.recalculateModelEpisode).toHaveBeenCalledWith({ profileId: 1 });
+    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...validBody, profileId: 1, seed: 20_260_824 });
   });
 
   it("does not persist an intermediate model while Training publication is pending", async () => {
@@ -58,7 +61,7 @@ describe("forecast application route", () => {
     expect((await POST(request(validBody))).status).toBe(200);
     expect(services.getModelStatus).not.toHaveBeenCalled();
     expect(services.recalculateModelEpisode).not.toHaveBeenCalled();
-    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...validBody, seed: 20_260_824 });
+    expect(services.forecastModelEpisode).toHaveBeenCalledWith({ ...validBody, profileId: 1, seed: 20_260_824 });
   });
 
   it("skips persistence when there is no active episode yet", async () => {
@@ -87,5 +90,30 @@ describe("forecast application route", () => {
     const response = await POST(request(validBody));
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "forecast_failed" });
+  });
+
+  it("allows concurrent forecasts for different Profiles while preserving same-profile locking", async () => {
+    let resolveBothEntered!: () => void;
+    let resolveFirstEntered!: () => void;
+    const bothEntered = new Promise<void>((resolve) => { resolveBothEntered = resolve; });
+    const firstEntered = new Promise<void>((resolve) => { resolveFirstEntered = resolve; });
+    const resolvers = new Map<number, (value: { status: string; dates: unknown[] }) => void>();
+    services.forecastModelEpisode.mockImplementation((input: { profileId: number }) => new Promise((resolve) => {
+      resolvers.set(input.profileId, resolve);
+      if (resolvers.size === 1) resolveFirstEntered();
+      if (resolvers.size === 2) resolveBothEntered();
+    }));
+
+    authAccess.getSessionPrincipal.mockResolvedValueOnce({ profileId: 101, userId: "user-a", method: "session" });
+    const first = POST(request(validBody));
+    await firstEntered;
+    authAccess.getSessionPrincipal.mockResolvedValueOnce({ profileId: 202, userId: "user-b", method: "session" });
+    const second = POST(request(validBody));
+    await bothEntered;
+    expect([...resolvers.keys()].sort()).toEqual([101, 202]);
+    resolvers.get(101)?.({ status: "ok", dates: [] });
+    resolvers.get(202)?.({ status: "ok", dates: [] });
+    const responses = await Promise.all([first, second]);
+    expect(responses.map(({ status }) => status)).toEqual([200, 200]);
   });
 });

@@ -9,4 +9,14 @@ describe("operation gate", () => {
     release?.();
     expect(tryAcquireOperation("forecast-test")).toBeTypeOf("function");
   });
+
+  it("keeps long-running request locks independent between Profiles", () => {
+    const releaseA = tryAcquireOperation("forecast:profile-a");
+    expect(releaseA).toBeTypeOf("function");
+    expect(tryAcquireOperation("forecast:profile-a")).toBeNull();
+    const releaseB = tryAcquireOperation("forecast:profile-b");
+    expect(releaseB).toBeTypeOf("function");
+    releaseA?.();
+    releaseB?.();
+  });
 });

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const dependencies = vi.hoisted(() => ({ getActive: vi.fn(), status: vi.fn(), evidence: vi.fn(), recovery: vi.fn(), build: vi.fn() }));
+const fence = vi.hoisted(() => ({ read: vi.fn(), pending: vi.fn(), changed: vi.fn(), owns: vi.fn() }));
+vi.mock("@/lib/db/prisma", () => ({ prisma: {} }));
 vi.mock("@/modules/model-episodes/model-episode.repository", () => ({ ModelEpisodeRepository: class { getActive = dependencies.getActive; status = dependencies.status; } }));
 vi.mock("@/modules/model-diagnostics/model-diagnostics.repository", () => ({ ModelDiagnosticsRepository: class { loadEvidence = dependencies.evidence; } }));
 vi.mock("@/modules/model-recovery/model-recovery.repository", () => ({ ModelRecoveryRepository: class { latestStatus = dependencies.recovery; } }));
@@ -8,22 +10,36 @@ vi.mock("@/modules/model-diagnostics/model-diagnostics", async (importOriginal) 
   const actual = await importOriginal<typeof import("@/modules/model-diagnostics/model-diagnostics")>();
   return { ...actual, buildDiagnosticsDto: dependencies.build };
 });
+vi.mock("@/modules/training/training-refresh-queue", () => ({
+  readTrainingRefreshVisibilityFence: fence.read,
+  isTrainingRefreshPending: fence.pending,
+  trainingRefreshFenceChanged: fence.changed,
+  trainingRefreshWorkerOwnsGeneration: fence.owns,
+}));
 
 import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
 
 describe("getModelDiagnostics", () => {
-  beforeEach(() => { vi.clearAllMocks(); dependencies.build.mockReturnValue({ ok: true }); dependencies.recovery.mockResolvedValue(null); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dependencies.build.mockReturnValue({ ok: true });
+    dependencies.recovery.mockResolvedValue(null);
+    fence.read.mockResolvedValue(null);
+    fence.pending.mockReturnValue(false);
+    fence.changed.mockResolvedValue(false);
+    fence.owns.mockResolvedValue(false);
+  });
 
   it("throws when no active episode exists", async () => {
     dependencies.getActive.mockResolvedValue(null);
-    await expect(getModelDiagnostics({} as never)).rejects.toBeInstanceOf(NoActiveModelEpisodeError);
+    await expect(getModelDiagnostics(1)).rejects.toBeInstanceOf(NoActiveModelEpisodeError);
   });
 
   it("throws when the selected episode disappears before status projection", async () => {
     dependencies.getActive.mockResolvedValue({ id: 2 });
     dependencies.status.mockResolvedValue(null);
-    await expect(getModelDiagnostics({} as never)).rejects.toBeInstanceOf(NoActiveModelEpisodeError);
+    await expect(getModelDiagnostics(1)).rejects.toBeInstanceOf(NoActiveModelEpisodeError);
   });
 
   it("uses an inclusive 28-day calendar window and composes read-only sources", async () => {
@@ -34,7 +50,7 @@ describe("getModelDiagnostics", () => {
     dependencies.status.mockResolvedValue(status);
     dependencies.evidence.mockResolvedValue(evidence);
     dependencies.recovery.mockResolvedValue({ status: "recovered" });
-    expect(await getModelDiagnostics({} as never)).toEqual({ ok: true });
+    expect(await getModelDiagnostics(1)).toEqual({ ok: true });
     expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-07-29", "2026-08-25", "2026-08-25");
     expect(dependencies.build).toHaveBeenCalledWith({ episode, status, evidence, windowStartDate: "2026-07-29", recovery: { status: "recovered" } });
   });
@@ -44,7 +60,7 @@ describe("getModelDiagnostics", () => {
     dependencies.getActive.mockResolvedValue(episode);
     dependencies.status.mockResolvedValue({ episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: "2026-08-25" });
     dependencies.evidence.mockResolvedValue({ modeledDayCount: 6 });
-    await getModelDiagnostics({} as never);
+    await getModelDiagnostics(1);
     expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-08-20", "2026-08-25", "2026-08-25");
   });
 
@@ -53,7 +69,7 @@ describe("getModelDiagnostics", () => {
     const status = { episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: null };
     dependencies.getActive.mockResolvedValue(episode);
     dependencies.status.mockResolvedValue(status);
-    await getModelDiagnostics({} as never);
+    await getModelDiagnostics(1);
     expect(dependencies.evidence).not.toHaveBeenCalled();
     expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
       windowStartDate: null,
@@ -73,7 +89,7 @@ describe("getModelDiagnostics", () => {
     dependencies.status.mockResolvedValue(status);
     dependencies.evidence.mockResolvedValue({ modeledDayCount: 9, completeDayCount: 9 });
 
-    await getModelDiagnostics({} as never);
+    await getModelDiagnostics(1);
 
     expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-12", "2026-10-09", "2026-10-09");
     expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
@@ -96,7 +112,7 @@ describe("getModelDiagnostics", () => {
     dependencies.status.mockResolvedValue(status);
     dependencies.evidence.mockResolvedValue({ modeledDayCount: 27 });
 
-    await getModelDiagnostics({} as never);
+    await getModelDiagnostics(1);
 
     expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-11", "2026-10-08", "2026-10-08");
   });
@@ -112,7 +128,7 @@ describe("getModelDiagnostics", () => {
     dependencies.getActive.mockResolvedValue(episode);
     dependencies.status.mockResolvedValue(status);
 
-    await getModelDiagnostics({} as never);
+    await getModelDiagnostics(1);
 
     expect(dependencies.evidence).not.toHaveBeenCalled();
     expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
@@ -139,7 +155,7 @@ describe("getModelDiagnostics", () => {
     dependencies.status.mockResolvedValue(status);
     dependencies.evidence.mockResolvedValue({ modeledDayCount: 28 });
 
-    await getModelDiagnostics({} as never);
+    await getModelDiagnostics(1);
 
     expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-18", "2026-10-15", "2026-10-15");
   });

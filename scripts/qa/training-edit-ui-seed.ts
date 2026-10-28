@@ -77,11 +77,11 @@ async function main() {
   });
 
   const day = await prisma.dailyHealthData.upsert({
-    where: { date: "2026-09-16" },
+    where: { profileId_date: { profileId: 1, date: "2026-09-16" } },
     update: {
       strengthTrainingMinutes: 62,
     },
-    create: {
+    create: { profileId: 1,
       date: "2026-09-16",
       weightKg: 88.2,
       caloriesKcal: 2400,
@@ -103,7 +103,7 @@ async function main() {
 
   const workout = await prisma.workout.upsert({
     where: {
-      dailyHealthDataId_sourceIdentity: {
+      profileId_dailyHealthDataId_sourceIdentity: { profileId: 1,
         dailyHealthDataId: day.id,
         sourceIdentity,
       },
@@ -115,7 +115,7 @@ async function main() {
       durationMinutes: 62,
       activeEnergyKcal: 562,
     },
-    create: {
+    create: { profileId: 1,
       dailyHealthDataId: day.id,
       externalId,
       sourceIdentity,
@@ -145,6 +145,7 @@ async function main() {
       matchedWorkoutId: workout.id,
       exercises: {
         create: version.exercises.map((exercise) => ({
+          profileId: 1,
           sourceExerciseCatalogId: exercise.exerciseCatalogId,
           snapshotExerciseName: catalog.find((row) => row.id === exercise.exerciseCatalogId)?.name ?? "Exercise",
           sortOrder: exercise.sortOrder,

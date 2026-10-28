@@ -42,6 +42,7 @@ async function clean() {
 }
 async function seed() {
   await prisma.dailyHealthData.createMany({ data: dates.map((date, index) => ({
+    profileId,
     date, weightKg: 80 - index, bodyFatPercent: 20, caloriesKcal: 2300, proteinG: 150,
     fatG: 75, carbsG: 250, steps: 7000, walkingDistanceKm: 5, workoutFeedObserved: true, rawPayload: {},
   })) });
@@ -95,11 +96,11 @@ describe("v7 shadow diagnostics with PostgreSQL", () => {
     await shadow.run(request); await shadow.run(request);
     expect(await prisma.physiologyV7ShadowDiagnostic.count({ where: { profileId, date: { in: dates } } })).toBe(2);
     await persistence.invalidate(profileId, dates[1]);
-    await shadow.run({ ...request, rebuild: false });
+    await shadow.run({  ...request, rebuild: false });
     expect((await prisma.physiologyV7ShadowDiagnostic.findUniqueOrThrow({ where: { profileId_date: { profileId, date: dates[1] } } })).reasonCodes)
       .toEqual(expect.arrayContaining(["v7-stale-cache"]));
     await prisma.physiologyV7DailyResult.deleteMany({ where: { profileId, date: dates[0] } });
-    await shadow.run({ ...request, rebuild: false });
+    await shadow.run({  ...request, rebuild: false });
     expect((await prisma.physiologyV7ShadowDiagnostic.findUniqueOrThrow({ where: { profileId_date: { profileId, date: dates[0] } } })).reasonCodes)
       .toEqual(expect.arrayContaining(["v7-missing-result"]));
   });

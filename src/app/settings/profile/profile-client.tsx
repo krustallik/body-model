@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AppNav } from "@/components/app-nav";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import type { ProfileDto } from "@/modules/profile/profile.types";
@@ -22,9 +23,9 @@ const emptyForm: FormValues = {
 function formFromProfile(profile: ProfileDto): FormValues {
   return {
     locale: profile.locale,
-    sex: profile.sex,
-    dateOfBirth: profile.dateOfBirth,
-    heightCm: String(profile.heightCm),
+    sex: profile.sex ?? "",
+    dateOfBirth: profile.dateOfBirth ?? "",
+    heightCm: profile.heightCm === null ? "" : String(profile.heightCm),
     autoAdvanceExercises: String(profile.autoAdvanceExercises),
   };
 }
@@ -49,7 +50,8 @@ async function readError(response: Response, uk = false): Promise<{ message: str
   }
 }
 
-export function ProfileClient() {
+export function ProfileClient({ onboarding = false }: { onboarding?: boolean }) {
+  const router = useRouter();
   const { locale, setLocale } = useI18n();
   const uk = locale === "uk";
   const [values, setValues] = useState<FormValues>(emptyForm);
@@ -109,6 +111,7 @@ export function ProfileClient() {
       const body = await response.json() as { profile: ProfileDto };
       setValues(formFromProfile(body.profile));
       setSaved(true);
+      if (onboarding) router.replace("/dashboard");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : uk ? "Не вдалося зберегти профіль" : "Unable to save profile");
     } finally {
@@ -123,13 +126,13 @@ export function ProfileClient() {
           BodyCast
           <span>{uk ? "Простір здоров’я" : "Health workspace"}</span>
         </Link>
-        <AppNav active="profile" />
+        {!onboarding && <AppNav active="profile" />}
       </header>
 
       <section className={styles.hero}>
-        <p className={styles.eyebrow}>{uk ? "Налаштування" : "Settings"}</p>
-        <h1>{uk ? "Ваш профіль." : "Your profile."}</h1>
-        <p>{uk ? "Збережіть основні персональні дані та мову інтерфейсу." : "Keep your basic personal details and interface language."}</p>
+        <p className={styles.eyebrow}>{onboarding ? (uk ? "Початкове налаштування" : "Getting started") : (uk ? "Налаштування" : "Settings")}</p>
+        <h1>{onboarding ? (uk ? "Заповніть свій профіль." : "Set up your profile.") : (uk ? "Ваш профіль." : "Your profile.")}</h1>
+        <p>{onboarding ? (uk ? "Вкажіть власні дані, щоб розрахунки працювали для вас." : "Add your own details so calculations are personalized to you.") : (uk ? "Збережіть основні персональні дані та мову інтерфейсу." : "Keep your basic personal details and interface language.")}</p>
       </section>
 
       <section className={styles.card} aria-labelledby="profile-form-title">
@@ -215,6 +218,7 @@ export function ProfileClient() {
           </form>
         )}
       </section>
+      {!onboarding && <p className={styles.links}><Link href="/settings/security">{uk ? "Безпека акаунта й пароль" : "Account security and password"}</Link></p>}
     </main>
   );
 }

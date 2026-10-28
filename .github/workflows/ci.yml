@@ -2,8 +2,8 @@ name: BodyCast CI/CD
 
 # Full quality gates on every PR update and on every push/merge to main.
 # Feature-branch pushes without an open PR do not start this workflow.
-# A successful current-main run triggers a separate automatic, migration-free
-# production app deploy; schema migrations remain separately owner-authorized.
+# Production deployment is a separate, explicitly dispatched workflow; this
+# CI workflow does not trigger deployment.
 # This CI workflow never performs production migrations or holds production secrets.
 # This workflow must never hold production secrets or deploy credentials.
 on:
@@ -72,6 +72,9 @@ jobs:
       NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
       IOS_SHORTCUT_API_KEY: integration-test-secret
+      BETTER_AUTH_SECRET: bodycast-ci-only-auth-secret-not-for-deployment
+      BETTER_AUTH_URL: http://localhost:3000
+      AUTH_TRUSTED_PROXIES: 127.0.0.1/32
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -223,6 +226,9 @@ jobs:
       NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
       IOS_SHORTCUT_API_KEY: integration-test-secret
+      BETTER_AUTH_SECRET: bodycast-ci-only-auth-secret-not-for-deployment
+      BETTER_AUTH_URL: http://localhost:3000
+      AUTH_TRUSTED_PROXIES: 127.0.0.1/32
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

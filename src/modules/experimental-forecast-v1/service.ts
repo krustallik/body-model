@@ -341,13 +341,13 @@ export function mapExperimentalForecastToLegacy(result: ExperimentalForecastResu
 }
 
 export async function experimentalForecastModelEpisode(
-  request: ForecastModelRequest & { now?: Date },
+  request: ForecastModelRequest & { profileId: number; now?: Date },
   client: PrismaClient = prisma,
 ): Promise<ForecastResult | null> {
   if (!client || typeof (client as unknown as { unifiedExperimentalPhysiologyStateV2?: unknown }).unifiedExperimentalPhysiologyStateV2 !== "object") {
     return null;
   }
-  const episodes = new ModelEpisodeRepository(client);
+  const episodes = new ModelEpisodeRepository(request.profileId, client);
   const episode = request.episodeId === undefined ? await episodes.getActive() : await episodes.getById(request.episodeId);
   if (!episode) {
     if (request.episodeId !== undefined) return null;

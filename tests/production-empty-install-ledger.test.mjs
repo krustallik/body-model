@@ -48,9 +48,9 @@ describe("fresh empty-install migration verification", () => {
       .toThrow(/pre-existing Workout rows/);
   });
 
-  it("hashes the complete migration tree and agrees with the repository's current 74-directory snapshot", async () => {
+  it("hashes the complete 75-migration tree and agrees with the repository snapshot", async () => {
     const tree = await readMigrationTree(resolve("prisma/migrations"));
-    expect(tree.migrations).toHaveLength(74);
+    expect(tree.migrations).toHaveLength(75);
     const expected = createHash("sha256");
     for (const item of tree.migrations) {
       const sql = await readFile(resolve("prisma/migrations", item.name, "migration.sql"));

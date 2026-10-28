@@ -4,7 +4,7 @@ import { rebuildRelativeMuscleEpisodeTrajectories } from "./relative-muscle-shad
 /** Rebuilds both coordinated Relative Muscle trajectory rows for this date. */
 export async function recordExperimentalCessationDetrainingShadow(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
 }): Promise<void> {
   await rebuildRelativeMuscleEpisodeTrajectories({ profileId: input.profileId, fromDate: input.date });
 }
@@ -29,7 +29,7 @@ export async function recordExperimentalCessationDetrainingShadowForSession(inpu
 export async function rebuildAuthoritativeRelativeMuscleTrajectory(input: {
   fromDate?: string;
   fromInstant?: Date;
-  profileId?: number;
+  profileId: number;
   onCandidateProcessed?: () => Promise<void> | void;
 }): Promise<void> {
   await rebuildRelativeMuscleEpisodeTrajectories(input);

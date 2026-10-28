@@ -134,7 +134,7 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
 
     expect(mocks.rebuildTransientWater).toHaveBeenCalledWith({ profileId: 1, client: expect.anything() });
     expect(mocks.invalidate).toHaveBeenCalledWith(1, "2024-01-01");
-    expect(mocks.recalculateModelEpisode).toHaveBeenCalledWith({ episodeId: 11 }, expect.anything());
+    expect(mocks.recalculateModelEpisode).toHaveBeenCalledWith({ episodeId: 11, profileId: 1 }, expect.anything());
     expect(mocks.rebuildUnified).toHaveBeenCalledWith({
       profileId: 1,
       client: expect.anything(),

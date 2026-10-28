@@ -364,7 +364,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       }
       if (expectedSession.side === "pull") {
         const observed = await db.healthMetricSample.create({
-          data: {
+          data: { profileId: 1,
             date: targetDate,
             metric: "weight-kg",
             source: "apple-health-shortcut",
@@ -636,14 +636,14 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const date = instantToLocalDateTime(new Date(session.webStartedAt!), "Europe/Bratislava").date;
       await service.createSet(session.id, session.exercises[0]!.id, { reps: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const firstSample = await db.healthMetricSample.create({
-        data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "10:00", "Europe/Bratislava"), value: 80 },
+        data: { profileId: 1, date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "10:00", "Europe/Bratislava"), value: 80 },
         select: { id: true },
       });
       sampleIds.push(firstSample.id);
       const first = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       expect(first.loadAccountingV1?.bodyweight.reference).toMatchObject({ status: "observed", valueKg: 80 });
       const secondSample = await db.healthMetricSample.create({
-        data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "14:00", "Europe/Bratislava"), value: 82 },
+        data: { profileId: 1, date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "14:00", "Europe/Bratislava"), value: 82 },
         select: { id: true },
       });
       sampleIds.push(secondSample.id);
@@ -694,7 +694,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const { instantToLocalDateTime } = await import("../../src/model/time-zone");
       const date = instantToLocalDateTime(new Date(), "Europe/Bratislava").date;
       const sample = await db.healthMetricSample.create({
-        data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "12:00", "Europe/Bratislava"), value: 80 },
+        data: { profileId: 1, date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "12:00", "Europe/Bratislava"), value: 80 },
         select: { id: true },
       });
       sampleId = sample.id;
@@ -858,7 +858,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         },
       });
       const sample = await db.healthMetricSample.create({
-        data: {
+        data: { profileId: 1,
           date: "2045-01-01",
           metric: "weight-kg",
           source: "apple-health-shortcut",
@@ -1175,7 +1175,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         .toMatchObject({ status: "unavailable", valueKg: null, localDate: "2010-04-15" });
 
       const sample = await db.healthMetricSample.create({
-        data: {
+        data: { profileId: 1,
           date: "2010-04-15",
           metric: "weight-kg",
           source: "apple-health-shortcut",
@@ -1245,7 +1245,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const { TrainingService } = await import("../../src/modules/training/training.service");
       const { PrismaHealthSyncRepository } = await import("../../src/modules/health/health.repository");
       const service = new TrainingService(db);
-      const sync = new PrismaHealthSyncRepository(db);
+      const sync = new PrismaHealthSyncRepository(1, db);
       const primeUnifiedPublicationMarker = async () => {
         const lifecycle = await db.physiologyV7Lifecycle.findUnique({
           where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
@@ -1499,18 +1499,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           loadInput: "per-implement-kg",
           repsMeaning: "per-side",
         },
-      });
+      }, 1);
       const program = await service.createProgram({
         name: `stage02-compat-program-${Date.now()}`,
         exercises: [{ catalogId: catalog.id, plannedSets: 2, resistanceType: "EXTERNAL_WEIGHT" }],
-      });
+      }, 1);
       programId = program.id;
-      const session = await service.startSession(program.id);
+      const session = await service.startSession(program.id, 1);
       sessionId = session.id;
       const exerciseId = session.exercises[0]!.id;
 
       // Existing clients send only the pre-Stage-02 scalar fields.
-      const oldClientSet = await service.createSet(session.id, exerciseId, { reps: 12, weightKg: 10 });
+      const oldClientSet = await service.createSet(session.id, exerciseId, { reps: 12, weightKg: 10 }, 1);
       expect(oldClientSet).toMatchObject({ reps: 12, weightKg: 10, loadAccountingOverride: null });
       const asymmetricSet = await service.createSet(session.id, exerciseId, {
         reps: 12,
@@ -1518,11 +1518,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         loadAccountingOverride: {
           reps: { kind: "asymmetric-per-side", left: 12, right: 10 },
         },
-      });
+      }, 1);
       expect(asymmetricSet.reps).toBe(12);
 
-      await service.materializeSessionAccounting(session.id);
-      const stillActive = await service.getSession(session.id);
+      await service.materializeSessionAccounting(session.id, 1);
+      const stillActive = await service.getSession(session.id, 1);
       expect(stillActive?.status).toBe("ACTIVE");
       expect(stillActive?.exercises[0]?.sets.map(({ reps }) => reps)).toEqual([12, 12]);
       expect(stillActive?.loadAccountingV1?.externalLoadVolume.value).toBe(460);
@@ -1566,13 +1566,13 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           loadInput: "nominal-kg-per-logged-side",
           repsMeaning: "per-side",
         },
-      });
+      }, 1);
       const program = await service.createProgram({
         name: `stage02-band-pair-program-${Date.now()}`,
         exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "RESISTANCE_BAND" }],
-      });
+      }, 1);
       programId = program.id;
-      const active = await service.startSession(program.id);
+      const active = await service.startSession(program.id, 1);
       sessionId = active.id;
       const exerciseId = active.exercises[0]!.id;
 
@@ -1580,9 +1580,9 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const set = await service.createSet(active.id, exerciseId, {
         reps: 12,
         bandNominalResistanceKg: 20,
-      });
+      }, 1);
       expect(set).toMatchObject({ reps: 12, loadAccountingOverride: null });
-      const finished = await service.finishSession(active.id);
+      const finished = await service.finishSession(active.id, 1);
       expect(finished.loadAccountingV1?.bandNominalIndex.leftSide.value).toBe(240);
       expect(finished.loadAccountingV1?.bandNominalIndex.rightSide.value).toBe(240);
       expect(finished.loadAccountingV1?.bandNominalIndex.perLoggedSide.value).toBe(0);
@@ -1608,7 +1608,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         expect.objectContaining({ category: "bandNominalRightSide", value: 240, availability: "available" }),
       ]));
       expect(row.contributions.some(({ category }) => category === "bandNominalPerLoggedSide")).toBe(false);
-      const reloaded = await service.getSession(active.id);
+      const reloaded = await service.getSession(active.id, 1);
       expect(reloaded?.loadAccountingV1?.bandNominalIndex.leftSide.value).toBe(240);
       expect(reloaded?.loadAccountingV1?.bandNominalIndex.rightSide.value).toBe(240);
       expect((reloaded?.loadAccountingV1?.bandNominalIndex.leftSide.value ?? 0)
@@ -1647,9 +1647,9 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const program = await service.createProgram({
         name: `stage02-old-client-${Date.now()}`,
         exercises: [{ catalogId: catalog.id, plannedSets: 3, resistanceType: "EXTERNAL_WEIGHT" }],
-      });
+      }, 1);
       programId = program.id;
-      const session = await service.startSession(program.id);
+      const session = await service.startSession(program.id, 1);
       sessionId = session.id;
       const exerciseId = session.exercises[0]!.id;
       const initialSnapshot = session.exercises[0]!.loadAccountingConfigSnapshot;
@@ -1658,8 +1658,8 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         inventoryCount: 2,
       });
 
-      const firstSet = await service.createSet(session.id, exerciseId, { reps: 12, weightKg: 10, rir: 2 });
-      const secondSet = await service.createSet(session.id, exerciseId, { reps: 8, weightKg: 20, rir: 1 });
+      const firstSet = await service.createSet(session.id, exerciseId, { reps: 12, weightKg: 10, rir: 2 }, 1);
+      const secondSet = await service.createSet(session.id, exerciseId, { reps: 8, weightKg: 20, rir: 1 }, 1);
       expect([firstSet, secondSet].map(({ reps, rir, loadAccountingOverride }) => [reps, rir, loadAccountingOverride]))
         .toEqual([[12, 2, null], [8, 1, null]]);
 
@@ -1691,7 +1691,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           loadInput: "per-implement-kg",
           repsMeaning: "per-side",
         },
-      });
+      }, 1);
       mutatedConfigId = (await db.exerciseCatalog.findUniqueOrThrow({
         where: { id: catalog.id }, select: { currentLoadAccountingConfigId: true },
       })).currentLoadAccountingConfigId;
@@ -1708,10 +1708,10 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       }
       expect(rereadHistoricalPayload.breakdown.rows).toEqual(historicalRows);
 
-      const thirdSet = await service.createSet(session.id, exerciseId, { reps: 6, weightKg: 5, rir: 3 });
+      const thirdSet = await service.createSet(session.id, exerciseId, { reps: 6, weightKg: 5, rir: 3 }, 1);
       expect(thirdSet).toMatchObject({ reps: 6, rir: 3, loadAccountingOverride: null });
 
-      const snapshotA = await service.materializeSessionAccounting(session.id, undefined, "stage02-a-b-a-first");
+      const snapshotA = await service.materializeSessionAccounting(session.id, 1, "stage02-a-b-a-first");
       const newlyMaterializedSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
         where: { sessionId: session.id, snapshotRevision: snapshotA.snapshotRevision },
         select: { payload: true },
@@ -1725,20 +1725,20 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(historicalConfigVersion).toBeDefined();
       expect(newlyMaterializedPayload.breakdown.rows.every((row) =>
         row.config.sourceSnapshot?.configVersion === historicalConfigVersion)).toBe(true);
-      const repeatedA = await service.materializeSessionAccounting(session.id, undefined, "stage02-a-b-a-first");
+      const repeatedA = await service.materializeSessionAccounting(session.id, 1, "stage02-a-b-a-first");
       expect(repeatedA.snapshotRevision).toBe(snapshotA.snapshotRevision);
       const concurrentA = await Promise.all([
-        service.materializeSessionAccounting(session.id),
-        service.materializeSessionAccounting(session.id),
+        service.materializeSessionAccounting(session.id, 1),
+        service.materializeSessionAccounting(session.id, 1),
       ]);
       expect(concurrentA.map(({ snapshotRevision }) => snapshotRevision)).toEqual([
         snapshotA.snapshotRevision, snapshotA.snapshotRevision,
       ]);
 
-      await service.updateSet(session.id, firstSet.id, { reps: 20 });
-      const snapshotB = await service.materializeSessionAccounting(session.id);
-      await service.updateSet(session.id, firstSet.id, { reps: 12 });
-      const snapshotAAgain = await service.materializeSessionAccounting(session.id);
+      await service.updateSet(session.id, firstSet.id, { reps: 20 }, 1);
+      const snapshotB = await service.materializeSessionAccounting(session.id, 1);
+      await service.updateSet(session.id, firstSet.id, { reps: 12 }, 1);
+      const snapshotAAgain = await service.materializeSessionAccounting(session.id, 1);
       expect(snapshotB.snapshotRevision).toBeGreaterThan(snapshotA.snapshotRevision!);
       expect(snapshotAAgain.snapshotRevision).toBeGreaterThan(snapshotB.snapshotRevision!);
       const revisions = await db.strengthSessionAccountingSnapshot.findMany({
@@ -1755,13 +1755,13 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const contextChanged = await service.updateSessionAccountingContext(session.id, {
         effectiveAccountingAt: "2026-09-29T12:00:00.000Z",
         timeZone: "Europe/Bratislava",
-      });
+      }, 1);
       expect(contextChanged.materializationState).toBe("missing");
-      const contextSnapshot = await service.materializeSessionAccounting(session.id);
+      const contextSnapshot = await service.materializeSessionAccounting(session.id, 1);
       expect(contextSnapshot.accountingTimeZone).toBe("Europe/Bratislava");
       expect(contextSnapshot.effectiveAccountingAt).toBe("2026-09-29T12:00:00.000Z");
 
-      const reloadedActive = await service.getSession(session.id);
+      const reloadedActive = await service.getSession(session.id, 1);
       expect(reloadedActive?.status).toBe("ACTIVE");
       expect(reloadedActive?.exercises[0]?.loadAccountingConfigSnapshot).toEqual(initialSnapshot);
       expect(reloadedActive?.exercises[0]?.sets.map(({ setNumber }) => setNumber)).toEqual([1, 2, 3]);
@@ -1780,11 +1780,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           id: true, setNumber: true, reps: true, rir: true, completedAt: true, createdAt: true, updatedAt: true,
         } } },
       });
-      const finished = await service.finishSession(session.id);
+      const finished = await service.finishSession(session.id, 1);
       expect(finished.status).toBe("COMPLETED");
       expect(finished.webEndedAt).not.toBeNull();
 
-      const reloadedCompleted = await service.getSession(session.id);
+      const reloadedCompleted = await service.getSession(session.id, 1);
       expect(reloadedCompleted?.status).toBe("COMPLETED");
       expect(reloadedCompleted?.webEndedAt).toBe(finished.webEndedAt);
       expect(reloadedCompleted?.exercises[0]?.loadAccountingConfigSnapshot).toEqual(initialSnapshot);
@@ -1858,7 +1858,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       sessionId = session.id;
       const localDate = instantToLocalDateTime(new Date(session.webStartedAt!), "Europe/Bratislava").date;
       const sample = await db.healthMetricSample.create({
-        data: {
+        data: { profileId: 1,
           date: localDate,
           metric: "weight-kg",
           source: "apple-health-shortcut",
@@ -1945,7 +1945,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       sessionId = session.id;
       const localDate = instantToLocalDateTime(new Date(session.webStartedAt!), "Europe/Bratislava").date;
       const sample = await db.healthMetricSample.create({
-        data: {
+        data: { profileId: 1,
           date: localDate,
           metric: "weight-kg",
           source: "apple-health-shortcut",
@@ -2073,11 +2073,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     const db = prisma!;
     const row = createTrainingHistoryStage01FixtureV1().workouts.find((workout) => workout.scenario === "ms100-boundary" && workout.externalId === null)!;
     const before = await db.workout.count({ where: { dailyHealthDataId: row.dailyHealthDataId } });
-    const first = await db.workout.findUnique({ where: { dailyHealthDataId_sourceIdentity: { dailyHealthDataId: row.dailyHealthDataId, sourceIdentity: row.sourceIdentity } } });
+    const first = await db.workout.findUnique({ where: { profileId_dailyHealthDataId_sourceIdentity: { profileId: 1, dailyHealthDataId: row.dailyHealthDataId, sourceIdentity: row.sourceIdentity } } });
     const upserted = await db.workout.upsert({
-      where: { dailyHealthDataId_sourceIdentity: { dailyHealthDataId: row.dailyHealthDataId, sourceIdentity: row.sourceIdentity } },
+      where: { profileId_dailyHealthDataId_sourceIdentity: { profileId: 1, dailyHealthDataId: row.dailyHealthDataId, sourceIdentity: row.sourceIdentity } },
       update: {},
-      create: {
+      create: { profileId: 1,
         dailyHealthDataId: row.dailyHealthDataId,
         sourceIdentity: row.sourceIdentity,
         type: row.type,
@@ -2308,20 +2308,20 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       data: { id: SENTINEL_SET_ID, sessionExerciseId: parentExercise.id, setNumber: 999, reps: 1, createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT), updatedAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
     });
     await db.programExercise.create({
-      data: { id: SENTINEL_PROGRAM_EXERCISE_ID, programVersionId: parentVersion.id, exerciseCatalogId: unusedCatalog.id, sortOrder: 99, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT", createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT), updatedAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
+      data: { profileId: 1, id: SENTINEL_PROGRAM_EXERCISE_ID, programVersionId: parentVersion.id, exerciseCatalogId: unusedCatalog.id, sortOrder: 99, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT", createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT), updatedAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
     });
     await db.strengthSessionExercise.create({
-      data: { id: SENTINEL_SESSION_EXERCISE_ID, sessionId: parentSession.id, sourceExerciseCatalogId: unusedCatalog.id, snapshotExerciseName: "Stage 01 sentinel exercise", sortOrder: 99, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT", origin: "EXTRA", createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT), updatedAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
+      data: { id: SENTINEL_SESSION_EXERCISE_ID, profileId: parentSession.profileId, sessionId: parentSession.id, sourceExerciseCatalogId: unusedCatalog.id, snapshotExerciseName: "Stage 01 sentinel exercise", sortOrder: 99, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT", origin: "EXTRA", createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT), updatedAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
     });
     await db.trainingProgramVersion.create({
-      data: { id: SENTINEL_PROGRAM_VERSION_ID, programId: parentVersion.programId, versionNumber: 99, createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
+      data: { profileId: 1, id: SENTINEL_PROGRAM_VERSION_ID, programId: parentVersion.programId, versionNumber: 99, createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
     });
     await db.strengthDiaryProgramChange.create({
       data: { id: SENTINEL_PROGRAM_CHANGE_ID, sessionId: parentSession.id, fromProgramId: parentSession.programId, fromProgramVersionId: parentSession.programVersionId, toProgramId: parentSession.programId, toProgramVersionId: parentSession.programVersionId, createdAt: new Date(TRAINING_HISTORY_STAGE01_CREATED_AT) },
     });
     const supersededWorkout = fixture.workouts[0]!;
     await db.workout.create({
-      data: {
+      data: { profileId: 1,
         id: SENTINEL_SUPERSEDED_WORKOUT_ID,
         dailyHealthDataId: supersededWorkout.dailyHealthDataId,
         sourceIdentity: "sentinel:stage01-superseded-workout-protection",
@@ -2638,7 +2638,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     const dailyId = fixture.dailyHealthRows[0]!.id;
     expect(await db.workout.findUnique({ where: { id: SENTINEL_WORKOUT_ID } })).toBeNull();
     await db.workout.create({
-      data: {
+      data: { profileId: 1,
         id: SENTINEL_WORKOUT_ID,
         dailyHealthDataId: dailyId,
         sourceIdentity: SENTINEL_SOURCE_IDENTITY,

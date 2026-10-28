@@ -1,13 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
 import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, evaluateProductionMigrationTree, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
 import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
@@ -635,28 +635,78 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(runbook).toContain("The Training manifest has `cutbackSupported: false`");
   });
 
-  it("selects only the combined Training manifest and rehearses it from the pinned 65-migration baseline", async () => {
+  it("keeps the Training manifest intact and rehearses the complete Auth release from its pinned 74-migration baseline", async () => {
     const [migrationWorkflow, preflightWorkflow, safetyWorkflow] = await Promise.all([
       readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8"),
     ]);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations).toHaveLength(65);
+    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(9);
+    expect(AUTH_MULTIUSER_MANIFEST.migrationOriginSha).toBe("0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
+    expect(AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations).toHaveLength(74);
+    expect(AUTH_MULTIUSER_MANIFEST.migrations).toHaveLength(3);
+    expect(AUTH_MULTIUSER_MANIFEST.requireCompleteReleaseTree).toBe(true);
+    expect(AUTH_MULTIUSER_MANIFEST.cutbackSupported).toBe(false);
+
+    const migrationDirectories = await readdir(new URL("../prisma/migrations/", import.meta.url), { withFileTypes: true });
+    const releaseTree = evaluateProductionMigrationTree(
+      migrationDirectories.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+      AUTH_MULTIUSER_MANIFEST.id,
+    );
+    expect(releaseTree.ready).toBe(true);
+    expect(releaseTree.actualDirectories).toHaveLength(77);
+
+    for (const migration of AUTH_MULTIUSER_MANIFEST.migrations) {
+      const sql = await readFile(new URL(`../prisma/migrations/${migration.name}/migration.sql`, import.meta.url), "utf8");
+      const cleanBlobBytes = Buffer.from(sql.replaceAll("\r\n", "\n"));
+      expect(createHash("sha256").update(cleanBlobBytes).digest("hex")).toBe(migration.sha256);
+    }
+
     expect(migrationWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
     expect(migrationWorkflow).not.toContain("programless-workouts-health-sync-v1");
+    expect(migrationWorkflow).toContain("auth-multiuser-v1");
+    expect(migrationWorkflow).toContain("The Auth migration manifest accepts standard exact-SHA execution only.");
     expect(preflightWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
     expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
-    expect(safetyWorkflow).toContain("Rehearse the exact Training manifest from the 65-migration baseline");
-    expect(safetyWorkflow).toContain("BASELINE_SHA: 35c556772759ea03c2728de921c1825f454d59c2");
-    const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Training manifest from the 65-migration baseline");
+    expect(preflightWorkflow).toContain("auth-multiuser-v1");
+    expect(preflightWorkflow).toContain("The Auth migration manifest does not accept historical resume evidence.");
+    expect(safetyWorkflow).toContain("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
+    expect(safetyWorkflow).toContain("BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
+    expect(safetyWorkflow).toContain("test \"$baseline_count\" = 74");
+    expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1");
+    const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
+    const baselineMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"', rehearsalStart);
     const currentMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema prisma/schema.prisma', rehearsalStart);
     expect(rehearsalStart).toBeGreaterThan(0);
     expect(exactTreeCheck).toBeGreaterThan(0);
+    expect(baselineMigration).toBeGreaterThan(rehearsalStart);
+    expect(exactTreeCheck).toBeGreaterThan(baselineMigration);
     expect(exactTreeCheck).toBeLessThan(currentMigration);
-    expect(safetyWorkflow).toContain('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"');
     expect(safetyWorkflow).toContain("npx prisma migrate deploy --schema prisma/schema.prisma");
-    expect(safetyWorkflow).toContain("--manifest training-mutation-ledger-refresh-queue-v1");
+    expect(safetyWorkflow).toMatch(/\|\s*PGAPPNAME=bodycast-production-preflight\s+psql\s+"\$DATABASE_URL"/);
+    expect(safetyWorkflow).not.toMatch(/PGAPPNAME=bodycast-production-preflight\s+\\\s*\n\s*node scripts\/production-db-preflight\.mjs/);
+    expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1 --release-sha \"$GITHUB_SHA\"");
     expect(safetyWorkflow).toContain('--release-sha "$GITHUB_SHA"');
+  });
+
+  it("renders Auth baseline tables and DDL locks from its reviewed manifest", async () => {
+    const template = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
+    const authSql = renderProductionDbPreflightSql(template, getExpectedSchemaObjectNames(), AUTH_MULTIUSER_MANIFEST.id);
+    const trainingSql = renderProductionDbPreflightSql(template);
+
+    expect(authSql).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
+    expect(authSql).not.toContain("__BASELINE_TABLES_JSON__");
+    expect(authSql).not.toContain("__DDL_LOCK_TARGETS_JSON__");
+    expect(authSql).toContain(JSON.stringify(AUTH_MULTIUSER_MANIFEST.requiredTablesBefore));
+    expect(authSql).toContain(JSON.stringify(AUTH_MULTIUSER_MANIFEST.ddlLockTargets));
+    expect(AUTH_MULTIUSER_MANIFEST.ddlLockTargets).toHaveLength(50);
+    expect(authSql).toContain("AccessExclusiveLock");
+    expect(authSql).toContain("AuthRateLimitBucket");
+    expect(trainingSql).toContain('{"tableName":"Workout","requiredLockMode":"ShareRowExclusiveLock"}');
+    expect(trainingSql).toContain('{"tableName":"DailyModelState","requiredLockMode":"AccessExclusiveLock"}');
+    expect(trainingSql).toContain(JSON.stringify(ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredTablesBefore));
   });
 
   it("renders the canonical preflight SQL template before the PostgreSQL backup/restore smoke executes it", async () => {
@@ -707,8 +757,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).toContain('{ tableName: "Workout", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" }');
     expect(smoke).toContain('for (const tableName of ["Workout", "Profile", "ModelEpisode"])');
     expect(sql).toContain("ddl_targets(table_name, required_lock_mode)");
-    expect(sql).toContain("('Workout', 'ShareRowExclusiveLock')");
-    expect(sql).toContain("('PhysiologyV7Lifecycle', 'AccessExclusiveLock')");
+    expect(sql).toContain("__DDL_LOCK_TARGETS_JSON__");
+    const renderedSql = renderProductionDbPreflightSql(sql);
+    expect(renderedSql).toContain('{"tableName":"Workout","requiredLockMode":"ShareRowExclusiveLock"}');
+    expect(renderedSql).toContain('{"tableName":"PhysiologyV7Lifecycle","requiredLockMode":"AccessExclusiveLock"}');
     expect(smoke).toContain('withPreparedTransactionRelationLock(preparedDb, "DailyModelState"');
     expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",');
     expect(smoke).toContain('"Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe"');
@@ -745,6 +797,41 @@ describe("V5 closed migration manifest and full pending set", () => {
     const currentRelease = evaluateProductionPreflight(validPreflightReport(), fullDirs);
     expect(currentRelease.readyForOwnerAuthorization).toBe(false);
     expect(currentRelease.pending).toEqual([...names, ...V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name)].sort());
+  });
+
+  it("accepts only the exact PostgreSQL 17 restored Training checks in the Auth baseline", () => {
+    const report = validTrainingMutationLedgerPreflightReport({ applied: true });
+    const authDirs = [...trainingMutationLedgerDirs, ...AUTH_MULTIUSER_MANIFEST.migrations.map(({ name }) => name)];
+    report.objects = schemaObjects("v4-after");
+    for (const name of AUTH_MULTIUSER_MANIFEST.requiredObjectsBefore) {
+      const object = report.objects.find((candidate) => candidate.name === name);
+      object.present = true;
+      object.kind = name.startsWith("function:") ? "function"
+        : name.startsWith("trigger:") ? "trigger"
+          : name.includes(".") ? "column" : "constraint";
+      object.signature = AUTH_MULTIUSER_MANIFEST.requiredObjectSignatureEquals[name]
+        ?? AUTH_MULTIUSER_MANIFEST.requiredObjectSignatureIncludes[name]
+        ?? "reviewed-signature";
+    }
+    report.tables = Object.fromEntries(AUTH_MULTIUSER_MANIFEST.requiredTablesBefore.map((name) => [name, { exists: true, estimatedRows: 1, totalBytes: 128 }]));
+    const restoredSignatures = {
+      UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
+      StepperCreateOperation_payloadVersion_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
+      StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
+      StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+    };
+    for (const [name, signature] of Object.entries(restoredSignatures)) {
+      report.objects.find((object) => object.name === name).signature = signature;
+    }
+
+    const accepted = evaluateProductionPreflight(report, authDirs, AUTH_MULTIUSER_MANIFEST.id);
+    expect(accepted.readyForOwnerAuthorization, accepted.blockers.join(" | ")).toBe(true);
+
+    const altered = { ...report, objects: report.objects.map((object) => ({ ...object })) };
+    altered.objects.find((object) => object.name === "StepperCreateOperation_state_check").signature =
+      restoredSignatures.StepperCreateOperation_state_check.replace("'TOMBSTONED'", "'UNREVIEWED'");
+    const rejected = evaluateProductionPreflight(altered, authDirs, AUTH_MULTIUSER_MANIFEST.id);
+    expect(rejected.blockers.join(" ")).toContain("pre-migration schema signatures differ");
   });
 
   it("blocks an extra release migration, unexpected database row, failed row, duplicate, rollback, checksum drift, or partial target schema", () => {
@@ -1247,7 +1334,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8")).toContain("default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
     expect(sql).toContain("PhysiologyV7Lifecycle");
     expect(sql).toContain("DailyModelState");
-    for (const relation of ["Workout", "Profile", "ModelEpisode"]) expect(sql).toContain(`('${relation}')`);
+    expect(sql).toContain(JSON.stringify(ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredTablesBefore));
     expect(sql).toContain("host(inet_server_addr())");
     expect(sql).toContain("inet_server_port()");
     expect(sql).toContain("pg_get_functiondef(p.oid)");

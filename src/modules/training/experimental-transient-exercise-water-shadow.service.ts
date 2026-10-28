@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -225,12 +226,12 @@ function sourceRow(impulse: TransientExerciseWaterImpulseV2, profileId: number) 
 }
 
 export async function rebuildExperimentalTransientExerciseWaterV2(input: {
-  profileId?: number;
+  profileId: number;
   client?: PrismaClient;
   onCandidateComputed?: () => Promise<void>;
   onProgress?: () => Promise<void>;
-} = {}): Promise<{ earliestModelDate: string | null; latestModelDate: string | null; sourceToken: string; impulseCount: number }> {
-  const profileId = input.profileId ?? 1;
+}): Promise<{ earliestModelDate: string | null; latestModelDate: string | null; sourceToken: string; impulseCount: number }> {
+  const profileId = requireProfileId(input.profileId);
   const client = input.client ?? prisma;
   const before = await readSourceSnapshot(client, profileId);
   const impulses = await candidateImpulses(before, input.onProgress);

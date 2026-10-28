@@ -13,6 +13,7 @@ type MassReference = NonNullable<StrengthSessionDto["activeEnergyMassReference"]
 
 /** Shared historical source policy; callers decide whether their calculation needs mass. */
 export async function resolveSessionHistoricalMassReferenceV1(
+  profileId: number,
   db: PrismaClient | Prisma.TransactionClient,
   localDate: string,
   timeZone: string,
@@ -44,6 +45,7 @@ export async function resolveSessionHistoricalMassReferenceV1(
   try {
     const samples = await findSamples.call(dataClient.healthMetricSample, {
       where: {
+        profileId,
         metric: "weight-kg",
         source: "apple-health-shortcut",
         timestamp: { gte: start, lt: end },
@@ -70,7 +72,7 @@ export async function resolveSessionHistoricalMassReferenceV1(
 
   let modelEstimate = null;
   try {
-    const episodes = new ModelEpisodeRepository(db);
+    const episodes = new ModelEpisodeRepository(profileId, db);
     const episode = await episodes.getAsOf(localDate);
     if (episode && calendarDayIndex(localDate) - calendarDayIndex(episode.startDate) + 1
         <= MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1) {
@@ -104,10 +106,10 @@ export async function resolveSessionHistoricalMassReferenceV1(
  */
 export async function resolveStrengthEnergyMassReferenceV1(
   db: PrismaClient | Prisma.TransactionClient,
-  input: { stage02Mass: MassReference | null; localDate: string; timeZone: string },
+  input: { profileId: number; stage02Mass: MassReference | null; localDate: string; timeZone: string },
 ): Promise<MassReference | null> {
   if (input.stage02Mass === null || input.stage02Mass.reference.status !== "unavailable") return input.stage02Mass;
-  const reference = await resolveSessionHistoricalMassReferenceV1(db, input.localDate, input.timeZone);
+  const reference = await resolveSessionHistoricalMassReferenceV1(input.profileId, db, input.localDate, input.timeZone);
   const massResolutionIdentity = buildMassResolutionIdentity({
     localDate: input.localDate,
     timeZone: input.timeZone,

@@ -15,8 +15,13 @@ const trainingService = vi.hoisted(() => ({
   finishSession: vi.fn(),
   cancelSession: vi.fn(),
 }));
+const authAccess = vi.hoisted(() => ({
+  getSessionPrincipal: vi.fn().mockResolvedValue({ profileId: 42, userId: "user-42", method: "session" }),
+  isTrustedOrigin: vi.fn().mockReturnValue(true),
+}));
 
 vi.mock("@/modules/training/training.service", () => ({ trainingService }));
+vi.mock("@/modules/auth/access", () => authAccess);
 
 import { POST as CREATE_SET } from "@/app/api/v1/training/sessions/[id]/exercises/[exerciseId]/sets/route";
 import { POST as CANCEL } from "@/app/api/v1/training/sessions/[id]/cancel/route";
@@ -97,10 +102,12 @@ describe("/api/v1/training/sessions", () => {
     trainingService.getSession.mockResolvedValue(session);
     const result = await DETAIL(new Request(`${base}/42?readOnly=true`), sessionCtx("42"));
     expect(result.status).toBe(200);
-    expect(trainingService.getSession).toHaveBeenCalledWith(42, 1, { readOnly: true });
+    expect(trainingService.getSession).toHaveBeenCalledWith(42, 42, { readOnly: true });
   });
   beforeEach(() => {
     Object.values(trainingService).forEach((mock) => mock.mockReset());
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 42, userId: "user-42", method: "session" });
+    authAccess.isTrustedOrigin.mockReturnValue(true);
   });
 
   it("maps a durably rejected set-create operation to a terminal 409", async () => {
@@ -115,12 +122,12 @@ describe("/api/v1/training/sessions", () => {
       state: "REJECTED",
       error: "set_create_operation_rejected",
     });
-    expect(trainingService.getSetCreateOperation).toHaveBeenCalledWith(testOperationId, undefined, undefined);
+    expect(trainingService.getSetCreateOperation).toHaveBeenCalledWith(testOperationId, 42, undefined);
   });
 
   it("returns the active session payload", async () => {
     trainingService.getActiveSession.mockResolvedValue(session);
-    const response = await ACTIVE();
+    const response = await ACTIVE(new Request(`${base}/active`));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session });
   });
@@ -131,7 +138,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await RECENT(new Request(`${base}/recent?limit=5&offset=10`));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ sessions: [session], totalCount: 17 });
-    expect(trainingService.listRecentSessions).toHaveBeenCalledWith({ limit: 5, offset: 10 });
+    expect(trainingService.listRecentSessions).toHaveBeenCalledWith({ limit: 5, offset: 10, profileId: 42 });
   });
 
   it("rejects invalid recent limit without service call", async () => {
@@ -145,7 +152,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await DETAIL(new Request(`${base}/42`), sessionCtx("42"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session });
-    expect(trainingService.getSession).toHaveBeenCalledWith(42);
+    expect(trainingService.getSession).toHaveBeenCalledWith(42, 42);
   });
 
   it("returns 404 for missing session detail", async () => {
@@ -160,7 +167,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await START(jsonRequest(`${base}/start`, "POST", { programId: 7 }));
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ session });
-    expect(trainingService.startSession).toHaveBeenCalledWith(7, undefined, undefined);
+    expect(trainingService.startSession).toHaveBeenCalledWith(7, 42, undefined);
   });
 
   it("starts a dynamic live session without a program and preserves the supplied time zone", async () => {
@@ -176,7 +183,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await START_DYNAMIC(jsonRequest(`${base}/start-dynamic`, "POST", { timeZone: "Europe/Bratislava" }));
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ session: dynamicSession });
-    expect(trainingService.startDynamicSession).toHaveBeenCalledWith(undefined, "Europe/Bratislava");
+    expect(trainingService.startDynamicSession).toHaveBeenCalledWith(42, "Europe/Bratislava");
   });
 
   it("rejects invalid dynamic-session time zones without mutation", async () => {
@@ -222,7 +229,7 @@ describe("/api/v1/training/sessions", () => {
     expect(trainingService.createSet).toHaveBeenCalledWith(42, 5, {
       reps: 10,
       weightKg: 30,
-    }, undefined, testOperationId);
+    }, 42, testOperationId);
   });
 
   it("fails closed for legacy set-create requests without an idempotency key", async () => {
@@ -269,7 +276,7 @@ describe("/api/v1/training/sessions", () => {
       weightKg: null,
       bandNominalResistanceKg: null,
       loadAccountingOverride: loadedSet.loadAccountingOverride,
-    }, undefined, testOperationId);
+    }, 42, testOperationId);
 
     trainingService.getSetForSession.mockResolvedValue(loadedSet);
     const readResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
@@ -299,7 +306,7 @@ describe("/api/v1/training/sessions", () => {
     expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, {
       reps: 10,
       loadAccountingOverride: updatedOverride,
-    });
+    }, 42);
   });
 
   it("accepts the maximum override and rejects out-of-range or overflowing POST/PATCH inputs", async () => {
@@ -374,7 +381,7 @@ describe("/api/v1/training/sessions", () => {
     );
 
     expect(patchResponse.status).toBe(200);
-    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { rir: 3, comment: "after" });
+    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { rir: 3, comment: "after" }, 42);
     trainingService.getSetForSession.mockResolvedValue({ ...historical, rir: 3, comment: "after" });
     const getResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
     expect(getResponse.status).toBe(200);
@@ -394,7 +401,7 @@ describe("/api/v1/training/sessions", () => {
       setCtx("42", "9"),
     );
     expect(zeroPatchResponse.status).toBe(200);
-    expect(trainingService.updateSet).toHaveBeenLastCalledWith(42, 9, { rir: 3 });
+    expect(trainingService.updateSet).toHaveBeenLastCalledWith(42, 9, { rir: 3 }, 42);
     trainingService.getSetForSession.mockResolvedValue({ ...zeroHistorical, rir: 3 });
     const zeroGetResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
     expect(zeroGetResponse.status).toBe(200);
@@ -454,7 +461,7 @@ describe("/api/v1/training/sessions", () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ set: { ...setDto, reps: 8 } });
-    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { reps: 8 });
+    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { reps: 8 }, 42);
   });
 
   it("reads a set for mutation reconciliation without using session detail", async () => {
@@ -462,7 +469,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ set: setDto });
-    expect(trainingService.getSetForSession).toHaveBeenCalledWith(42, 9);
+    expect(trainingService.getSetForSession).toHaveBeenCalledWith(42, 9, 42);
     expect(trainingService.getSession).not.toHaveBeenCalled();
   });
 
@@ -492,7 +499,7 @@ describe("/api/v1/training/sessions", () => {
       setCtx("42", "9"),
     );
     expect(response.status).toBe(204);
-    expect(trainingService.deleteSet).toHaveBeenCalledWith(42, 9);
+    expect(trainingService.deleteSet).toHaveBeenCalledWith(42, 9, 42);
   });
 
   it("maps missing set on delete to 404", async () => {
@@ -516,7 +523,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await FINISH(new Request(`${base}/42/finish`, { method: "POST" }), sessionCtx("42"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session: completed });
-    expect(trainingService.finishSession).toHaveBeenCalledWith(42);
+    expect(trainingService.finishSession).toHaveBeenCalledWith(42, 42);
   });
 
   it("repeated finish stays a successful contract call (idempotent service semantics)", async () => {
@@ -541,7 +548,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await CANCEL(new Request(`${base}/42/cancel`, { method: "POST" }), sessionCtx("42"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ session: cancelled });
-    expect(trainingService.cancelSession).toHaveBeenCalledWith(42);
+    expect(trainingService.cancelSession).toHaveBeenCalledWith(42, 42);
   });
 
   it("maps finish/cancel not-found to 404", async () => {

@@ -159,8 +159,8 @@ async function ensureHealth(date: string, overrides: {
   workoutFeedObserved?: boolean | null;
 } = {}): Promise<void> {
   const health = await prisma.dailyHealthData.upsert({
-    where: { date },
-    create: {
+    where: { profileId_date: { profileId: profileId, date: date } },
+    create: { profileId: profileId,
       date,
       weightKg: overrides.weightKg === undefined ? null : overrides.weightKg,
       bodyFatPercent: overrides.bodyFatPercent === undefined ? null : overrides.bodyFatPercent,
@@ -182,7 +182,7 @@ async function ensureHealth(date: string, overrides: {
   // Relative Muscle accepts this date-only feed/coverage evidence only when
   // the durable sync snapshot proves its ModelEpisode timezone.
   await prisma.healthSyncSnapshot.create({
-    data: {
+    data: { profileId: profileId,
       dailyHealthDataId: health.id,
       date,
       timezone: "Europe/Bratislava",
@@ -452,12 +452,12 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
     await cleanAll();
     // Historical as-of mass fallback must come from a prior day, never D5.
     await prisma.dailyHealthData.upsert({
-      where: { date: "2061-02-28" },
-      create: { date: "2061-02-28", weightKg: 78, rawPayload: {}, workoutFeedObserved: true },
+      where: { profileId_date: { profileId: profileId, date: "2061-02-28" } },
+      create: { profileId: profileId, date: "2061-02-28", weightKg: 78, rawPayload: {}, workoutFeedObserved: true },
       update: { weightKg: 78 },
     });
     await prisma.healthMetricSample.create({
-      data: {
+      data: { profileId: profileId,
         date: "2061-02-28",
         metric: "weight-kg",
         source: "apple-health-shortcut",
@@ -597,8 +597,8 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
 
     await ensureHealth(D5, { workoutFeedObserved: true, carbsG: 220, activeEnergyKcal: 700 });
     await prisma.workout.create({
-      data: {
-        dailyHealthDataId: (await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: D5 } })).id,
+      data: { profileId: profileId,
+        dailyHealthDataId: (await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: D5 } } })).id,
         type: "Traditional Strength Training",
         startAt: new Date(`${D5}T17:00:00.000Z`),
         endAt: new Date(`${D5}T18:00:00.000Z`),
@@ -684,7 +684,7 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
       where: { profileId_date: { profileId, date: D2 } },
     });
 
-    const days = new DailyMetricRepository();
+    const days = new DailyMetricRepository(profileId);
     await days.update(D2, { carbsG: 175 });
     const afterEdit = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
       where: { profileId_date: { profileId, date: D2 } },
@@ -715,7 +715,7 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
     });
 
     await ensureHealth(D5, { workoutFeedObserved: true });
-    const d5Health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: D5 } });
+    const d5Health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { profileId_date: { profileId: profileId, date: D5 } } });
     await prisma.heartRateSample.create({
       data: {
         profileId,

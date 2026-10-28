@@ -32,7 +32,7 @@ export async function rebuildFatWeightShadowV1(input: {
     : hasCompatibleBaseline ? source.episode.startDate : input.fromDate;
   const [states, health] = await Promise.all([
     prisma.dailyModelState.findMany({ where: { episodeId: source.episodeId, date: { gte: rebuildFrom, lte: input.toDate } }, orderBy: { date: "asc" }, select: { date: true, fatMassKg: true, leanTissueKg: true, energyBalanceKcal: true } }),
-    prisma.dailyHealthData.findMany({ where: { date: { gte: rebuildFrom, lte: input.toDate } }, select: { date: true, weightKg: true, bodyFatPercent: true } }),
+    prisma.dailyHealthData.findMany({ where: { profileId: input.profileId, date: { gte: rebuildFrom, lte: input.toDate } }, select: { date: true, weightKg: true, bodyFatPercent: true } }),
   ]);
   const byDate = new Map(health.map((row) => [row.date, row]));
   let prior = stateFromStored(predecessor?.result) ?? initialState(hasCompatibleBaseline ? source.episode : null);

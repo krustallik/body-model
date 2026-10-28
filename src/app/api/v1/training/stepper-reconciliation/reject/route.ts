@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { readJson, validationResponse } from "@/modules/days/day.http";
@@ -12,21 +13,25 @@ const RejectSchema = z.object({
 });
 
 export async function POST(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = RejectSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
   try {
     const members = await prisma.stepperReconciliationCandidate.findMany({
-      where: { groupId: parsed.data.groupId },
+      where: { profileId: principal.profileId, groupId: parsed.data.groupId },
       select: { manualWorkoutId: true, garminWorkoutId: true },
     });
-    await rejectStepperReconciliationV1(prisma, { groupId: parsed.data.groupId });
+    await rejectStepperReconciliationV1(prisma, { profileId: principal.profileId, groupId: parsed.data.groupId });
     await recordExperimentalStepperActiveEnergyShadowsForWorkouts({
       workoutIds: [...new Set(members.flatMap((pair) => [pair.manualWorkoutId, pair.garminWorkoutId]))],
-      profileId: 1,
+      profileId: principal.profileId,
     });
-    const published = await publishActiveEnergyChangesV1({ activeEnergyCandidateScope: {
+    const published = await publishActiveEnergyChangesV1({ profileId: principal.profileId, activeEnergyCandidateScope: {
       strengthSessionIds: [],
       workoutIds: [...new Set(members.flatMap((pair) => [pair.manualWorkoutId, pair.garminWorkoutId]))],
     } });

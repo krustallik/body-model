@@ -47,7 +47,7 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
     const rangeEnd = localDateTimeToInstant(addCalendarDays(input.toDate, 1), "00:00", input.timeZone);
     const [dailyRows, snapshotRows, activityIntervalRows, workoutRows, heartRateRows, restingRows, sleepRows, sessionIds] = await Promise.all([
       this.client.dailyHealthData.findMany({
-        where: { date: { gte: input.historyFromDate, lte: input.toDate } },
+        where: { profileId: input.profileId, date: { gte: input.historyFromDate, lte: input.toDate } },
         orderBy: { date: "asc" },
         select: {
           id: true,
@@ -64,12 +64,13 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
         },
       }),
       this.client.healthSyncSnapshot.findMany({
-        where: { date: { gte: input.historyFromDate, lte: input.toDate } },
+        where: { profileId: input.profileId, date: { gte: input.historyFromDate, lte: input.toDate } },
         orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
         select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true },
       }),
       this.client.healthActivityInterval.findMany({
         where: {
+          profileId: input.profileId,
           metric: "steps",
           startAt: { lt: rangeEnd },
           endAt: { gt: rangeStart },
@@ -78,7 +79,7 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
         select: { id: true, startAt: true, endAt: true, value: true },
       }),
       this.client.workout.findMany({
-        where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: input.historyFromDate, lte: input.toDate } } },
+        where: { profileId: input.profileId, hiddenFromHistory: false, dailyHealthData: { date: { gte: input.historyFromDate, lte: input.toDate } } },
         orderBy: [{ dailyHealthData: { date: "asc" } }, { startAt: "asc" }, { id: "asc" }],
         select: {
           id: true,

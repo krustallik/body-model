@@ -6,20 +6,24 @@ import { serializeGoalPlanningResult, toTargetSolverRequest } from "@/modules/mo
 import { solveModelEpisodeTarget } from "@/modules/model-target-solver/model-target-solver.service";
 import { errorKind, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
+import { getSessionPrincipal } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = GoalPlanningRequestSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
-  const release = tryAcquireOperation("goal-solver");
+  const release = tryAcquireOperation(`goal-solver:${principal.profileId}`);
   if (!release) return Response.json({ error: "operation_in_progress" }, { status: 429, headers: { "Retry-After": "1" } });
   try {
     const now = forecastQaNow();
     const result = await solveModelEpisodeTarget({
       ...toTargetSolverRequest(parsed.data),
+      profileId: principal.profileId,
       ...(now ? { now } : {}),
     });
     return Response.json(serializeGoalPlanningResult(parsed.data, result));

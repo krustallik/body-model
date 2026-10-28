@@ -385,13 +385,13 @@ describe("Unified V3/V4 rollout verification", () => {
 
   it("does not publish V3 when lifecycle or output coverage is stale", async () => {
     mocks.state.lifecycle = lifecycle({ unifiedTargetRevision: V4 });
-    await expect(verifyAndPublishUnifiedV3Postflight({ client: mocks.prisma as never }))
+    await expect(verifyAndPublishUnifiedV3Postflight({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("V3 postflight lifecycle/generation is not current");
     expect(mocks.prisma.physiologyV7Lifecycle.updateMany).not.toHaveBeenCalled();
 
     setCurrent(V3);
     mocks.state.rows[0]!.sourceFingerprint = "stale-source";
-    await expect(verifyAndPublishUnifiedV3Postflight({ client: mocks.prisma as never }))
+    await expect(verifyAndPublishUnifiedV3Postflight({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("source-fingerprint");
     expect(mocks.prisma.physiologyV7Lifecycle.updateMany).not.toHaveBeenCalled();
   });
@@ -402,12 +402,12 @@ describe("Unified V3/V4 rollout verification", () => {
       [mocks.state.day],
       [{ ...mocks.state.day, sourceLineage: { production: "changed" } }],
     ];
-    await expect(verifyAndPublishUnifiedV3Postflight({ client: mocks.prisma as never }))
+    await expect(verifyAndPublishUnifiedV3Postflight({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("concurrent source change");
 
     setCurrent(V3);
     mocks.state.updateCount = 0;
-    await expect(verifyAndPublishUnifiedV3Postflight({ client: mocks.prisma as never }))
+    await expect(verifyAndPublishUnifiedV3Postflight({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("concurrent source change");
   });
 
@@ -423,12 +423,12 @@ describe("Unified V3/V4 rollout verification", () => {
 
   it("rejects activation without current production or published V3 postflight", async () => {
     mocks.state.lifecycle = lifecycle({ productionStaleFromDate: date });
-    await expect(activateAndReplayUnifiedV4({ client: mocks.prisma as never }))
+    await expect(activateAndReplayUnifiedV4({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("V4 activation requires current production state");
 
     setCurrent(V3);
     mocks.state.lifecycle!.unifiedPublishedRolloutEpoch = null;
-    await expect(activateAndReplayUnifiedV4({ client: mocks.prisma as never }))
+    await expect(activateAndReplayUnifiedV4({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("V4 activation requires a successfully published V3 postflight epoch 0");
   });
 
@@ -447,7 +447,7 @@ describe("Unified V3/V4 rollout verification", () => {
   it("rejects a lost activation compare-and-swap without replaying", async () => {
     setCurrent(V3);
     mocks.state.updateCount = 0;
-    await expect(activateAndReplayUnifiedV4({ client: mocks.prisma as never }))
+    await expect(activateAndReplayUnifiedV4({ profileId: 1, client: mocks.prisma as never }))
       .rejects.toThrow("concurrent source change");
     expect(mocks.rebuild).not.toHaveBeenCalled();
   });

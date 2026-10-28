@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -91,7 +92,7 @@ async function expectedRange(client: DbClient, profileId: number) {
   const last = partitions.at(-1);
   if (!first || !last || !first.startInstant) throw new Error("postflight refuses missing episode boundaries");
   const [latestDurable, completedSessions] = await Promise.all([
-    client.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } }),
+    client.dailyHealthData.findFirst({ where: { profileId }, orderBy: { date: "desc" }, select: { date: true } }),
     client.strengthDiarySession.findMany({
       where: { profileId, status: "COMPLETED" },
       select: {
@@ -241,12 +242,12 @@ export async function verifyPublishedV4Current(
 }
 
 export async function verifyUnifiedV4ReadyForTraffic(input: {
-  profileId?: number;
+  profileId: number;
   client?: DbClient;
   checkTrainingRefreshQueue?: boolean;
-} = {}): Promise<{ profileId: number; rolloutEpoch: number; dayCount: number }> {
+}): Promise<{ profileId: number; rolloutEpoch: number; dayCount: number }> {
   const client = input.client ?? prisma;
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId } });
   if (!lifecycle || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
       || lifecycle.unifiedRolloutEpoch < 1
@@ -286,11 +287,11 @@ function sameLifecycle(left: {
 }
 
 export async function verifyAndPublishUnifiedV3Postflight(input: {
-  profileId?: number;
+  profileId: number;
   client?: PrismaClient;
-} = {}): Promise<{ profileId: number; dayCount: number; rangeToken: string }> {
+}): Promise<{ profileId: number; dayCount: number; rangeToken: string }> {
   const client = input.client ?? prisma;
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId } });
   if (!lifecycle || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
       || lifecycle.unifiedRolloutEpoch !== 0 || lifecycle.productionStaleFromDate !== null
@@ -332,11 +333,11 @@ export async function verifyAndPublishUnifiedV3Postflight(input: {
 }
 
 export async function inspectUnifiedV4Lifecycle(input: {
-  profileId?: number;
+  profileId: number;
   client?: PrismaClient;
-} = {}): Promise<{ profileId: number; state: "v3-ready" | "v4-replayable" | "v4-current" }> {
+}): Promise<{ profileId: number; state: "v3-ready" | "v4-replayable" | "v4-current" }> {
   const client = input.client ?? prisma;
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId } });
   if (!lifecycle || lifecycle.productionStaleFromDate !== null
       || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration
@@ -365,11 +366,11 @@ export async function inspectUnifiedV4Lifecycle(input: {
 }
 
 export async function activateAndReplayUnifiedV4(input: {
-  profileId?: number;
+  profileId: number;
   client?: PrismaClient;
-} = {}): Promise<{ profileId: number; rolloutEpoch: number; dayCount: number }> {
+}): Promise<{ profileId: number; rolloutEpoch: number; dayCount: number }> {
   const client = input.client ?? prisma;
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const rollout = await client.$transaction(async (tx) => {
     await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
     const lifecycle = await tx.physiologyV7Lifecycle.findUnique({ where: { profileId } });

@@ -20,9 +20,10 @@ export class TrainingRefreshPendingDiagnosticsError extends Error {
   }
 }
 
-export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) {
-  const trainingFence = await readTrainingRefreshVisibilityFence(client, 1);
-  const episodes = new ModelEpisodeRepository(client);
+export async function getModelDiagnostics(profileId: number, client: ModelDatabaseClient = prisma) {
+  if (!Number.isInteger(profileId) || profileId <= 0) throw new Error("profileId must be a positive integer");
+  const trainingFence = await readTrainingRefreshVisibilityFence(client, profileId);
+  const episodes = new ModelEpisodeRepository(profileId, client);
   const episode = await episodes.getActive();
   if (!episode) throw new NoActiveModelEpisodeError();
   const status = await episodes.status(episode.id);
@@ -64,11 +65,11 @@ export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) 
   ]);
   const workerOwnsGeneration = await trainingRefreshWorkerOwnsGeneration(
     client,
-    1,
+    profileId,
     trainingFence?.requestedGeneration,
   );
   if ((isTrainingRefreshPending(trainingFence) && !workerOwnsGeneration)
-      || await trainingRefreshFenceChanged(client, 1, trainingFence)) {
+      || await trainingRefreshFenceChanged(client, profileId, trainingFence)) {
     // Deterministic and recovery snapshots form one composed current-state
     // response. A partial fallback could still expose the previous generation's
     // posterior or calibration as current, so fail closed for the whole read.

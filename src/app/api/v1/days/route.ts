@@ -1,10 +1,11 @@
 import { DuplicateDayError } from "@/modules/days/day.errors";
 import { readJson, validationResponse } from "@/modules/days/day.http";
-import { dailyMetricRepository } from "@/modules/days/day.repository";
+import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { CreateDailyMetricSchema, DailyMetricListQuerySchema } from "@/modules/days/day.schema";
 import { addCalendarDays, todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
 import { getLocalDemoDataset } from "@/modules/demo/local-demo-data";
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
@@ -34,9 +35,11 @@ export async function GET(request: Request): Promise<Response> {
       : [];
     return Response.json({ days, trainingDays, limit, offset });
   }
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    const { days, trainingDays } = await dailyMetricRepository.listWithTrainingFacts(query.data);
+    const { days, trainingDays } = await new DailyMetricRepository(principal.profileId).listWithTrainingFacts(query.data);
     return Response.json({ days, trainingDays, limit: query.data.limit, offset: query.data.offset });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });
@@ -45,6 +48,9 @@ export async function GET(request: Request): Promise<Response> {
 
 export async function POST(request: Request): Promise<Response> {
   if (isLocalDemoMode()) return localDemoReadOnlyResponse();
+  if (!isTrustedOrigin(request)) return originRejected();
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await readJson(request);
   if (body instanceof Response) return body;
 
@@ -52,7 +58,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    return Response.json({ day: await dailyMetricRepository.create(parsed.data) }, { status: 201 });
+    return Response.json({ day: await new DailyMetricRepository(principal.profileId).create(parsed.data) }, { status: 201 });
   } catch (error) {
     if (error instanceof DuplicateDayError) {
       return Response.json({ error: "date_conflict" }, { status: 409 });

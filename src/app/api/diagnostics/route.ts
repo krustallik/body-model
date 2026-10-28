@@ -4,12 +4,15 @@ import {
   TrainingRefreshPendingDiagnosticsError,
 } from "@/modules/model-diagnostics/model-diagnostics.service";
 import { errorKind, logEvent } from "@/lib/logger";
+import { getSessionPrincipal } from "@/modules/auth/access";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
   try {
-    return Response.json(await getModelDiagnostics());
+    return Response.json(await getModelDiagnostics(principal.profileId));
   } catch (error) {
     if (error instanceof TrainingRefreshPendingDiagnosticsError) {
       return Response.json({ error: "training_refresh_pending" }, { status: 503 });

@@ -1,3 +1,5 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
+
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
   CatalogExerciseIdParamsSchema,
@@ -12,6 +14,9 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
   const routeParams = CatalogExerciseIdParamsSchema.safeParse(await params);
   if (!routeParams.success) return validationResponse(routeParams.error);
   const body = await readJson(request);
@@ -19,7 +24,7 @@ export async function PATCH(
   const parsed = UpdateCatalogLoadAccountingConfigSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
   try {
-    await trainingService.updateCatalogLoadAccountingConfig(routeParams.data.id, parsed.data);
+    await trainingService.updateCatalogLoadAccountingConfig(routeParams.data.id, parsed.data, principal.profileId);
     return Response.json({ ok: true });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

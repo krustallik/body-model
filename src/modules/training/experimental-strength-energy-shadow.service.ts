@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { calculateStrengthActivity } from "@/model/activity/strength";
@@ -77,6 +78,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
   const massDate = stage02Mass?.reference.localDate ?? instantToLocalDateTime(new Date(input.session.effectiveAccountingAt
     ?? input.session.matchedWorkout?.startAt ?? input.session.webStartedAt ?? input.session.createdAt), massTimeZone).date;
   const energyMass = await resolveStrengthEnergyMassReferenceV1(prisma, {
+    profileId: input.profileId!,
     stage02Mass, localDate: massDate, timeZone: massTimeZone,
   });
   const bodyMassKg = energyMass !== null && energyMass.reference.status !== "unavailable"
@@ -218,6 +220,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
         || (current.webStartedAt?.toISOString() ?? null) !== (input.session.webStartedAt ?? null)
         || (current.webEndedAt?.toISOString() ?? null) !== (input.session.webEndedAt ?? null)) return false;
     const currentEnergyMass = await resolveStrengthEnergyMassReferenceV1(tx, {
+      profileId: input.profileId!,
       stage02Mass, localDate: massDate, timeZone: massTimeZone,
     });
     if (sha256Canonical(currentEnergyMass) !== sha256Canonical(energyMass)) return false;
@@ -392,11 +395,11 @@ export async function recordExperimentalStrengthEnergyShadowBySessionId(input: {
 /** Identifies completed sessions whose observed or historical bodyweight may depend on a changed weight date. */
 export async function listExperimentalStrengthEnergySessionsForWeightDate(input: {
   date: string;
-  profileId?: number;
+  profileId: number;
   /** True only when the raw weight source changed; enables the historical as-of suffix refresh. */
   refreshHistoricalAsOfFallback?: boolean;
 }): Promise<number[]> {
-  const profileId = input.profileId ?? 1;
+  const profileId = requireProfileId(input.profileId);
   const episodes = await prisma.modelEpisode.findMany({
     where: { profileId }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true },

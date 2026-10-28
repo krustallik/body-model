@@ -197,6 +197,7 @@ export async function persistSelectionEpisodeHistoryV1(input: {
     await input.client.activationRollbackEntry.createMany({
       data: [
         {
+          profileId: input.episode.profileId,
           generationId: input.generationId,
           recordKind: "model-episode",
           recordId: input.episode.id,
@@ -206,6 +207,7 @@ export async function persistSelectionEpisodeHistoryV1(input: {
           sourceRevision,
         },
         {
+          profileId: input.episode.profileId,
           generationId: input.generationId,
           recordKind: "model-episode",
           recordId: input.episode.id,
@@ -294,18 +296,19 @@ export async function rollbackSelectionEpisodeActivationV1(input: {
  */
 export async function activateConfirmedReconciliationVisibilityV1(input: {
   client: PrismaClient | Prisma.TransactionClient;
+  profileId: number;
   generationId: string;
   manualWorkoutId: number;
   garminWorkoutId: number;
 }): Promise<{ applied: number }> {
   const activate = async (tx: Prisma.TransactionClient) => {
-    await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
+    await new PhysiologyV7PersistenceRepository(tx).lockProfile(input.profileId);
     const affected = await tx.workout.findMany({
-      where: { id: { in: [input.manualWorkoutId, input.garminWorkoutId] } },
+      where: { profileId: input.profileId, id: { in: [input.manualWorkoutId, input.garminWorkoutId] } },
       select: { id: true, startAt: true, endAt: true },
     });
     const result = await activateVisibilityGenerationV1({
-      store: prismaVisibilityStoreV1(tx),
+      store: prismaVisibilityStoreV1(tx, input.profileId),
       generationId: input.generationId,
       changes: [{
         // Manual is superseded by canonical Garmin, not the reverse.
@@ -316,7 +319,7 @@ export async function activateConfirmedReconciliationVisibilityV1(input: {
     if (result.applied > 0 && affected.length > 0) {
       await invalidateWorkoutEnergyInTransactionV1({
         tx,
-        profileId: 1,
+        profileId: input.profileId,
         workoutIds: affected.map((row) => row.id),
         affectedInstants: affected.flatMap((row) => [row.startAt, row.endAt]),
       });
@@ -329,28 +332,29 @@ export async function activateConfirmedReconciliationVisibilityV1(input: {
 
 export async function rollbackActivationGenerationV1(input: {
   client: PrismaClient;
+  profileId: number;
   generationId: string;
 }): Promise<{ restored: number; conflicts: number[] }> {
   return input.client.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
-    await lifecycle.lockProfile(1);
+    await lifecycle.lockProfile(input.profileId);
     const journal = await tx.activationRollbackEntry.findMany({
-      where: { generationId: input.generationId, recordKind: "workout" },
+      where: { profileId: input.profileId, generationId: input.generationId, recordKind: "workout" },
       select: { recordId: true },
     });
     const workoutIds = [...new Set(journal.map((row) => row.recordId))];
     const before = workoutIds.length === 0 ? [] : await tx.workout.findMany({
-      where: { id: { in: workoutIds } },
+      where: { profileId: input.profileId, id: { in: workoutIds } },
       select: { id: true, startAt: true, endAt: true },
     });
     const result = await rollbackVisibilityGenerationV1({
-      store: prismaVisibilityStoreV1(tx),
+      store: prismaVisibilityStoreV1(tx, input.profileId),
       generationId: input.generationId,
     });
     if (result.restored > 0 && before.length > 0) {
       await invalidateWorkoutEnergyInTransactionV1({
         tx,
-        profileId: 1,
+        profileId: input.profileId,
         workoutIds: before.map((row) => row.id),
         affectedInstants: before.flatMap((row) => [row.startAt, row.endAt]),
       });

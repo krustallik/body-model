@@ -36,7 +36,7 @@ const ledgerRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((e
     finishedAt: "2026-01-01T00:00:00Z",
     rolledBackAt: null,
   }));
-const currentMigrationRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
+const allMigrationRows = readdirSync(migrationRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
   .map((entry) => entry.name).sort().map((name) => ({
     name,
     checksum: createHash("sha256").update(readFileSync(join(fileURLToPath(migrationRoot), name, "migration.sql"))
@@ -44,6 +44,9 @@ const currentMigrationRows = readdirSync(migrationRoot, { withFileTypes: true })
     finishedAt: "2026-01-01T00:00:00Z",
     rolledBackAt: null,
   }));
+// This legacy V4 recovery release is pinned to its original 74-migration tree.
+// A later auth migration must not silently join that separately authorized target.
+const currentMigrationRows = allMigrationRows.slice(0, 74);
 const blocks = [
   ...Array.from({ length: 8 }, (_, i) => ({ source: "health", sourceKey: `2026-10-${String(i + 1).padStart(2, "0")}`,
     fromDate: `2026-10-${String(i + 1).padStart(2, "0")}`, revision: 1,
@@ -158,6 +161,8 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
 
   it("binds immutable migration files without treating them as applied ledger rows", () => {
     const migrationFiles = currentMigrationRows.map(({ name, checksum }) => ({ name, checksum }));
+    expect(allMigrationRows).toHaveLength(75);
+    expect(() => migrationFilesDigest(allMigrationRows.map(({ name, checksum }) => ({ name, checksum })), 74)).toThrow();
     expect(migrationFilesDigest(migrationFiles.slice(0, 65), 65)).toBe(LEGACY_V4_RECOVERY.ledgerDigest);
     expect(migrationFilesDigest(migrationFiles, 74)).toBe(migrationLedgerDigest(currentMigrationRows, 74));
     expect(() => migrationFilesDigest(migrationFiles.slice(1), 74)).toThrow();

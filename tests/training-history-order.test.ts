@@ -29,7 +29,7 @@ describe("training exercise history ordering", () => {
     ]);
     const repository = new TrainingRepository({ strengthSessionExercise: { findMany } } as never);
 
-    const entries = await repository.listExerciseHistory({
+    const entries = await repository.listExerciseHistory({ profileId: 1,
       excludeSessionId: 99,
       catalogId: 7,
       snapshotExerciseName: "Press",

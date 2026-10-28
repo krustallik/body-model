@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/model/time-zone";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
@@ -8,7 +9,6 @@ import { selectPersistedEnergyResolutionV1 } from "@/model/activity/canonical-ac
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
-  DEFAULT_TRAINING_PROFILE_ID,
   DIARY_COMPLETENESS,
   ENTRY_MODE,
   EXERCISE_ORIGIN,
@@ -541,6 +541,7 @@ function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkou
 }
 
 async function resolveSessionBodyweightReference(
+  profileId: number,
   db: PrismaClient,
   record: SessionDetailRecord,
   localDate: string,
@@ -552,7 +553,7 @@ async function resolveSessionBodyweightReference(
   if (!record.exercises.some((exercise) => (
     exercise.resistanceType === RESISTANCE.BODYWEIGHT && exercise.sets.length > 0
   ))) return unavailable;
-  return resolveSessionHistoricalMassReferenceV1(db, localDate, timeZone);
+  return resolveSessionHistoricalMassReferenceV1(profileId, db, localDate, timeZone);
 }
 
 function calculateSessionLoadAccounting(
@@ -759,12 +760,12 @@ export async function hideSessionDerivedResultsWhileTrainingRefreshIsPending(
 
 export async function readActiveEnergyMassReferencesV1(
   db: PrismaClient,
-  input: { sessionIds: readonly number[]; profileId?: number },
+  input: { sessionIds: readonly number[]; profileId: number },
 ): Promise<Map<number, NonNullable<StrengthSessionDto["activeEnergyMassReference"]>>> {
   const sessionIds = [...new Set(input.sessionIds)];
   if (sessionIds.length === 0) return new Map();
   const rows = await db.strengthDiarySession.findMany({
-    where: { profileId: input.profileId ?? DEFAULT_TRAINING_PROFILE_ID, id: { in: sessionIds } },
+    where: { profileId: input.profileId, id: { in: sessionIds } },
     select: sessionDetailSelect,
   });
   const references = new Map<number, NonNullable<StrengthSessionDto["activeEnergyMassReference"]>>();
@@ -773,6 +774,7 @@ export async function readActiveEnergyMassReferencesV1(
     const payload = snapshot.state === "current" ? snapshot.payload : null;
     if (payload === null) continue;
     const reference = await resolveStrengthEnergyMassReferenceV1(db, {
+      profileId: input.profileId,
       stage02Mass: {
         reference: payload.massReference,
         snapshotRevision: payload.snapshotRevision,
@@ -889,6 +891,23 @@ async function writeExerciseOrder(
   }
 }
 
+async function assertSessionExerciseIds(
+  tx: Prisma.TransactionClient,
+  sessionId: number,
+  profileId: number,
+  exerciseIds: readonly number[],
+): Promise<void> {
+  const requested = new Set(exerciseIds);
+  const rows = await tx.strengthSessionExercise.findMany({
+    where: { sessionId, session: { profileId } },
+    select: { id: true },
+  });
+  if (requested.size !== exerciseIds.length || rows.length !== exerciseIds.length
+      || rows.some(({ id }) => !requested.has(id))) {
+    throw new TrainingConcurrentMutationError();
+  }
+}
+
 function moveWithin(orderedIds: readonly number[], exerciseId: number, position: number): number[] {
   const without = orderedIds.filter((id) => id !== exerciseId);
   const target = Math.min(Math.max(position, 0), without.length);
@@ -907,10 +926,10 @@ export class TrainingRepository {
   constructor(private readonly db: PrismaClient = prisma) {}
 
   async listCatalog(options: {
-    profileId?: number;
+    profileId: number;
     activeOnly?: boolean;
-  } = {}): Promise<ExerciseCatalogDto[]> {
-    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  }): Promise<ExerciseCatalogDto[]> {
+    const profileId = requireProfileId(options.profileId);
     const activeOnly = options.activeOnly ?? true;
     const rows = await this.db.exerciseCatalog.findMany({
       where: {
@@ -929,8 +948,9 @@ export class TrainingRepository {
    * renames of already-keyed rows are left untouched.
    */
   async ensureCanonicalExerciseCatalog(
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<ExerciseCatalogDto[]> {
+    profileId = requireProfileId(profileId);
     for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
       const byKey = await this.db.exerciseCatalog.findFirst({
         where: { profileId, stableKey: identity.stableKey },
@@ -972,7 +992,8 @@ export class TrainingRepository {
     return this.listCatalog({ profileId, activeOnly: false });
   }
 
-  async findCatalogByIds(ids: number[], profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async findCatalogByIds(ids: number[], profileId: number) {
+    profileId = requireProfileId(profileId);
     return this.db.exerciseCatalog.findMany({
       where: { profileId, id: { in: ids } },
       select: {
@@ -984,11 +1005,11 @@ export class TrainingRepository {
 
   async setCatalogLoadAccountingConfig(input: {
     catalogId: number;
-    profileId?: number;
+    profileId: number;
     config: Prisma.InputJsonValue | null;
     configVersion?: string;
   }): Promise<boolean> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
       const catalog = await tx.exerciseCatalog.findFirst({
         where: { id: input.catalogId, profileId },
@@ -997,13 +1018,14 @@ export class TrainingRepository {
       if (!catalog) return false;
       if (input.config === null || input.configVersion === undefined) {
         await tx.exerciseCatalog.update({
-          where: { id: catalog.id },
+          where: { profileId_id: { profileId, id: catalog.id } },
           data: { currentLoadAccountingConfigId: null },
         });
         return true;
       }
       const version = await tx.exerciseLoadConfiguration.create({
         data: {
+          profileId,
           exerciseCatalogId: catalog.id,
           configVersion: input.configVersion,
           configuration: input.config,
@@ -1011,7 +1033,7 @@ export class TrainingRepository {
         select: { id: true },
       });
       await tx.exerciseCatalog.update({
-        where: { id: catalog.id },
+        where: { profileId_id: { profileId, id: catalog.id } },
         data: { currentLoadAccountingConfigId: version.id },
       });
       return true;
@@ -1019,10 +1041,10 @@ export class TrainingRepository {
   }
 
   async listPrograms(options: {
-    profileId?: number;
+    profileId: number;
     includeArchived?: boolean;
-  } = {}): Promise<TrainingProgramSummaryDto[]> {
-    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  }): Promise<TrainingProgramSummaryDto[]> {
+    const profileId = requireProfileId(options.profileId);
     const rows = await this.db.trainingProgram.findMany({
       where: {
         profileId,
@@ -1060,8 +1082,9 @@ export class TrainingRepository {
 
   async getProgram(
     programId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<TrainingProgramDto | null> {
+    profileId = requireProfileId(profileId);
     const row = await this.db.trainingProgram.findFirst({
       where: { id: programId, profileId },
       select: {
@@ -1098,11 +1121,11 @@ export class TrainingRepository {
   }
 
   async createProgramWithVersion(input: {
-    profileId?: number;
+    profileId: number;
     name: string;
     exercises: OrderedProgramExerciseWrite[];
   }): Promise<TrainingProgramDto> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
 
     const created = await this.db.$transaction(async (tx) => {
       const program = await tx.trainingProgram.create({
@@ -1111,10 +1134,12 @@ export class TrainingRepository {
       });
       const version = await tx.trainingProgramVersion.create({
         data: {
+          profileId,
           programId: program.id,
           versionNumber: 1,
           exercises: {
             create: input.exercises.map((exercise) => ({
+              profileId,
               exerciseCatalogId: exercise.exerciseCatalogId,
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
@@ -1126,7 +1151,7 @@ export class TrainingRepository {
         select: { id: true },
       });
       await tx.trainingProgram.update({
-        where: { id: program.id },
+        where: { profileId_id: { profileId, id: program.id } },
         data: { currentVersionId: version.id },
       });
       return program.id;
@@ -1139,11 +1164,11 @@ export class TrainingRepository {
 
   async updateProgramWithNewVersion(input: {
     programId: number;
-    profileId?: number;
+    profileId: number;
     name?: string;
     exercises?: OrderedProgramExerciseWrite[];
   }): Promise<TrainingProgramDto | null> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
 
     const updatedId = await this.db.$transaction(async (tx) => {
       const existing = await tx.trainingProgram.findFirst({
@@ -1185,10 +1210,12 @@ export class TrainingRepository {
       const nextVersionNumber = (existing.currentVersion?.versionNumber ?? 0) + 1;
       const version = await tx.trainingProgramVersion.create({
         data: {
+          profileId,
           programId: existing.id,
           versionNumber: nextVersionNumber,
           exercises: {
             create: nextExercises.map((exercise) => ({
+              profileId,
               exerciseCatalogId: exercise.exerciseCatalogId,
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
@@ -1201,7 +1228,7 @@ export class TrainingRepository {
       });
 
       await tx.trainingProgram.update({
-        where: { id: existing.id },
+        where: { profileId_id: { profileId, id: existing.id } },
         data: {
           name: nextName,
           currentVersionId: version.id,
@@ -1217,9 +1244,10 @@ export class TrainingRepository {
 
   async archiveProgram(
     programId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
     archivedAt: Date = new Date(),
   ): Promise<TrainingProgramDto | null> {
+    profileId = requireProfileId(profileId);
     const existing = await this.db.trainingProgram.findFirst({
       where: { id: programId, profileId },
       select: { id: true, archivedAt: true },
@@ -1228,13 +1256,14 @@ export class TrainingRepository {
     if (existing.archivedAt) return this.getProgram(programId, profileId);
 
     await this.db.trainingProgram.update({
-      where: { id: programId },
+      where: { profileId_id: { profileId, id: programId } },
       data: { archivedAt },
     });
     return this.getProgram(programId, profileId);
   }
 
-  async getActiveSession(profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<StrengthSessionDto | null> {
+  async getActiveSession(profileId: number): Promise<StrengthSessionDto | null> {
+    profileId = requireProfileId(profileId);
     const trainingFence = await readTrainingRefreshVisibilityFence(this.db, profileId);
     const row = await this.db.strengthDiarySession.findFirst({
       where: { profileId, status: SESSION_STATUS.ACTIVE },
@@ -1245,8 +1274,8 @@ export class TrainingRepository {
     return hideSessionDerivedResultsWhileTrainingRefreshIsPending(this.db, profileId, trainingFence, session);
   }
 
-  async finishInactiveSessions(input: { profileId?: number; now?: Date } = {}): Promise<Array<{ id: number; endAt: Date }>> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  async finishInactiveSessions(input: { profileId: number; now?: Date }): Promise<Array<{ id: number; endAt: Date }>> {
+    const profileId = requireProfileId(input.profileId);
     const now = input.now ?? new Date();
     const rows = (await this.db.strengthDiarySession.findMany({
       where: { profileId, status: SESSION_STATUS.ACTIVE },
@@ -1266,8 +1295,9 @@ export class TrainingRepository {
 
   async getSession(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<StrengthSessionDto | null> {
+    profileId = requireProfileId(profileId);
     const trainingFence = await readTrainingRefreshVisibilityFence(this.db, profileId);
     const row = await this.db.strengthDiarySession.findFirst({
       where: { id: sessionId, profileId },
@@ -1279,22 +1309,24 @@ export class TrainingRepository {
   }
 
   /** Complete, non-paginated source set for transient-water reconstruction. */
-  async listCompletedTransientWaterSourcesV2(profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<Array<{
+  async listCompletedTransientWaterSourcesV2(profileId: number): Promise<Array<{
     session: StrengthSessionDto;
     canonicalEventInstant: Date;
     sourceDependencyFingerprint: string;
   }>> {
+    profileId = requireProfileId(profileId);
     return TrainingRepository.listCompletedTransientWaterSourcesV2FromClient(this.db, profileId);
   }
 
   static async listCompletedTransientWaterSourcesV2FromClient(
     db: Pick<PrismaClient, "strengthDiarySession"> | Prisma.TransactionClient,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<Array<{
     session: StrengthSessionDto;
     canonicalEventInstant: Date;
     sourceDependencyFingerprint: string;
   }>> {
+    profileId = requireProfileId(profileId);
     const rows = await db.strengthDiarySession.findMany({
       where: { profileId, status: SESSION_STATUS.COMPLETED },
       orderBy: [{ id: "asc" }],
@@ -1359,11 +1391,11 @@ export class TrainingRepository {
 
   async updateAccountingContext(input: {
     sessionId: number;
-    profileId?: number;
+    profileId: number;
     effectiveAccountingAt?: Date;
     timeZone?: string;
   }): Promise<void> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     await this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       await tx.$queryRaw<Array<{ id: number }>>`
@@ -1494,7 +1526,7 @@ export class TrainingRepository {
   /** Controlled Stage 02 write path. GET never calls this method. */
   async materializeAccounting(input: {
     sessionId: number;
-    profileId?: number;
+    profileId: number;
     mode?: "ordinary" | "refresh";
     idempotencyKey?: string;
     finalizeAt?: Date;
@@ -1503,7 +1535,7 @@ export class TrainingRepository {
     /** Health day whose changed bodyweight caused this completed snapshot refresh. */
     dependentHealthDate?: string;
   }): Promise<number> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     const mode = input.mode ?? "ordinary";
     const record = await this.db.strengthDiarySession.findFirst({
       where: { id: input.sessionId, profileId },
@@ -1596,6 +1628,7 @@ export class TrainingRepository {
     }
     if (!massReference) {
       massReference = await resolveSessionBodyweightReference(
+        profileId,
         this.db,
         record,
         localDate,
@@ -1784,7 +1817,7 @@ export class TrainingRepository {
         },
       });
       await tx.strengthDiarySession.update({
-        where: { id: record.id },
+        where: { profileId_id: { profileId, id: record.id } },
         data: {
           effectiveAccountingAt: locked.effectiveAccountingAt ?? effectiveAt,
           accountingTimeZone: locked.accountingTimeZone ?? timeZone,
@@ -1822,7 +1855,7 @@ export class TrainingRepository {
   }
 
   async createSessionSnapshot(input: {
-    profileId?: number;
+    profileId: number;
     programId: number | null;
     programVersionId: number | null;
     status?: SessionStatus;
@@ -1849,7 +1882,7 @@ export class TrainingRepository {
       loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
     }>;
   }): Promise<StrengthSessionDto> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     const webStartedAt = input.webStartedAt === undefined ? new Date() : input.webStartedAt;
     const effectiveAccountingAt = input.effectiveAccountingAt
       ?? webStartedAt
@@ -1905,7 +1938,7 @@ export class TrainingRepository {
    * Garmin workout. No fuzzy matcher runs — the user picked the workout.
    */
   async createRetrospectiveSession(input: {
-    profileId?: number;
+    profileId: number;
     programId: number;
     programVersionId: number;
     matchedWorkoutId: number;
@@ -1943,11 +1976,12 @@ export class TrainingRepository {
     });
   }
 
-  async incrementSessionRevision(sessionId: number): Promise<number> {
+  async incrementSessionRevision(sessionId: number, profileId: number): Promise<number> {
+    profileId = requireProfileId(profileId);
     return this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const row = await tx.strengthDiarySession.update({
-        where: { id: sessionId },
+        where: { profileId_id: { profileId, id: sessionId } },
         data: { revision: { increment: 1 } },
         select: { revision: true },
       });
@@ -1956,7 +1990,8 @@ export class TrainingRepository {
     });
   }
 
-  async findSessionExercise(sessionId: number, exerciseId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async findSessionExercise(sessionId: number, exerciseId: number, profileId: number) {
+    profileId = requireProfileId(profileId);
     return this.db.strengthSessionExercise.findFirst({
       where: {
         id: exerciseId,
@@ -1989,8 +2024,9 @@ export class TrainingRepository {
   async findSessionExerciseDetail(
     sessionId: number,
     exerciseId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ) {
+    profileId = requireProfileId(profileId);
     return this.db.strengthSessionExercise.findFirst({
       where: { id: exerciseId, sessionId, session: { profileId } },
       select: {
@@ -2006,7 +2042,8 @@ export class TrainingRepository {
   }
 
   /** Session shape needed to plan program reconciliation and exercise edits. */
-  async findSessionForEdit(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async findSessionForEdit(sessionId: number, profileId: number) {
+    profileId = requireProfileId(profileId);
     return this.db.strengthDiarySession.findFirst({
       where: { id: sessionId, profileId },
       select: {
@@ -2050,10 +2087,11 @@ export class TrainingRepository {
     toProgramVersionId: number;
     plan: ProgramReconcilePlan;
   }): Promise<number> {
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(input.profileId);
-      const sourceSession = await tx.strengthDiarySession.findUnique({
-        where: { id: input.sessionId },
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+      const sourceSession = await tx.strengthDiarySession.findFirst({
+        where: { id: input.sessionId, profileId },
         select: {
           id: true, profileId: true, status: true, programId: true,
           programVersionId: true, revision: true, matchedWorkoutId: true,
@@ -2061,18 +2099,40 @@ export class TrainingRepository {
           matchedWorkout: { select: { sourceIdentity: true, startAt: true } },
         },
       });
-      if (!sourceSession || sourceSession.profileId !== input.profileId) {
+      if (!sourceSession || sourceSession.programId !== input.fromProgramId
+          || sourceSession.programVersionId !== input.fromProgramVersionId) {
         throw new Error("session not found for program change");
       }
+      const targetVersion = await tx.trainingProgramVersion.findFirst({
+        where: { id: input.toProgramVersionId, programId: input.toProgramId, profileId },
+        select: { id: true },
+      });
+      if (!targetVersion) throw new Error("target program version not found for profile");
       const oldExercises = await tx.strengthSessionExercise.findMany({
-        where: { sessionId: input.sessionId },
+        where: { sessionId: input.sessionId, session: { profileId } },
         select: { id: true, sets: { select: { id: true } } },
       });
+      const keepIds = input.plan.keep.map((keep) => keep.exerciseId);
+      const ownedKeep = await tx.strengthSessionExercise.findMany({
+        where: { sessionId: input.sessionId, id: { in: keepIds }, session: { profileId } },
+        select: { id: true },
+      });
+      if (keepIds.length !== new Set(keepIds).size || ownedKeep.length !== keepIds.length) {
+        throw new TrainingConcurrentMutationError();
+      }
+      const catalogIds = [...new Set(input.plan.add
+        .map((exercise) => exercise.sourceExerciseCatalogId)
+        .filter((id): id is number => id !== null))];
+      const ownedCatalogIds = await tx.exerciseCatalog.findMany({
+        where: { profileId, id: { in: catalogIds } }, select: { id: true },
+      });
+      if (ownedCatalogIds.length !== catalogIds.length) throw new TrainingConcurrentMutationError();
       await parkExerciseOrder(tx, input.plan.keep.map((keep) => keep.exerciseId));
 
       for (const added of input.plan.add) {
         await tx.strengthSessionExercise.create({
           data: {
+            profileId,
             sessionId: input.sessionId,
             sourceExerciseCatalogId: added.sourceExerciseCatalogId,
             snapshotExerciseName: added.snapshotExerciseName,
@@ -2108,7 +2168,7 @@ export class TrainingRepository {
       });
 
       const session = await tx.strengthDiarySession.update({
-        where: { id: input.sessionId },
+        where: { profileId_id: { profileId, id: input.sessionId } },
         data: {
           programId: input.toProgramId,
           programVersionId: input.toProgramVersionId,
@@ -2135,7 +2195,7 @@ export class TrainingRepository {
         });
         const modelDate = episodeTimeContextForInstantV1(episodes, eventAt).date;
         const newExercises = await tx.strengthSessionExercise.findMany({
-          where: { sessionId: input.sessionId },
+          where: { sessionId: input.sessionId, session: { profileId } },
           select: { id: true, sets: { select: { id: true } } },
         });
         const oldIdentity = {
@@ -2177,6 +2237,7 @@ export class TrainingRepository {
 
   /** Session-only exercise addition; the program template is never touched. */
   async addSessionExercise(input: {
+    profileId: number;
     sessionId: number;
     sourceExerciseCatalogId: number;
     snapshotExerciseName: string;
@@ -2189,8 +2250,18 @@ export class TrainingRepository {
     order?: number;
     orderedExerciseIds: readonly number[];
   }): Promise<{ exerciseId: number; revision: number }> {
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+      const ownedSession = await tx.strengthDiarySession.findFirst({
+        where: { id: input.sessionId, profileId }, select: { id: true },
+      });
+      if (!ownedSession) throw new TrainingConcurrentMutationError();
+      const ownedCatalog = await tx.exerciseCatalog.findFirst({
+        where: { id: input.sourceExerciseCatalogId, profileId }, select: { id: true },
+      });
+      if (!ownedCatalog) throw new TrainingConcurrentMutationError();
+      await assertSessionExerciseIds(tx, input.sessionId, profileId, input.orderedExerciseIds);
       const existing = [...input.orderedExerciseIds];
       const position = input.order === undefined
         ? existing.length
@@ -2201,6 +2272,7 @@ export class TrainingRepository {
 
       const created = await tx.strengthSessionExercise.create({
         data: {
+          profileId,
           sessionId: input.sessionId,
           sourceExerciseCatalogId: input.sourceExerciseCatalogId,
           snapshotExerciseName: input.snapshotExerciseName,
@@ -2223,7 +2295,7 @@ export class TrainingRepository {
       }
 
       const session = await tx.strengthDiarySession.update({
-        where: { id: input.sessionId },
+        where: { profileId_id: { profileId, id: input.sessionId } },
         data: {
           revision: { increment: 1 },
           accountingInputRevision: { increment: 1 },
@@ -2237,6 +2309,7 @@ export class TrainingRepository {
   }
 
   async updateSessionExercise(input: {
+    profileId: number;
     sessionId: number;
     exerciseId: number;
     plannedSets?: number;
@@ -2248,17 +2321,18 @@ export class TrainingRepository {
     expectedAccountingInputRevision: number;
     orderedExerciseIds: readonly number[];
   }): Promise<number> {
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const lockedSession = await tx.strengthDiarySession.findFirst({
-        where: { id: input.sessionId, profileId: DEFAULT_TRAINING_PROFILE_ID },
+        where: { id: input.sessionId, profileId },
         select: { accountingInputRevision: true, revision: true },
       });
       if (!lockedSession || lockedSession.accountingInputRevision !== input.expectedAccountingInputRevision) {
         throw new TrainingConcurrentMutationError();
       }
       const currentExercise = await tx.strengthSessionExercise.findFirst({
-        where: { id: input.exerciseId, sessionId: input.sessionId },
+        where: { id: input.exerciseId, sessionId: input.sessionId, session: { profileId } },
         select: {
           plannedSets: true,
           resistanceType: true,
@@ -2266,6 +2340,7 @@ export class TrainingRepository {
           sets: { select: { weightKg: true, bandNominalResistanceKg: true } },
         },
       });
+      if (!currentExercise) throw new TrainingConcurrentMutationError();
       const clearsExistingLoad = currentExercise !== null && (
         input.clearWeightKg && currentExercise.sets.some((set) => set.weightKg !== null)
         || input.clearBandNominalResistanceKg && currentExercise.sets.some((set) => set.bandNominalResistanceKg !== null)
@@ -2288,8 +2363,12 @@ export class TrainingRepository {
       }
 
       if (input.clearWeightKg || input.clearBandNominalResistanceKg) {
+        const ownedSetIds = await tx.strengthSet.findMany({
+          where: { sessionExerciseId: input.exerciseId, sessionExercise: { session: { profileId } } },
+          select: { id: true },
+        });
         await tx.strengthSet.updateMany({
-          where: { sessionExerciseId: input.exerciseId },
+          where: { id: { in: ownedSetIds.map(({ id }) => id) }, sessionExerciseId: input.exerciseId },
           data: {
             ...(input.clearWeightKg ? { weightKg: null } : {}),
             ...(input.clearBandNominalResistanceKg ? { bandNominalResistanceKg: null } : {}),
@@ -2298,13 +2377,14 @@ export class TrainingRepository {
       }
 
       if (input.order !== undefined) {
+        await assertSessionExerciseIds(tx, input.sessionId, profileId, input.orderedExerciseIds);
         const reordered = moveWithin(input.orderedExerciseIds, input.exerciseId, input.order);
         await parkExerciseOrder(tx, reordered);
         await writeExerciseOrder(tx, reordered);
       }
 
       const session = await tx.strengthDiarySession.update({
-        where: { id: input.sessionId },
+        where: { profileId_id: { profileId, id: input.sessionId } },
         data: {
           revision: { increment: 1 },
           ...(input.resistanceType !== undefined || input.clearWeightKg || input.clearBandNominalResistanceKg
@@ -2319,20 +2399,28 @@ export class TrainingRepository {
   }
 
   async deleteSessionExercise(input: {
+    profileId: number;
     sessionId: number;
     exerciseId: number;
     orderedExerciseIds: readonly number[];
   }): Promise<number> {
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+      const ownedExercise = await tx.strengthSessionExercise.findFirst({
+        where: { id: input.exerciseId, sessionId: input.sessionId, session: { profileId } },
+        select: { id: true },
+      });
+      if (!ownedExercise) throw new TrainingConcurrentMutationError();
+      await assertSessionExerciseIds(tx, input.sessionId, profileId, input.orderedExerciseIds);
       const deletedSets = await tx.strengthSet.findMany({
-        where: { sessionExerciseId: input.exerciseId },
+        where: { sessionExerciseId: input.exerciseId, sessionExercise: { session: { profileId } } },
         select: { id: true },
       });
       if (deletedSets.length > 0) {
         await tx.trainingSetCreateOperation.updateMany({
           where: {
-            profileId: DEFAULT_TRAINING_PROFILE_ID,
+            profileId,
             canonicalSetId: { in: deletedSets.map(({ id }) => id) },
             state: "COMMITTED",
           },
@@ -2344,7 +2432,7 @@ export class TrainingRepository {
       await parkExerciseOrder(tx, remaining);
       await writeExerciseOrder(tx, remaining);
       const session = await tx.strengthDiarySession.update({
-        where: { id: input.sessionId },
+        where: { profileId_id: { profileId, id: input.sessionId } },
         data: {
           revision: { increment: 1 },
           accountingInputRevision: { increment: 1 },
@@ -2366,15 +2454,17 @@ export class TrainingRepository {
   }
 
   async reorderSessionExercises(input: {
+    profileId: number;
     sessionId: number;
     orderedExerciseIds: readonly number[];
   }): Promise<number> {
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const [currentSession, exercises] = await Promise.all([
-        tx.strengthDiarySession.findUnique({ where: { id: input.sessionId }, select: { revision: true } }),
+        tx.strengthDiarySession.findFirst({ where: { id: input.sessionId, profileId }, select: { id: true, revision: true } }),
         tx.strengthSessionExercise.findMany({
-          where: { sessionId: input.sessionId },
+          where: { sessionId: input.sessionId, session: { profileId } },
           orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
           select: { id: true },
         }),
@@ -2383,10 +2473,16 @@ export class TrainingRepository {
           && exercises.every((exercise, index) => exercise.id === input.orderedExerciseIds[index])) {
         return currentSession.revision;
       }
+      const requestedIds = new Set(input.orderedExerciseIds);
+      if (!currentSession || exercises.length !== input.orderedExerciseIds.length
+          || requestedIds.size !== input.orderedExerciseIds.length
+          || exercises.some((exercise) => !requestedIds.has(exercise.id))) {
+        throw new TrainingConcurrentMutationError();
+      }
       await parkExerciseOrder(tx, input.orderedExerciseIds);
       await writeExerciseOrder(tx, input.orderedExerciseIds);
       const session = await tx.strengthDiarySession.update({
-        where: { id: input.sessionId },
+        where: { profileId_id: { profileId, id: input.sessionId } },
         data: { revision: { increment: 1 } },
         select: { revision: true },
       });
@@ -2396,7 +2492,7 @@ export class TrainingRepository {
   }
 
   async createSet(input: {
-    profileId?: number;
+    profileId: number;
     operationId: string;
     payloadDigest: string;
     sessionId: number;
@@ -2411,7 +2507,7 @@ export class TrainingRepository {
     loadAccountingOverride?: Prisma.InputJsonValue | null;
   }): Promise<StrengthSetDto | { state: "REJECTED" } | null> {
     return this.db.$transaction(async (tx) => {
-      const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+      const profileId = requireProfileId(input.profileId);
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const existing = await tx.trainingSetCreateOperation.findUnique({
         where: { profileId_operationId: { profileId, operationId: input.operationId } },
@@ -2510,7 +2606,7 @@ export class TrainingRepository {
    * cannot later turn the rejected key into a successful create.
    */
   async rejectSetCreateOperation(input: {
-    profileId?: number;
+    profileId: number;
     operationId: string;
     payloadDigest: string;
     sessionId: number;
@@ -2522,7 +2618,7 @@ export class TrainingRepository {
     | { state: "PENDING" }
     | { state: "COMMITTED"; set: StrengthSetDto }
   > {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const existing = await tx.trainingSetCreateOperation.findUnique({
@@ -2574,13 +2670,13 @@ export class TrainingRepository {
   }
 
   async resolveSetCreateOperation(input: {
-    profileId?: number;
+    profileId: number;
     operationId: string;
     payloadDigest?: string;
     sessionId?: number;
     exerciseId?: number;
   }): Promise<{ state: "NOT_FOUND" } | { state: "COMMITTED"; set: StrengthSetDto } | { state: "TOMBSTONED" } | { state: "REJECTED" } | { state: "PENDING" }> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     const operation = await this.db.trainingSetCreateOperation.findUnique({
       where: { profileId_operationId: { profileId, operationId: input.operationId } },
     });
@@ -2614,7 +2710,7 @@ export class TrainingRepository {
   async updateSet(input: {
     setId: number;
     sessionId: number;
-    profileId?: number;
+    profileId: number;
     reps?: number;
     weightKg?: number | null;
     bandNominalResistanceKg?: number | null;
@@ -2623,7 +2719,7 @@ export class TrainingRepository {
     completedAt?: Date | null;
     loadAccountingOverride?: Prisma.InputJsonValue | null;
   }): Promise<StrengthSetDto | null> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     return this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const existing = await tx.strengthSet.findFirst({
@@ -2690,7 +2786,7 @@ export class TrainingRepository {
   async deleteSet(
     setId: number,
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<boolean> {
     return this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
@@ -2718,13 +2814,13 @@ export class TrainingRepository {
    * Newest first. Excludes the current session and empty set lists.
    */
   async listExerciseHistory(input: {
-    profileId?: number;
+    profileId: number;
     excludeSessionId: number;
     catalogId: number | null;
     snapshotExerciseName: string;
     limit?: number;
   }): Promise<ExerciseHistoryEntryDto[]> {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     const limit = Math.min(Math.max(input.limit ?? 8, 1), 20);
     const identityFilter = input.catalogId != null
       ? { sourceExerciseCatalogId: input.catalogId }
@@ -2806,7 +2902,8 @@ export class TrainingRepository {
     }).slice(0, limit);
   }
 
-  async findSetForSession(setId: number, sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async findSetForSession(setId: number, sessionId: number, profileId: number) {
+    profileId = requireProfileId(profileId);
     return this.db.strengthSet.findFirst({
       where: {
         id: setId,
@@ -2845,23 +2942,25 @@ export class TrainingRepository {
   async markSessionCompleted(
     sessionId: number,
     webEndedAt: Date,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<void> {
+    profileId = requireProfileId(profileId);
     await this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       await tx.strengthDiarySession.update({
-        where: { id: sessionId },
+        where: { profileId_id: { profileId, id: sessionId } },
         data: { status: SESSION_STATUS.COMPLETED, webEndedAt },
       });
       await blockCompletedStrengthUnifiedInTransaction(tx, sessionId);
     });
   }
 
-  async markSessionCancelled(sessionId: number, webEndedAt: Date): Promise<void> {
+  async markSessionCancelled(sessionId: number, webEndedAt: Date, profileId: number): Promise<void> {
+    profileId = requireProfileId(profileId);
     await this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
-      const session = await tx.strengthDiarySession.findUnique({
-        where: { id: sessionId },
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+      const session = await tx.strengthDiarySession.findFirst({
+        where: { id: sessionId, profileId },
         select: {
           id: true, profileId: true, status: true, effectiveAccountingAt: true,
           webStartedAt: true, createdAt: true, matchedWorkoutId: true,
@@ -2890,7 +2989,7 @@ export class TrainingRepository {
         });
       }
       await tx.strengthDiarySession.update({
-        where: { id: sessionId },
+        where: { profileId_id: { profileId, id: sessionId } },
         data: {
           status: SESSION_STATUS.CANCELLED,
           webEndedAt,
@@ -2946,8 +3045,9 @@ export class TrainingRepository {
    */
   async deleteDiarySession(
     sessionId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<{ deleted: true; matchedWorkoutId: number | null }> {
+    profileId = requireProfileId(profileId);
     const existing = await this.db.strengthDiarySession.findFirst({
       where: { id: sessionId, profileId },
       select: { id: true, matchedWorkoutId: true },
@@ -2958,8 +3058,8 @@ export class TrainingRepository {
     const matchedWorkoutId = existing.matchedWorkoutId;
     await this.db.$transaction(async (tx) => {
       await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
-      const session = await tx.strengthDiarySession.findUnique({
-        where: { id: sessionId },
+      const session = await tx.strengthDiarySession.findFirst({
+        where: { id: sessionId, profileId },
         select: {
           profileId: true, status: true, effectiveAccountingAt: true, accountingTimeZone: true,
           webStartedAt: true, createdAt: true, matchedWorkoutId: true,
@@ -3002,13 +3102,14 @@ export class TrainingRepository {
           staleMatchingAliasesOnly: true,
         });
       }
-      await tx.strengthDiarySession.delete({ where: { id: sessionId } });
+      await tx.strengthDiarySession.delete({ where: { profileId_id: { profileId, id: sessionId } } });
       if (trainingEvidence) await enqueueTrainingSourceChangeInTransaction(tx, trainingEvidence);
     });
     return { deleted: true, matchedWorkoutId };
   }
 
   async applyMatchResult(input: {
+    profileId: number;
     sessionId: number;
     matchStatus: MatchStatus;
     matchMethod: MatchMethod | null;
@@ -3016,10 +3117,11 @@ export class TrainingRepository {
     matchedAt: Date | null;
     deadlineMode?: TrainingSourceChangeEvidence["deadlineMode"];
   }): Promise<void> {
+    const profileId = requireProfileId(input.profileId);
     await this.db.$transaction(async (tx) => {
-      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
-      const session = await tx.strengthDiarySession.findUnique({
-        where: { id: input.sessionId },
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+      const session = await tx.strengthDiarySession.findFirst({
+        where: { id: input.sessionId, profileId },
         select: {
           id: true,
           profileId: true,
@@ -3038,10 +3140,10 @@ export class TrainingRepository {
       if (!session) return;
       const [previousWorkout, workout] = await Promise.all([
         session.matchedWorkoutId === null ? Promise.resolve(null) : tx.workout.findUnique({
-          where: { id: session.matchedWorkoutId }, select: { id: true, sourceIdentity: true, startAt: true, endAt: true },
+          where: { profileId_id: { profileId, id: session.matchedWorkoutId } }, select: { id: true, sourceIdentity: true, startAt: true, endAt: true },
         }),
         input.matchedWorkoutId === null ? Promise.resolve(null) : tx.workout.findUnique({
-          where: { id: input.matchedWorkoutId }, select: { id: true, sourceIdentity: true, startAt: true, endAt: true },
+          where: { profileId_id: { profileId, id: input.matchedWorkoutId } }, select: { id: true, sourceIdentity: true, startAt: true, endAt: true },
         }),
       ]);
       const nextEffectiveAt = workout?.startAt ?? session.webStartedAt ?? session.createdAt;
@@ -3063,7 +3165,7 @@ export class TrainingRepository {
         });
       }
       await tx.strengthDiarySession.update({
-        where: { id: input.sessionId },
+        where: { profileId_id: { profileId, id: input.sessionId } },
         data: {
           matchStatus: input.matchStatus,
           matchMethod: input.matchMethod,
@@ -3150,11 +3252,11 @@ export class TrainingRepository {
   }
 
   async listRecentSessions(options: {
-    profileId?: number;
+    profileId: number;
     limit?: number;
     offset?: number;
-  } = {}): Promise<StrengthSessionSummaryDto[]> {
-    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  }): Promise<StrengthSessionSummaryDto[]> {
+    const profileId = requireProfileId(options.profileId);
     const limit = Math.min(Math.max(options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit, 1), 100);
     const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
     // Page by the same canonical occurrence time shown in the diary. The id tie
@@ -3180,7 +3282,8 @@ export class TrainingRepository {
     });
   }
 
-  countRecentSessions(profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<number> {
+  countRecentSessions(profileId: number): Promise<number> {
+    profileId = requireProfileId(profileId);
     return this.db.strengthDiarySession.count({
       where: {
         profileId,
@@ -3190,12 +3293,12 @@ export class TrainingRepository {
   }
 
   async listMatchAttention(options: {
-    profileId?: number;
+    profileId: number;
     longPendingBefore?: Date;
     limit?: number;
     offset?: number;
-  } = {}): Promise<StrengthSessionSummaryDto[]> {
-    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  }): Promise<StrengthSessionSummaryDto[]> {
+    const profileId = requireProfileId(options.profileId);
     const longPendingBefore = options.longPendingBefore;
     const limit = Math.min(Math.max(options.limit ?? 100, 1), 100);
     const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
@@ -3222,10 +3325,10 @@ export class TrainingRepository {
   }
 
   countMatchAttention(options: {
-    profileId?: number;
+    profileId: number;
     longPendingBefore?: Date;
-  } = {}): Promise<number> {
-    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  }): Promise<number> {
+    const profileId = requireProfileId(options.profileId);
     return this.db.strengthDiarySession.count({
       where: {
         profileId,
@@ -3244,11 +3347,11 @@ export class TrainingRepository {
   }
 
   async findPendingCompletedSessionsOverlapping(window: {
-    profileId?: number;
+    profileId: number;
     windowStart: Date;
     windowEnd: Date;
   }) {
-    const profileId = window.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(window.profileId);
     // Retrospective backfills are already linked 1:1 by the user; the fuzzy
     // matcher must never revisit them (and they have no live web interval).
     return this.db.strengthDiarySession.findMany({
@@ -3283,6 +3386,7 @@ export class TrainingRepository {
   }
 
   async findWorkoutsNearInterval(interval: {
+    profileId: number;
     startAt: Date;
     endAt: Date;
     padMs: number;
@@ -3296,10 +3400,12 @@ export class TrainingRepository {
     externalId: string | null;
     matchedDiarySession: { id: number } | null;
   }>> {
+    const profileId = requireProfileId(interval.profileId);
     const padStart = new Date(interval.startAt.getTime() - interval.padMs);
     const padEnd = new Date(interval.endAt.getTime() + interval.padMs);
     return this.db.workout.findMany({
       where: {
+        profileId,
         hiddenFromHistory: false,
         startAt: { lt: padEnd },
         endAt: { gt: padStart },
@@ -3343,9 +3449,10 @@ export class TrainingRepository {
     }));
   }
 
-  async findWorkoutById(workoutId: number) {
-    return this.db.workout.findUnique({
-        where: { id: workoutId, hiddenFromHistory: false },
+  async findWorkoutById(workoutId: number, profileId: number) {
+    profileId = requireProfileId(profileId);
+    return this.db.workout.findFirst({
+        where: { id: workoutId, profileId, hiddenFromHistory: false },
       select: {
         id: true,
         type: true,
@@ -3373,14 +3480,17 @@ export class TrainingRepository {
    * other activity types are never diary candidates.
    */
   async listHistoricalStrengthWorkouts(options: {
+    profileId: number;
     limit?: number;
     offset?: number;
     cursor?: number;
     onlyMissingDiary?: boolean;
-  } = {}): Promise<HistoricalStrengthWorkoutDto[]> {
+  }): Promise<HistoricalStrengthWorkoutDto[]> {
+    const profileId = requireProfileId(options.profileId);
     const limit = options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit;
     const rows = await this.db.workout.findMany({
       where: {
+        profileId,
         hiddenFromHistory: false,
         type: { equals: TRADITIONAL_STRENGTH_TRAINING_TYPE, mode: "insensitive" },
         ...(options.onlyMissingDiary ? { matchedDiarySession: null } : {}),
@@ -3438,10 +3548,13 @@ export class TrainingRepository {
   }
 
   countHistoricalStrengthWorkouts(options: {
+    profileId: number;
     onlyMissingDiary?: boolean;
-  } = {}): Promise<number> {
+  }): Promise<number> {
+    const profileId = requireProfileId(options.profileId);
     return this.db.workout.count({
       where: {
+        profileId,
         hiddenFromHistory: false,
         type: { equals: TRADITIONAL_STRENGTH_TRAINING_TYPE, mode: "insensitive" },
         ...(options.onlyMissingDiary ? { matchedDiarySession: null } : {}),
@@ -3457,9 +3570,9 @@ export class TrainingRepository {
   async loadProgramVersion(input: {
     programId: number;
     programVersionId?: number | null;
-    profileId?: number;
+    profileId: number;
   }) {
-    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const profileId = requireProfileId(input.profileId);
     const program = await this.db.trainingProgram.findFirst({
       where: { id: input.programId, profileId },
       select: { id: true, name: true, archivedAt: true, currentVersionId: true },
@@ -3470,7 +3583,7 @@ export class TrainingRepository {
     if (versionId == null) return { ...program, version: null };
 
     const version = await this.db.trainingProgramVersion.findFirst({
-      where: { id: versionId, programId: program.id },
+      where: { id: versionId, programId: program.id, profileId },
       select: {
         id: true,
         versionNumber: true,
@@ -3493,8 +3606,9 @@ export class TrainingRepository {
   /** Null when the program does not exist for this profile. */
   async listProgramVersions(
     programId: number,
-    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    profileId: number,
   ): Promise<ProgramVersionSummaryDto[] | null> {
+    profileId = requireProfileId(profileId);
     const program = await this.db.trainingProgram.findFirst({
       where: { id: programId, profileId },
       select: { id: true },
@@ -3502,7 +3616,7 @@ export class TrainingRepository {
     if (!program) return null;
 
     const rows = await this.db.trainingProgramVersion.findMany({
-      where: { programId },
+      where: { programId, profileId },
       select: {
         id: true,
         programId: true,
@@ -3521,7 +3635,8 @@ export class TrainingRepository {
     }));
   }
 
-  async loadProgramForStart(programId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async loadProgramForStart(programId: number, profileId: number) {
+    profileId = requireProfileId(profileId);
     return this.db.trainingProgram.findFirst({
       where: { id: programId, profileId },
       select: {

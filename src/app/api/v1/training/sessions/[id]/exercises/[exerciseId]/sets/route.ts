@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
   CreateSetSchema,
@@ -13,6 +14,10 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string; exerciseId: string }> },
 ): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const routeParams = SessionExerciseParamsSchema.safeParse(await params);
   if (!routeParams.success) return validationResponse(routeParams.error);
 
@@ -35,7 +40,7 @@ export async function POST(
       routeParams.data.id,
       routeParams.data.exerciseId,
       parsed.data,
-      undefined,
+      principal.profileId,
       operationId.data,
     );
     return Response.json({ operationId: operationId.data, state: "COMMITTED", set }, { status: 201 });

@@ -10,6 +10,9 @@ vi.mock("next/link", () => ({
     <a href={String(href)} {...props}>{children}</a>
   ),
 }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+}));
 vi.mock("@/i18n/i18n-provider", () => ({
   useI18n: () => ({ locale: localeState.current, setLocale: vi.fn() }),
 }));

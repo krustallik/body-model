@@ -1,3 +1,4 @@
+import { getSessionPrincipal, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
   DeleteSessionExerciseSchema,
@@ -12,6 +13,10 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string; exerciseId: string }> };
 
 export async function PATCH(request: Request, context: Ctx): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const params = SessionExerciseParamsSchema.safeParse(await context.params);
   if (!params.success) return validationResponse(params.error);
 
@@ -26,6 +31,7 @@ export async function PATCH(request: Request, context: Ctx): Promise<Response> {
       params.data.id,
       params.data.exerciseId,
       parsed.data,
+      principal.profileId,
     );
     return Response.json({ session });
   } catch (error) {
@@ -34,6 +40,10 @@ export async function PATCH(request: Request, context: Ctx): Promise<Response> {
 }
 
 export async function DELETE(request: Request, context: Ctx): Promise<Response> {
+  const principal = await getSessionPrincipal(request);
+  if (!principal) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!isTrustedOrigin(request)) return originRejected();
+
   const params = SessionExerciseParamsSchema.safeParse(await context.params);
   if (!params.success) return validationResponse(params.error);
 
@@ -58,6 +68,7 @@ export async function DELETE(request: Request, context: Ctx): Promise<Response> 
       params.data.id,
       params.data.exerciseId,
       parsed.data,
+      principal.profileId,
     );
     return Response.json({ session });
   } catch (error) {

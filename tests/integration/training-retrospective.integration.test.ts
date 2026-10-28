@@ -14,7 +14,7 @@ import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-p
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
-const health = new PrismaHealthSyncRepository(prisma);
+const health = new PrismaHealthSyncRepository(1, prisma);
 const training = new TrainingService(prisma);
 
 const date = "2042-06-01";
@@ -96,7 +96,7 @@ async function createProgram(
   }>,
 ) {
   const program = await prisma.trainingProgram.create({
-    data: {
+    data: { profileId: 1,
       name,
       versions: {
         create: {
@@ -199,7 +199,7 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     const created = await training.createSessionFromWorkout({
       workoutId: workoutBefore.id,
       programId: programA.id,
-    });
+    }, 1);
 
     expect(created.entryMode).toBe(ENTRY_MODE.RETROSPECTIVE);
     expect(created.status).toBe(SESSION_STATUS.COMPLETED);
@@ -224,16 +224,16 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     await training.createSet(created.id, externalExercise!.id, {
       reps: 10,
       weightKg: 30,
-    });
+    }, 1);
     await training.createSet(created.id, bandExercise!.id, {
       reps: 12,
       bandNominalResistanceKg: 108,
-    });
+    }, 1);
     await training.createSet(created.id, bodyExercise!.id, {
       reps: 20,
-    });
+    }, 1);
 
-    const reread = await training.getSession(created.id);
+    const reread = await training.getSession(created.id, 1);
     expect(reread).not.toBeNull();
     expect(reread!.revision).toBeGreaterThanOrEqual(4);
     const externalSets = reread!.exercises.find((e) => e.id === externalExercise!.id)!.sets;
@@ -271,7 +271,7 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     const changed = await training.changeSessionProgram(created.id, {
       programId: programB.id,
       programVersionId: programB.versionId,
-    });
+    }, 1);
 
     expect(changed.programId).toBe(programB.id);
     expect(changed.revision).toBeGreaterThan(revisionBeforeChange);
@@ -335,7 +335,7 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     const activeChanged = await training.changeSessionProgram(active.id, {
       programId: programB.id,
       programVersionId: programB.versionId,
-    });
+    }, 1);
     expect(activeChanged.status).toBe(SESSION_STATUS.ACTIVE);
     const activeProgramChange = await prisma.trainingSourceChange.findFirstOrThrow({
       where: {
@@ -456,12 +456,12 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     const first = await training.createSessionFromWorkout({
       workoutId: w1!.id,
       programId: program.id,
-    });
+    }, 1);
 
     const bulk = await training.bulkCreateSessionsFromWorkouts({
       workoutIds: [w1!.id, w2!.id, w3!.id],
       programId: program.id,
-    });
+    }, 1);
 
     /**
      * Bulk semantics (documented by this integration contract):
@@ -485,7 +485,7 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     const repeat = await training.bulkCreateSessionsFromWorkouts({
       workoutIds: [w1!.id, w2!.id, w3!.id],
       programId: program.id,
-    });
+    }, 1);
     expect(repeat.createdSessionIds).toEqual([]);
     expect(repeat.existingSessionIds.sort()).toEqual(
       [...bulk.sessions.map((session) => session.id)].sort(),
@@ -500,7 +500,7 @@ describe("Retrospective Training Diary with PostgreSQL", () => {
     const linkedTwice = await training.bulkCreateSessionsFromWorkouts({
       workoutIds: [w2!.id, w2!.id],
       programId: program.id,
-    });
+    }, 1);
     expect(linkedTwice.sessions).toHaveLength(1);
     expect(linkedTwice.createdSessionIds).toEqual([]);
     expect(

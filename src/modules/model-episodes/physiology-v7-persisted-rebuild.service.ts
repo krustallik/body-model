@@ -1,3 +1,4 @@
+import { requireProfileId } from "@/modules/profile/profile-scope";
 import { prisma } from "@/lib/db/prisma";
 import { addCalendarDays } from "./model-calendar";
 import {
@@ -21,7 +22,7 @@ export class PhysiologyV7PersistedRebuildService {
   ) {}
 
   async rebuild(input: {
-    profileId?: number;
+    profileId: number;
     fromDate: string;
     toDate: string;
     timeZone: string;
@@ -30,7 +31,7 @@ export class PhysiologyV7PersistedRebuildService {
     beforePromotion?: () => Promise<void>;
     onProgress?: () => Promise<void> | void;
   }) {
-    const profileId = input.profileId ?? 1;
+    const profileId = requireProfileId(input.profileId);
     const prepared = await prisma.$transaction(async (tx) => {
       const repository = new PhysiologyV7PersistenceRepository(tx);
       await repository.lockProfile(profileId);

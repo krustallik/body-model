@@ -16,7 +16,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
 } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { getExpectedSchemaObjectNames, renderProductionDbPreflightSql } from "../scripts/production-db-preflight.mjs";
 import {
@@ -402,6 +402,9 @@ describe("production migration preflight evaluator", () => {
       ...TRAINING_MUTATION_LEDGER_MANIFEST.requiredObjectsBefore,
       ...TRAINING_MUTATION_LEDGER_MANIFEST.postflightObjects,
       ...TRAINING_MUTATION_LEDGER_MANIFEST.partialObjects,
+      ...AUTH_MULTIUSER_MANIFEST.requiredObjectsBefore,
+      ...AUTH_MULTIUSER_MANIFEST.postflightObjects,
+      ...AUTH_MULTIUSER_MANIFEST.partialObjects,
     ])].sort());
   });
 
@@ -592,7 +595,7 @@ describe("workflow mutation boundary", () => {
     expect(safetyWorkflow).toContain("name: Exact legacy 65-schema V4 recovery tool image");
     expect(safetyWorkflow).toContain('LEGACY_SHA="$(node --input-type=module -e \'import { LEGACY_V4_RECOVERY } from "./scripts/production-v4-derived-recovery.mjs"; process.stdout.write(LEGACY_V4_RECOVERY.sourceSha)\')"');
     expect(safetyWorkflow).not.toContain("LEGACY_SHA: 35c556772759ea03c2728de921c1825f454d59c2");
-    expect(safetyWorkflow).toContain("BASELINE_SHA: 35c556772759ea03c2728de921c1825f454d59c2");
+    expect(safetyWorkflow).toContain("BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
     expect(safetyWorkflow.match(/image:\s+docker\.io\/library\/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(6);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres@sha256:/);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);

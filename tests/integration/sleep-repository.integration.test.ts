@@ -36,7 +36,7 @@ describe("SleepRepository PostgreSQL date attribution", () => {
     const { PrismaClient: Client } = await import("@prisma/client");
     prisma = new Client({ datasourceUrl: process.env.DATABASE_URL });
     await prisma.$connect();
-    repository = new SleepRepository(prisma);
+    repository = new SleepRepository(profileId, prisma);
     await cleanFixtures();
   }, 60_000);
 
@@ -93,7 +93,7 @@ describe("SleepRepository PostgreSQL date attribution", () => {
 
   it("uses the latest persisted sync timezone for an offsetless overnight segment", async () => {
     await prisma!.healthSyncSnapshot.create({
-      data: {
+      data: { profileId: profileId,
         date: fallbackSnapshotDate,
         receivedAt: new Date("2188-02-28T20:00:00.000Z"),
         timezone: "Asia/Tokyo",

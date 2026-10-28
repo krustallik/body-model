@@ -17,8 +17,8 @@ async function main() {
       },
     });
     const day = await prisma.dailyHealthData.upsert({
-      where: { date: "2099-01-01" },
-      create: {
+      where: { profileId_date: { profileId: 1, date: "2099-01-01" } },
+      create: { profileId: 1,
         date: "2099-01-01",
         weightKg: 80,
         caloriesKcal: 2000,
@@ -34,7 +34,7 @@ async function main() {
       where: { sourceIdentity: "ext:upgrade-baseline" },
     });
     const workout = existing ?? await prisma.workout.create({
-      data: {
+      data: { profileId: 1,
         dailyHealthDataId: day.id,
         sourceIdentity: "ext:upgrade-baseline",
         type: "Stair Climbing",
@@ -49,7 +49,7 @@ async function main() {
     return;
   }
 
-  const day = await prisma.dailyHealthData.findUnique({ where: { date: "2099-01-01" } });
+  const day = await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: "2099-01-01" } } });
   const workout = await prisma.workout.findFirst({ where: { sourceIdentity: "ext:upgrade-baseline" } });
   const indexes = await prisma.$queryRawUnsafe<Array<{ indexname: string }>>(
     "select indexname from pg_indexes where schemaname = 'public' and (indexname ilike '%reconcil%' or indexname ilike '%supersed%' or indexname ilike '%sourceidentity%') order by 1",

@@ -113,7 +113,7 @@ function goalNutritionInput(
     targetWeightKg: parsedTargetWeight,
     targetDate: values.goalDate || null,
     latestModeledDate,
-    ageYears: profile && latestModeledDate ? ageOnDate(profile.dateOfBirth, latestModeledDate) : null,
+    ageYears: profile?.dateOfBirth && latestModeledDate ? ageOnDate(profile.dateOfBirth, latestModeledDate) : null,
     bodyCompositionAvailable: Number.isFinite(status.currentFatMassKg) || Number.isFinite(status.currentLeanTissueKg),
     sex: profile?.sex ?? null,
     heightCm: profile?.heightCm ?? null,

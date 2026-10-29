@@ -14,11 +14,15 @@ const profile = { id: 1, locale: "en", sex: "male", dateOfBirth: "1990-01-01", h
 describe("ProfileClient stepper equipment", () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
   it("does not expose configurable stepper equipment in the profile", async () => {
-    const fetchMock = vi.fn(async () => Response.json({ profile }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("/api/v1/profile/api-keys")
+        ? Response.json({ keys: [] })
+        : Response.json({ profile }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     render(<ProfileClient />);
     expect(await screen.findByRole("heading", { name: "Your profile." })).toBeTruthy();
     expect(screen.queryByText(/MS100/i)).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

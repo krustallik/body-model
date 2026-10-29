@@ -354,6 +354,151 @@
   font-weight: 700;
 }
 
+.keyBody {
+  padding: 1.5rem;
+}
+
+.keyHint {
+  max-width: 48rem;
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.keyForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.keyForm button,
+.keyReveal button,
+.keyActions button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.7rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background-color var(--ease), border-color var(--ease), transform var(--ease);
+}
+
+.keyForm button {
+  color: var(--primary-ink);
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--primary-strong) 35%, transparent);
+}
+
+.keyForm button:disabled,
+.keyActions button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.keyReveal {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  padding: 0.85rem;
+  background: var(--inset);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.75rem;
+}
+
+.keyReveal code {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.keySuccess,
+.keyError {
+  margin: 0.85rem 0 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.keySuccess {
+  color: var(--success-strong);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+}
+
+.keyError {
+  color: var(--danger-strong);
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+}
+
+.keyList {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.keyItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  padding: 0.85rem;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: 0.75rem;
+}
+
+.keyMeta {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.keyMeta > span {
+  color: var(--primary-strong);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.keyMeta > .keyRevoked {
+  color: var(--danger-strong);
+}
+
+.keyMeta > small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.keyActions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.keyActions .keyRevoke {
+  color: var(--danger-strong);
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+}
+
 .equipmentForm {
   display: flex;
   align-items: end;
@@ -431,6 +576,16 @@
     background: var(--surface-2);
     border-color: var(--border-strong);
   }
+
+  .keyForm button:not(:disabled):hover {
+    background: var(--primary-strong);
+  }
+
+  .keyReveal button:not(:disabled):hover,
+  .keyActions button:not(:disabled):hover {
+    background: var(--elevated);
+    border-color: var(--primary);
+  }
 }
 
 @media (max-width: 620px) {
@@ -507,6 +662,20 @@
   .equipmentForm {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .keyForm,
+  .keyReveal {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .keyItem {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .keyActions > button {
+    flex: 1 1 8rem;
   }
 
   .equipmentForm button {

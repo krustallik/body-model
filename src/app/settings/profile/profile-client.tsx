@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { AppNav } from "@/components/app-nav";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import type { ProfileDto } from "@/modules/profile/profile.types";
+import { ProfileApiKeys } from "./profile-api-keys";
 import styles from "./profile.module.css";
 
 type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "autoAdvanceExercises";
@@ -218,6 +219,7 @@ export function ProfileClient({ onboarding = false }: { onboarding?: boolean }) 
           </form>
         )}
       </section>
+      {!onboarding && <ProfileApiKeys />}
       {!onboarding && <p className={styles.links}><Link href="/settings/security">{uk ? "Безпека акаунта й пароль" : "Account security and password"}</Link></p>}
     </main>
   );

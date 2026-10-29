@@ -1,9 +1,9 @@
 # BodyCast authentication and multi-user transition plan
 
-**Status:** `READY FOR INDEPENDENT PLAN RE-AUDIT`  
-**Scope:** Architecture plan only. No implementation, Prisma migration, production change, deploy, or Git operation is authorized by this document.  
-**Repository basis:** `origin/main` `0f93f37dd6a4208cfc74331a0fb4c063c542c6bd`.  
-**Auth API basis:** Better Auth `v1.7.14` source. The repository currently uses Next.js `16.3.6` and Prisma `6.19`, and does not yet depend on Better Auth.
+**Status:** `IMPLEMENTED ON MAIN; OWNER BOOTSTRAP READY FOR A SEPARATELY AUTHORIZED FUTURE CUTOVER`
+**Scope:** Architecture and implementation contract. This plan does not authorize production DDL, owner bootstrap, public-signup activation, or deployment.
+**Implementation source baseline:** `26ba69fb9c2997559826d0cd7ee8786121c5109d`; this readiness change also adds the missing Profile API-key UI.
+**Auth API basis:** The implementation pins Better Auth `1.7.14`; this checkout uses Next.js `16.3.6` and Prisma `6.19`.
 
 ## 1. Decisions and constraints
 
@@ -19,7 +19,7 @@
 
 ## 2. Pinned Better Auth behavior
 
-Before implementation, pin `better-auth` to `1.7.14` and record the exact compatible Prisma adapter version in the lockfile. Better Auth's Prisma documentation says Prisma 6 can keep its existing Prisma Client setup. Do not implement against an unpinned `latest` API.
+The implementation pins `better-auth` to `1.7.14` and records the compatible Prisma adapter in the lockfile. Better Auth's Prisma documentation says Prisma 6 can keep its existing Prisma Client setup. Do not change this to an unpinned `latest` API.
 
 Relevant `v1.7.14` contracts:
 
@@ -44,7 +44,7 @@ Primary source references:
 
 ### Chosen phase-1 flow: two OTPs, using Better Auth routes
 
-This is the minimal safe stock flow for a password account. One OTP is not selected for phase 1: `signInEmailOTP` creates a session and exposes its token before application-level provisioning has completed, while `signUpEmail` necessarily creates a credential and `setPassword` cannot replace it. A one-OTP variant would need additional session interception/revocation or credential-deletion orchestration. That is more custom security logic than the second standard OTP. The owner must accept the extra OTP in the registration UX before implementation.
+This is the minimal safe stock flow for a password account. One OTP is not selected for phase 1: `signInEmailOTP` creates a session and exposes its token before application-level provisioning has completed, while `signUpEmail` necessarily creates a credential and `setPassword` cannot replace it. A one-OTP variant would need additional session interception/revocation or credential-deletion orchestration. That is more custom security logic than the second standard OTP. The owner has accepted this two-OTP flow and will set the initial password directly; no temporary password is handed to the owner.
 
 Pin these settings in the Better Auth configuration rather than relying on defaults:
 
@@ -55,8 +55,8 @@ Pin these settings in the Better Auth configuration rather than relying on defau
 
 **State transitions:**
 
-1. **Registration start.** `POST /api/register/start` accepts only normalized email and allowlisted display name. It accepts no password, `userId`, `profileId`, `emailVerified`, role, or other Better Auth additional fields.
-2. The server calls the pinned `auth.api.signUpEmail` with a cryptographically random, server-generated throwaway password, `requireEmailVerification: true`, and `autoSignIn: false`. Never log or return the temporary password. This credential is unknowable to the registrant until replaced after verification.
+1. **Registration start.** `POST /api/registration/start` accepts only normalized email and display name. It accepts no password, `userId`, `profileId`, `emailVerified`, role, or other Better Auth additional fields.
+2. The server calls the pinned `auth.api.signUpEmail` with a cryptographically random, server-generated credential, `requireEmailVerification: true`, and `autoSignIn: false`. Never log or return this credential. It is not known to the registrant and cannot be used before verified email and Profile provisioning.
 3. Better Auth's email OTP plugin sends an `email-verification` OTP on signup. Do not also send a verification link. Use identical generic responses for a new email and a duplicate email; do not disclose whether an account exists.
 4. **Email proof.** The user submits the first OTP to Better Auth's standard `/email-otp/verify-email` HTTP endpoint. Set `autoSignInAfterVerification: false`. The endpoint consumes the OTP once, marks the User verified, and awaits the application `afterEmailVerification` Profile provisioner. It creates no session.
 5. Only after Profile provisioning succeeds may the account proceed to password installation. The user requests a second `forget-password` OTP and submits it with their chosen password to the standard reset route. The application reset guard requires `emailVerified = true` and an existing Profile before accepting this flow. A successful reset installs the chosen credential and revokes prior sessions. The user then signs in with email and password.
@@ -118,21 +118,21 @@ Isolated PostgreSQL must prove that failure after OTP consumption creates no ses
 - Never accept a target email or user ID from the request as the account selector. The wrapper binds it to the session User and Profile.
 - Apply `revokeSessionsOnPasswordReset`; after success, require sign-in again. Do not permit a direct password-change route that skips OTP.
 
-### User 1 bootstrap and mandatory password replacement
+### Owner bootstrap and first password
 
-- Bootstrap User 1 only after the owner supplies the exact email and separately authorizes the bootstrap. Prove that email by OTP. In one transaction, create/link Better Auth User 1 to existing Profile 1; do not copy or rewrite historical data.
-- Mark User 1 `passwordChangeRequired = true`. Do not expose a generated temporary password in logs, Git, CI, or the plan. If a temporary password is used, its delivery method must be separately approved; prefer setting the first password through verified email OTP instead.
-- All private routes remain blocked while `passwordChangeRequired` is true; permit only password setup/reset and sign-out.
-- A password-reset callback may fail after the OTP and password have already been consumed/updated. Keep the account restricted. A User who signs in with the newly set password receives only a restricted session and may call a recovery endpoint that verifies that password via Better Auth and clears the flag transactionally. It must never grant private access merely because the callback failed or the flag is missing.
-- Do not accept client writes to `passwordChangeRequired`. Revoke all prior sessions after reset/change.
+- The owner has supplied the exact email out-of-band and authorized the product contract. Configure that exact address through `AUTH_PROFILE_ONE_OWNER_EMAIL`; do not commit the address or credentials. Enable `AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED=true` only with public registration disabled and valid Brevo configuration. While bootstrap is enabled, non-owner registration requests stay generic and create no users.
+- The owner starts registration and proves mailbox control with OTP1. Only after Better Auth consumes OTP1 does the server transaction bind the verified User to the existing Profile 1. It rejects a missing Profile 1, a Profile 1 bound to another User, or an owner User already attached elsewhere. It does not create an owner Profile or touch Profile 1's existing data.
+- The verification callback creates no session. The owner then requests OTP2 and sets their own password through the guarded Better Auth password-reset flow. The callback clears `passwordChangeRequired` only for a verified User that already has a Profile. No temporary password is sent or handed over.
+- Ordinary login is allowed after OTP2 succeeds. If the password update succeeds but its callback fails, keep the account restricted and repeat the OTP-backed reset; never clear the flag because a session exists. Existing sessions are revoked on reset/change.
+- Do not accept client writes to `passwordChangeRequired`. Do not open public registration until owner/Profile 1 binding, password setup/login, raw-data integrity and tenant-isolation postflight have passed.
 
 ## 6. Tenant ownership and isolation contract
 
-### Required data model changes
+### Implemented ownership model and invariants
 
-- Add nullable unique `Profile.userId` relation for the one-to-one owner mapping; Profile 1 remains intact until the approved User 1 bootstrap.
-- Add `profileId` to every tenant-owned table that lacks direct scope. In particular audit the profile-less Health raw rows/snapshots, daily data, metric samples, activity intervals, workouts, strength/session history, reconciliation, canonical energy, and all forecast/goal/model publication state. For child rows, use an explicit ownership path to a scoped parent.
-- Remove `profileId @default(1)` from **every** user-owned Prisma model. Remove `DEFAULT_TRAINING_PROFILE_ID` and equivalent runtime fallback arguments. A missing owner must fail closed.
+- The additive Auth migration adds nullable unique `Profile.userId` for the one-to-one owner mapping; Profile 1 remains intact until the separately authorized owner bootstrap.
+- Tenant-owned tables are explicitly scoped or reached through an ownership-checked parent path. Scope includes Health raw rows/snapshots, daily data, metric samples, activity intervals, workouts, strength/session history, canonical energy, and Forecast/Goal/model-publication state.
+- User-owned Prisma models and runtime repository methods do not default to Profile 1. A missing owner fails closed.
 - `profileId` comes only from a verified session, a verified per-profile sync key, or a durable job carrying a profile ID. No request body, query parameter, nested ID, or global singleton supplies it.
 - Profile 1 is permitted only in clearly isolated legacy bootstrap/recovery tooling, never an ordinary runtime read/write.
 - Inventory and scope every global unique key that represents user data. Examples: `DailyHealthData.date` becomes unique by `(profileId, date)`; `HealthMetricSample(metric,timestamp)` becomes unique by `(profileId, metric, timestamp)`; `HealthActivityInterval.sourceFingerprint` becomes unique by `(profileId, sourceFingerprint)`. Preserve the fingerprint payload itself; tenant scope belongs in the key/ownership contract, not a rewritten provenance value.
@@ -140,7 +140,7 @@ Isolated PostgreSQL must prove that failure after OTP consumption creates no ses
 - `HealthSyncSnapshot` keeps a composite `(profileId, dailyHealthDataId)` FK with `ON DELETE RESTRICT`, matching Prisma. The authorized DailyHealthData delete path transactionally nulls only that optional pointer before deleting the projection; snapshot payload, timestamps, and source evidence remain unchanged. Apply the FK contract only while old delete writers are quiesced under maintenance; do not rely on a database-only partial `SET NULL` action that Prisma cannot represent.
 - Set deletion behavior to restrict for Profiles with health/training data. Disable Better Auth user deletion and do not cascade-delete primary records in phase 1.
 
-### Scope boundaries that must be converted
+### Scope boundaries enforced by the implementation
 
 - **Health:** daily data, samples, snapshots, activity intervals, sync, import keys, source reconciliation, and retention/audit paths.
 - **Training:** Workout, Stepper, Strength session, exercise/set IDs, accounting snapshots/operations, program/catalog, and Garmin reconciliation.
@@ -149,7 +149,7 @@ Isolated PostgreSQL must prove that failure after OTP consumption creates no ses
 - **Workers/jobs:** Health and Training refresh jobs, V7/Unified publishing, retries, lock keys and deduplication all carry Profile ID. A worker never calls a default Profile 1 repository method.
 - **Cache/publication:** disable shared/static caching for private responses or include Profile ID in every cache key/tag. Publication fences, currentness state, generation counters, and candidate lookups are Profile-scoped.
 
-Known Profile 1 paths in current `origin/main` that require explicit conversion include `src/modules/training/training.repository.ts` (many `DEFAULT_TRAINING_PROFILE_ID` fallbacks), `src/modules/training/exercise-mapping-snapshot.ts`, `src/modules/training/stepper-workout.repository.ts`, `src/modules/model-episodes/model-episode.service.ts`, `src/modules/activity/active-energy-materialization.ts`, and `src/app/api/forecast/action/route.ts`. This list is representative; implementation must complete the route/model/worker inventory before activation.
+The former runtime Profile 1 fallbacks in Training, Stepper, V7, Energy, and Forecast were removed or made explicitly scoped. The remaining explicit Profile 1 paths are the feature-gated legacy Shortcut principal in `src/modules/auth/access.ts` and the isolated historical provenance backfill in `src/modules/health/legacy-weight-provenance-backfill.ts`; neither is an ordinary session-scoped tenant fallback. Recheck these two paths before activation and keep the legacy Shortcut feature enabled only for the approved transition window.
 
 ### HealthSyncAudit
 
@@ -187,14 +187,31 @@ Before any production DDL/backfill, require all of:
 
 If any identity, backup, raw-integrity, ownership, writer, or rollback state is ambiguous, leave the app protected and stop. App deployment CI is not migration authorization.
 
-## 8. Minimal implementation stages
+### Protected production configuration checklist
 
-1. Pin Better Auth/Prisma adapter; add auth configuration, OTP email delivery, trusted-origin/CSRF behavior, and the protected registration-start route.
-2. Add Profile/User relation and onboarding-nullable physiology fields with additive-compatible schema. Keep signup disabled.
-3. Convert all tenant-owned repositories, endpoints, SSR/actions, nested IDs, cache keys, publication state, unique constraints, foreign keys, jobs, and workers to required scope.
-4. Add the User 1 bootstrap path, Profile provisioning/recovery, password reset/change wrappers, and restricted forced-password-change recovery.
-5. Complete the targeted isolated PostgreSQL acceptance tests below. Conduct internal review, then independent plan/code audit before any implementation release gate is treated as passed.
-6. Only after separate exact DDL/backfill authorization, rehearse and perform the controlled schema/data transition. Deploy tenant-aware code with signup off, verify owner/Profile 1 and legacy Shortcut, then activate public signup.
+Set values only in the protected runtime secret/config store; never put them in Git, CI output, logs, or this document.
+
+- `BETTER_AUTH_SECRET`: a unique random secret of at least 32 characters.
+- `BETTER_AUTH_URL`: the canonical HTTPS BodyCast origin.
+- `AUTH_TRUSTED_ORIGINS`: explicit comma-separated HTTPS origins that are allowed to make auth requests; no wildcard.
+- `AUTH_TRUSTED_PROXIES`: exact proxy address/CIDR entries for the production ingress; validate against the actual app network.
+- `AUTH_PROFILE_ONE_OWNER_EMAIL`: the owner’s exact normalized email. `AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED=true` requires this and the Brevo values below.
+- `AUTH_PUBLIC_REGISTRATION_ENABLED=false` during owner bootstrap; it must not be true at the same time as `AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED=true`.
+- `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BREVO_SENDER_NAME`: valid provider credential and verified sender. Confirm quota and delivery only after a separately authorized production configuration and email check; CI uses a stub, never production Brevo.
+- `AUTH_EMAIL_DAILY_LIMIT` and `AUTH_EMAIL_RECIPIENT_DAILY_LIMIT` are optional bounded quota overrides; defaults are 250 messages/day and 10 messages/recipient/day.
+- Preserve the existing `IOS_SHORTCUT_API_KEY` secret and set `LEGACY_IOS_SHORTCUT_ENABLED=true` during the legacy-to-personal-key transition. Do not log or regenerate the existing key. The current env schema still requires this variable even after the legacy flag is disabled.
+- Production startup also requires the existing database URL, HTTPS, secure HttpOnly/SameSite cookies, and the actual trusted-proxy setting. Verify all without disclosing values.
+
+### Apple Shortcut key transition
+
+The UI creates, lists, rotates, and revokes per-Profile keys; only a digest is stored and a newly created secret is shown once. After the owner is authenticated to Profile 1, create one personal key in Profile settings, replace only the existing Shortcut’s `x-api-key` value, run one owner-authorized sync, and confirm it resolves to Profile 1 without changing the payload contract. Keep the legacy key enabled until that sync and ownership/integrity checks pass. Then disable `LEGACY_IOS_SHORTCUT_ENABLED` through the separately authorized config change and revoke the personal key only through its Profile-scoped UI. Do not create a production key as part of readiness work.
+
+## 8. Implementation and activation status
+
+- Core Auth, owner bootstrap, Profile 1 binding, tenant scoping, API-key endpoints, migrations, and targeted integration tests are implemented on the recorded source baseline and merged to `main`. This readiness change adds the missing Profile settings UI for personal API-key creation, one-time copy, rotation, and revocation; it reuses the existing scoped endpoints.
+- No production schema/data/owner changes, email OTP, activation, or deployment were performed by this readiness pass.
+- Future production work follows section 7’s protected preflight, separate backup/restore and DDL authorization, maintenance, exact migration, tenant-aware serving with public registration off, OTP1 Profile 1 binding, OTP2 password setup, integrity/currentness acceptance, and only then public signup activation.
+- Rollback remains limited to a schema-compatible, tenant-safe code/schema pair. After owner/multi-user activation, never return to code that serves user data without tenant scoping. Retire the legacy Shortcut key only after its personal Profile 1 key is verified.
 
 No new queue, generalized tenancy framework, custom OTP store, custom cryptographic primitive, social-auth provider, broad release runner, or duplicate test framework is planned.
 
@@ -207,7 +224,7 @@ Run only against an isolated PostgreSQL database using the pinned dependency ver
 3. **OTP contract:** hashed storage, expiry, max attempts, resend rotation, IP/email rate limits, generic duplicate/unknown responses, atomic single-use, replay, and concurrent verification.
 4. **Provisioning recovery:** consume OTP1, force Profile insert failure, prove no session/token/cookie is returned, resend and verify a fresh OTP, then prove exactly one empty Profile and no reliance on request-supplied identity.
 5. **Password installation/reset:** OTP2 cannot run for unverified/no-Profile Users; it succeeds after Profile provisioning; reset revokes sessions; OTP2 cannot substitute for OTP1 or verify an email by itself.
-6. **Password callback recovery:** inject failure after password update/OTP consumption; user remains data-restricted; a new OTP or restricted authenticated recovery completes safely; concurrent resets are single-winner.
+6. **Password callback recovery:** inject failure after password update/OTP consumption; user remains data-restricted; a new OTP-backed reset completes safely; concurrent resets are single-winner. Never clear the restriction solely because a session exists.
 7. **Tenant isolation:** missing owner, foreign Profile, cross-profile nested Workout/Strength/Stepper ID, conflicting global keys, concurrent workers for different profiles, and request-supplied owner all fail closed.
 8. **Legacy preservation:** Profile 1 ID and physiology/raw/provenance payloads remain unchanged; scoped unique keys allow equivalent values in different Profiles; cascades cannot delete primary history.
 9. **HealthSyncAudit:** unauthenticated row has no trusted tenant, tenant APIs cannot read audit rows, authorized key maps to exactly one Profile, and 30-day pruning affects only eligible audit rows.
@@ -218,15 +235,13 @@ Do not expand into a broad test framework; add these to the existing targeted in
 
 ## 10. Owner decisions and authorization still required
 
-Already decided: open public registration and mandatory email OTP. Invite-only is rejected. HealthSyncAudit retains its approved 30-day policy.
+Already decided: public registration is the product direction, email OTP is mandatory, the owner uses the existing Profile 1, the owner sets their own first password through the two-OTP flow, temporary-password delivery is not used, and HealthSyncAudit retains its approved 30-day policy. Invite-only is rejected. Public registration remains operationally disabled until after owner bootstrap acceptance.
 
-Before implementation/activation, owner must still decide or authorize:
+Still required before production activation:
 
-1. The exact verified owner email and one-time authorization to bind User 1 to Profile 1. Do not put the email or credentials in this plan.
-2. Whether the registration UX accepts the recommended two-OTP sequence. If one OTP is required, first prove the complete pinned-version flow—including no token/cookie/session exposure before Profile provisioning and safe credential installation—on isolated PostgreSQL. Do not replace the phase-1 flow with an untested custom session wrapper.
-3. The approved secure delivery channel for a User 1 temporary password, or approve the simpler alternative of setting its first password through verified OTP without a temporary password.
-4. User/Profile deletion and health-data retention semantics. Until explicitly decided and implemented safely, deletion remains disabled and Profile deletion is restricted.
-5. Exact production DDL authorization and separate ownership-backfill authorization after the gates in section 7. This plan authorizes neither.
+1. Configure and verify the owner address, Better Auth secret/URL/origins/proxy, and Brevo API/sender values in the protected production environment. Do not place secrets or the owner email in Git, logs, or this plan.
+2. Separate exact authorization for production backup/isolated restore, DDL, Profile 1 ownership bootstrap, maintenance, and the exact-SHA deployment. This plan authorizes none of those operations.
+3. Decide and implement safe User/Profile deletion and health-data retention semantics before enabling deletion. Until then, deletion remains disabled and Profile deletion is restricted.
 
 ## 11. Audit finding disposition
 

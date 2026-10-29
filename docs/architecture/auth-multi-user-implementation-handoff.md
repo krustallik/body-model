@@ -1,8 +1,23 @@
 # BodyCast Auth / Multi-User Finalization Handoff
 
-Updated: 2026-10-28
+Updated: 2026-10-29
 
-## Final status
+## Current readiness snapshot — 2026-10-29
+
+This section supersedes the historical status and limitations recorded below; older entries remain as the audit trail for their then-current revisions.
+
+- Current code baseline before this final readiness update: `origin/main` and `HEAD` are both `26ba69fb9c2997559826d0cd7ee8786121c5109d`, tree `4b2406049fa12feeb6a0711c60ce4a3c3a953d12`. The worktree was clean before this task's source and documentation changes.
+- Owner contract is final: the owner uses the existing Profile 1; the exact verified email is supplied through protected `AUTH_PROFILE_ONE_OWNER_EMAIL` configuration; the owner proves the address with OTP1, then sets their own first password using OTP2/Brevo. No temporary password is delivered. Keep public registration disabled until Profile 1 binding, password setup/login, data-integrity, and tenant-isolation postflight pass.
+- The implementation baseline on main contains the Better Auth `1.7.14` routes, OTP/session guards, Profile 1 bootstrap, profile-scoped sync-key API, tenant scoping, and additive Auth migrations. This readiness change adds the missing Profile settings UI for creating, one-time copying, rotating, and revoking those scoped keys. The architecture contract is in [`auth-multi-user-plan.md`](auth-multi-user-plan.md).
+- Exact-SHA BodyCast CI [40764484173](https://github.com/krustallik/body-model/actions/runs/40764484173) passed on `26ba69fb9c2997559826d0cd7ee8786121c5109d`; all 13 jobs passed, including Auth PostgreSQL integration, build, unit coverage, and Docker image checks.
+- Exact-SHA production migration safety CI [40764484154](https://github.com/krustallik/body-model/actions/runs/40764484154) passed on the same SHA; all eight safety jobs passed, including the legacy V4 rehearsal, Auth migration manifest, disposable PostgreSQL backup/restore, recovery, and cutback checks. These are isolated CI rehearsals, not production backup or integrity evidence.
+- Local isolated PostgreSQL 17.11 rehearsal: extracted the pinned 74-migration baseline, seeded only a synthetic Profile 1, applied all 77 current migrations, and ran `tests/integration/auth-multiuser.integration.test.ts`: **5/5 passed**. A separate synthetic browser fixture was created only in that disposable local DB.
+- Local Chrome browser QA against the isolated DB passed: registration UI was driven through OTP1, OTP2, and password steps using local API response stubs (the backend flow is covered separately by PostgreSQL integration), and no password field appeared before OTP1; synthetic Profile 1 login reaches Dashboard with onboarding/password gates clear; Dashboard, History, Training, Forecast, Goal, Diagnostics, Profile settings, Security settings, and Body Map returned HTTP 200; a synthetic Profile 2 enters its own onboarding state; no browser page errors or API 5xx were observed. The Profile key UI created/copied/rotated/revoked a test key; the actual Health sync endpoint authenticated the current key through payload validation, returned 401 for old/revoked keys, and Profile 2 could neither list nor rotate Profile 1 keys. Signup/login and Dashboard/Training were checked at 360, 390, 768, and 1280 px with no horizontal overflow; Profile key settings were visually inspected at 360 px; login keyboard focus styling was visible. This does not test actual Brevo email delivery or real production data.
+- Playwright's bundled Chromium was absent; the installed Chrome executable was used. Brevo delivery, production runtime configuration, production data fingerprints, and production schema state remain unverified because this task explicitly prohibits production operations.
+- The prior independent PASS recorded below was on an earlier source tree and is not represented as an audit of the current `26ba69f` base or the Profile UI change. Independent review of the final documentation/source diff is required before it is pushed.
+- Production remains **NOT DEPLOYED / NOT CHANGED**. No production DB/VPS/network operation, migration, owner account, OTP delivery, public-signup activation, or deployment was performed.
+
+## Historical finalization status — 2026-10-28
 
 - The Auth/multi-user implementation and release-tooling source revision audited is `e5769a1334edac8eb1dfb2e418bd86d7eeaee27a`, tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8`. At that source audit, detached `HEAD` and fetched `origin/main` matched. The handoff was refreshed in a separate documentation-only commit and pushed; no source, schema, migration, or test files changed in that refresh.
 - Independent audit: **PASS** on source tree `8a1a15dc783fbb8c34029a3a64401d2d5cc05fe8` from `/root/independent_auth_final_audit`; patch SHA-256 `588ee7d9cb583e8cccff2d0f4390d47628b8bb25fdc23f854cfbabed65970c75`. The auditor verified the tree with staged `git write-tree`; no temporary Git index was used. No P0/P1/P2 findings on that source tree. The audit did not run tests or production operations.

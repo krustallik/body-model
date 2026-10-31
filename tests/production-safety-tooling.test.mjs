@@ -261,6 +261,7 @@ function preflightFixture(migrationDirectories) {
   return {
     identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311", role: "bodycast", serverVersion: "17.0", serverAddress: "172.20.0.2", serverPort: 5432 },
     logicalDataFingerprint: "d".repeat(64),
+    profileOneExists: true,
     migrations: appliedMigrations.map((name) => ({
       name,
       checksum: stage02Checksums.get(name) ?? "a".repeat(64),

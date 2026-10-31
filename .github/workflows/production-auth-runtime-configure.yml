@@ -1,0 +1,263 @@
+name: Prepare BodyCast Auth runtime configuration
+run-name: Prepare Auth runtime config ${{ inputs.commit_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full SHA of current canonical main with successful App and Safety CI
+        required: true
+        type: string
+      confirm_auth_runtime_configuration:
+        description: Type prepare-bodycast-auth-runtime to authorize an atomic .env update without restarting the app
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bodycast-production-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize owner-requested exact-main Auth configuration
+    if: github.repository == 'krustallik/body-model' && github.ref == 'refs/heads/main' && github.actor_id == '126446430'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.gate.outputs.release_sha }}
+    steps:
+      - name: Checkout current main gate helpers
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify owner, exact current main, and exact-SHA App and Safety CI
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ inputs.commit_sha }}
+          CONFIRMATION: ${{ inputs.confirm_auth_runtime_configuration }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "::error::Dispatch this workflow from canonical main only."; exit 1;
+          }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may authorize runtime configuration."; exit 1; }
+          [[ "$CONFIRMATION" == "prepare-bodycast-auth-runtime" ]] || { echo "::error::Auth runtime configuration confirmation did not match."; exit 1; }
+          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit_sha must be a full lowercase SHA."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-auth-config-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-auth-config-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-auth-runtime-configure.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main",
+            sha: process.env.GITHUB_SHA,
+            requireInProgress: true,
+          });
+          NODE
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_TIP" == "$(git rev-parse refs/remotes/origin/main)" && "$MAIN_TIP" == "$GITHUB_SHA" && "$MAIN_TIP" == "$DISPATCH_SHA" ]] || {
+            echo "::error::Requested SHA is not the exact current canonical main tip."; exit 1;
+          }
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" > "$RUNNER_TEMP/bodycast-app-ci-runs.ndjson"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?branch=main&event=push&per_page=100" > "$RUNNER_TEMP/bodycast-safety-ci-runs.ndjson"
+          node --input-type=module - "$RUNNER_TEMP/bodycast-app-ci-runs.ndjson" "$RUNNER_TEMP/bodycast-safety-ci-runs.ndjson" "$MAIN_TIP" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const read = (path) => readFileSync(path, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+          const tip = process.argv[4];
+          for (const [label, path] of [["App CI", process.argv[2]], ["Safety CI", process.argv[3]]]) {
+            const runs = read(path).filter((run) => run.head_sha === tip && run.head_branch === "main" && run.event === "push");
+            runs.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
+            if (!runs[0] || runs[0].status !== "completed" || runs[0].conclusion !== "success") {
+              throw new Error(`Exact current-main ${label} is not successful.`);
+            }
+          }
+          NODE
+          echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Auth runtime configuration authorization"
+            echo ""
+            echo "- exact current-main SHA: `$MAIN_TIP`"
+            echo "- exact-SHA App CI and Safety CI: successful"
+            echo "- production scope: atomically prepare BodyCast .env only; no app restart, DB operation, or traffic change"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  configure:
+    name: Prepare protected runtime config without restarting BodyCast
+    needs: authorize
+    if: needs.authorize.outputs.release_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout exact authorized main SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Validate protected owner and SSH inputs, then pin VPS host
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED: ${{ secrets.AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"
+          : "$DEPLOY_PATH"; : "$APP_HOST"; : "$AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED"; : "$BREVO_API_KEY"
+          [[ "$SSH_HOST" == "169.58.239.149" && "$APP_HOST" == "bodycast.ihorhub.eu" ]] || {
+            echo "::error::Protected production host or app hostname differs from the authorized BodyCast target."; exit 1;
+          }
+          [[ "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid production SSH user metadata."; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid production SSH port metadata."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned production SSH fingerprint metadata."; exit 1; }
+          [[ "$DEPLOY_PATH" == "/srv/bodycast" ]] || { echo "::error::DEPLOY_PATH does not match the pinned BodyCast checkout."; exit 1; }
+          owner_email="$(printf '%s' "$AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+          if ! OWNER_EMAIL="$owner_email" node --input-type=module <<'NODE'
+          const email = process.env.OWNER_EMAIL ?? "";
+          const pattern = /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+          if (!pattern.test(email)) process.exit(1);
+          NODE
+          then echo "::error::Protected Profile 1 owner email binding is missing or invalid."; exit 1; fi
+          [[ "$BREVO_API_KEY" != *$'\n'* && "$BREVO_API_KEY" != *$'\r'* ]] || { echo "::error::Brevo key is malformed."; exit 1; }
+          umask 077
+          install -d -m 700 "$RUNNER_TEMP/bodycast-auth-config-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-auth-config-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-auth-config-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-auth-config-ssh/candidate" 2>/dev/null
+          test -s "$RUNNER_TEMP/bodycast-auth-config-ssh/candidate"
+          SSH_HOST_FINGERPRINT="$SSH_HOST_FINGERPRINT" node scripts/filter-ssh-known-hosts.mjs \
+            "$RUNNER_TEMP/bodycast-auth-config-ssh/candidate" \
+            "$RUNNER_TEMP/bodycast-auth-config-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-auth-config-ssh/known_hosts"
+          printf 'BODYCAST_SSH_KEY=%s\n' "$RUNNER_TEMP/bodycast-auth-config-ssh/id" >> "$GITHUB_ENV"
+          printf 'BODYCAST_KNOWN_HOSTS=%s\n' "$RUNNER_TEMP/bodycast-auth-config-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Atomically prepare Auth runtime config and verify candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED: ${{ secrets.AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" && "$GITHUB_SHA" == "$RELEASE_SHA" ]] || {
+            echo "::error::Canonical main changed immediately before protected SSH configuration."; exit 1;
+          }
+          RELEASE_LOCK_SHA256="$(sha256sum scripts/production-release-lock.sh | awk '{print $1}')"
+          RELEASE_MARKER_SHA256="$(sha256sum scripts/production-release-marker.sh | awk '{print $1}')"
+          PROD_COMPOSE_SHA256="$(sha256sum docker-compose.prod.yml | awk '{print $1}')"
+          [[ "$RELEASE_LOCK_SHA256" =~ ^[0-9a-f]{64}$ && "$RELEASE_MARKER_SHA256" =~ ^[0-9a-f]{64}$ && "$PROD_COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::Could not fingerprint the exact-main release helpers."; exit 1;
+          }
+          b64() { printf '%s' "$1" | base64 -w0; }
+          owner_email="$(printf '%s' "$AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+          REMOTE_OUTPUT="$RUNNER_TEMP/bodycast-auth-config-output"
+          REMOTE_ERROR="$RUNNER_TEMP/bodycast-auth-config-error"
+          umask 077
+          : > "$REMOTE_OUTPUT"
+          : > "$REMOTE_ERROR"
+          chmod 600 "$REMOTE_OUTPUT"
+          chmod 600 "$REMOTE_ERROR"
+          trap 'rm -f -- "$REMOTE_OUTPUT" "$REMOTE_ERROR"' EXIT
+          if {
+            printf 'set +x\nset -Eeuo pipefail\n'
+            printf 'BODYCAST_DEPLOY_PATH_B64=%s\n' "$(b64 "$DEPLOY_PATH")"
+            printf 'BODYCAST_APP_HOST_B64=%s\n' "$(b64 "$APP_HOST")"
+            printf 'BODYCAST_OWNER_EMAIL_B64=%s\n' "$(b64 "$owner_email")"
+            printf 'BODYCAST_BREVO_API_KEY_B64=%s\n' "$(b64 "$BREVO_API_KEY")"
+            printf 'BODYCAST_RELEASE_SHA=%s\n' "$RELEASE_SHA"
+            printf 'BODYCAST_WORKFLOW_RUN_ID=%s\n' "$WORKFLOW_RUN_ID"
+            printf 'BODYCAST_WORKFLOW_RUN_ATTEMPT=%s\n' "$WORKFLOW_RUN_ATTEMPT"
+            printf 'BODYCAST_RELEASE_LOCK_SHA256=%s\n' "$RELEASE_LOCK_SHA256"
+            printf 'BODYCAST_RELEASE_MARKER_SHA256=%s\n' "$RELEASE_MARKER_SHA256"
+            printf 'BODYCAST_PROD_COMPOSE_SHA256=%s\n' "$PROD_COMPOSE_SHA256"
+            cat scripts/production-auth-runtime-configure.sh
+          } | timeout 5m ssh -T -p "$SSH_PORT" \
+            -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" \
+            -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" 'bash -s' > "$REMOTE_OUTPUT" 2> "$REMOTE_ERROR"; then
+            SSH_STATUS=0
+          else
+            SSH_STATUS=$?
+          fi
+          node --input-type=module - "$REMOTE_OUTPUT" "$SSH_STATUS" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const allowed = new Set([
+            "auth_config_node_env_production", "auth_config_secret_valid", "auth_config_url_matches",
+            "auth_config_origins_valid", "auth_config_proxy_matches_caddy", "auth_config_owner_email_valid",
+            "auth_config_bootstrap_enabled", "auth_config_public_registration_disabled", "auth_config_brevo_configured",
+            "auth_config_legacy_shortcut_enabled", "auth_config_database_url_unchanged", "auth_config_shortcut_key_unchanged",
+            "auth_config_brevo_api", "auth_config_brevo_api_status", "auth_config_brevo_sender_active", "auth_config_brevo_domain_authenticated",
+            "auth_config_brevo_transactional_relay_enabled", "auth_config_brevo_transactional_stats_available",
+            "auth_config_brevo_send_limit_status", "auth_config_candidate_ready", "auth_config_prepared",
+            "current_live_container_unchanged", "candidate_runtime_verified",
+          ]);
+          const remoteStatus = Number(process.argv[3]);
+          const raw = readFileSync(process.argv[2], "utf8").trim();
+          if (!raw) {
+            console.error(remoteStatus === 0 ? "Remote configuration returned no verification evidence." : "Remote configuration failed before verification evidence was produced.");
+            process.exit(1);
+          }
+          const entries = raw.split(/\r?\n/).map((line) => {
+            const split = line.indexOf("="); return [line.slice(0, split), line.slice(split + 1)];
+          });
+          if (!entries.length || entries.some(([key, value]) => !allowed.has(key)
+            || (key === "auth_config_brevo_api_status" && !/^(?:account=\d{3},senders=\d{3},domains=\d{3},smtp_report=\d{3}|network_or_response_error)$/.test(value))
+            || (key === "auth_config_brevo_send_limit_status" && !["positive", "zero", "not_reported"].includes(value))
+            || (!key.endsWith("_status") && key !== "auth_config_brevo_send_limit_status" && !["yes", "no", "not_verified"].includes(value)))) {
+            console.error("Remote Auth configuration report was malformed.");
+            process.exit(1);
+          }
+          if (new Set(entries.map(([key]) => key)).size !== entries.length) {
+            console.error("Remote Auth configuration report contained duplicate evidence fields.");
+            process.exit(1);
+          }
+          const values = new Map(entries);
+          for (const [key, value] of entries) console.log(`${key}=${value}`);
+          if (remoteStatus !== 0) {
+            console.error(`Protected remote configuration failed with SSH status ${remoteStatus}.`);
+            process.exit(1);
+          }
+          const required = ["auth_config_node_env_production", "auth_config_secret_valid", "auth_config_url_matches",
+            "auth_config_origins_valid", "auth_config_proxy_matches_caddy", "auth_config_owner_email_valid",
+            "auth_config_bootstrap_enabled", "auth_config_public_registration_disabled", "auth_config_brevo_configured",
+            "auth_config_legacy_shortcut_enabled", "auth_config_database_url_unchanged", "auth_config_shortcut_key_unchanged",
+            "auth_config_brevo_api", "auth_config_brevo_sender_active", "auth_config_brevo_domain_authenticated",
+            "auth_config_brevo_transactional_relay_enabled", "auth_config_brevo_transactional_stats_available",
+            "auth_config_candidate_ready", "auth_config_prepared", "current_live_container_unchanged", "candidate_runtime_verified"];
+          if (required.some((key) => values.get(key) !== "yes") || values.get("auth_config_brevo_send_limit_status") !== "positive") {
+            throw new Error("Candidate runtime readiness or no-restart verification failed.");
+          }
+          NODE
+
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-auth-config-ssh"

@@ -2,6 +2,15 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
 
+// Route handlers are invoked directly in this integration harness, outside a
+// Next request context. The post-response scheduler is covered separately by
+// auth-email-flow.test.ts.
+vi.mock("@/modules/auth/email-flow", () => ({
+  runAuthEmailFlow: async (_action: string, task: () => Promise<void>) => {
+    try { await task(); } catch { /* route acknowledgements stay generic */ }
+  },
+}));
+
 const databaseUrl = process.env.DATABASE_URL;
 requireIsolatedStage01Database(databaseUrl, process.env.BODYCAST_STAGE01_MODE, "test");
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
@@ -17,6 +26,7 @@ const authEnvironmentKeys = [
   "AUTH_PUBLIC_REGISTRATION_ENABLED",
   "AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED",
   "AUTH_EMAIL_DAILY_LIMIT",
+  "AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT",
   "BREVO_API_KEY",
   "BREVO_SENDER_EMAIL",
   "BREVO_SENDER_NAME",
@@ -65,6 +75,7 @@ describe("work interval CRUD with PostgreSQL", () => {
     process.env.AUTH_PUBLIC_REGISTRATION_ENABLED = "true";
     process.env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED = "false";
     process.env.AUTH_EMAIL_DAILY_LIMIT = "1000";
+    process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = "500";
     process.env.BREVO_API_KEY = "isolated-test-provider-key";
     process.env.BREVO_SENDER_EMAIL = "noreply@example.invalid";
     process.env.BREVO_SENDER_NAME = "BodyCast Test";

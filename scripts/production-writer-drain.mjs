@@ -1,4 +1,5 @@
 export const PRODUCTION_WRITER_TOPOLOGY_CONTRACT = "bodycast-compose-internal-db-single-writer-v1";
+export const PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT = "bodycast-compose-internal-db-pre-maintenance-v1";
 export const EXPECTED_PRODUCTION_DB_NETWORK = "bodycast-backend-prod";
 export const EXPECTED_PRODUCTION_DB_CONTAINER = "bodycast-db-prod";
 export const EXPECTED_PRODUCTION_APP_CONTAINER = "bodycast-app-prod";
@@ -109,6 +110,97 @@ export function evaluateProductionWriterDrain(report) {
     observedAt: drain?.observedAt ?? null,
     activeClientBackendCount: activeCount,
     topology: verifiedTopology,
+  };
+}
+
+export function evaluateProductionPreMaintenanceTopology(input) {
+  const blockers = [];
+  const checks = [];
+  const app = input?.app;
+  const database = input?.database;
+  const network = input?.backendNetwork;
+  const caddy = input?.caddy;
+  const route = input?.routeFile;
+  const appPresent = app?.state === "running";
+  const appAbsent = app?.state === "absent";
+  const expectedContainers = appPresent
+    ? [EXPECTED_PRODUCTION_APP_CONTAINER, EXPECTED_PRODUCTION_DB_CONTAINER]
+    : [EXPECTED_PRODUCTION_DB_CONTAINER];
+
+  checks.push(check("pre-maintenance-schema", input?.schemaVersion === 1, blockers,
+    "Pre-maintenance topology evidence schema is missing or unsupported."));
+  checks.push(check("pre-maintenance-contract", input?.contract === PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, blockers,
+    "Pre-maintenance topology evidence does not match the fixed reviewed contract."));
+  checks.push(check("pre-maintenance-observed-at", typeof input?.observedAt === "string" && Number.isFinite(Date.parse(input.observedAt)), blockers,
+    "Pre-maintenance topology observation time is missing or malformed."));
+  checks.push(check("pre-maintenance-ready", input?.ready === true && Array.isArray(input?.blockers) && input.blockers.length === 0, blockers,
+    "Pre-maintenance topology evidence reports blocked or unknown predicates."));
+
+  checks.push(check("prior-app-state", (appPresent && /^[a-f0-9]{64}$/.test(String(app?.containerId ?? ""))
+    && /^sha256:[a-f0-9]{64}$/.test(String(app?.imageId ?? "")) && app?.health === "healthy"
+    && app?.restartPolicy === "unless-stopped" && (/^[a-f0-9]{40}$/.test(String(app?.releaseSha ?? "")) || app?.releaseSha === "unknown"))
+    || (appAbsent && app?.containerId === null && app?.imageId === null && app?.health === null), blockers,
+  "The prior app is neither an immutable healthy running container nor positively absent."));
+  checks.push(check("database-state", database?.name === EXPECTED_PRODUCTION_DB_CONTAINER
+    && /^[a-f0-9]{64}$/.test(String(database?.containerId ?? "")) && database?.state === "running"
+    && database?.health === "healthy" && database?.publishedPostgresPort === false
+    && JSON.stringify([...(database?.networks ?? [])].sort()) === JSON.stringify([EXPECTED_PRODUCTION_DB_NETWORK]), blockers,
+  "The reviewed private PostgreSQL container is not healthy or its identity/topology is unknown."));
+  checks.push(check("backend-network-membership", network?.name === EXPECTED_PRODUCTION_DB_NETWORK
+    && JSON.stringify([...(network?.containers ?? [])].sort()) === JSON.stringify(expectedContainers), blockers,
+  "The PostgreSQL network contains an unknown or unapproved client container."));
+  checks.push(check("caddy-state", caddy?.name === EXPECTED_PRODUCTION_CADDY_CONTAINER
+    && caddy?.state === "running" && caddy?.configValidated === true, blockers,
+  "The production Caddy configuration is not positively healthy."));
+  const servingRoute = route?.verified === true && route?.servingResponse === true
+    && route?.maintenanceResponse === false && route?.containsReverseProxy === true;
+  const maintenanceRoute = route?.verified === true && route?.maintenanceResponse === true
+    && route?.servingResponse === false && route?.containsReverseProxy === false;
+  checks.push(check("route-state", /^[a-f0-9]{64}$/.test(String(route?.sha256 ?? ""))
+    && (servingRoute || maintenanceRoute) && (!appAbsent || maintenanceRoute), blockers,
+  "The BodyCast route is neither the exact serving route nor the exact maintenance route compatible with app state."));
+
+  return { ready: blockers.length === 0, blockers, checks, appPresent, appAbsent };
+}
+
+export function evaluateProductionPreMaintenanceReadiness(report, { now = Date.now(), maxAgeMs = 30_000 } = {}) {
+  const blockers = [];
+  const checks = [];
+  const drain = report?.writerDrain;
+  const topology = evaluateProductionPreMaintenanceTopology(drain?.topology ?? {});
+  checks.push(...topology.checks);
+  blockers.push(...topology.blockers);
+  checks.push(check("pre-maintenance-observer", drain?.schemaVersion === 1
+    && Number.isSafeInteger(drain?.observerPid) && drain.observerPid > 0
+    && drain?.observerApplicationName === "bodycast-production-preflight"
+    && drain?.identityPolicy === "no-other-client-backends"
+    && typeof drain?.observedAt === "string" && Number.isFinite(Date.parse(drain.observedAt)), blockers,
+  "Pre-maintenance PostgreSQL observer identity is missing or malformed."));
+  const backendsKnown = Array.isArray(drain?.activeClientBackends);
+  checks.push(check("pre-maintenance-backend-inventory", backendsKnown, blockers,
+    "Pre-maintenance PostgreSQL client-backend inventory is missing or malformed."));
+  if (topology.ready && topology.appAbsent && backendsKnown && drain.activeClientBackends.length !== 0) {
+    blockers.push("PostgreSQL has an unexpected client backend after the old app is absent.");
+    checks.push({ id: "pre-maintenance-no-app-backends", passed: false });
+  }
+  const databaseObservedAt = Date.parse(drain?.observedAt ?? "");
+  const databaseSnapshotAgeMs = now - databaseObservedAt;
+  checks.push(check("pre-maintenance-database-freshness", Number.isFinite(databaseObservedAt)
+    && databaseSnapshotAgeMs >= -60_000 && databaseSnapshotAgeMs <= maxAgeMs, blockers,
+  "The pre-maintenance database snapshot is stale or from the future."));
+  const topologyObservedAt = Date.parse(drain?.topology?.observedAt ?? "");
+  const topologyAgeMs = now - topologyObservedAt;
+  checks.push(check("pre-maintenance-topology-freshness", Number.isFinite(topologyObservedAt)
+    && topologyAgeMs >= -60_000 && topologyAgeMs <= maxAgeMs, blockers,
+  "The pre-maintenance app, database, or route topology snapshot is stale or from the future."));
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    checks,
+    observedClientBackendCount: backendsKnown ? drain.activeClientBackends.length : null,
+    appState: topology.appPresent ? "running" : topology.appAbsent ? "absent" : "unknown",
+    databaseSnapshotAgeMs,
+    topologyAgeMs,
   };
 }
 

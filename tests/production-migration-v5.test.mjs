@@ -18,9 +18,9 @@ import { assertLiveDataMatchesBackupReadability, verifyFinalMigrationAuthorizati
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-database-identity.mjs";
-import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
+import { psqlCompatibleDatabaseUrl, psqlUrlFromRenderedComposeConfig } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
-import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
+import { PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { assertPreDdlBackupArtifactMetadata, assertPreDdlRecoverySource, assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayBoundary, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
@@ -295,6 +295,7 @@ function validPreflightReport() {
   return {
     identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311", role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
     logicalDataFingerprint: "d".repeat(64),
+    profileOneExists: true,
     readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])),
     migrations: [
       migrationRow({ name: dirs[0], sha256: "a".repeat(64) }),
@@ -731,9 +732,14 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("runs production preflight and postflight against the effective Compose Prisma DATABASE_URL", async () => {
     const deploy = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
     const target = await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8");
+    const cutover = await readFile(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8");
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     expect(deploy).toContain('production-db-target.sh" --preflight "$DB_CONTAINER"');
-    expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools run --rm --no-deps");
+    expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools config --format json");
+    expect(target).not.toContain("compose -f \"$COMPOSE_FILE\" --profile tools run --rm");
+    expect(target).toContain("  --pre-maintenance-snapshot)");
+    expect(cutover).toContain('production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod');
+    expect(target).toContain("BODYCAST_TOPOLOGY_BEFORE");
     expect(target).toContain("production-db-target-url.mjs");
     expect(target).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
     expect(target).toContain('readonly DB_NETWORK="bodycast-backend-prod"');
@@ -758,6 +764,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).toContain('{ tableName: "Workout", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" }');
     expect(smoke).toContain('for (const tableName of ["Workout", "Profile", "ModelEpisode"])');
     expect(sql).toContain("ddl_targets(table_name, required_lock_mode)");
+    expect(sql).toContain("'profileOneExists', EXISTS (SELECT 1 FROM public.\"Profile\" WHERE id = 1)");
     expect(sql).toContain("__DDL_LOCK_TARGETS_JSON__");
     const renderedSql = renderProductionDbPreflightSql(sql);
     expect(renderedSql).toContain('{"tableName":"Workout","requiredLockMode":"ShareRowExclusiveLock"}');
@@ -798,6 +805,39 @@ describe("V5 closed migration manifest and full pending set", () => {
     const currentRelease = evaluateProductionPreflight(validPreflightReport(), fullDirs);
     expect(currentRelease.readyForOwnerAuthorization).toBe(false);
     expect(currentRelease.pending).toEqual([...names, ...V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name)].sort());
+  });
+
+  it("requires a fresh, non-authorizing pre-maintenance snapshot and preserves Profile 1", () => {
+    const report = validPreflightReport();
+    report.writerDrain.observedAt = new Date(now).toISOString();
+    report.writerDrain.topology = {
+      schemaVersion: 1, contract: PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, ready: true, blockers: [],
+      observedAt: new Date(now).toISOString(),
+      app: { name: "bodycast-app-prod", containerId: "a".repeat(64), imageId: `sha256:${"b".repeat(64)}`,
+        state: "running", health: "healthy", restartPolicy: "unless-stopped", releaseSha: "c".repeat(40) },
+      database: { name: "bodycast-db-prod", containerId: "d".repeat(64), state: "running", health: "healthy",
+        publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+      backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-app-prod", "bodycast-db-prod"] },
+      caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+      routeFile: { verified: true, servingResponse: true, maintenanceResponse: false,
+        containsReverseProxy: true, sha256: "e".repeat(64) },
+    };
+    const result = evaluateProductionPreflight(report, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { preMaintenance: true, now });
+    expect(result.readyForPreMaintenance, result.blockers.join(" | ")).toBe(true);
+    expect(result.readyForOwnerAuthorization).toBe(false);
+    expect(result.writerDrainReady).toBe(false);
+
+    const missingProfileOne = { ...report, profileOneExists: false };
+    expect(evaluateProductionPreflight(missingProfileOne, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+      { preMaintenance: true, now }).blockers.join(" ")).toContain("Profile 1 baseline is missing");
+
+    const wrongDatabase = { ...report, identity: { ...report.identity, database: "wrong_target" } };
+    expect(evaluateProductionPreflight(wrongDatabase, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+      { preMaintenance: true, now }).blockers.join(" ")).toContain("database/role identity differs");
+
+    const stale = { ...report, writerDrain: { ...report.writerDrain, observedAt: new Date(now - 31_000).toISOString() } };
+    expect(evaluateProductionPreflight(stale, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+      { preMaintenance: true, now }).blockers.join(" ")).toContain("stale or from the future");
   });
 
   it("accepts only the exact PostgreSQL 17 restored Training checks in the Auth baseline", () => {
@@ -1505,6 +1545,11 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(() => psqlCompatibleDatabaseUrl("postgresql://u:p@db/bodycast?sslidentity=client" )).toThrow("cannot faithfully preserve");
     expect(() => psqlCompatibleDatabaseUrl("postgresql://u:p@db/bodycast?schema=tenant" )).toThrow("public Prisma schema target");
     expect(() => psqlCompatibleDatabaseUrl("postgresql://u:p@db/bodycast?host=other-db" )).toThrow("target overrides");
+    expect(psqlUrlFromRenderedComposeConfig({ services: { migrate: { environment: {
+      DATABASE_URL: "postgresql://bodycast:config-secret@db-primary:5433/bodycast?schema=public&connection_limit=8",
+    } } } })).toBe("postgresql://bodycast:config-secret@db-primary:5433/bodycast");
+    expect(() => psqlUrlFromRenderedComposeConfig({ services: { app: { environment: {} } } }))
+      .toThrow("no effective DATABASE_URL");
   });
 
   it("uses the actual post-verification clock at the Prisma spawn boundary", async () => {

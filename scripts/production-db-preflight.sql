@@ -183,6 +183,7 @@ SELECT json_build_object(
     'StrengthDiarySession', json_build_object('rowCount', (SELECT count(*) FROM public."StrengthDiarySession")),
     'ExerciseCatalog', json_build_object('rowCount', (SELECT count(*) FROM public."ExerciseCatalog"))
   ),
+  'profileOneExists', EXISTS (SELECT 1 FROM public."Profile" WHERE id = 1),
   -- Aggregate only. The rollback gate needs to know if old app readers would
   -- encounter nullable program relations; no Health or workout payload is
   -- included in production evidence.

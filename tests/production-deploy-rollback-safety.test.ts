@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CANDIDATE_IMAGE_ID, PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, createFixture, runFixture, appState, toBashPath } from "./helpers/production-release-cutover-fixture";
+import { CANDIDATE_IMAGE_ID, PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, createFixture, maintenanceRoute, runFixture, appState, toBashPath } from "./helpers/production-release-cutover-fixture";
 import { capturePreviousAppProvenance, parsePreviousAppProvenance, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
 
 function seedCapturedPreviousRelease(fixture: ReturnType<typeof createFixture>, options: {
@@ -447,7 +448,7 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(writerDrainAt).toBeGreaterThan(removeAt);
     expect(appState(fixture)).toMatchObject({ status: "exited", present: "false" });
     const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
-    expect(dockerLog).toContain("production-db-target-url.mjs");
+    expect(dockerLog).toContain("config --format json");
     expect(dockerLog).toContain("PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
     const provenanceSource = readFileSync(path.resolve("scripts/production-previous-app-provenance.mjs"), "utf8");
     expect(provenanceSource).toContain('"--previous-app-compatibility-snapshot", "bodycast-db-prod"');
@@ -455,6 +456,103 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release"), "utf8"))
       .toContain(`targetSha=${fixture.candidateSha}`);
     expect(result.stdout).toContain("PostgreSQL writers are drained");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the serving app and route untouched when the migration pre-maintenance DB probe fails", () => {
+    const fixture = createFixture();
+    writeFileSync(path.join(fixture.repo, "scripts", "production-db-target.sh"),
+      "#!/usr/bin/env bash\nprintf '%s\\n' pre-maintenance-db-probe-failed >&2\nexit 71\n", { mode: 0o755 });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID: "active-energy-unified-v2",
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("pre-maintenance-db-probe-failed");
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).not.toContain("live-route-mutation:maintenance");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain(`image-tag:${PREVIOUS_IMAGE_ID}:bodycast-app:rollback`);
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("does not let a resume flag bypass the required prior-app capture path", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID: "active-energy-unified-v2",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Migration maintenance requires the existing owner-authorized prior-app capture path");
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    const dockerLog = existsSync(path.join(fixture.root, "docker.log")) ? readFileSync(path.join(fixture.root, "docker.log"), "utf8") : "";
+    expect(dockerLog).not.toContain("image tag");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("preserves the verified forward-resume route and rejects a mismatched marker before capture changes", () => {
+    const fixture = createFixture();
+    const { recordPath } = seedCapturedPreviousRelease(fixture);
+    const markerPath = path.join(fixture.repo, ".git", "bodycast-production-schema-cutover");
+    const markerText = `schemaVersion=1\nmanifestId=active-energy-unified-v2\nreleaseSha=${fixture.candidateSha}\nstate=ddl-started\n`;
+    writeFileSync(markerPath, markerText, { mode: 0o600 });
+    const recordBefore = readFileSync(recordPath, "utf8");
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID: "active-energy-unified-v2",
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.candidateSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: "40123456789",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "40123456790",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+      BODYCAST_FORWARD_RESUME_CAPTURE: "1",
+      BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: "38022978032",
+      BODYCAST_FORWARD_RESUME_FAILED_SHA: fixture.candidateSha,
+      BODYCAST_FORWARD_RESUME_FAILURE_PROOF_DIGEST: "a".repeat(64),
+      BODYCAST_FORWARD_RESUME_MARKER_DIGEST: "b".repeat(64),
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The marker does not match the independently verified no-spawn failure and source digest");
+    expect(readFileSync(recordPath, "utf8")).toBe(recordBefore);
+    expect(readFileSync(markerPath, "utf8")).toBe(markerText);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const dockerLog = existsSync(path.join(fixture.root, "docker.log")) ? readFileSync(path.join(fixture.root, "docker.log"), "utf8") : "";
+    expect(dockerLog).not.toContain("compose stop");
+
+    const validFixture = createFixture();
+    const { recordPath: validRecordPath } = seedCapturedPreviousRelease(validFixture);
+    const validMarkerPath = path.join(validFixture.repo, ".git", "bodycast-production-schema-cutover");
+    const validMarkerText = `schemaVersion=1\nmanifestId=active-energy-unified-v2\nreleaseSha=${validFixture.candidateSha}\nstate=ddl-started\n`;
+    writeFileSync(validMarkerPath, validMarkerText, { mode: 0o600 });
+    writeFileSync(path.join(validFixture.routes, "bodycast.caddy"), maintenanceRoute("fixture-attempt"));
+    const validResume = runFixture(validFixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: validFixture.advanceSha,
+      BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID: "active-energy-unified-v2",
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: validFixture.candidateSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: "40123456789",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "40123456790",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+      BODYCAST_FORWARD_RESUME_CAPTURE: "1",
+      BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: "38022978032",
+      BODYCAST_FORWARD_RESUME_FAILED_SHA: validFixture.candidateSha,
+      BODYCAST_FORWARD_RESUME_FAILURE_PROOF_DIGEST: "a".repeat(64),
+      BODYCAST_FORWARD_RESUME_MARKER_DIGEST: createHash("sha256").update(validMarkerText).digest("hex"),
+    });
+    expect(validResume.status, `${validResume.stdout}\n${validResume.stderr}`).toBe(0);
+    expect(validResume.stdout).toContain("BODYCAST_PRE_DDL_RESUME_RECEIPT=");
+    expect(readFileSync(validRecordPath, "utf8")).toContain(`targetSha=${validFixture.advanceSha}`);
+    expect(appState(validFixture)).toMatchObject({ present: "false" });
+    expect(readFileSync(path.join(validFixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps maintenance and fails closed when another DB-network client remains after stopping the old app", () => {

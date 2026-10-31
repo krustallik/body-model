@@ -325,6 +325,26 @@ describe("active production release entrypoints", () => {
     ].map((fragment) => workflow.indexOf(fragment));
     expect(preflightOrder.every((index) => index >= 0)).toBe(true);
     expect(preflightOrder).toEqual([...preflightOrder].sort((left, right) => left - right));
+
+    const enterMaintenance = capture.indexOf("enter_maintenance() {");
+    const preMaintenanceGate = capture.indexOf('assert_pre_maintenance_migration_state "$preflight_result_path"', enterMaintenance);
+    const recoveryCapture = capture.indexOf('capture_pre_ddl_previous_release "$preflight_result_path"', enterMaintenance);
+    const exactShaRecheck = capture.indexOf('bodycast_assert_current_main_sha "${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" || return 1', recoveryCapture);
+    const routeMutation = capture.indexOf("publish_maintenance_route || return 1", enterMaintenance);
+    const appStop = capture.indexOf("  stop_old_app\n}", enterMaintenance);
+    expect([enterMaintenance, preMaintenanceGate, recoveryCapture, exactShaRecheck, routeMutation, appStop].every((index) => index >= 0)).toBe(true);
+    expect(preMaintenanceGate).toBeLessThan(recoveryCapture);
+    expect(recoveryCapture).toBeLessThan(exactShaRecheck);
+    expect(exactShaRecheck).toBeLessThan(routeMutation);
+    expect(routeMutation).toBeLessThan(appStop);
+    expect(capture).toContain("--pre-maintenance-snapshot bodycast-db-prod");
+    expect(capture).toContain("--pre-maintenance \\");
+    expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
+    expect(workflow).toContain("BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID=\"$MANIFEST_ID\"");
+    expect(capture).toContain('[[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]]');
+    expect(capture).toContain('if [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]]');
+    expect(capture).toContain('resume_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir"');
+    expect(capture).toContain('if [[ "${BODYCAST_FORWARD_RESUME_CAPTURE:-0}" == "1" ]]');
   });
 
   it("allows only an explicit owner-gated V4 capture refresh and preserves the old capture before replacing it", () => {

@@ -591,6 +591,7 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
           RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
           RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
@@ -612,6 +613,7 @@ jobs:
           FORWARD_FAILED_RUN_ID_B64="$(printf '%s' "$FORWARD_RESUME_FAILED_RUN_ID" | base64 -w0)"
           FORWARD_HISTORY_DIGEST_B64="$(printf '%s' "$FORWARD_RESUME_MUTATION_HISTORY_DIGEST" | base64 -w0)"
           REFRESH_CAPTURE_B64="$(printf '%s' "$REFRESH_CAPTURE" | base64 -w0)"
+          MANIFEST_ID_B64="$(printf '%s' "$MANIFEST_ID" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
@@ -627,7 +629,11 @@ jobs:
           FORWARD_FAILED_RUN_ID="$(printf '%s' "${11}" | base64 --decode)"
           FORWARD_HISTORY_DIGEST="$(printf '%s' "${12}" | base64 --decode)"
           REFRESH_CAPTURE="$(printf '%s' "${13}" | base64 --decode)"
+          MANIFEST_ID="$(printf '%s' "${14}" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
+            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" ]] || exit 2
+          export BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID="$MANIFEST_ID"
           if [[ -n "$RESUME_SOURCE_SHA" ]]; then
             [[ "$RESUME_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \
               && "$RESUME_SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$CURRENT_RUN_ID" =~ ^[1-9][0-9]*$ \
@@ -692,7 +698,7 @@ jobs:
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RESUME_SOURCE_SHA_B64' '$RESUME_SOURCE_RUN_ID_B64' '$RESUME_SOURCE_RUN_ATTEMPT_B64' '$CURRENT_RUN_ID_B64' '$CURRENT_RUN_ATTEMPT_B64' '$FORWARD_FAILURE_PROOF_DIGEST_B64' '$FORWARD_FAILED_RUN_ID_B64' '$FORWARD_HISTORY_DIGEST_B64' '$REFRESH_CAPTURE_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RESUME_SOURCE_SHA_B64' '$RESUME_SOURCE_RUN_ID_B64' '$RESUME_SOURCE_RUN_ATTEMPT_B64' '$CURRENT_RUN_ID_B64' '$CURRENT_RUN_ATTEMPT_B64' '$FORWARD_FAILURE_PROOF_DIGEST_B64' '$FORWARD_FAILED_RUN_ID_B64' '$FORWARD_HISTORY_DIGEST_B64' '$REFRESH_CAPTURE_B64' '$MANIFEST_ID_B64'"
           REMOTE_OUTPUT_FILE="$RUNNER_TEMP/production-maintenance-output.txt"
           timeout 20m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" | tee "$REMOTE_OUTPUT_FILE"

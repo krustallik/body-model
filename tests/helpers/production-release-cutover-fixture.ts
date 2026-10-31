@@ -281,6 +281,11 @@ if [[ "$1" == "compose" ]]; then
     printf '%s\n' "BODYCAST_PRISMA_DB_IDENTITY=$PRODUCTION_DB_ENDPOINT_IDENTITY"
     exit 0
   fi
+  if [[ "$joined" == *"config --format json"* ]]; then
+    event "previous-app-db-url-resolved"
+    printf '%s\n' '{"services":{"migrate":{"environment":{"DATABASE_URL":"postgresql://bodycast:fixture@bodycast-db-prod:5432/bodycast"}}}}'
+    exit 0
+  fi
   if [[ "$joined" == *"production-db-target-url.mjs"* ]]; then
     event "previous-app-db-url-resolved"
     printf '%s\n' 'postgresql://bodycast:fixture@bodycast-db-prod:5432/bodycast'

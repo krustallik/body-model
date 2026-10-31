@@ -147,8 +147,12 @@ publish_maintenance_route() {
 
 capture_pre_ddl_previous_release() {
   [[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]] || return 0
-  local target_sha existing_app capture_text provenance_kind previous_sha previous_image_id previous_container_id previous_health previous_runtime_digest pinned_id
+  local target_sha preflight_result_path existing_app capture_text provenance_kind previous_sha previous_image_id previous_container_id previous_health previous_runtime_digest pinned_id
   local record_path record_tmp git_dir
+  preflight_result_path="${1:-}"
+  [[ "$#" -le 1 && ( -z "$preflight_result_path" || ( "$preflight_result_path" == /* && -f "$preflight_result_path" && ! -L "$preflight_result_path" ) ) ]] || {
+    echo "Pre-maintenance evidence path is not a private regular file." >&2; return 1;
+  }
   target_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-DDL recovery capture requires the exact target SHA." >&2; return 1; }
   git_dir="$(git rev-parse --absolute-git-dir)"
@@ -171,7 +175,12 @@ capture_pre_ddl_previous_release() {
   }
   existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
   [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "A healthy prior app is required for recoverable migration preflight." >&2; return 1; }
-  if ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha")"; then
+  if [[ -n "$preflight_result_path" ]]; then
+    if ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha" --pre-maintenance-result "$preflight_result_path")"; then
+      echo "The prior app image/runtime or read-only database migration/schema/data snapshot does not match the fresh pre-maintenance evidence." >&2
+      return 1
+    fi
+  elif ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha")"; then
     echo "The prior app image/runtime or read-only database migration/schema provenance is not verifiable." >&2
     return 1
   fi
@@ -1058,11 +1067,91 @@ cleanup_pre_ddl_recovery_pin_after_serving_commit() {
   fi
 }
 
-enter_maintenance() {
-  if ! publish_maintenance_route; then
-    return 1
+assert_pre_maintenance_migration_state() (
+  set -Eeuo pipefail
+  local target_sha manifest_id marker_status report_path result_path
+  result_path="${1:-}"
+  [[ "$#" -eq 1 && "$result_path" == /* && -f "$result_path" && ! -L "$result_path" ]] || {
+    echo "Pre-maintenance evidence output path is missing or unsafe." >&2; exit 1;
+  }
+  target_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
+  manifest_id="${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}"
+  [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-maintenance checks require the exact release SHA." >&2; exit 1; }
+  [[ "$manifest_id" == "active-energy-unified-v2" || "$manifest_id" == "unified-v4-republication-v1" \
+    || "$manifest_id" == "training-mutation-ledger-refresh-queue-v1" || "$manifest_id" == "auth-multiuser-v1" ]] || {
+    echo "Pre-maintenance checks require a closed reviewed migration manifest." >&2; exit 1;
+  }
+  bodycast_assert_current_main_sha "$target_sha"
+  if read_bodycast_release_marker; then
+    echo "An existing release marker blocks a new maintenance preflight." >&2
+    exit 1
+  else
+    marker_status=$?
   fi
-  capture_pre_ddl_previous_release
+  [[ "$marker_status" -eq 1 ]] || { echo "Release-marker state is unknown; maintenance is blocked." >&2; exit 1; }
+
+  report_path="$(mktemp /tmp/bodycast-pre-maintenance-report.XXXXXX)"
+  chmod 0600 "$report_path"
+  trap 'rm -f -- "$report_path"' EXIT
+  node "$ROOT_DIR/scripts/production-db-preflight.mjs" --manifest "$manifest_id" \
+    | bash "$ROOT_DIR/scripts/production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod > "$report_path"
+  if ! node "$ROOT_DIR/scripts/production-migration-preflight.mjs" --pre-maintenance \
+    --manifest "$manifest_id" --release-sha "$target_sha" --repository "$ROOT_DIR" --report "$report_path" > "$result_path"; then
+    echo "Read-only pre-maintenance database, schema, ownership, recovery-topology, or manifest checks failed; maintenance was not entered." >&2
+    exit 1
+  fi
+  bodycast_assert_current_main_sha "$target_sha"
+  echo "Exact-SHA read-only pre-maintenance DB/schema/Profile 1 and recovery-topology gates passed under the production release lock."
+)
+
+enter_maintenance() {
+  local preflight_result_path
+  preflight_result_path=""
+  if [[ -n "${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}" ]]; then
+    [[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]] || {
+      echo "Migration maintenance requires the existing owner-authorized prior-app capture path." >&2; return 1;
+    }
+    if [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
+      # Resume is only valid after an earlier, already-verified maintenance
+      # transition. Its marker/proof, writer drain, and DB compatibility are
+      # rechecked by resume_pre_ddl_previous_release before it mutates capture.
+      [[ -f "$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release" \
+        && ! -L "$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release" ]] || {
+        echo "Pre-DDL capture resume requires the existing durable prior-app record." >&2; return 1;
+      }
+      capture_pre_ddl_previous_release || return 1
+    else
+      preflight_result_path="$(mktemp /tmp/bodycast-pre-maintenance-result.XXXXXX)" || return 1
+      chmod 0600 "$preflight_result_path"
+      if ! assert_pre_maintenance_migration_state "$preflight_result_path"; then
+        rm -f -- "$preflight_result_path"
+        return 1
+      fi
+      # Capture and pin the known prior app before changing traffic. A failed
+      # recovery capture therefore cannot strand a healthy serving app in maintenance.
+      if ! capture_pre_ddl_previous_release "$preflight_result_path"; then
+        rm -f -- "$preflight_result_path"
+        return 1
+      fi
+      rm -f -- "$preflight_result_path"
+    fi
+    bodycast_assert_current_main_sha "${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" || return 1
+    if bodycast_verify_exact_maintenance_route >/dev/null 2>&1; then
+      maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
+      bodycast_probe_public_maintenance "$maintenance_marker" || return 1
+    else
+      if ! bodycast_verify_exact_serving_route; then
+        echo "Current BodyCast traffic route is neither serving nor verified maintenance." >&2
+        return 1
+      fi
+      publish_maintenance_route || return 1
+    fi
+  else
+    if ! publish_maintenance_route; then
+      return 1
+    fi
+    capture_pre_ddl_previous_release
+  fi
   stop_old_app
 }
 

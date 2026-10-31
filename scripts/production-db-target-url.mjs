@@ -23,8 +23,25 @@ export function psqlCompatibleDatabaseUrl(databaseUrl) {
   return url.toString();
 }
 
+export function psqlUrlFromRenderedComposeConfig(compose) {
+  const databaseUrl = compose?.services?.migrate?.environment?.DATABASE_URL;
+  if (typeof databaseUrl !== "string" || !databaseUrl) {
+    throw new Error("The rendered production migrator has no effective DATABASE_URL.");
+  }
+  return psqlCompatibleDatabaseUrl(databaseUrl);
+}
+
 async function main() {
-  process.stdout.write(psqlCompatibleDatabaseUrl(process.env.DATABASE_URL));
+  let databaseUrl = process.env.DATABASE_URL;
+  if (process.argv[2] === "--compose-json") {
+    let input = "";
+    for await (const chunk of process.stdin) input += chunk;
+    process.stdout.write(psqlUrlFromRenderedComposeConfig(JSON.parse(input)));
+    return;
+  } else if (process.argv.length > 2) {
+    throw new Error("Usage: production-db-target-url.mjs [--compose-json]");
+  }
+  process.stdout.write(psqlCompatibleDatabaseUrl(databaseUrl));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

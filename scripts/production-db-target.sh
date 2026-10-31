@@ -6,9 +6,8 @@ COMPOSE_FILE="$ROOT_DIR/docker-compose.prod.yml"
 readonly DB_NETWORK="bodycast-backend-prod"
 
 effective_psql_url() {
-  docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
-    --volume "$ROOT_DIR/scripts/production-db-target-url.mjs:/run/bodycast-production-db-target-url.mjs:ro" \
-    --entrypoint node migrate /run/bodycast-production-db-target-url.mjs < /dev/null
+  docker compose -f "$COMPOSE_FILE" --profile tools config --format json \
+    | node "$ROOT_DIR/scripts/production-db-target-url.mjs" --compose-json
 }
 
 inspect_fixed_database_target() {
@@ -69,6 +68,54 @@ case "${1:-}" in
       process.stdout.write(`${JSON.stringify(report)}\n`);
     ' "$DATA_FINGERPRINT"
     ;;
+  --pre-maintenance-snapshot)
+    DB_CONTAINER="${2:-}"
+    [[ "$DB_CONTAINER" == "bodycast-db-prod" ]] || { echo "Refusing pre-maintenance snapshot against an unreviewed PostgreSQL container." >&2; exit 1; }
+    inspect_fixed_database_target
+    TOPOLOGY_BEFORE="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
+      bash "$ROOT_DIR/scripts/production-writer-drain.sh" --pre-maintenance-report)"
+    TARGET_URL="$(effective_psql_url)"
+    export BODYCAST_PSQL_DATABASE_URL="$TARGET_URL"
+    unset TARGET_URL
+    RAW_REPORT="$(docker exec -i --env BODYCAST_PSQL_DATABASE_URL \
+      --env "BODYCAST_WRITER_TOPOLOGY_JSON=$TOPOLOGY_BEFORE" \
+      --env 'PGAPPNAME=bodycast-production-preflight' \
+      --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
+      "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"'
+    )"
+    unset BODYCAST_PSQL_DATABASE_URL
+    verify_report_endpoint "$RAW_REPORT"
+    DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
+    [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
+    TOPOLOGY_AFTER="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
+      bash "$ROOT_DIR/scripts/production-writer-drain.sh" --pre-maintenance-report)"
+    BODYCAST_TOPOLOGY_BEFORE="$TOPOLOGY_BEFORE" BODYCAST_TOPOLOGY_AFTER="$TOPOLOGY_AFTER" node --input-type=module <<'NODE'
+const before = JSON.parse(process.env.BODYCAST_TOPOLOGY_BEFORE ?? "null");
+const after = JSON.parse(process.env.BODYCAST_TOPOLOGY_AFTER ?? "null");
+if (!before || !after) throw new Error("Pre-maintenance topology evidence is missing.");
+const canonical = (value) => {
+  const { observedAt, ...stable } = value;
+  return JSON.stringify(stable);
+};
+if (canonical(before) !== canonical(after)) throw new Error("Production app, database, Caddy, or route topology changed during the read-only pre-maintenance snapshot.");
+NODE
+    assert_fixed_database_container_unchanged
+    printf '%s\n' "$RAW_REPORT" | BODYCAST_VERIFIED_TOPOLOGY="$TOPOLOGY_AFTER" node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      const report = JSON.parse(readFileSync(0, "utf8"));
+      const digest = process.argv[1];
+      if (!report || typeof report !== "object" || Array.isArray(report) || !/^[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("Production database report or logical data fingerprint is invalid.");
+      }
+      const topology = JSON.parse(process.env.BODYCAST_VERIFIED_TOPOLOGY ?? "null");
+      if (!report.writerDrain || !topology || typeof topology.observedAt !== "string") {
+        throw new Error("The verified post-snapshot production topology is missing.");
+      }
+      report.writerDrain.topology = topology;
+      report.logicalDataFingerprint = digest;
+      process.stdout.write(`${JSON.stringify(report)}\n`);
+    ' "$DATA_FINGERPRINT"
+    ;;
   --previous-app-compatibility-snapshot)
     DB_CONTAINER="${2:-}"
     [[ "$DB_CONTAINER" == "bodycast-db-prod" ]] || { echo "Refusing compatibility snapshot against an unreviewed PostgreSQL container." >&2; exit 1; }
@@ -91,7 +138,7 @@ case "${1:-}" in
     printf '%s\n' "$RAW_REPORT"
     ;;
   *)
-    echo "Usage: production-db-target.sh --psql-url|--preflight|--previous-app-compatibility-snapshot bodycast-db-prod" >&2
+    echo "Usage: production-db-target.sh --psql-url|--preflight|--pre-maintenance-snapshot|--previous-app-compatibility-snapshot bodycast-db-prod" >&2
     exit 2
     ;;
 esac

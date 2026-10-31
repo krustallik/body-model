@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import {
   PRODUCTION_WRITER_TOPOLOGY_CONTRACT,
+  PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT,
   assertFreshWriterDrain,
+  evaluateProductionPreMaintenanceReadiness,
+  evaluateProductionPreMaintenanceTopology,
   evaluateProductionWriterDrain,
   evaluateProductionWriterTopology,
 } from "../scripts/production-writer-drain.mjs";
@@ -123,5 +126,47 @@ describe("production writer drain and topology gate", () => {
     expect(() => assertFreshWriterDrain(report({ observedAt: new Date(now - 31_000).toISOString() }), { now })).toThrow("stale or from the future");
     expect(() => assertFreshWriterDrain(report({ observedAt: new Date(now + 61_000).toISOString() }), { now })).toThrow("stale or from the future");
     expect(evaluateProductionWriterDrain(report({ observerApplicationName: "psql" })).ready).toBe(false);
+  });
+
+  it("admits only a fresh, fixed pre-maintenance topology while the known old app is still healthy", () => {
+    const preMaintenance = report({
+      activeClientBackends: [{ present: true }],
+      topology: {
+        schemaVersion: 1,
+        contract: PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT,
+        ready: true,
+        blockers: [],
+        observedAt: new Date(now).toISOString(),
+        app: { name: "bodycast-app-prod", containerId: "a".repeat(64), imageId: `sha256:${"b".repeat(64)}`,
+          state: "running", health: "healthy", restartPolicy: "unless-stopped", releaseSha: "c".repeat(40) },
+        database: { name: "bodycast-db-prod", containerId: "d".repeat(64), state: "running", health: "healthy",
+          publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+        backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-app-prod", "bodycast-db-prod"] },
+        caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+        routeFile: { verified: true, servingResponse: true, maintenanceResponse: false, containsReverseProxy: true, sha256: "e".repeat(64) },
+      },
+    });
+    expect(evaluateProductionPreMaintenanceTopology(preMaintenance.writerDrain.topology).ready).toBe(true);
+    expect(evaluateProductionPreMaintenanceReadiness(preMaintenance, { now }).ready).toBe(true);
+
+    const unknownClient = structuredClone(preMaintenance);
+    unknownClient.writerDrain.topology.backendNetwork.containers.push("unknown-worker");
+    expect(evaluateProductionPreMaintenanceReadiness(unknownClient, { now }).ready).toBe(false);
+
+    const absentAppWithBackend = structuredClone(preMaintenance);
+    absentAppWithBackend.writerDrain.topology.app = { name: "bodycast-app-prod", containerId: null, imageId: null,
+      state: "absent", health: null, restartPolicy: null, releaseSha: null };
+    absentAppWithBackend.writerDrain.topology.backendNetwork.containers = ["bodycast-db-prod"];
+    absentAppWithBackend.writerDrain.topology.routeFile = { verified: true, servingResponse: false,
+      maintenanceResponse: true, containsReverseProxy: false, sha256: "e".repeat(64) };
+    expect(evaluateProductionPreMaintenanceReadiness(absentAppWithBackend, { now }).ready).toBe(false);
+
+    const stale = structuredClone(preMaintenance);
+    stale.writerDrain.observedAt = new Date(now - 31_000).toISOString();
+    expect(evaluateProductionPreMaintenanceReadiness(stale, { now }).blockers.join(" ")).toContain("database snapshot is stale");
+
+    const staleTopology = structuredClone(preMaintenance);
+    staleTopology.writerDrain.topology.observedAt = new Date(now - 31_000).toISOString();
+    expect(evaluateProductionPreMaintenanceReadiness(staleTopology, { now }).blockers.join(" ")).toContain("topology snapshot is stale");
   });
 });

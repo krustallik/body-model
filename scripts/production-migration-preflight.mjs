@@ -4,7 +4,7 @@ import path from "node:path";
 import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, PRODUCTION_MIGRATION_MANIFESTS, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
-import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
+import { evaluateProductionPreMaintenanceReadiness, evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
 import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 
 export const EXPECTED_PENDING_MIGRATIONS = ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map(({ name }) => name);
@@ -505,6 +505,7 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   for (const tableName of manifest.requiredTablesBefore) {
     if (report?.tables?.[tableName]?.exists !== true) blockers.push(`Required production baseline table ${tableName} is missing.`);
   }
+  if (report?.profileOneExists !== true) blockers.push("The preserved Profile 1 baseline is missing or could not be verified.");
   const expectedDatabase = options.expectedDatabase ?? "bodycast";
   const expectedRole = options.expectedRole ?? "bodycast";
   if (report?.identity?.database !== expectedDatabase || report?.identity?.role !== expectedRole) blockers.push("Connected database/role identity differs from the reviewed production target.");
@@ -535,14 +536,18 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (!preparedTransactionsValid) {
     blockers.push("Prepared transaction state is unknown or prepared-transaction diagnostics are malformed.");
   }
-  const writerDrain = evaluateProductionWriterDrain(report);
+  const preMaintenance = options.preMaintenance === true;
+  const writerDrain = preMaintenance
+    ? evaluateProductionPreMaintenanceReadiness(report, { now: options.now ?? Date.now(), maxAgeMs: options.maxPreMaintenanceAgeMs ?? 30_000 })
+    : evaluateProductionWriterDrain(report);
   blockers.push(...writerDrain.blockers);
   if (!/^[a-f0-9]{64}$/.test(String(report?.logicalDataFingerprint ?? ""))) {
     blockers.push("The production logical data fingerprint is missing or malformed.");
   }
 
   return {
-    readyForOwnerAuthorization: blockers.length === 0,
+    readyForOwnerAuthorization: !preMaintenance && blockers.length === 0,
+    ...(preMaintenance ? { readyForPreMaintenance: blockers.length === 0 } : {}),
     blockers,
     manifestId: manifest.id,
     expectedPending,
@@ -565,7 +570,8 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     conflictingLocks,
     preparedTransactions: Array.isArray(preparedTransactions) ? preparedTransactions : [],
     writerDrain: report?.writerDrain ?? null,
-    writerDrainReady: writerDrain.ready,
+    writerDrainReady: preMaintenance ? false : writerDrain.ready,
+    ...(preMaintenance ? { preMaintenanceTopologyReady: writerDrain.ready, preMaintenanceAppState: writerDrain.appState ?? null } : {}),
     writerDrainDigest: report?.writerDrain ? canonicalSha256(report.writerDrain) : null,
     diagnostics: { longTransactions: Array.isArray(report?.longTransactions) ? report.longTransactions : [] },
   };
@@ -711,7 +717,7 @@ async function main() {
     }
     return;
   }
-  if (mode === "--verify-release-tree" || mode === "--preflight" || mode === "--postflight") {
+  if (mode === "--verify-release-tree" || mode === "--preflight" || mode === "--pre-maintenance" || mode === "--postflight") {
     const value = (flag) => { const index = args.indexOf(flag); return index < 0 ? null : args[index + 1]; };
     const manifestId = value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id;
     const repositoryPath = value("--repository") ?? process.cwd();
@@ -729,8 +735,9 @@ async function main() {
     const reportPath = value("--report");
     const report = await readJsonInput(reportPath);
     let result;
-    if (mode === "--preflight") {
-      result = evaluateProductionPreflight(report, migrationDirectories, manifestId);
+    if (mode === "--preflight" || mode === "--pre-maintenance") {
+      const preMaintenance = mode === "--pre-maintenance";
+      result = evaluateProductionPreflight(report, migrationDirectories, manifestId, { preMaintenance });
       const manifest = getProductionMigrationManifest(manifestId);
       const integrity = [];
       const reviewedMigrations = [...new Map([
@@ -744,7 +751,8 @@ async function main() {
         if (!item.matchesManifest) result.blockers.push(`Committed migration blob ${item.name} differs from the reviewed manifest checksum.`);
       }
       result.blobIntegrity = integrity;
-      result.readyForOwnerAuthorization = result.blockers.length === 0;
+      result.readyForOwnerAuthorization = !preMaintenance && result.blockers.length === 0;
+      if (preMaintenance) result.readyForPreMaintenance = result.blockers.length === 0;
     } else {
       result = evaluateProductionPostflight(report, migrationDirectories, manifestId);
       const integrity = [];
@@ -757,16 +765,20 @@ async function main() {
       result.ready = result.blockers.length === 0;
     }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    if (mode === "--preflight" ? !result.readyForOwnerAuthorization : !result.ready) {
+    const passed = mode === "--preflight" ? result.readyForOwnerAuthorization
+      : mode === "--pre-maintenance" ? result.readyForPreMaintenance : result.ready;
+    if (!passed) {
       const blockers = Array.isArray(result.blockers) ? result.blockers.filter((blocker) => typeof blocker === "string") : [];
       const categories = safeBlockerCategories(blockers);
       const summary = categories.length ? categories.join(",") : "unclassified";
-      process.stderr.write(`${mode === "--preflight" ? "Production migration preflight" : "Production migration postflight"} failed (blocker-count=${blockers.length}; categories=${summary}).\n`);
+      const label = mode === "--preflight" ? "Production migration preflight"
+        : mode === "--pre-maintenance" ? "Production pre-maintenance preflight" : "Production migration postflight";
+      process.stderr.write(`${label} failed (blocker-count=${blockers.length}; categories=${summary}).\n`);
       process.exitCode = 1;
     }
     return;
   }
-  throw new Error("Usage: production-migration-preflight.mjs --verify-release-tree|--preflight|--postflight|--execution-integrity|--verify-restore|--verify-authorization ...");
+  throw new Error("Usage: production-migration-preflight.mjs --verify-release-tree|--preflight|--pre-maintenance|--postflight|--execution-integrity|--verify-restore|--verify-authorization ...");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

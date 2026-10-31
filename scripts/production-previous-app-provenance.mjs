@@ -6,6 +6,7 @@ import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { isHistoricalPostgresDatabaseIdentity, postgresDatabaseIdentityLegacyDigestProjection } from "./postgres-database-identity.mjs";
 import { schemaInventoryDigest, verifyRestoredBackup } from "./production-migration-preflight.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
+import { evaluateProductionPreMaintenanceReadiness } from "./production-writer-drain.mjs";
 import { renderProductionDbPreflightSql } from "./production-db-preflight.mjs";
 
 export const PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION = 2;
@@ -374,6 +375,37 @@ export function verifyPreviousAppCaptureMatchesPreflight(record, preflightResult
     previousAppProvenance: previousAppProvenanceBinding(record) };
 }
 
+export function verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(record, databaseReport, preflightResult, expectedTargetSha,
+  { now = Date.now(), maxAgeMs = 30_000 } = {}) {
+  validatePreviousAppProvenance(record, expectedTargetSha);
+  const readiness = evaluateProductionPreMaintenanceReadiness(preflightResult, { now, maxAgeMs });
+  if (preflightResult?.readyForPreMaintenance !== true || preflightResult.readyForOwnerAuthorization !== false
+    || !Array.isArray(preflightResult.blockers) || preflightResult.blockers.length !== 0
+    || preflightResult?.pendingExactlyExpected !== true
+    || !HEX_256.test(String(preflightResult.logicalDataFingerprint ?? ""))
+    || !readiness.ready) {
+    throw new Error("The exact-SHA pre-maintenance evidence is incomplete, stale, or unexpectedly authorizing.");
+  }
+  const capturedDigests = previousAppDatabaseCompatibilityDigests(databaseReport);
+  const preflightDigests = previousAppDatabaseCompatibilityDigests(preflightResult);
+  if (capturedDigests.databaseIdentityDigest !== preflightDigests.databaseIdentityDigest
+    || capturedDigests.migrationHistoryDigest !== preflightDigests.migrationHistoryDigest
+    || capturedDigests.schemaDigest !== preflightDigests.schemaDigest
+    || capturedDigests.compatibilityDigest !== preflightDigests.compatibilityDigest
+    || capturedDigests.databaseIdentityDigest !== record.preDdlDatabaseIdentityDigest
+    || capturedDigests.migrationHistoryDigest !== record.preDdlMigrationHistoryDigest
+    || capturedDigests.schemaDigest !== record.preDdlSchemaInventoryDigest
+    || capturedDigests.compatibilityDigest !== record.preDdlDatabaseCompatibilityDigest) {
+    throw new Error("Production database identity, schema, or migration state changed after the read-only pre-maintenance snapshot.");
+  }
+  const app = preflightResult.writerDrain.topology.app;
+  if (app?.containerId !== record.previousContainerId || app?.imageId !== record.previousImageId
+    || (record.previousSha !== "unavailable" && app?.releaseSha !== record.previousSha)) {
+    throw new Error("The healthy prior app changed after the read-only pre-maintenance snapshot.");
+  }
+  return { verified: true, compatibilityDigest: capturedDigests.compatibilityDigest };
+}
+
 export function rebindPreviousAppProvenanceForPreflightResume({
   record, sourceSha, targetSha, sourceRunId, sourceRunAttempt, databaseReport,
 }) {
@@ -537,8 +569,15 @@ async function readCurrentPreviousAppDatabaseReport(rootDir) {
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "capture") {
-    const [targetSha, imagePin = null] = args;
-    if (args.length > 2) throw new Error("Usage: capture <target-sha> [attempt-bound-image-pin]");
+    const [targetSha, imagePinOrFlag = null, flagOrPath = null, maybePath = null] = args;
+    const imagePin = imagePinOrFlag === "--pre-maintenance-result" ? null : imagePinOrFlag;
+    const preMaintenanceResultPath = imagePinOrFlag === "--pre-maintenance-result" ? flagOrPath
+      : flagOrPath === "--pre-maintenance-result" ? maybePath : null;
+    if (args.length > 4 || (imagePinOrFlag === "--pre-maintenance-result" && (!flagOrPath || maybePath !== null))
+      || (flagOrPath && flagOrPath !== "--pre-maintenance-result" && imagePinOrFlag !== "--pre-maintenance-result")
+      || (flagOrPath === "--pre-maintenance-result" && (!maybePath || args.length !== 4))) {
+      throw new Error("Usage: capture <target-sha> [attempt-bound-image-pin] [--pre-maintenance-result <result.json>]");
+    }
     const rootDir = process.cwd();
     const containerJson = execFileSync("bash", ["--noprofile", "--norc", "-c", "exec docker inspect bodycast-app-prod"], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
@@ -549,6 +588,10 @@ async function main() {
     const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: rootDir, encoding: "utf8" }).trim();
     const cutbackReceipt = await readVerifiedCutbackReceiptFromGitDir(gitDir, { container: containers[0], databaseReport });
     const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha, cutbackReceipt, imagePin });
+    if (preMaintenanceResultPath) {
+      const preMaintenanceResult = JSON.parse(await readFile(preMaintenanceResultPath, "utf8"));
+      verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(record, databaseReport, preMaintenanceResult, targetSha);
+    }
     process.stdout.write(serializePreviousAppProvenance(record));
     return;
   }

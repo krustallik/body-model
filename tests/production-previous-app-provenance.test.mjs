@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { createPreflightEvidence } from "../scripts/production-migration-evidence.mjs";
-import { evaluateProductionWriterDrain, PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
+import { evaluateProductionWriterDrain, PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { verifyPreviousAppMigrationCompatibility, verifyRecreatedPreviousAppRuntime } from "../scripts/production-database-cutback.mjs";
 import {
   LEGACY_PREVIOUS_APP_PROVENANCE,
@@ -27,6 +27,7 @@ import {
   validatePreviousAppProvenanceBinding,
   verifyLegacyPreviousAppRestoredCompatibility,
   verifyPreviousAppCaptureMatchesPreflight,
+  verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot,
   verifyPreviousAppCaptureMatchesLiveContainer,
   validateVerifiedCutbackReceipt,
 } from "../scripts/production-previous-app-provenance.mjs";
@@ -197,6 +198,53 @@ describe("versioned previous-app provenance", () => {
     expect(() => verifyPreviousAppCaptureMatchesPreflight(parsed,
       { ...preflightResult, migrations: [{ ...migrations[0], checksum: "f".repeat(64) }] }, targetSha))
       .toThrow(/changed before the signed preflight/);
+  });
+
+  it("rejects stale pre-maintenance evidence when DB identity, schema, migration ledger, or prior app changed", () => {
+    const logicalDataFingerprint = "f".repeat(64);
+    const observedAt = new Date().toISOString();
+    const capturedDatabase = { ...databaseReport, logicalDataFingerprint };
+    const captured = capturePreviousAppProvenance({ container: container({ "org.bodycast.release-sha": "1".repeat(40) }),
+      databaseReport: capturedDatabase, targetSha });
+    const preflight = {
+      ...capturedDatabase,
+      readyForPreMaintenance: true,
+      readyForOwnerAuthorization: false,
+      blockers: [],
+      pendingExactlyExpected: true,
+      writerDrain: {
+        schemaVersion: 1, observerPid: 1, observerApplicationName: "bodycast-production-preflight",
+        identityPolicy: "no-other-client-backends", observedAt, activeClientBackends: [],
+        topology: {
+          schemaVersion: 1, contract: PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, ready: true, blockers: [], observedAt,
+          app: { name: "bodycast-app-prod", containerId: captured.previousContainerId, imageId: captured.previousImageId,
+            state: "running", health: "healthy", restartPolicy: "unless-stopped", releaseSha: "1".repeat(40) },
+          database: { name: "bodycast-db-prod", containerId: "2".repeat(64), state: "running", health: "healthy",
+            publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+          backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-app-prod", "bodycast-db-prod"] },
+          caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+          routeFile: { verified: true, servingResponse: true, maintenanceResponse: false,
+            containsReverseProxy: true, sha256: "3".repeat(64) },
+        },
+      },
+    };
+    expect(verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured, capturedDatabase, preflight, targetSha).verified).toBe(true);
+    expect(() => verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured,
+      { ...capturedDatabase, objects: [{ ...objects[0], signature: "changed schema" }] }, preflight, targetSha))
+      .toThrow(/identity, schema, or migration state changed/);
+    expect(() => verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured,
+      { ...capturedDatabase, migrations: [{ ...migrations[0], checksum: "9".repeat(64) }] }, preflight, targetSha))
+      .toThrow(/identity, schema, or migration state changed/);
+    expect(() => verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured, capturedDatabase,
+      { ...preflight, logicalDataFingerprint: "malformed" }, targetSha)).toThrow(/incomplete, stale, or unexpectedly authorizing/);
+    const changedApp = structuredClone(preflight);
+    changedApp.writerDrain.topology.app.containerId = "a".repeat(64);
+    expect(() => verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured, capturedDatabase, changedApp, targetSha))
+      .toThrow(/prior app changed/);
+    expect(() => verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured, capturedDatabase,
+      { ...preflight, readyForOwnerAuthorization: true }, targetSha)).toThrow(/unexpectedly authorizing/);
+    expect(() => verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(captured, capturedDatabase, preflight, targetSha,
+      { now: Date.parse(observedAt) + 30_001, maxAgeMs: 30_000 })).toThrow(/incomplete, stale, or unexpectedly authorizing/);
   });
 
   it("requires exact restored schema, Prisma history, data readability, and signed preflight binding for legacy compatibility", () => {

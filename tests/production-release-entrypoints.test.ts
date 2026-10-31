@@ -34,7 +34,7 @@ describe("active production release entrypoints", () => {
   });
 
   it("keeps Auth runtime configuration owner-gated, exact-main, and non-restarting", () => {
-    const workflow = readFileSync(resolve(workflowDir, "production-auth-runtime-configure.yml"), "utf8");
+    const workflow = readFileSync(resolve(workflowDir, "production-auth-runtime-configure.yml"), "utf8").replace(/\r\n/g, "\n");
     const remote = readFileSync(resolve("scripts/production-auth-runtime-configure.sh"), "utf8");
     expect(workflow).toContain("permissions:\n  contents: read\n  actions: read");
     expect(workflow).not.toContain("id-token: write");
@@ -53,7 +53,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("secrets.BREVO_API_KEY");
     expect(workflow).toContain('StrictHostKeyChecking=yes');
     expect(workflow).toContain("BODYCAST_SCHEMA_HANDOFF_SHA256");
-    expect(workflow).toContain("BODYCAST_MIGRATION_MANIFESTS_SHA256");
+    expect(workflow).not.toContain("BODYCAST_MIGRATION_MANIFESTS_SHA256");
     expect(workflow).toContain("BODYCAST_APP_CAPABILITIES_SHA256");
     expect(remote).toContain('verify_pinned_release_file "$DEPLOY_PATH/scripts/production-schema-deploy-handoff.mjs"');
     expect(remote).toContain("mv -fT -- \"$TEMP_ENV\" \"$ENV_FILE\"");

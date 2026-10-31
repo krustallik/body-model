@@ -117,7 +117,6 @@ RUN_ATTEMPT="${BODYCAST_WORKFLOW_RUN_ATTEMPT:-}"
 RELEASE_LOCK_SHA256="${BODYCAST_RELEASE_LOCK_SHA256:-}"
 RELEASE_MARKER_SHA256="${BODYCAST_RELEASE_MARKER_SHA256:-}"
 SCHEMA_HANDOFF_SHA256="${BODYCAST_SCHEMA_HANDOFF_SHA256:-}"
-MIGRATION_MANIFESTS_SHA256="${BODYCAST_MIGRATION_MANIFESTS_SHA256:-}"
 APP_CAPABILITIES_SHA256="${BODYCAST_APP_CAPABILITIES_SHA256:-}"
 PROD_COMPOSE_SHA256="${BODYCAST_PROD_COMPOSE_SHA256:-}"
 unset BODYCAST_DEPLOY_PATH_B64 BODYCAST_APP_HOST_B64 BODYCAST_OWNER_EMAIL_B64 BODYCAST_BREVO_API_KEY_B64
@@ -129,7 +128,6 @@ unset BODYCAST_DEPLOY_PATH_B64 BODYCAST_APP_HOST_B64 BODYCAST_OWNER_EMAIL_B64 BO
   && "$RELEASE_LOCK_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$RELEASE_MARKER_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$SCHEMA_HANDOFF_SHA256" =~ ^[0-9a-f]{64}$ \
-  && "$MIGRATION_MANIFESTS_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$APP_CAPABILITIES_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$PROD_COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$BREVO_API_KEY" =~ ^[A-Za-z0-9_-]{20,}$ ]] || {
@@ -174,7 +172,6 @@ bodycast_acquire_production_release_lock
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-release-lock.sh" "$RELEASE_LOCK_SHA256" "lock" || exit 1
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-release-marker.sh" "$RELEASE_MARKER_SHA256" "marker" || exit 1
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-schema-deploy-handoff.mjs" "$SCHEMA_HANDOFF_SHA256" "schema handoff validator" || exit 1
-verify_pinned_release_file "$DEPLOY_PATH/scripts/production-migration-manifests.mjs" "$MIGRATION_MANIFESTS_SHA256" "migration manifest dependency" || exit 1
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-app-capabilities.mjs" "$APP_CAPABILITIES_SHA256" "app capabilities dependency" || exit 1
 verify_pinned_release_file "$DEPLOY_PATH/docker-compose.prod.yml" "$PROD_COMPOSE_SHA256" "production Compose" || exit 1
 

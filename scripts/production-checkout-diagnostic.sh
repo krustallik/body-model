@@ -17,6 +17,132 @@ bool() {
   if [[ "$1" == 1 ]]; then printf 'yes'; else printf 'no'; fi
 }
 
+candidate_compose_matches_running_app() {
+  local compose_sha compose_output runtime_output compose_b64 runtime_b64 runtime_environment_match
+  compose_sha="$(sha256sum "$DEPLOY_PATH/docker-compose.prod.yml" 2>/dev/null | awk '{print $1}')" || return 1
+  [[ "$compose_sha" == "$COMPOSE_FILE_SHA256" ]] || return 1
+  compose_output="$(cd -- "$DEPLOY_PATH" && docker compose -f docker-compose.prod.yml config --format json 2>/dev/null)" || return 1
+  runtime_output="$(docker inspect --format '{{json .Config.Env}}' bodycast-app-prod 2>/dev/null)" || return 1
+  compose_b64="$(printf '%s' "$compose_output" | base64 -w0)" || return 1
+  runtime_b64="$(printf '%s' "$runtime_output" | base64 -w0)" || return 1
+  runtime_environment_match="$(
+    printf '%s\n%s\n' "$compose_b64" "$runtime_b64" | node --input-type=module -e '
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+try {
+  const [composeB64, runtimeB64, ...extra] = input.trim().split(/\r?\n/);
+  if (!composeB64 || !runtimeB64 || extra.length) throw new Error("malformed");
+  const composeEnvironment = JSON.parse(Buffer.from(composeB64, "base64").toString("utf8"))?.services?.app?.environment;
+  const runtimeEnvironment = JSON.parse(Buffer.from(runtimeB64, "base64").toString("utf8"));
+  if (!composeEnvironment || typeof composeEnvironment !== "object" || Array.isArray(composeEnvironment) || !Array.isArray(runtimeEnvironment)) {
+    throw new Error("malformed");
+  }
+  const runtime = new Map(runtimeEnvironment.map((item) => {
+    if (typeof item !== "string" || !item.includes("=")) throw new Error("malformed");
+    const separator = item.indexOf("=");
+    return [item.slice(0, separator), item.slice(separator + 1)];
+  }));
+  const keys = ["DATABASE_URL", "NODE_ENV", "IOS_SHORTCUT_API_KEY", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL",
+    "AUTH_TRUSTED_ORIGINS", "AUTH_TRUSTED_PROXIES", "AUTH_PROFILE_ONE_OWNER_EMAIL", "AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED",
+    "AUTH_PUBLIC_REGISTRATION_ENABLED", "BREVO_API_KEY", "BREVO_SENDER_EMAIL", "BREVO_SENDER_NAME", "LEGACY_IOS_SHORTCUT_ENABLED"];
+  const matches = keys.every((key) => {
+    const candidate = composeEnvironment[key] == null ? undefined : String(composeEnvironment[key]);
+    return candidate === runtime.get(key);
+  });
+  process.stdout.write(matches ? "yes" : "no");
+} catch {
+  process.stdout.write("no");
+}
+    '
+  )" || return 1
+  [[ "$runtime_environment_match" == yes ]]
+}
+
+read_only_auth_runtime_diagnostic() {
+  local expected_owner_email_b64
+  expected_owner_email_b64="$(printf '%s' "$EXPECTED_OWNER_EMAIL_B64" | base64 --decode 2>/dev/null | base64 -w0)" || return 1
+  {
+    printf 'const expectedOwnerEmail = Buffer.from("%s", "base64").toString("utf8");\n' "$expected_owner_email_b64"
+    cat <<'NODE'
+try {
+  const { isIP } = await import("node:net");
+  const env = process.env;
+  const expectedOrigin = `https://${env.BODYCAST_AUTH_DIAGNOSTIC_APP_HOST}`;
+  const placeholders = ["change_me", "replace_with_long_random_secret", "replace_with_strong_database_password", "replace_with_at_least_32_random_characters", "bodycast-local-development-only-secret-change-me", "bodycast-ci-only-auth-secret-not-for-deployment", "integration-test-secret", "fixture-better-auth-secret-0123456789", "fixture-ios-shortcut-secret", "isolated-test-shortcut-key-000000", "isolated-auth-test-secret-with-32-characters", "isolated-work-interval-auth-secret-with-32-characters", "a-long-test-secret", "a-long-model-test-secret"];
+  // Mirrors the practical email pattern used by Zod in src/lib/env.ts.
+  const emailPattern = /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+  const emailValid = (value) => typeof value === "string" && value === value.trim() && emailPattern.test(value);
+  const proxyValid = (entry) => {
+    const slash = entry.lastIndexOf("/");
+    const address = slash === -1 ? entry : entry.slice(0, slash);
+    const family = isIP(address);
+    if (!family) return false;
+    if (slash === -1) return true;
+    const prefixText = entry.slice(slash + 1);
+    if (entry.indexOf("/") !== slash || !/^\d+$/.test(prefixText)) return false;
+    const prefix = Number(prefixText);
+    return prefix > 0 && prefix <= (family === 4 ? 32 : 128);
+  };
+  const validOrigin = (value) => {
+    try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password; }
+    catch { return false; }
+  };
+  const origin = (() => { try { return new URL(env.BETTER_AUTH_URL ?? ""); } catch { return null; } })();
+  const origins = (env.AUTH_TRUSTED_ORIGINS ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+  const proxies = (env.AUTH_TRUSTED_PROXIES ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+  const checks = {
+    node_env_production: env.NODE_ENV === "production",
+    secret_valid: typeof env.BETTER_AUTH_SECRET === "string" && env.BETTER_AUTH_SECRET.length >= 32 && !placeholders.includes(env.BETTER_AUTH_SECRET),
+    url_matches: origin?.origin === expectedOrigin && origin.pathname === "/" && !origin.username && !origin.password,
+    origins_valid: origins.every(validOrigin) && origins.every((item) => { try { return new URL(item).origin === expectedOrigin; } catch { return false; } }),
+    proxies_valid: proxies.length > 0 && proxies.every(proxyValid),
+    owner_email_valid: emailValid(env.AUTH_PROFILE_ONE_OWNER_EMAIL),
+    owner_email_matches: emailValid(env.AUTH_PROFILE_ONE_OWNER_EMAIL)
+      && emailValid(expectedOwnerEmail) && env.AUTH_PROFILE_ONE_OWNER_EMAIL.trim().toLowerCase() === expectedOwnerEmail.trim().toLowerCase(),
+    profile_one_bootstrap_enabled: env.AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED === "true",
+    public_registration_disabled: env.AUTH_PUBLIC_REGISTRATION_ENABLED === undefined || env.AUTH_PUBLIC_REGISTRATION_ENABLED === "false",
+    brevo_configured: typeof env.BREVO_API_KEY === "string" && env.BREVO_API_KEY.length > 0
+      && emailValid(env.BREVO_SENDER_EMAIL) && typeof env.BREVO_SENDER_NAME === "string"
+      && env.BREVO_SENDER_NAME.trim().length > 0 && env.BREVO_SENDER_NAME.length <= 100,
+    legacy_shortcut_enabled: env.LEGACY_IOS_SHORTCUT_ENABLED === "true",
+    shortcut_key_valid: typeof env.IOS_SHORTCUT_API_KEY === "string" && env.IOS_SHORTCUT_API_KEY.length >= 16 && !placeholders.includes(env.IOS_SHORTCUT_API_KEY),
+  };
+  const staticReady = Object.values(checks).every(Boolean);
+  let brevoApi = "not_checked";
+  let senderActive = false;
+  if (staticReady) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const headers = { "api-key": env.BREVO_API_KEY, accept: "application/json" };
+      const [accountResponse, sendersResponse] = await Promise.all(["account", "senders"].map((path) => fetch(`https://api.brevo.com/v3/${path}`, {
+        method: "GET", headers, redirect: "error", cache: "no-store", signal: controller.signal,
+      })));
+      if (accountResponse.ok && sendersResponse.ok) {
+        const senders = await sendersResponse.json();
+        senderActive = Array.isArray(senders?.senders) && senders.senders.some((sender) => typeof sender?.email === "string"
+          && sender.email.toLowerCase() === env.BREVO_SENDER_EMAIL.toLowerCase() && sender.name === env.BREVO_SENDER_NAME && sender.active === true);
+        brevoApi = "verified";
+      } else {
+        brevoApi = [accountResponse.status, sendersResponse.status].some((status) => status === 401 || status === 403) ? "rejected" : "unavailable";
+      }
+    } catch {
+      brevoApi = "unavailable";
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  for (const [key, value] of Object.entries(checks)) process.stdout.write(`auth_runtime_${key}=${value ? "yes" : "no"}\n`);
+  process.stdout.write(`auth_runtime_brevo_api=${brevoApi}\nauth_runtime_brevo_sender_active=${senderActive ? "yes" : "no"}\n`);
+  process.stdout.write(`auth_runtime_ready=${staticReady && brevoApi === "verified" && senderActive ? "yes" : "no"}\n`);
+} catch {
+  process.stdout.write("auth_runtime_ready=no\n");
+}
+NODE
+  } | docker exec --interactive --env "BODYCAST_AUTH_DIAGNOSTIC_APP_HOST=$APP_HOST" \
+    bodycast-app-prod node --input-type=module 2>/dev/null
+}
+
 count_nul_records() {
   local count=0 record
   while IFS= read -r -d '' record; do
@@ -504,6 +630,15 @@ if [[ "$DEPLOY_PATH" != /* || "$DEPLOY_PATH" == *$'\n'* || "$DEPLOY_PATH" == *$'
   emit diagnostic_status invalid_path_input
   exit 2
 fi
+COMPOSE_FILE_SHA256="${COMPOSE_FILE_SHA256:-}"
+if [[ ! "$COMPOSE_FILE_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+  emit diagnostic_status invalid_compose_file_hash_input
+  exit 2
+fi
+if [[ ! "${EXPECTED_OWNER_EMAIL_B64:-}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+  emit diagnostic_status invalid_owner_email_expectation_input
+  exit 2
+fi
 
 DEPLOY_EXISTS=0
 DEPLOY_IS_DIR=0
@@ -705,6 +840,33 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
       production_db_ready=true
     fi
   done
+  auth_runtime_candidate_compose_match=no
+  if candidate_compose_matches_running_app; then auth_runtime_candidate_compose_match=yes; fi
+  emit auth_runtime_candidate_compose_match "$auth_runtime_candidate_compose_match"
+  if [[ "$auth_runtime_candidate_compose_match" == yes \
+    && "$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' bodycast-app-prod 2>/dev/null)" == "running|healthy" ]]; then
+    auth_runtime_output="$(read_only_auth_runtime_diagnostic)"
+    auth_runtime_status=$?
+    auth_runtime_valid=true
+    auth_runtime_line_count=0
+    while IFS= read -r auth_runtime_line; do
+      if [[ ! "$auth_runtime_line" =~ ^auth_runtime_[a-z_]+=(yes|no|verified|not_checked|rejected|unavailable)$ ]]; then
+        auth_runtime_valid=false
+        break
+      fi
+      ((auth_runtime_line_count += 1))
+    done <<< "$auth_runtime_output"
+    if [[ "$auth_runtime_status" -eq 0 && "$auth_runtime_valid" == true && "$auth_runtime_line_count" -eq 15 ]]; then
+      emit auth_runtime_diagnostic_status available
+      printf '%s\n' "$auth_runtime_output"
+    else
+      emit auth_runtime_diagnostic_status unavailable
+      emit auth_runtime_ready no
+    fi
+  else
+    emit auth_runtime_diagnostic_status unavailable
+    emit auth_runtime_ready no
+  fi
   deploy_rollback_image="bodycast-app:deploy-rollback"
   if deploy_rollback_rows="$(docker image ls --no-trunc --format '{{.ID}}' "$deploy_rollback_image" 2>/dev/null)"; then
     if [[ -z "$deploy_rollback_rows" ]]; then

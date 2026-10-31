@@ -94,7 +94,7 @@ jobs:
             echo ""
             echo "- exact current-main SHA: `$MAIN_TIP`"
             echo "- current-main CI: $CI_URL"
-            echo "- production scope: read-only checkout/container identity and health, restricted aggregate energy inventory, Workout 56 shadow/canonical-input fingerprint and reconciliation-writer-target flags, fixed rollback-image pin inspection, and public maintenance/API/UI probes; raw shadow payload is held only in a mode-600 temporary capture and sanitized before logs; no database writes, Docker lifecycle/configuration changes, checkout, fetch, Caddy, or traffic operations"
+            echo "- production scope: read-only checkout/container identity and health, candidate Compose/runtime config equality, sanitized Auth/Brevo/Shortcut runtime readiness including exact owner-email binding, Brevo GET-only credential/sender check, restricted aggregate energy inventory, Workout 56 shadow/canonical-input fingerprint and reconciliation-writer-target flags, fixed rollback-image pin inspection, and public maintenance/API/UI probes; raw shadow payload is held only in a mode-600 temporary capture and sanitized before logs; no database writes, Docker lifecycle/configuration changes, checkout, fetch, Caddy, or traffic operations"
           } >> "$GITHUB_STEP_SUMMARY"
 
   diagnose:
@@ -175,6 +175,7 @@ jobs:
           SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
+          AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED: ${{ secrets.AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
@@ -184,6 +185,17 @@ jobs:
           }
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          EXPECTED_OWNER_EMAIL_NORMALIZED="$(printf '%s' "$AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+          if ! EXPECTED_OWNER_EMAIL_NORMALIZED="$EXPECTED_OWNER_EMAIL_NORMALIZED" node --input-type=module <<'NODE'
+          const emailPattern = /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+          if (!emailPattern.test(process.env.EXPECTED_OWNER_EMAIL_NORMALIZED ?? "")) process.exit(1);
+          NODE
+          then
+            echo "::error::Protected owner-email expectation is missing or invalid."; exit 1;
+          fi
+          EXPECTED_OWNER_EMAIL_B64="$(printf '%s' "$EXPECTED_OWNER_EMAIL_NORMALIZED" | base64 -w0)"
+          COMPOSE_FILE_SHA256="$(sha256sum docker-compose.prod.yml | awk '{print $1}')"
+          [[ "$COMPOSE_FILE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Candidate Compose file hash is unavailable."; exit 1; }
           DIAGNOSTIC_OUTPUT="$RUNNER_TEMP/bodycast-checkout-diagnostic-output"
           umask 077
           : > "$DIAGNOSTIC_OUTPUT"
@@ -192,6 +204,8 @@ jobs:
           {
             printf 'DEPLOY_PATH_B64=%s\n' "$DEPLOY_PATH_B64"
             printf 'APP_HOST_B64=%s\n' "$APP_HOST_B64"
+            printf 'COMPOSE_FILE_SHA256=%s\n' "$COMPOSE_FILE_SHA256"
+            printf 'EXPECTED_OWNER_EMAIL_B64=%s\n' "$EXPECTED_OWNER_EMAIL_B64"
             cat scripts/production-checkout-diagnostic.sh
           } | timeout 5m ssh -T -p "$SSH_PORT" \
             -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \

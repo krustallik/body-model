@@ -17,6 +17,16 @@ if [[ "$1" == info ]]; then
   [[ "${DOCKER_INFO_FAIL:-0}" == 0 ]] || exit 91
   exit 0
 fi
+if [[ "$1" == compose ]]; then
+  [[ "$#" == 6 && "${2:-}" == -f && "${3:-}" == docker-compose.prod.yml \
+    && "${4:-}" == config && "${5:-}" == --format && "${6:-}" == json ]] || exit 89
+  if [[ "${DOCKER_COMPOSE_ENV_MISMATCH:-0}" == 1 ]]; then
+    sed "s/$AUTH_TEST_BETTER_AUTH_SECRET/different-secret/" "$AUTH_COMPOSE_CONFIG"
+  else
+    cat "$AUTH_COMPOSE_CONFIG"
+  fi
+  exit 0
+fi
 if [[ "$1" == image ]]; then
   case "${2:-}" in
     ls)
@@ -55,6 +65,72 @@ if [[ "$1" == ps ]]; then
 fi
 if [[ "$1" == exec ]]; then
   [[ "${DOCKER_EXEC_FAIL:-0}" == 0 ]] || exit 99
+  if [[ "${5:-}" == bodycast-app-prod && "${6:-}" == node && "${7:-}" == --input-type=module ]]; then
+    [[ "$#" == 7 && "${2:-}" == --interactive && "${3:-}" == --env \
+      && "${4:-}" == BODYCAST_AUTH_DIAGNOSTIC_APP_HOST=* ]] || exit 98
+    cat > "$AUTH_DIAG_INPUT"
+    diagnostic_host="${4#BODYCAST_AUTH_DIAGNOSTIC_APP_HOST=}"
+    {
+      cat <<'MOCK_FETCH'
+globalThis.__bodycastDiagnosticCalls = [];
+if (process.env.AUTH_RUNTIME_FIXTURE === "missing_secret") delete process.env.BETTER_AUTH_SECRET;
+if (process.env.AUTH_RUNTIME_FIXTURE === "development_secret") process.env.BETTER_AUTH_SECRET = "bodycast-local-development-only-secret-change-me";
+if (process.env.AUTH_RUNTIME_FIXTURE === "ci_auth_secret") process.env.BETTER_AUTH_SECRET = "bodycast-ci-only-auth-secret-not-for-deployment";
+if (process.env.AUTH_RUNTIME_FIXTURE === "ci_shortcut_key") process.env.IOS_SHORTCUT_API_KEY = "integration-test-secret";
+if (process.env.AUTH_RUNTIME_FIXTURE === "committed_fixture_secret") process.env.BETTER_AUTH_SECRET = "fixture-better-auth-secret-0123456789";
+if (process.env.AUTH_RUNTIME_FIXTURE === "committed_fixture_shortcut") process.env.IOS_SHORTCUT_API_KEY = "fixture-ios-shortcut-secret";
+if (process.env.AUTH_RUNTIME_FIXTURE === "isolated_auth_secret") process.env.BETTER_AUTH_SECRET = "isolated-auth-test-secret-with-32-characters";
+if (process.env.AUTH_RUNTIME_FIXTURE === "isolated_work_secret") process.env.BETTER_AUTH_SECRET = "isolated-work-interval-auth-secret-with-32-characters";
+if (process.env.AUTH_RUNTIME_FIXTURE === "isolated_shortcut_key") process.env.IOS_SHORTCUT_API_KEY = "isolated-test-shortcut-key-000000";
+if (process.env.AUTH_RUNTIME_FIXTURE === "short_test_shortcut_key") process.env.IOS_SHORTCUT_API_KEY = "a-long-test-secret";
+if (process.env.AUTH_RUNTIME_FIXTURE === "model_test_shortcut_key") process.env.IOS_SHORTCUT_API_KEY = "a-long-model-test-secret";
+if (process.env.AUTH_RUNTIME_FIXTURE === "bad_proxy") process.env.AUTH_TRUSTED_PROXIES = "999.9.9.9/32";
+if (process.env.AUTH_RUNTIME_FIXTURE === "signup_enabled") process.env.AUTH_PUBLIC_REGISTRATION_ENABLED = "true";
+if (process.env.AUTH_RUNTIME_FIXTURE === "signup_invalid") process.env.AUTH_PUBLIC_REGISTRATION_ENABLED = "disabled";
+if (process.env.AUTH_RUNTIME_FIXTURE === "legacy_disabled") process.env.LEGACY_IOS_SHORTCUT_ENABLED = "false";
+if (process.env.AUTH_RUNTIME_FIXTURE === "owner_mismatch") process.env.AUTH_PROFILE_ONE_OWNER_EMAIL = "different@example.test";
+if (process.env.AUTH_RUNTIME_FIXTURE === "owner_double_dot") process.env.AUTH_PROFILE_ONE_OWNER_EMAIL = "owner@bodycast..com";
+if (process.env.AUTH_RUNTIME_FIXTURE === "owner_one_letter_tld") process.env.AUTH_PROFILE_ONE_OWNER_EMAIL = "owner@bodycast.c";
+if (process.env.AUTH_RUNTIME_FIXTURE === "sender_double_dot") process.env.BREVO_SENDER_EMAIL = "sender@bodycast..com";
+globalThis.fetch = async (url, options = {}) => {
+  const method = options.method ?? "GET";
+  globalThis.__bodycastDiagnosticCalls.push([String(url), method]);
+  if (method !== "GET" || options.headers?.["api-key"] !== process.env.BREVO_API_KEY) return new Response("", { status: 401 });
+  if (process.env.AUTH_RUNTIME_FIXTURE === "brevo_rejected") return new Response("", { status: 401 });
+  if (String(url) === "https://api.brevo.com/v3/account") return new Response("{}", { status: 200 });
+  if (String(url) === "https://api.brevo.com/v3/senders") {
+    const active = process.env.AUTH_RUNTIME_FIXTURE !== "sender_inactive";
+    return new Response(JSON.stringify({ senders: [{ email: process.env.BREVO_SENDER_EMAIL, name: process.env.BREVO_SENDER_NAME, active }] }), { status: 200 });
+  }
+  return new Response("", { status: 404 });
+};
+process.on("beforeExit", () => {
+  const calls = globalThis.__bodycastDiagnosticCalls;
+  const shouldCheckBrevo = !["missing_secret", "development_secret", "ci_auth_secret", "ci_shortcut_key", "committed_fixture_secret", "committed_fixture_shortcut", "isolated_auth_secret", "isolated_work_secret", "isolated_shortcut_key", "short_test_shortcut_key", "model_test_shortcut_key", "bad_proxy", "signup_enabled", "signup_invalid", "legacy_disabled", "owner_mismatch", "owner_double_dot", "owner_one_letter_tld", "sender_double_dot"].includes(process.env.AUTH_RUNTIME_FIXTURE);
+  if (calls.length !== (shouldCheckBrevo ? 2 : 0) || calls.some(([url, method]) => method !== "GET"
+    || !["https://api.brevo.com/v3/account", "https://api.brevo.com/v3/senders"].includes(url))) process.exitCode = 93;
+});
+MOCK_FETCH
+      cat "$AUTH_DIAG_INPUT"
+    } | env \
+      BODYCAST_AUTH_DIAGNOSTIC_APP_HOST="$diagnostic_host" \
+      NODE_ENV=production \
+      BETTER_AUTH_SECRET="$AUTH_TEST_BETTER_AUTH_SECRET" \
+      BETTER_AUTH_URL="https://$diagnostic_host" \
+      AUTH_TRUSTED_ORIGINS="https://$diagnostic_host" \
+      AUTH_TRUSTED_PROXIES=172.20.0.1/32 \
+      AUTH_PROFILE_ONE_OWNER_EMAIL=owner@example.test \
+      AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED=true \
+      AUTH_PUBLIC_REGISTRATION_ENABLED=false \
+      BREVO_API_KEY=fixture-brevo-api-secret \
+      BREVO_SENDER_EMAIL=sender@example.test \
+      BREVO_SENDER_NAME=BodyCast \
+      LEGACY_IOS_SHORTCUT_ENABLED=true \
+      IOS_SHORTCUT_API_KEY="$AUTH_TEST_SHORTCUT_KEY" \
+      AUTH_RUNTIME_FIXTURE="${AUTH_RUNTIME_FIXTURE:-ready}" \
+      node --input-type=module
+    exit $?
+  fi
   [[ "$#" == 7 && "${2:-}" == --interactive && "${3:-}" == bodycast-db-prod \
     && "${4:-}" == bash && "${5:-}" == -s && "${6:-}" == -- \
     && "${7:-}" == 172.20.0.2 ]] || exit 98
@@ -99,6 +175,16 @@ container="${@: -1}"
 if [[ "$container" == bodycast-db-prod && "${2:-}" == --format \
   && "${3:-}" == *NetworkSettings.Networks* ]]; then
   printf '%s\n' '172.20.0.2'
+  exit 0
+fi
+if [[ "$container" == bodycast-app-prod && "${2:-}" == --format \
+  && "${3:-}" == "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" ]]; then
+  printf '%s\n' 'running|healthy'
+  exit 0
+fi
+if [[ "$container" == bodycast-app-prod && "${2:-}" == --format \
+  && "${3:-}" == '{{json .Config.Env}}' ]]; then
+  cat "$AUTH_RUNTIME_ENV"
   exit 0
 fi
 case "$container" in
@@ -154,9 +240,50 @@ mkdir -p "$TEST_REPO"
 git -C "$TEST_REPO" init --quiet
 git -C "$TEST_REPO" config user.name 'BodyCast diagnostic test'
 git -C "$TEST_REPO" config user.email 'diagnostic-test@example.invalid'
+git -C "$TEST_REPO" config core.autocrlf false
 printf 'tracked baseline\n' > "$TEST_REPO/tracked.txt"
-git -C "$TEST_REPO" add tracked.txt
+cp "$REPO_ROOT/docker-compose.prod.yml" "$TEST_REPO/docker-compose.prod.yml"
+git -C "$TEST_REPO" add tracked.txt docker-compose.prod.yml
 git -C "$TEST_REPO" commit --quiet -m 'fixture baseline'
+
+AUTH_TEST_BETTER_AUTH_SECRET="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')"
+AUTH_TEST_SHORTCUT_KEY="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(24).toString("hex"))')"
+AUTH_COMPOSE_CONFIG="$FIXTURE_ROOT/auth-compose-config.json" \
+AUTH_RUNTIME_ENV="$FIXTURE_ROOT/auth-runtime-env.json" \
+AUTH_TEST_BETTER_AUTH_SECRET="$AUTH_TEST_BETTER_AUTH_SECRET" AUTH_TEST_SHORTCUT_KEY="$AUTH_TEST_SHORTCUT_KEY" \
+  node --input-type=module <<'NODE'
+import { writeFileSync } from "node:fs";
+const environment = {
+  DATABASE_URL: "postgresql://bodycast:fixture-database-password@db:5432/bodycast?schema=public",
+  NODE_ENV: "production",
+  IOS_SHORTCUT_API_KEY: process.env.AUTH_TEST_SHORTCUT_KEY,
+  BETTER_AUTH_SECRET: process.env.AUTH_TEST_BETTER_AUTH_SECRET,
+  BETTER_AUTH_URL: "https://bodycast.example.test",
+  AUTH_TRUSTED_ORIGINS: "https://bodycast.example.test",
+  AUTH_TRUSTED_PROXIES: "172.20.0.1/32",
+  AUTH_PROFILE_ONE_OWNER_EMAIL: "owner@example.test",
+  AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED: "true",
+  AUTH_PUBLIC_REGISTRATION_ENABLED: "false",
+  BREVO_API_KEY: "fixture-brevo-api-secret",
+  BREVO_SENDER_EMAIL: "sender@example.test",
+  BREVO_SENDER_NAME: "BodyCast",
+  LEGACY_IOS_SHORTCUT_ENABLED: "true",
+};
+writeFileSync(process.env.AUTH_COMPOSE_CONFIG, JSON.stringify({ services: { app: { environment } } }));
+writeFileSync(process.env.AUTH_RUNTIME_ENV, JSON.stringify(Object.entries(environment).map(([key, value]) => `${key}=${value}`)));
+NODE
+
+trimmed_owner_email="$(printf '%s' '  OWNER@example.test  ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+[[ "$trimmed_owner_email" == owner@example.test ]] || { echo 'Owner expectation normalization must trim and lowercase.' >&2; exit 1; }
+embedded_newline_owner_email="$(printf 'owner@example.\ncom' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+if EXPECTED_OWNER_EMAIL_NORMALIZED="$embedded_newline_owner_email" node --input-type=module <<'NODE'
+const emailPattern = /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+if (!emailPattern.test(process.env.EXPECTED_OWNER_EMAIL_NORMALIZED ?? "")) process.exit(1);
+NODE
+then
+  echo 'Embedded line breaks in owner expectation must remain invalid.' >&2
+  exit 1
+fi
 
 assert_field() {
   local report="$1" field="$2" expected="$3" actual
@@ -181,14 +308,23 @@ run_inspector() {
     DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
     DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
+    DOCKER_COMPOSE_ENV_MISMATCH="${DOCKER_COMPOSE_ENV_MISMATCH:-0}" \
     DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
+    AUTH_COMPOSE_CONFIG="$FIXTURE_ROOT/auth-compose-config.json" \
+    AUTH_RUNTIME_ENV="$FIXTURE_ROOT/auth-runtime-env.json" \
+    AUTH_TEST_BETTER_AUTH_SECRET="$AUTH_TEST_BETTER_AUTH_SECRET" \
+    AUTH_TEST_SHORTCUT_KEY="$AUTH_TEST_SHORTCUT_KEY" \
+    AUTH_RUNTIME_FIXTURE="${AUTH_RUNTIME_FIXTURE:-ready}" \
+    AUTH_DIAG_INPUT="$FIXTURE_ROOT/auth-diagnostic-input" \
     FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
     FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
     FIXTURE_UI_FINAL_STATUS="${FIXTURE_UI_FINAL_STATUS:-200}" \
     FIXTURE_UI_CONTENT_TYPE="${FIXTURE_UI_CONTENT_TYPE:-text/html; charset=utf-8}" \
     FIXTURE_UI_REDIRECT_LOCATION="${FIXTURE_UI_REDIRECT_LOCATION:-/login}" \
     APP_HOST_B64="$(printf '%s' 'bodycast.example.test' | base64 -w0)" \
+    COMPOSE_FILE_SHA256="${COMPOSE_FILE_SHA256:-$(sha256sum "$REPO_ROOT/docker-compose.prod.yml" | awk '{print $1}')}" \
+    EXPECTED_OWNER_EMAIL_B64="$(printf '%s' 'owner@example.test' | base64 -w0)" \
     DEPLOY_PATH_B64="$(printf '%s' "$path" | base64 -w0)" bash "$INSPECTOR"
 }
 
@@ -212,6 +348,21 @@ assert_field "$CLEAN_REPORT" bodycast_app_prod_found yes
 assert_field "$CLEAN_REPORT" bodycast_app_prod_state running
 assert_field "$CLEAN_REPORT" bodycast_app_prod_health healthy
 assert_field "$CLEAN_REPORT" bodycast_app_prod_release_sha 1111111111111111111111111111111111111111
+assert_field "$CLEAN_REPORT" auth_runtime_diagnostic_status available
+assert_field "$CLEAN_REPORT" auth_runtime_candidate_compose_match yes
+assert_field "$CLEAN_REPORT" auth_runtime_secret_valid yes
+assert_field "$CLEAN_REPORT" auth_runtime_url_matches yes
+assert_field "$CLEAN_REPORT" auth_runtime_origins_valid yes
+assert_field "$CLEAN_REPORT" auth_runtime_proxies_valid yes
+assert_field "$CLEAN_REPORT" auth_runtime_owner_email_valid yes
+assert_field "$CLEAN_REPORT" auth_runtime_owner_email_matches yes
+assert_field "$CLEAN_REPORT" auth_runtime_profile_one_bootstrap_enabled yes
+assert_field "$CLEAN_REPORT" auth_runtime_public_registration_disabled yes
+assert_field "$CLEAN_REPORT" auth_runtime_brevo_api verified
+assert_field "$CLEAN_REPORT" auth_runtime_brevo_sender_active yes
+assert_field "$CLEAN_REPORT" auth_runtime_legacy_shortcut_enabled yes
+assert_field "$CLEAN_REPORT" auth_runtime_shortcut_key_valid yes
+assert_field "$CLEAN_REPORT" auth_runtime_ready yes
 assert_field "$CLEAN_REPORT" bodycast_db_prod_health healthy
 assert_field "$CLEAN_REPORT" gymbeam_caddy_state running
 assert_field "$CLEAN_REPORT" deploy_rollback_pin_state present
@@ -276,6 +427,75 @@ if [[ "$CLEAN_REPORT" == *'rawBody'* || "$CLEAN_REPORT" == *'sourceId'* || "$CLE
   echo 'Energy acceptance diagnostic exposed row-level or credential data.' >&2
   exit 1
 fi
+if [[ "$CLEAN_REPORT" == *"$AUTH_TEST_BETTER_AUTH_SECRET"* || "$CLEAN_REPORT" == *"$AUTH_TEST_SHORTCUT_KEY"* \
+  || "$CLEAN_REPORT" == *'fixture-brevo-api-secret'* \
+  || "$CLEAN_REPORT" == *'fixture-ios-shortcut-secret'* || "$CLEAN_REPORT" == *'owner@example.test'* \
+  || "$CLEAN_REPORT" == *'sender@example.test'* ]]; then
+  echo 'Auth runtime diagnostic exposed a secret or email value.' >&2
+  exit 1
+fi
+
+AUTH_SECRET_MISSING_REPORT="$(AUTH_RUNTIME_FIXTURE=missing_secret run_inspector "$TEST_REPO")"
+assert_field "$AUTH_SECRET_MISSING_REPORT" auth_runtime_secret_valid no
+assert_field "$AUTH_SECRET_MISSING_REPORT" auth_runtime_brevo_api not_checked
+assert_field "$AUTH_SECRET_MISSING_REPORT" auth_runtime_ready no
+AUTH_DEVELOPMENT_SECRET_REPORT="$(AUTH_RUNTIME_FIXTURE=development_secret run_inspector "$TEST_REPO")"
+assert_field "$AUTH_DEVELOPMENT_SECRET_REPORT" auth_runtime_secret_valid no
+assert_field "$AUTH_DEVELOPMENT_SECRET_REPORT" auth_runtime_ready no
+AUTH_CI_SECRET_REPORT="$(AUTH_RUNTIME_FIXTURE=ci_auth_secret run_inspector "$TEST_REPO")"
+assert_field "$AUTH_CI_SECRET_REPORT" auth_runtime_secret_valid no
+assert_field "$AUTH_CI_SECRET_REPORT" auth_runtime_ready no
+AUTH_CI_SHORTCUT_KEY_REPORT="$(AUTH_RUNTIME_FIXTURE=ci_shortcut_key run_inspector "$TEST_REPO")"
+assert_field "$AUTH_CI_SHORTCUT_KEY_REPORT" auth_runtime_shortcut_key_valid no
+assert_field "$AUTH_CI_SHORTCUT_KEY_REPORT" auth_runtime_ready no
+for placeholder_case in committed_fixture_secret committed_fixture_shortcut isolated_auth_secret isolated_work_secret isolated_shortcut_key short_test_shortcut_key model_test_shortcut_key; do
+  placeholder_report="$(AUTH_RUNTIME_FIXTURE="$placeholder_case" run_inspector "$TEST_REPO")"
+  if [[ "$placeholder_case" == *_secret ]]; then
+    assert_field "$placeholder_report" auth_runtime_secret_valid no
+  else
+    assert_field "$placeholder_report" auth_runtime_shortcut_key_valid no
+  fi
+  assert_field "$placeholder_report" auth_runtime_brevo_api not_checked
+  assert_field "$placeholder_report" auth_runtime_ready no
+done
+AUTH_PROXY_INVALID_REPORT="$(AUTH_RUNTIME_FIXTURE=bad_proxy run_inspector "$TEST_REPO")"
+assert_field "$AUTH_PROXY_INVALID_REPORT" auth_runtime_proxies_valid no
+assert_field "$AUTH_PROXY_INVALID_REPORT" auth_runtime_ready no
+AUTH_PUBLIC_SIGNUP_REPORT="$(AUTH_RUNTIME_FIXTURE=signup_enabled run_inspector "$TEST_REPO")"
+assert_field "$AUTH_PUBLIC_SIGNUP_REPORT" auth_runtime_public_registration_disabled no
+assert_field "$AUTH_PUBLIC_SIGNUP_REPORT" auth_runtime_ready no
+AUTH_INVALID_SIGNUP_FLAG_REPORT="$(AUTH_RUNTIME_FIXTURE=signup_invalid run_inspector "$TEST_REPO")"
+assert_field "$AUTH_INVALID_SIGNUP_FLAG_REPORT" auth_runtime_public_registration_disabled no
+assert_field "$AUTH_INVALID_SIGNUP_FLAG_REPORT" auth_runtime_ready no
+AUTH_LEGACY_SHORTCUT_REPORT="$(AUTH_RUNTIME_FIXTURE=legacy_disabled run_inspector "$TEST_REPO")"
+assert_field "$AUTH_LEGACY_SHORTCUT_REPORT" auth_runtime_legacy_shortcut_enabled no
+assert_field "$AUTH_LEGACY_SHORTCUT_REPORT" auth_runtime_ready no
+AUTH_OWNER_EMAIL_MISMATCH_REPORT="$(AUTH_RUNTIME_FIXTURE=owner_mismatch run_inspector "$TEST_REPO")"
+assert_field "$AUTH_OWNER_EMAIL_MISMATCH_REPORT" auth_runtime_owner_email_matches no
+assert_field "$AUTH_OWNER_EMAIL_MISMATCH_REPORT" auth_runtime_ready no
+AUTH_OWNER_DOUBLE_DOT_REPORT="$(AUTH_RUNTIME_FIXTURE=owner_double_dot run_inspector "$TEST_REPO")"
+assert_field "$AUTH_OWNER_DOUBLE_DOT_REPORT" auth_runtime_owner_email_valid no
+assert_field "$AUTH_OWNER_DOUBLE_DOT_REPORT" auth_runtime_ready no
+AUTH_OWNER_ONE_LETTER_TLD_REPORT="$(AUTH_RUNTIME_FIXTURE=owner_one_letter_tld run_inspector "$TEST_REPO")"
+assert_field "$AUTH_OWNER_ONE_LETTER_TLD_REPORT" auth_runtime_owner_email_valid no
+assert_field "$AUTH_OWNER_ONE_LETTER_TLD_REPORT" auth_runtime_ready no
+AUTH_BREVO_REJECTED_REPORT="$(AUTH_RUNTIME_FIXTURE=brevo_rejected run_inspector "$TEST_REPO")"
+assert_field "$AUTH_BREVO_REJECTED_REPORT" auth_runtime_brevo_api rejected
+assert_field "$AUTH_BREVO_REJECTED_REPORT" auth_runtime_ready no
+AUTH_BREVO_INACTIVE_SENDER_REPORT="$(AUTH_RUNTIME_FIXTURE=sender_inactive run_inspector "$TEST_REPO")"
+assert_field "$AUTH_BREVO_INACTIVE_SENDER_REPORT" auth_runtime_brevo_sender_active no
+assert_field "$AUTH_BREVO_INACTIVE_SENDER_REPORT" auth_runtime_ready no
+AUTH_SENDER_EMAIL_MALFORMED_REPORT="$(AUTH_RUNTIME_FIXTURE=sender_double_dot run_inspector "$TEST_REPO")"
+assert_field "$AUTH_SENDER_EMAIL_MALFORMED_REPORT" auth_runtime_brevo_configured no
+assert_field "$AUTH_SENDER_EMAIL_MALFORMED_REPORT" auth_runtime_brevo_api not_checked
+assert_field "$AUTH_SENDER_EMAIL_MALFORMED_REPORT" auth_runtime_ready no
+AUTH_CANDIDATE_COMPOSE_MISMATCH_REPORT="$(COMPOSE_FILE_SHA256="$(printf '0%.0s' {1..64})" run_inspector "$TEST_REPO")"
+assert_field "$AUTH_CANDIDATE_COMPOSE_MISMATCH_REPORT" auth_runtime_candidate_compose_match no
+assert_field "$AUTH_CANDIDATE_COMPOSE_MISMATCH_REPORT" auth_runtime_diagnostic_status unavailable
+assert_field "$AUTH_CANDIDATE_COMPOSE_MISMATCH_REPORT" auth_runtime_ready no
+AUTH_RUNTIME_ENV_MISMATCH_REPORT="$(DOCKER_COMPOSE_ENV_MISMATCH=1 run_inspector "$TEST_REPO")"
+assert_field "$AUTH_RUNTIME_ENV_MISMATCH_REPORT" auth_runtime_candidate_compose_match no
+assert_field "$AUTH_RUNTIME_ENV_MISMATCH_REPORT" auth_runtime_ready no
 
 ENERGY_DIAGNOSTIC_FAILURE_REPORT="$(DOCKER_EXEC_FAIL=1 run_inspector "$TEST_REPO")"
 assert_field "$ENERGY_DIAGNOSTIC_FAILURE_REPORT" energy_diagnostic_inventory_status unavailable

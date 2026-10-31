@@ -5,6 +5,7 @@ import { getEnv } from "@/lib/env";
 import { prisma } from "@/lib/db/prisma";
 import { enforceAuthRequestLimit, isTrustedOrigin, originRejected } from "@/modules/auth/access";
 import { runAuthEmailFlow } from "@/modules/auth/email-flow";
+import { reservePublicOtpEmailQuota } from "@/modules/auth/email-quota";
 import { readAuthJson } from "@/modules/auth/http";
 
 const bodySchema = z.object({
@@ -45,6 +46,9 @@ export async function POST(request: Request): Promise<Response> {
       select: { id: true, emailVerified: true, profile: { select: { id: true } } },
     });
     if (!existing) {
+      if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
+        await reservePublicOtpEmailQuota();
+      }
       await auth.api.signUpEmail({
         headers: request.headers,
         body: {
@@ -54,6 +58,9 @@ export async function POST(request: Request): Promise<Response> {
         },
       });
     } else if (!existing.emailVerified || !existing.profile) {
+      if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
+        await reservePublicOtpEmailQuota();
+      }
       // If verification succeeded but Profile provisioning failed, require a
       // fresh proof of mailbox control before retrying the idempotent upsert.
       // The verification callback is the only public retry path.

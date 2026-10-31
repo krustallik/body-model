@@ -8,6 +8,19 @@ umask 077
 
 MANAGED_KEYS="BETTER_AUTH_SECRET BETTER_AUTH_URL AUTH_TRUSTED_ORIGINS AUTH_TRUSTED_PROXIES AUTH_PROFILE_ONE_OWNER_EMAIL AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED AUTH_PUBLIC_REGISTRATION_ENABLED BREVO_API_KEY BREVO_SENDER_EMAIL BREVO_SENDER_NAME LEGACY_IOS_SHORTCUT_ENABLED"
 
+verify_pinned_release_file() {
+  local path="$1" expected="$2" label="$3" actual
+  [[ -f "$path" && ! -L "$path" ]] || {
+    echo "The pinned $label release file is unavailable or unsafe." >&2
+    return 1
+  }
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || {
+    echo "The production checkout $label release file differs from exact main." >&2
+    return 1
+  }
+}
+
 rewrite_runtime_env() {
   local source_file="$1" target_file="$2"
   local key value
@@ -77,6 +90,10 @@ if [[ "${BODYCAST_AUTH_CONFIG_TEST_ONLY:-}" == "1" ]]; then
     select_better_auth_secret "$2"
     exit 0
   fi
+  if [[ "$#" == 4 && "$1" == "--verify-pinned-file-test" ]]; then
+    verify_pinned_release_file "$2" "$3" "$4"
+    exit $?
+  fi
   [[ "$#" == 3 && "$1" == "--rewrite-test" ]] || exit 2
   rewrite_runtime_env "$2" "$3"
   exit 0
@@ -99,6 +116,9 @@ RUN_ID="${BODYCAST_WORKFLOW_RUN_ID:-}"
 RUN_ATTEMPT="${BODYCAST_WORKFLOW_RUN_ATTEMPT:-}"
 RELEASE_LOCK_SHA256="${BODYCAST_RELEASE_LOCK_SHA256:-}"
 RELEASE_MARKER_SHA256="${BODYCAST_RELEASE_MARKER_SHA256:-}"
+SCHEMA_HANDOFF_SHA256="${BODYCAST_SCHEMA_HANDOFF_SHA256:-}"
+MIGRATION_MANIFESTS_SHA256="${BODYCAST_MIGRATION_MANIFESTS_SHA256:-}"
+APP_CAPABILITIES_SHA256="${BODYCAST_APP_CAPABILITIES_SHA256:-}"
 PROD_COMPOSE_SHA256="${BODYCAST_PROD_COMPOSE_SHA256:-}"
 unset BODYCAST_DEPLOY_PATH_B64 BODYCAST_APP_HOST_B64 BODYCAST_OWNER_EMAIL_B64 BODYCAST_BREVO_API_KEY_B64
 
@@ -108,6 +128,9 @@ unset BODYCAST_DEPLOY_PATH_B64 BODYCAST_APP_HOST_B64 BODYCAST_OWNER_EMAIL_B64 BO
   && "$RUN_ATTEMPT" =~ ^[1-9][0-9]{0,19}$ \
   && "$RELEASE_LOCK_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$RELEASE_MARKER_SHA256" =~ ^[0-9a-f]{64}$ \
+  && "$SCHEMA_HANDOFF_SHA256" =~ ^[0-9a-f]{64}$ \
+  && "$MIGRATION_MANIFESTS_SHA256" =~ ^[0-9a-f]{64}$ \
+  && "$APP_CAPABILITIES_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$PROD_COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ \
   && "$BREVO_API_KEY" =~ ^[A-Za-z0-9_-]{20,}$ ]] || {
   echo "Pinned production Auth configuration inputs are invalid." >&2
@@ -132,18 +155,6 @@ ORIGIN_URL="$(git -C "$DEPLOY_PATH" remote get-url origin)"
 }
 # Reuse only release primitives whose bytes match exact main. The server
 # checkout may serve an older app SHA, so its HEAD is intentionally not pinned.
-verify_pinned_release_file() {
-  local path="$1" expected="$2" label="$3" actual
-  [[ -f "$path" && ! -L "$path" ]] || {
-    echo "The pinned $label release file is unavailable or unsafe." >&2
-    return 1
-  }
-  actual="$(sha256sum "$path" | awk '{print $1}')"
-  [[ "$actual" == "$expected" ]] || {
-    echo "The production checkout $label release file differs from exact main." >&2
-    return 1
-  }
-}
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-release-lock.sh" "$RELEASE_LOCK_SHA256" "lock" || exit 1
 cd -- "$DEPLOY_PATH"
 [[ "$(git rev-parse --absolute-git-dir 2>/dev/null)" == "$GIT_DIR" ]] || {
@@ -162,6 +173,9 @@ bodycast_acquire_production_release_lock
 }
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-release-lock.sh" "$RELEASE_LOCK_SHA256" "lock" || exit 1
 verify_pinned_release_file "$DEPLOY_PATH/scripts/production-release-marker.sh" "$RELEASE_MARKER_SHA256" "marker" || exit 1
+verify_pinned_release_file "$DEPLOY_PATH/scripts/production-schema-deploy-handoff.mjs" "$SCHEMA_HANDOFF_SHA256" "schema handoff validator" || exit 1
+verify_pinned_release_file "$DEPLOY_PATH/scripts/production-migration-manifests.mjs" "$MIGRATION_MANIFESTS_SHA256" "migration manifest dependency" || exit 1
+verify_pinned_release_file "$DEPLOY_PATH/scripts/production-app-capabilities.mjs" "$APP_CAPABILITIES_SHA256" "app capabilities dependency" || exit 1
 verify_pinned_release_file "$DEPLOY_PATH/docker-compose.prod.yml" "$PROD_COMPOSE_SHA256" "production Compose" || exit 1
 
 if [[ "$ORIGIN_URL" == "git@github.com:krustallik/body-model.git" ]]; then

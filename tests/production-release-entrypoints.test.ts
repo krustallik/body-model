@@ -12,6 +12,7 @@ const releaseWorkflows = [
   "production-database-cutback.yml",
   "production-no-app-preflight.yml",
   "production-v4-derived-recovery.yml",
+  "production-auth-runtime-configure.yml",
 ];
 const legacyWorkflows = [
   "production-recovery-phase-a.yml",
@@ -30,6 +31,35 @@ describe("active production release entrypoints", () => {
         && !readOnlyDiagnosticWorkflows.includes(name);
     }).sort();
     expect(productionDispatches).toEqual([...releaseWorkflows].sort());
+  });
+
+  it("keeps Auth runtime configuration owner-gated, exact-main, and non-restarting", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-auth-runtime-configure.yml"), "utf8");
+    const remote = readFileSync(resolve("scripts/production-auth-runtime-configure.sh"), "utf8");
+    expect(workflow).toContain("permissions:\n  contents: read\n  actions: read");
+    expect(workflow).not.toContain("id-token: write");
+    expect(workflow).toContain("github.repository == 'krustallik/body-model'");
+    expect(workflow).toContain("github.ref == 'refs/heads/main'");
+    expect(workflow).toContain("github.actor_id == '126446430'");
+    expect(workflow).toContain("assertTrustedOwnerWorkflowRun");
+    expect(workflow).toContain('&& "$MAIN_TIP" == "$GITHUB_SHA" && "$MAIN_TIP" == "$DISPATCH_SHA"');
+    expect(workflow).toContain('run.head_sha === tip && run.head_branch === "main" && run.event === "push"');
+    expect(workflow).toContain('"repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100"');
+    expect(workflow).toContain('"repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?branch=main&event=push&per_page=100"');
+    expect(workflow).toContain("environment: production");
+    expect(workflow).toContain("secrets.SSH_PRIVATE_KEY");
+    expect(workflow).toContain("secrets.SSH_HOST_FINGERPRINT");
+    expect(workflow).toContain("secrets.AUTH_PROFILE_ONE_OWNER_EMAIL_EXPECTED");
+    expect(workflow).toContain("secrets.BREVO_API_KEY");
+    expect(workflow).toContain('StrictHostKeyChecking=yes');
+    expect(workflow).toContain("BODYCAST_SCHEMA_HANDOFF_SHA256");
+    expect(workflow).toContain("BODYCAST_MIGRATION_MANIFESTS_SHA256");
+    expect(workflow).toContain("BODYCAST_APP_CAPABILITIES_SHA256");
+    expect(remote).toContain('verify_pinned_release_file "$DEPLOY_PATH/scripts/production-schema-deploy-handoff.mjs"');
+    expect(remote).toContain("mv -fT -- \"$TEMP_ENV\" \"$ENV_FILE\"");
+    expect(remote).toContain("current_live_container_unchanged");
+    expect(remote).not.toMatch(/docker compose[^\n]*(?:\bup\b|\brestart\b|\bstop\b|\bdown\b)/);
+    expect(remote).not.toMatch(/\b(?:prisma|psql)\b|\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|DATABASE)\b/);
   });
 
   it("keeps the production checkout diagnostic owner-only, exact-main, and read-only", () => {

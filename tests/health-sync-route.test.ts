@@ -45,7 +45,51 @@ describe("POST /api/v1/health/sync", () => {
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     expect(syncHealthData).not.toHaveBeenCalled();
     expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({
-      outcome: "unauthorized", httpStatus: 401, rawBody: JSON.stringify({ days: [{ date: "2026-08-21" }] }),
+      outcome: "unauthorized", httpStatus: 401, rawBody: null,
+    }));
+  });
+
+  it("does not read or retain malformed unauthenticated JSON", async () => {
+    const unauthorized = new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{malformed",
+    });
+    const response = await POST(unauthorized);
+
+    expect(response.status).toBe(401);
+    expect(unauthorized.bodyUsed).toBe(false);
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "unauthorized", httpStatus: 401, rawBody: null,
+    }));
+  });
+
+  it("keeps unauthorized oversized requests body-free and preserves 413 for declared overflow", async () => {
+    const streamed = new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(new Uint8Array(6 * 1024 * 1024)); },
+      }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const unauthorized = await POST(streamed);
+    expect(unauthorized.status).toBe(401);
+    expect(streamed.bodyUsed).toBe(false);
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "unauthorized", httpStatus: 401, rawBody: null,
+    }));
+
+    const declaredOversize = new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(5 * 1024 * 1024 + 1) },
+      body: "",
+    });
+    const rejected = await POST(declaredOversize);
+    expect(rejected.status).toBe(413);
+    expect(declaredOversize.bodyUsed).toBe(false);
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "payload-too-large", httpStatus: 413, rawBody: null,
     }));
   });
 

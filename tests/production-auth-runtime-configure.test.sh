@@ -97,13 +97,29 @@ grep -Fq 'SSH_HOST_FINGERPRINT' "$WORKFLOW"
 grep -Fq 'DEPLOY_PATH" == "/srv/bodycast"' "$WORKFLOW"
 grep -Fq 'BODYCAST_RELEASE_LOCK_SHA256' "$WORKFLOW"
 grep -Fq 'BODYCAST_RELEASE_MARKER_SHA256' "$WORKFLOW"
+grep -Fq 'BODYCAST_SCHEMA_HANDOFF_SHA256' "$WORKFLOW"
+grep -Fq 'BODYCAST_MIGRATION_MANIFESTS_SHA256' "$WORKFLOW"
+grep -Fq 'BODYCAST_APP_CAPABILITIES_SHA256' "$WORKFLOW"
 grep -Fq 'BODYCAST_PROD_COMPOSE_SHA256' "$WORKFLOW"
 grep -Fq 'BREVO_API_KEY' "$WORKFLOW"
 ! grep -Fq 'BODYCAST_AUTH_CONFIG_TEST_ONLY' "$WORKFLOW"
 grep -Fq 'production-release-lock.sh' "$SCRIPT"
 grep -Fq 'verify_pinned_release_file' "$SCRIPT"
+grep -Fq 'production-schema-deploy-handoff.mjs" "$SCHEMA_HANDOFF_SHA256"' "$SCRIPT"
+grep -Fq 'production-migration-manifests.mjs" "$MIGRATION_MANIFESTS_SHA256"' "$SCRIPT"
+grep -Fq 'production-app-capabilities.mjs" "$APP_CAPABILITIES_SHA256"' "$SCRIPT"
 grep -Fq 'cd -- "$DEPLOY_PATH"' "$SCRIPT"
 [[ "$(grep -Fc 'verify_pinned_release_file "$DEPLOY_PATH/scripts/production-release-lock.sh"' "$SCRIPT")" == 2 ]]
+trusted_validator_sha="$(sha256sum "$ROOT/scripts/production-schema-deploy-handoff.mjs" | awk '{print $1}')"
+printf '%s\n' 'process.exitCode = 77;' > "$TEMP/stale-schema-validator.mjs"
+if BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --verify-pinned-file-test "$TEMP/stale-schema-validator.mjs" "$trusted_validator_sha" "schema handoff validator" > "$TEMP/stale.stdout" 2> "$TEMP/stale.stderr"; then
+  echo "A stale schema marker validator must be rejected before execution." >&2
+  exit 1
+fi
+grep -Fq 'differs from exact main' "$TEMP/stale.stderr"
+validator_check="$(grep -nF 'production-schema-deploy-handoff.mjs" "$SCHEMA_HANDOFF_SHA256"' "$SCRIPT" | cut -d: -f1)"
+marker_read="$(grep -nF 'if read_bodycast_release_marker; then' "$SCRIPT" | cut -d: -f1)"
+[[ "$validator_check" -lt "$marker_read" ]]
 grep -Fq 'DEPLOY_PATH" == "/srv/bodycast"' "$SCRIPT"
 grep -Fq 'sha256sum "$BACKUP_FILE"' "$SCRIPT"
 grep -Fq 'CANDIDATE_DIGEST' "$SCRIPT"

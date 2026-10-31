@@ -4,6 +4,7 @@ import { validationResponse } from "@/modules/days/day.http";
 import { SessionIdParamsSchema } from "@/modules/training/training.schema";
 import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
+import { readBoundedJson } from "@/lib/http/request-body";
 
 export const dynamic = "force-dynamic";
 const BodySchema = z.object({ idempotencyKey: z.string().min(1).max(160).optional() }).strict();
@@ -18,8 +19,11 @@ export async function POST(
 
   const parsed = SessionIdParamsSchema.safeParse(await params);
   if (!parsed.success) return validationResponse(parsed.error);
-  let body: unknown = {};
-  try { body = await request.json(); } catch { /* refresh also supports legacy empty requests */ }
+  const parsedBody = await readBoundedJson(request, 1_048_576);
+  if (!parsedBody.ok && parsedBody.reason === "payload-too-large") {
+    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  }
+  const body: unknown = parsedBody.ok ? parsedBody.value : {};
   const payload = BodySchema.safeParse(body);
   if (!payload.success) return validationResponse(payload.error);
   try {

@@ -18,6 +18,7 @@ export const envSchema = z.object({
   BREVO_SENDER_NAME: z.string().min(1).max(100).optional(),
   AUTH_EMAIL_DAILY_LIMIT: z.coerce.number().int().min(1).max(100_000).default(250),
   AUTH_EMAIL_RECIPIENT_DAILY_LIMIT: z.coerce.number().int().min(1).max(100).default(10),
+  AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT: z.coerce.number().int().min(1).max(100_000).optional(),
 });
 
 const insecureProductionValues = new Set([

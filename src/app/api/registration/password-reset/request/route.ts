@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/prisma";
+import { getEnv } from "@/lib/env";
 import { enforceAuthRequestLimit, isTrustedOrigin, originRejected } from "@/modules/auth/access";
+import { reservePublicOtpEmailQuota } from "@/modules/auth/email-quota";
 import { runAuthEmailFlow } from "@/modules/auth/email-flow";
 import { readAuthJson } from "@/modules/auth/http";
 
@@ -26,6 +28,9 @@ export async function POST(request: Request): Promise<Response> {
       select: { emailVerified: true, profile: { select: { id: true } } },
     });
     if (user?.emailVerified && user.profile) {
+      if (getEnv().AUTH_PUBLIC_REGISTRATION_ENABLED === "true") {
+        await reservePublicOtpEmailQuota();
+      }
       await auth.api.requestPasswordResetEmailOTP({ headers: request.headers, body: { email } });
     }
   });

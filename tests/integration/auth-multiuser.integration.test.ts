@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   POSTCOMMIT_TEST_DATABASE_NAME,
@@ -6,6 +7,15 @@ import {
   POSTCOMMIT_TEST_DATABASE_ROLE,
   requireIsolatedStage01Database,
 } from "@/modules/training/testing/require-isolated-database";
+
+// Route handlers are invoked directly in this integration harness, outside a
+// Next request context. Keep the existing synchronous route lifecycle here;
+// the real post-response scheduler is covered by auth-email-flow.test.ts.
+vi.mock("@/modules/auth/email-flow", () => ({
+  runAuthEmailFlow: async (_action: string, task: () => Promise<void>) => {
+    try { await task(); } catch { /* route acknowledgements stay generic */ }
+  },
+}));
 
 const databaseUrl = process.env.DATABASE_URL;
 const isolatedDatabase = requireIsolatedStage01Database(databaseUrl, process.env.BODYCAST_STAGE01_MODE, "test");
@@ -32,6 +42,7 @@ let initialProfileOneTrainingState: Awaited<ReturnType<typeof saveProfileOneTrai
 let auth: typeof import("@/lib/auth")["auth"];
 let registrationStart: typeof import("@/app/api/registration/start/route").POST;
 let registrationResend: typeof import("@/app/api/registration/resend/route").POST;
+let passwordResetRequest: typeof import("@/app/api/registration/password-reset/request/route").POST;
 let login: typeof import("@/app/api/account/login/route").POST;
 let passwordChangeRequest: typeof import("@/app/api/account/password-change/request/route").POST;
 let passwordChange: typeof import("@/app/api/account/password-change/route").POST;
@@ -151,6 +162,7 @@ describe("auth and tenant registration integration", () => {
     process.env.BREVO_SENDER_EMAIL = "noreply@example.invalid";
     process.env.BREVO_SENDER_NAME = "BodyCast Test";
     process.env.AUTH_EMAIL_DAILY_LIMIT = "1000";
+    process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = "500";
 
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const payload = JSON.parse(String(init?.body)) as { to?: Array<{ email: string }>; textContent?: string };
@@ -180,6 +192,7 @@ describe("auth and tenant registration integration", () => {
     ({ auth } = await import("@/lib/auth"));
     ({ POST: registrationStart } = await import("@/app/api/registration/start/route"));
     ({ POST: registrationResend } = await import("@/app/api/registration/resend/route"));
+    ({ POST: passwordResetRequest } = await import("@/app/api/registration/password-reset/request/route"));
     ({ POST: login } = await import("@/app/api/account/login/route"));
     ({ POST: passwordChangeRequest } = await import("@/app/api/account/password-change/request/route"));
     ({ POST: passwordChange } = await import("@/app/api/account/password-change/route"));
@@ -233,6 +246,62 @@ describe("auth and tenant registration integration", () => {
     if (initialProfileOneTrainingState) await restoreProfileOneTrainingState(initialProfileOneTrainingState);
     await prisma.$disconnect();
     vi.unstubAllGlobals();
+  });
+
+  it("shares a bounded daily OTP budget across anonymous signup and password reset", async () => {
+    const priorLimits = {
+      daily: process.env.AUTH_EMAIL_DAILY_LIMIT,
+      public: process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT,
+      recipient: process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT,
+    };
+    const day = new Date().toISOString().slice(0, 10);
+    const publicOtpKey = `bodycast:brevo:public-otp:${day}`;
+    const sharedKey = `bodycast:brevo:daily:${day}`;
+    const bucketId = (key: string) => createHash("sha256").update(key, "utf8").digest("hex");
+    await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: { in: [bucketId(publicOtpKey), bucketId(sharedKey)] } } });
+
+    try {
+      process.env.AUTH_EMAIL_DAILY_LIMIT = "4";
+      process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = "2";
+      process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = "10";
+      const signupEmails = Array.from({ length: 6 }, () => `quota-signup-${crypto.randomUUID()}@example.invalid`);
+      signupEmails.forEach((email) => emails.add(email));
+
+      const responses = await Promise.all(signupEmails.map((email) => registrationStart(request({ email, name: "Quota User" }))));
+      expect(responses.map((response) => response.status)).toEqual(Array(6).fill(202));
+      const created = await prisma.user.findMany({ where: { email: { in: signupEmails } }, select: { id: true, email: true } });
+      created.forEach((user) => userIds.add(user.id));
+      expect(created).toHaveLength(2);
+
+      const httpAuth = await import("@/app/api/auth/[...all]/route");
+      for (const { email } of created) {
+        const verification = await httpAuth.POST(authHttpRequest("/email-otp/verify-email", { email, otp: nextOtp(email) }));
+        expect(verification.status).toBe(200);
+        const verified = await prisma.user.findUniqueOrThrow({
+          where: { email }, select: { profile: { select: { id: true } } },
+        });
+        expect(verified.profile).not.toBeNull();
+        if (verified.profile) profileIds.add(verified.profile.id);
+      }
+
+      const resetResponses = await Promise.all(signupEmails.slice(0, 2).map((email) => passwordResetRequest(request({ email }))));
+      expect(resetResponses.map((response) => response.status)).toEqual([202, 202]);
+      expect(signupEmails.slice(0, 2).every((email) => (mailbox.get(email) ?? []).length === 0)).toBe(true);
+
+      const { sendAuthEmail } = await import("@/modules/auth/email");
+      await sendAuthEmail({ email: `recovery-a-${crypto.randomUUID()}@example.invalid`, code: "123456", purpose: "reset" });
+      await sendAuthEmail({ email: `recovery-b-${crypto.randomUUID()}@example.invalid`, code: "234567", purpose: "reset" });
+      await expect(sendAuthEmail({ email: `recovery-c-${crypto.randomUUID()}@example.invalid`, code: "345678", purpose: "reset" }))
+        .rejects.toThrow("daily quota");
+    } finally {
+      if (priorLimits.daily === undefined) delete process.env.AUTH_EMAIL_DAILY_LIMIT;
+      else process.env.AUTH_EMAIL_DAILY_LIMIT = priorLimits.daily;
+      if (priorLimits.public === undefined) delete process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT;
+      else process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = priorLimits.public;
+      if (priorLimits.recipient === undefined) delete process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT;
+      else process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = priorLimits.recipient;
+      await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: { in: [bucketId(publicOtpKey), bucketId(sharedKey)] } } });
+    }
   });
 
   it("requires email OTP before Profile or session and keeps trusted API calls while blocking raw signup", async () => {
@@ -388,16 +457,18 @@ describe("auth and tenant registration integration", () => {
     process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = "100";
 
     const syncUrl = `${origin}/api/v1/health/sync`;
-    const oversizedSync = await healthSyncPost(new Request(syncUrl, {
+    const oversizedRequest = new Request(syncUrl, {
       method: "POST",
       headers: { origin, "content-type": "application/json", "x-forwarded-for": testClientIp() },
       body: `{"payload":"${"x".repeat(5 * 1024 * 1024)}"}`,
-    }));
-    expect(oversizedSync.status).toBe(413);
-    const oversizedAudit = await prisma.healthSyncAudit.findFirst({
-      where: { outcome: "payload-too-large", httpStatus: 413 }, orderBy: { id: "desc" },
     });
-    if (!oversizedAudit) throw new Error("Oversized request was not recorded in HealthSyncAudit");
+    const oversizedSync = await healthSyncPost(oversizedRequest);
+    expect(oversizedSync.status).toBe(401);
+    expect(oversizedRequest.bodyUsed).toBe(false);
+    const oversizedAudit = await prisma.healthSyncAudit.findFirst({
+      where: { outcome: "unauthorized", httpStatus: 401, rawBody: null }, orderBy: { id: "desc" },
+    });
+    if (!oversizedAudit) throw new Error("Unauthorized oversized request metadata was not recorded in HealthSyncAudit");
     healthAuditIds.add(oversizedAudit.id);
     expect(oversizedAudit).toMatchObject({ profileId: null, rawBody: null });
 
@@ -409,11 +480,11 @@ describe("auth and tenant registration integration", () => {
     }));
     expect(unauthorizedSync.status).toBe(401);
     const unauthorizedAudit = await prisma.healthSyncAudit.findFirst({
-      where: { outcome: "unauthorized", httpStatus: 401, rawBody: unauthorizedBody }, orderBy: { id: "desc" },
+      where: { outcome: "unauthorized", httpStatus: 401, rawBody: null }, orderBy: { id: "desc" },
     });
-    if (!unauthorizedAudit) throw new Error("Unauthenticated HealthSyncAudit body was not retained");
+    if (!unauthorizedAudit) throw new Error("Unauthenticated HealthSyncAudit metadata was not retained");
     healthAuditIds.add(unauthorizedAudit.id);
-    expect(unauthorizedAudit.profileId).toBeNull();
+    expect(unauthorizedAudit).toMatchObject({ profileId: null, rawBody: null });
   });
 
   it("expires verification OTPs, limits attempts, and rotates resent codes", async () => {

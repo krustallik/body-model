@@ -145,6 +145,27 @@ describe("training accounting and exercise history routes", () => {
       .toHaveBeenCalledExactlyOnceWith(73, 1, undefined);
   });
 
+  it("keeps legacy empty accounting bodies but rejects chunked bodies over one MiB", async () => {
+    const oversized = (path: string) => new Request(`http://localhost${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(1_048_577)); } }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+    const refresh = await refreshSessionAccounting(
+      oversized("/api/v1/training/sessions/73/accounting/refresh"), sessionParams("73"),
+    );
+    const materialize = await materializeSessionAccounting(
+      oversized("/api/v1/training/sessions/73/accounting/materialize"), sessionParams("73"),
+    );
+
+    expect(refresh.status).toBe(413);
+    expect(materialize.status).toBe(413);
+    expect(routeMocks.trainingService.refreshSessionAccounting).not.toHaveBeenCalled();
+    expect(routeMocks.trainingService.materializeSessionAccounting).not.toHaveBeenCalled();
+  });
+
   it("validates materialize idempotency payloads and reports non-editable sessions", async () => {
     const invalid = await materializeSessionAccounting(
       jsonRequest("POST", { idempotencyKey: "request-73", activate: true }),

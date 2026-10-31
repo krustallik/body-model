@@ -19,32 +19,16 @@ import {
 import { errorKind, logEvent } from "@/lib/logger";
 import { healthSyncRepositoryForProfile } from "@/modules/health/health.repository";
 import { enforceAuthRequestLimit } from "@/modules/auth/access";
+import { readBoundedRequestBytes } from "@/lib/http/request-body";
 
 export const dynamic = "force-dynamic";
 const MAX_HEALTH_SYNC_BODY_BYTES = 5 * 1024 * 1024;
 
 async function readBoundedBody(request: Request): Promise<{ rawBody: string; tooLarge: false } | { rawBody: null; tooLarge: true }> {
-  if (!request.body) return { rawBody: "", tooLarge: false };
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  while (true) {
-    const next = await reader.read();
-    if (next.done) break;
-    totalBytes += next.value.byteLength;
-    if (totalBytes > MAX_HEALTH_SYNC_BODY_BYTES) {
-      await reader.cancel();
-      return { rawBody: null, tooLarge: true };
-    }
-    chunks.push(next.value);
-  }
-  const body = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { rawBody: new TextDecoder().decode(body), tooLarge: false };
+  const body = await readBoundedRequestBytes(request, MAX_HEALTH_SYNC_BODY_BYTES);
+  if (!body.ok && body.reason === "payload-too-large") return { rawBody: null, tooLarge: true };
+  if (!body.ok) throw new Error("Health Sync request body could not be read");
+  return { rawBody: new TextDecoder().decode(body.bytes), tooLarge: false };
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -63,11 +47,21 @@ export async function POST(request: Request): Promise<Response> {
     await audit("unauthorized", 429, "RateLimited");
     return ipLimit;
   }
-  const declaredBytes = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declaredBytes) && declaredBytes > MAX_HEALTH_SYNC_BODY_BYTES) {
+  const declaredLength = request.headers.get("content-length");
+  const declaredBytes = declaredLength !== null && /^\d+$/.test(declaredLength) ? Number(declaredLength) : null;
+  if (declaredBytes !== null && declaredBytes > MAX_HEALTH_SYNC_BODY_BYTES) {
     await audit("payload-too-large", 413, "BodyTooLarge");
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
+
+  const principal = await getProfilePrincipal(request);
+  if (!principal || principal.method === "session") {
+    await audit("unauthorized", 401);
+    logEvent("warn", "health_sync_unauthorized", { contentType });
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  auditProfileId = principal.profileId;
+
   try {
     // Read text once so malformed JSON and rejected requests retain their exact body.
     const body = await readBoundedBody(request);
@@ -88,14 +82,6 @@ export async function POST(request: Request): Promise<Response> {
     logEvent("warn", "health_sync_body_read_failed", { errorType: errorKind(error) });
     return Response.json({ error: "validation_error", details: [{ path: [], message: "Unable to read request body" }] }, { status: 400 });
   }
-
-  const principal = await getProfilePrincipal(request);
-  if (!principal || principal.method === "session") {
-    await audit("unauthorized", 401);
-    logEvent("warn", "health_sync_unauthorized", { contentType });
-    return Response.json({ error: "unauthorized" }, { status: 401 });
-  }
-  auditProfileId = principal.profileId;
 
   if (!contentType?.toLowerCase().startsWith("application/json")) {
     await audit("invalid-content-type", 400);

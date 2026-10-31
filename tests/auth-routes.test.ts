@@ -15,6 +15,7 @@ const routeMocks = vi.hoisted(() => ({
   getEnv: vi.fn(),
   emailFlow: vi.fn(),
   sendEmail: vi.fn(),
+  reservePublicOtpEmailQuota: vi.fn(),
   createApiKey: vi.fn(),
   listApiKeys: vi.fn(),
   rotateApiKey: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@/lib/env", () => ({ getEnv: routeMocks.getEnv }));
 vi.mock("@/modules/auth/access", () => routeMocks.access);
 vi.mock("@/modules/auth/email-flow", () => ({ runAuthEmailFlow: routeMocks.emailFlow }));
 vi.mock("@/modules/auth/email", () => ({ sendAuthEmail: routeMocks.sendEmail }));
+vi.mock("@/modules/auth/email-quota", () => ({ reservePublicOtpEmailQuota: routeMocks.reservePublicOtpEmailQuota }));
 vi.mock("@/modules/auth/api-keys", () => ({
   createProfileApiKey: routeMocks.createApiKey,
   listProfileApiKeys: routeMocks.listApiKeys,
@@ -53,12 +55,14 @@ import { POST as requestPasswordChange } from "@/app/api/account/password-change
 import { POST as authPost } from "@/app/api/auth/[...all]/route";
 import { POST as requestPasswordReset } from "@/app/api/registration/password-reset/request/route";
 import { POST as startRegistration } from "@/app/api/registration/start/route";
-import { GET as listApiKeys, POST as createApiKey } from "@/app/api/v1/profile/api-keys/route";
+import { DELETE as revokeApiKeyRoute, GET as listApiKeys, PATCH as rotateApiKeyRoute, POST as createApiKey } from "@/app/api/v1/profile/api-keys/route";
 
 const publicAuthEnv = {
   AUTH_PROFILE_ONE_OWNER_EMAIL: "owner@example.invalid",
   AUTH_PROFILE_ONE_BOOTSTRAP_ENABLED: "false",
   AUTH_PUBLIC_REGISTRATION_ENABLED: "true",
+  AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT: 25,
+  AUTH_EMAIL_DAILY_LIMIT: 250,
 };
 
 function post(path: string, body: unknown): Request {
@@ -87,8 +91,11 @@ describe("authentication route security boundaries", () => {
     routeMocks.forwardAuthRequest.mockResolvedValue(Response.json({ ok: true }));
     routeMocks.hashPassword.mockResolvedValue("dummy-hash");
     routeMocks.getEnv.mockReturnValue(publicAuthEnv);
-    routeMocks.emailFlow.mockImplementation(async (_purpose: string, run: () => Promise<unknown>) => run());
+    routeMocks.emailFlow.mockImplementation(async (_purpose: string, run: () => Promise<unknown>) => {
+      try { await run(); } catch { /* public acknowledgement remains generic */ }
+    });
     routeMocks.sendEmail.mockResolvedValue(undefined);
+    routeMocks.reservePublicOtpEmailQuota.mockResolvedValue(undefined);
     routeMocks.createApiKey.mockResolvedValue({ id: "key-1", token: "secret-once" });
     routeMocks.listApiKeys.mockResolvedValue([]);
     routeMocks.rotateApiKey.mockResolvedValue(null);
@@ -130,6 +137,7 @@ describe("authentication route security boundaries", () => {
       body: expect.objectContaining({ email: "new.user@example.invalid", name: "New User" }),
     }));
     expect(routeMocks.authApi.signUpEmail.mock.calls[0]?.[0].body.password).not.toBe("New User");
+    expect(routeMocks.reservePublicOtpEmailQuota).toHaveBeenCalledTimes(1);
 
     routeMocks.prisma.user.findUnique.mockResolvedValueOnce({
       id: "pending-1", emailVerified: false, profile: null,
@@ -143,6 +151,18 @@ describe("authentication route security boundaries", () => {
       body: { email: "new.user@example.invalid", type: "email-verification" },
     }));
     expect(routeMocks.authApi.signUpEmail).toHaveBeenCalledTimes(1);
+    expect(routeMocks.reservePublicOtpEmailQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps public registration generic when its abuse budget is exhausted", async () => {
+    routeMocks.reservePublicOtpEmailQuota.mockRejectedValueOnce(new Error("quota exhausted"));
+    const response = await startRegistration(post("/api/registration/start", {
+      email: "budget@example.invalid", name: "Budget User",
+    }));
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ requestReceived: true });
+    expect(routeMocks.authApi.signUpEmail).not.toHaveBeenCalled();
   });
 
   it("keeps password-reset requests enumeration-safe", async () => {
@@ -152,6 +172,7 @@ describe("authentication route security boundaries", () => {
     expect(unknown.status).toBe(202);
     expect(await unknown.json()).toEqual({ requestReceived: true });
     expect(routeMocks.authApi.requestPasswordResetEmailOTP).not.toHaveBeenCalled();
+    expect(routeMocks.reservePublicOtpEmailQuota).not.toHaveBeenCalled();
 
     routeMocks.prisma.user.findUnique.mockResolvedValueOnce({
       emailVerified: true, profile: { id: 23 },
@@ -161,9 +182,40 @@ describe("authentication route security boundaries", () => {
     }));
     expect(known.status).toBe(202);
     expect(await known.json()).toEqual({ requestReceived: true });
+    expect(routeMocks.reservePublicOtpEmailQuota).toHaveBeenCalledOnce();
     expect(routeMocks.authApi.requestPasswordResetEmailOTP).toHaveBeenCalledWith({
       headers: expect.any(Headers), body: { email: "person@example.invalid" },
     });
+  });
+
+  it("keeps reset responses generic when its shared public OTP budget is exhausted", async () => {
+    routeMocks.prisma.user.findUnique.mockResolvedValueOnce({
+      emailVerified: true, profile: { id: 23 },
+    });
+    routeMocks.reservePublicOtpEmailQuota.mockRejectedValueOnce(new Error("quota exhausted"));
+
+    const response = await requestPasswordReset(post("/api/registration/password-reset/request", {
+      email: "person@example.invalid",
+    }));
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ requestReceived: true });
+    expect(routeMocks.authApi.requestPasswordResetEmailOTP).not.toHaveBeenCalled();
+  });
+
+  it("does not require the public OTP subquota for resets while public signup is disabled", async () => {
+    routeMocks.getEnv.mockReturnValue({ ...publicAuthEnv, AUTH_PUBLIC_REGISTRATION_ENABLED: "false" });
+    routeMocks.prisma.user.findUnique.mockResolvedValueOnce({
+      emailVerified: true, profile: { id: 23 },
+    });
+
+    const response = await requestPasswordReset(post("/api/registration/password-reset/request", {
+      email: "person@example.invalid",
+    }));
+
+    expect(response.status).toBe(202);
+    expect(routeMocks.reservePublicOtpEmailQuota).not.toHaveBeenCalled();
+    expect(routeMocks.authApi.requestPasswordResetEmailOTP).toHaveBeenCalledOnce();
   });
 
   it("requires an authenticated, provisioned profile for OTP password change", async () => {
@@ -216,5 +268,26 @@ describe("authentication route security boundaries", () => {
     const created = await createApiKey(post("/api/v1/profile/api-keys", { name: "Personal laptop" }));
     expect(created.status).toBe(201);
     expect(routeMocks.createApiKey).toHaveBeenCalledWith(23, "Personal laptop");
+  });
+
+  it("rejects chunked API-key mutations over one MiB before parsing", async () => {
+    routeMocks.access.getSessionPrincipal.mockResolvedValue({ profileId: 23, userId: "user-23", method: "session" });
+    const oversized = (path: string, method: string) => new Request(`http://localhost${path}`, {
+      method,
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(1_048_577)); } }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+    const responses = await Promise.all([
+      createApiKey(oversized("/api/v1/profile/api-keys", "POST")),
+      rotateApiKeyRoute(oversized("/api/v1/profile/api-keys", "PATCH")),
+      revokeApiKeyRoute(oversized("/api/v1/profile/api-keys", "DELETE")),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([413, 413, 413]);
+    expect(routeMocks.createApiKey).not.toHaveBeenCalled();
+    expect(routeMocks.rotateApiKey).not.toHaveBeenCalled();
+    expect(routeMocks.revokeApiKey).not.toHaveBeenCalled();
   });
 });

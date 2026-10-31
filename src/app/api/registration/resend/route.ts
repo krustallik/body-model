@@ -6,6 +6,7 @@ import { enforceAuthRequestLimit, isTrustedOrigin, originRejected } from "@/modu
 import { prisma } from "@/lib/db/prisma";
 import { runAuthEmailFlow } from "@/modules/auth/email-flow";
 import { readAuthJson } from "@/modules/auth/http";
+import { reservePublicOtpEmailQuota } from "@/modules/auth/email-quota";
 
 const bodySchema = z.object({
   email: z.string().trim().email().max(320),
@@ -44,6 +45,9 @@ export async function POST(request: Request): Promise<Response> {
       select: { emailVerified: true, profile: { select: { id: true } } },
     });
     if (!user && parsed.data.name) {
+      if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
+        await reservePublicOtpEmailQuota();
+      }
       await auth.api.signUpEmail({
         headers: request.headers,
         body: {
@@ -53,6 +57,9 @@ export async function POST(request: Request): Promise<Response> {
         },
       });
     } else if (user && (!user.emailVerified || !user.profile)) {
+      if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
+        await reservePublicOtpEmailQuota();
+      }
       await auth.api.sendVerificationOTP({
         headers: request.headers,
         body: { email, type: "email-verification" },

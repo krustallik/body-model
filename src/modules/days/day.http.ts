@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { readBoundedJson } from "@/lib/http/request-body";
 
 export function validationResponse(error: z.ZodError): Response {
   return Response.json(
@@ -18,22 +19,13 @@ export async function readJson(request: Request): Promise<unknown | Response> {
     );
   }
 
-  const maximumBytes = 1_048_576;
-  const declaredLength = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+  const body = await readBoundedJson(request, 1_048_576);
+  if (body.ok) return body.value;
+  if (body.reason === "payload-too-large") {
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
-
-  try {
-    const text = await request.text();
-    if (new TextEncoder().encode(text).byteLength > maximumBytes) {
-      return Response.json({ error: "payload_too_large" }, { status: 413 });
-    }
-    return JSON.parse(text) as unknown;
-  } catch {
-    return Response.json(
-      { error: "validation_error", details: [{ path: [], message: "Invalid JSON body" }] },
-      { status: 400 },
-    );
-  }
+  return Response.json(
+    { error: "validation_error", details: [{ path: [], message: "Invalid JSON body" }] },
+    { status: 400 },
+  );
 }

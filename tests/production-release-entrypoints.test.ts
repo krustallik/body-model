@@ -53,8 +53,16 @@ describe("active production release entrypoints", () => {
     expect(inspector).not.toMatch(/\bgit\s+(?:fetch|checkout|reset|clean|add|commit)\b/);
     expect(inspector).toContain("docker inspect");
     expect(inspector).toContain("curl --silent --show-error --max-time 10");
-    expect(inspector).not.toMatch(/\bdocker\s+(?:compose|start|stop|restart|rm|run|update|kill)\b/);
-    expect(inspector.match(/\bdocker\s+exec\b/g)).toHaveLength(1);
+    const dockerRootCommands = [...inspector.matchAll(/\bdocker\s+([a-z][a-z-]*)\b/g)].map((match) => match[1]).sort();
+    expect(inspector.match(/\bdocker\s+/g)).toHaveLength(13);
+    expect(dockerRootCommands).toEqual(["compose", "exec", "exec", "image", "image", "info", "inspect", "inspect", "inspect", "inspect", "ps", "ps"]);
+    expect(inspector.match(/\bdocker\s+compose\b/g)).toHaveLength(1);
+    expect(inspector).toContain("docker compose -f docker-compose.prod.yml config --format json");
+    expect(inspector.match(/\bdocker\s+exec\b/g)).toHaveLength(2);
+    expect(inspector).toMatch(/docker exec --interactive --env "BODYCAST_AUTH_DIAGNOSTIC_APP_HOST=\$APP_HOST" \\\s+bodycast-app-prod node --input-type=module 2>\/dev\/null/);
+    expect(inspector.match(/\bdocker\s+image\b/g)).toHaveLength(2);
+    expect(inspector.match(/\bdocker\s+image\s+ls\b/g)).toHaveLength(1);
+    expect(inspector.match(/\bdocker\s+image\s+inspect\b/g)).toHaveLength(1);
     expect(inspector).toContain('docker exec --interactive bodycast-db-prod bash -s -- "$server_ip"');
     expect(inspector).toContain('FROM "ExperimentalStepperActiveEnergyShadow" AS s');
     expect(inspector).toContain("energy_diagnostic_workout_56_shadow_payload_b64");

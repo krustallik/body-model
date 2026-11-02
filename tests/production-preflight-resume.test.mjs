@@ -225,6 +225,20 @@ const successfulPreflightSteps = [
   "Report read-only completion",
 ];
 const migrationFailure = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
+const writerDrainFreshnessFailure = "Production writer-drain gate blocked: writer-drain or topology observation is stale or from the future";
+const writerDrainFreshnessChecks = [
+  ["inventory-schema", true], ["observer-pid", true], ["observed-at", true], ["observer-application", true],
+  ["identity-policy", true], ["backend-inventory", true], ["zero-other-client-backends", true],
+  ["topology-schema", true], ["topology-contract", true], ["topology-reported-ready", true],
+  ["app-absent", true], ["postgres-healthy", true], ["postgres-unpublished", true],
+  ["postgres-network", true], ["backend-network-membership", true], ["caddy-healthy", true],
+  ["maintenance-route", true], ["maintenance-route-digest", true],
+  ["writer-drain-freshness", false], ["topology-freshness", false],
+].map(([id, passed]) => ({ id, passed }));
+const writerDrainFreshnessLog = [
+  'Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:42:47.1460792Z {"schemaVersion":1,"contract":"bodycast-compose-internal-db-single-writer-v1","ready":true,"blockers":[],"observedAt":"2026-11-02T20:42:47Z","app":{"name":"bodycast-app-prod","state":"absent","restartPolicy":null},"database":{"name":"bodycast-db-prod","state":"running","health":"healthy","publishedPostgresPort":false,"networks":["bodycast-backend-prod"]},"backendNetwork":{"name":"bodycast-backend-prod","containers":["bodycast-db-prod"]},"caddy":{"name":"gymbeam-caddy","state":"running","configValidated":true},"routeFile":{"verified":true,"maintenanceResponse":true,"containsReverseProxy":false,"sha256":"cebcdecb1e464cd547f63bde509a29633c8675dd1188d27421c98027562fb2f7"}}',
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:36.1750783Z ${writerDrainFreshnessFailure}; checks=${JSON.stringify(writerDrainFreshnessChecks)}`,
+].join("\n");
 const migrationLog = [
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:27.8263452Z ${migrationFailure}`,
@@ -1065,6 +1079,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
       sourceSha,
       targetSha,
       migrationFailureRunId: preDdlMigrationRunId,
+      migrationFailureKind: "authorization-helper-import",
       blockedCaptureRunId,
       unverifiedHistoricalAuthorizationOnlyPreflightRunIds: [safePreflightRetryRunId],
     });
@@ -1119,7 +1134,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
   });
 
   it("requires the import failure in both live probes and the final guard", () => {
-    expect(() => verifyPreDdlResume({ migrationLogText: migrationFailure })).toThrow("exactly three known import failures");
+    expect(() => verifyPreDdlResume({ migrationLogText: migrationFailure })).toThrow("one exact reviewed pre-DDL failure");
     expect(() => verifyPreDdlResume({ migrationLogText: "unrecognized migration log" }))
       .toThrow(/sanitized evidence counts: \{"parsedLogRecords":1,"fixedMigrationStepRecords":0,"knownImportFailuresInFixedStep":0/);
     const reorderedLines = migrationLog.split("\n");
@@ -1127,6 +1142,24 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     const reorderedLog = reorderedLines.join("\n");
     expect(() => verifyPreDdlResume({ migrationLogText: reorderedLog })).toThrow("not in the reviewed order");
     expect(verifyPreDdlResume({ migrationLogText: migrationLog }).resumeKind).toBe("verified-pre-ddl-migration-failure");
+  });
+
+  it("accepts only the exact final writer-drain freshness failure from the authenticated migration step", () => {
+    expect(verifyPreDdlResume({ migrationLogText: writerDrainFreshnessLog })).toMatchObject({
+      migrationFailureKind: "writer-drain-freshness",
+      migrationFailureRunId: preDdlMigrationRunId,
+    });
+
+    const changedCheck = writerDrainFreshnessLog.replace('"topology-freshness","passed":false', '"topology-freshness","passed":true');
+    expect(() => verifyPreDdlResume({ migrationLogText: changedCheck })).toThrow("one exact reviewed pre-DDL failure");
+    expect(() => verifyPreDdlResume({ migrationLogText: `${writerDrainFreshnessLog}\n${writerDrainFreshnessLog.split("\n")[1]}` }))
+      .toThrow("one exact reviewed pre-DDL failure");
+    const wrongStep = writerDrainFreshnessLog.replace("Run the fixed guarded migration script over SSH", "Validate protected production SSH");
+    expect(() => verifyPreDdlResume({ migrationLogText: wrongStep })).toThrow("one exact reviewed pre-DDL failure");
+    const beforeMarker = writerDrainFreshnessLog.split("\n").reverse().join("\n");
+    expect(() => verifyPreDdlResume({ migrationLogText: beforeMarker })).toThrow("one exact reviewed pre-DDL failure");
+    const mixedFailureKinds = `${migrationLog}\n${writerDrainFreshnessLog.split("\n")[1]}`;
+    expect(() => verifyPreDdlResume({ migrationLogText: mixedFailureKinds })).toThrow("one exact reviewed pre-DDL failure");
   });
 
   it("parses wrapped runner logs while binding failures to the sole failed fixed migration step", () => {
@@ -1142,7 +1175,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
 
     const lateUnknownStepLog = unknownStepLog.replace("2026-10-10T00:08:29.3550399Z", "2026-10-10T00:08:30.3550399Z");
     expect(() => verifyPreDdlResume({ migrationLogText: lateUnknownStepLog }))
-      .toThrow("exactly three known import failures");
+      .toThrow("one exact reviewed pre-DDL failure");
 
     const migrationJobsWithoutStepTimes = preDdlMigrationJobs();
     for (const step of migrationJobsWithoutStepTimes.jobs[2].steps) {
@@ -1150,7 +1183,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
       delete step.completed_at;
     }
     expect(() => verifyPreDdlResume({ migrationLogText: unknownStepLog, migrationJobs: migrationJobsWithoutStepTimes }))
-      .toThrow("exactly three known import failures");
+      .toThrow("one exact reviewed pre-DDL failure");
 
     const crossStepErrors = migrationLog.split("\n");
     crossStepErrors[0] = crossStepErrors[0].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tValidate protected production SSH\t");
@@ -1161,7 +1194,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     } catch (error) {
       crossStepErrorMessage = error.message;
     }
-    expect(crossStepErrorMessage).toContain("exactly three known import failures");
+    expect(crossStepErrorMessage).toContain("one exact reviewed pre-DDL failure");
     expect(crossStepErrorMessage).toContain('"step":"Validate protected production SSH"');
     expect(crossStepErrorMessage).not.toContain(migrationFailure);
 
@@ -1179,11 +1212,11 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     const crossStepWriterDrain = migrationLog.split("\n");
     crossStepWriterDrain[2] = crossStepWriterDrain[2].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tRead-only production identity check\t");
     expect(() => verifyPreDdlResume({ migrationLogText: crossStepWriterDrain.join("\n") }))
-      .toThrow("exactly three known import failures");
+      .toThrow("one exact reviewed pre-DDL failure");
 
     const migrationJobs = preDdlMigrationJobs();
     migrationJobs.jobs[2].steps.push({ name: "Unexpected failed step", conclusion: "failure" });
-    expect(() => verifyPreDdlResume({ migrationJobs })).toThrow("exactly three known import failures");
+    expect(() => verifyPreDdlResume({ migrationJobs })).toThrow("one exact reviewed pre-DDL failure");
   });
 
   it.each([

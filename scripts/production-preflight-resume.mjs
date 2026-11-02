@@ -81,6 +81,16 @@ const BLOCKED_NO_APP_PREFLIGHT_STEPS = Object.freeze({
   "Report read-only completion": "skipped",
 });
 const MIGRATION_PRE_DDL_FAILURE = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
+const WRITER_DRAIN_FRESHNESS_FAILURE = "Production writer-drain gate blocked: writer-drain or topology observation is stale or from the future";
+const EXPECTED_FINAL_WRITER_DRAIN_CHECKS = new Map([
+  ["inventory-schema", true], ["observer-pid", true], ["observed-at", true], ["observer-application", true],
+  ["identity-policy", true], ["backend-inventory", true], ["zero-other-client-backends", true],
+  ["topology-schema", true], ["topology-contract", true], ["topology-reported-ready", true],
+  ["app-absent", true], ["postgres-healthy", true], ["postgres-unpublished", true],
+  ["postgres-network", true], ["backend-network-membership", true], ["caddy-healthy", true],
+  ["maintenance-route", true], ["maintenance-route-digest", true],
+  ["writer-drain-freshness", false], ["topology-freshness", false],
+]);
 const MIGRATION_FAILURE_STEP = "Run the fixed guarded migration script over SSH";
 const MIGRATION_FAILURE_JOB = "Final live guard and authorized migration";
 const WRITER_DRAIN_READY_MARKER = '"contract":"bodycast-compose-internal-db-single-writer-v1","ready":true';
@@ -156,7 +166,8 @@ function isExpectedMigrationEvidenceRecord(record, migrationExecution, importFai
   if (logSecond > startedSecond && logAt < completedAt) return true;
 
   const normalizedRecord = normalizeActionLog(record.text);
-  const containsKnownMarker = normalizedRecord.includes(importFailure) || normalizedRecord.includes(writerDrainMarker);
+  const containsKnownMarker = normalizedRecord.includes(importFailure) || normalizedRecord.includes(writerDrainMarker)
+    || normalizedRecord.includes(WRITER_DRAIN_FRESHNESS_FAILURE);
   const nextStepStartedAt = Date.parse(nextStep?.started_at);
   // Jobs API step times are whole seconds. Accept a known marker in the completion second
   // only when the next step is the reviewed runner-credential cleanup and both boundaries
@@ -173,6 +184,27 @@ function findAllOccurrences(text, needle) {
   const positions = [];
   for (let from = 0; (from = text.indexOf(needle, from)) !== -1; from += needle.length) positions.push(from);
   return positions;
+}
+
+function hasExactWriterDrainFreshnessFailure(logRecords, normalizedLog) {
+  const failureRecords = logRecords.filter((record) =>
+    normalizeActionLog(record.text).includes(WRITER_DRAIN_FRESHNESS_FAILURE));
+  if (findAllOccurrences(normalizedLog, WRITER_DRAIN_FRESHNESS_FAILURE).length !== 1
+    || failureRecords.length !== 1 || failureRecords[0].job !== MIGRATION_FAILURE_JOB
+    || failureRecords[0].step !== MIGRATION_FAILURE_STEP) return false;
+  const recordText = normalizeActionLog(failureRecords[0].text);
+  const failureMatch = /^Production writer-drain gate blocked: writer-drain or topology observation is stale or from the future; checks=(\[[\s\S]*\])$/.exec(recordText);
+  if (!failureMatch) return false;
+  let checks;
+  try { checks = JSON.parse(failureMatch[1]); } catch { return false; }
+  if (!Array.isArray(checks) || checks.length !== EXPECTED_FINAL_WRITER_DRAIN_CHECKS.size) return false;
+  const observed = new Map();
+  for (const entry of checks) {
+    if (!entry || typeof entry.id !== "string" || typeof entry.passed !== "boolean" || observed.has(entry.id)) return false;
+    observed.set(entry.id, entry.passed);
+  }
+  return observed.size === EXPECTED_FINAL_WRITER_DRAIN_CHECKS.size
+    && [...EXPECTED_FINAL_WRITER_DRAIN_CHECKS].every(([id, passed]) => observed.get(id) === passed);
 }
 
 function workflowPath(run) {
@@ -633,8 +665,8 @@ function assertSuccessfulPreflightArtifacts(artifacts, sha, runId, manifestId) {
 
 /**
  * Resume a durable previous-app capture only for the narrowly verified incident
- * where a successful owner preflight was followed by the known final-guard
- * import failure before the DDL marker, then a retry stopped at the existing
+ * where a successful owner preflight was followed by a recognized final-guard
+ * failure before the DDL marker, then a retry stopped at the existing
  * capture guard or because the captured app container was already absent. No
  * new maintenance transition or DB inspection follows that early stop. The host still performs fresh marker, maintenance, app,
  * writer-drain, DB identity/history/schema, and immutable-image checks before
@@ -698,19 +730,35 @@ export function verifyPreDdlMigrationFailureResume({
   const failuresOutsideMigrationStep = findAllOccurrences(normalizedOtherLogs, importFailure).length;
   const writerDrainOutsideMigrationStep = findAllOccurrences(normalizedOtherLogs, writerDrainMarker).length;
   const failedSteps = (migrationExecution.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
-  if (failurePositions.length !== 3 || failuresOutsideMigrationStep !== 0 || writerDrainOutsideMigrationStep !== 0
-    || findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length !== 1
-    || failedSteps.length !== 1 || failedSteps[0] !== MIGRATION_FAILURE_STEP) {
+  const normalizedMigrationLog = normalizeActionLog(migrationLogText);
+  const importFailureSequenceIsExact = failurePositions.length === 3 && failuresOutsideMigrationStep === 0
+    && writerDrainOutsideMigrationStep === 0 && findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length === 1
+    && findAllOccurrences(normalizedMigrationLog, WRITER_DRAIN_FRESHNESS_FAILURE).length === 0
+    && failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP;
+  const writerFreshnessFailurePosition = normalizedEvidenceLog.indexOf(WRITER_DRAIN_FRESHNESS_FAILURE);
+  const writerFreshnessFailureIsExact = failurePositions.length === 0 && failuresOutsideMigrationStep === 0
+    && writerDrainOutsideMigrationStep === 0 && findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length === 1
+    && failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP
+    && writerDrainReadyPosition >= 0 && writerDrainReadyPosition < writerFreshnessFailurePosition
+    && hasExactWriterDrainFreshnessFailure(logRecords, normalizedMigrationLog);
+  let migrationFailureKind;
+  if (importFailureSequenceIsExact) {
+    migrationFailureKind = "authorization-helper-import";
+  } else if (writerFreshnessFailureIsExact) {
+    migrationFailureKind = "writer-drain-freshness";
+  } else {
     const observedMarkerRecordLabels = logRecords.flatMap((record) => {
       const normalizedRecord = normalizeActionLog(record.text);
       const importFailureOccurrences = findAllOccurrences(normalizedRecord, importFailure).length;
       const writerDrainOccurrences = findAllOccurrences(normalizedRecord, writerDrainMarker).length;
-      if (importFailureOccurrences === 0 && writerDrainOccurrences === 0) return [];
+      const freshnessFailureOccurrences = findAllOccurrences(normalizedRecord, WRITER_DRAIN_FRESHNESS_FAILURE).length;
+      if (importFailureOccurrences === 0 && writerDrainOccurrences === 0 && freshnessFailureOccurrences === 0) return [];
       return [{
         job: sanitizeActionLogLabel(record.job),
         step: sanitizeActionLogLabel(record.step),
         importFailureOccurrences,
         writerDrainOccurrences,
+        freshnessFailureOccurrences,
       }];
     }).slice(0, 8);
     const diagnostics = {
@@ -718,15 +766,17 @@ export function verifyPreDdlMigrationFailureResume({
       fixedMigrationStepRecords: evidenceRecords.length,
       knownImportFailuresInFixedStep: failurePositions.length,
       knownImportFailuresOutsideFixedStep: failuresOutsideMigrationStep,
+      finalWriterDrainFreshnessFailures: findAllOccurrences(normalizedEvidenceLog, WRITER_DRAIN_FRESHNESS_FAILURE).length,
+      exactFreshnessCheckSet: hasExactWriterDrainFreshnessFailure(logRecords, normalizedMigrationLog),
       writerDrainMarkersInFixedStep: findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length,
       writerDrainMarkersOutsideFixedStep: writerDrainOutsideMigrationStep,
       failedMigrationSteps: failedSteps.length,
       onlyExpectedMigrationStepFailed: failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP,
       observedMarkerRecordLabels,
     };
-    reject(`the migration log does not show exactly three known import failures in the fixed migration step (sanitized evidence counts: ${JSON.stringify(diagnostics)}).`);
+    reject(`the migration log does not show one exact reviewed pre-DDL failure in the fixed migration step (sanitized evidence counts: ${JSON.stringify(diagnostics)}).`);
   }
-  if (!(failurePositions[0] < failurePositions[1]
+  if (migrationFailureKind === "authorization-helper-import" && !(failurePositions[0] < failurePositions[1]
     && failurePositions[1] < writerDrainReadyPosition && writerDrainReadyPosition < failurePositions[2])) {
     reject("the two failed live probes, successful writer-drain observation, and final-guard import failure are not in the reviewed order.");
   }
@@ -828,6 +878,7 @@ export function verifyPreDdlMigrationFailureResume({
     sourceSha,
     targetSha: currentMainSha,
     migrationFailureRunId: String(migrationRun.id),
+    migrationFailureKind,
     blockedCaptureRunId: String(blockedCaptureRun.id),
     unverifiedHistoricalAuthorizationOnlyPreflightRunIds: Object.freeze([...unverifiedAuthorizationOnlyRetryIds].sort()),
   });

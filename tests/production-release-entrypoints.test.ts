@@ -431,7 +431,8 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain('gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts"');
     expect(workflow).toContain('artifacts: JSON.parse(readFileSync(artifactsPath, "utf8"))');
     expect(migrationWorkflow).toMatch(/- name: Remove temporary runner credentials\s+if: always\(\)\s+run: rm -rf "\$RUNNER_TEMP\/bodycast-migrate-ssh"/);
-    expect(resumeVerifier).toContain("two failed live probes, successful writer-drain observation, and final-guard import failure");
+    expect(resumeVerifier).toContain("one exact reviewed pre-DDL failure in the fixed migration step");
+    expect(workflow).toContain("exact reviewed $RESUME_MIGRATION_FAILURE_KIND failure occurred before the marker/Prisma boundary");
     expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");
     expect(resumeVerifier).toContain("must create a new backup");
     const finalGuard = migrationScript.indexOf("production-migration-final-guard.mjs");

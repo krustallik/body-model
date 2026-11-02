@@ -596,7 +596,6 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -Eeuo pipefail
-          trap 'status=$?; failed_line=${LINENO}; echo "::error::Pre-maintenance probe failed at step-script line ${failed_line} (exit ${status}); maintenance was not entered."; exit "$status"' ERR
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}" bodycast-db-prod')"
           [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy|"* ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
@@ -611,7 +610,6 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA'" <<'REMOTE'
           set -Eeuo pipefail
-          trap 'status=$?; failed_line=${LINENO}; echo "Production read-only host probe failed at host-script line ${failed_line} (exit ${status})." >&2; exit "$status"' ERR
           CONTAINER_ID="$1"
           DB_DATA_PATH="$2"
           DEPLOY_PATH="$(printf '%s' "$3" | base64 --decode)"
@@ -641,7 +639,7 @@ jobs:
               echo "Verified previous-app capture or provenance helper is unavailable." >&2; exit 1;
             }
             CAPTURE_META="$(cat -- "$CAPTURE_FILE" | node "$CAPTURE_HELPER" --verify-record)"
-            read -r CAPTURE_TARGET_SHA CAPTURE_IMAGE_ID CAPTURE_IMAGE_PIN < <(node --input-type=module -e 'const value=JSON.parse(process.argv[1]); process.stdout.write([value.targetSha, value.previousImageId, value.previousImagePin].join(" "))' "$CAPTURE_META")
+            read -r CAPTURE_TARGET_SHA CAPTURE_IMAGE_ID CAPTURE_IMAGE_PIN < <(node --input-type=module -e 'const value=JSON.parse(process.argv[1]); process.stdout.write([value.targetSha, value.previousImageId, value.previousImagePin].join(" ") + "\n")' "$CAPTURE_META")
             [[ "$CAPTURE_TARGET_SHA" == "$RESUME_SOURCE_SHA" && "$CAPTURE_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
               && ( "$CAPTURE_IMAGE_PIN" == "bodycast-app:rollback" \
                 || "$CAPTURE_IMAGE_PIN" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) ]] || {

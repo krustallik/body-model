@@ -77,6 +77,8 @@ case "${1:-}" in
     inspect_fixed_database_target
     TOPOLOGY_BEFORE="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
       bash "$ROOT_DIR/scripts/production-writer-drain.sh" --pre-maintenance-report)"
+    DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
+    [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
     TARGET_URL="$(effective_psql_url)"
     export BODYCAST_PSQL_DATABASE_URL="$TARGET_URL"
     unset TARGET_URL
@@ -88,8 +90,6 @@ case "${1:-}" in
     )"
     unset BODYCAST_PSQL_DATABASE_URL
     verify_report_endpoint "$RAW_REPORT"
-    DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
-    [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
     TOPOLOGY_AFTER="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
       bash "$ROOT_DIR/scripts/production-writer-drain.sh" --pre-maintenance-report)"
     BODYCAST_TOPOLOGY_BEFORE="$TOPOLOGY_BEFORE" BODYCAST_TOPOLOGY_AFTER="$TOPOLOGY_AFTER" node --input-type=module <<'NODE'

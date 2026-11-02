@@ -837,9 +837,12 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(writerDrain).toContain("export PRE_MAINTENANCE_CONTRACT");
     expect(writerDrain).not.toContain('PRE_MAINTENANCE_CONTRACT="$PRE_MAINTENANCE_CONTRACT"');
     const preflightTargetStart = target.indexOf("  --preflight)");
+    const preMaintenanceTargetStart = target.indexOf("  --pre-maintenance-snapshot)");
     const compatibilityTargetStart = target.indexOf("  --previous-app-compatibility-snapshot)");
     const reportBinding = 'verify_report_endpoint "$RAW_REPORT"';
     expect(target.indexOf(reportBinding, preflightTargetStart)).toBeLessThan(target.indexOf('DATA_FINGERPRINT="'));
+    expect(target.indexOf('DATA_FINGERPRINT="', preMaintenanceTargetStart)).toBeLessThan(target.indexOf('RAW_REPORT="', preMaintenanceTargetStart));
+    expect(target.indexOf('DATA_FINGERPRINT="', preMaintenanceTargetStart)).toBeLessThan(target.indexOf(reportBinding, preMaintenanceTargetStart));
     expect(target.indexOf(reportBinding, compatibilityTargetStart)).toBeLessThan(target.indexOf('printf \'%s\\n\' "$RAW_REPORT"', compatibilityTargetStart));
     expect(preflight).toContain('production-db-target.sh\\" --preflight bodycast-db-prod');
     expect(preflight).toContain("Pre-maintenance tooling archive digest mismatch.");

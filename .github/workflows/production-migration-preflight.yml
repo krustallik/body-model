@@ -596,6 +596,7 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -Eeuo pipefail
+          trap 'status=$?; failed_line=${LINENO}; echo "::error::Pre-maintenance probe failed at step-script line ${failed_line} (exit ${status}); maintenance was not entered."; exit "$status"' ERR
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}" bodycast-db-prod')"
           [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy|"* ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }

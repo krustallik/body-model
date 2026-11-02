@@ -760,6 +760,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const storageProbeStart = preflightWorkflow.indexOf("- name: Verify production container, PostgreSQL clients, and storage headroom");
     const storageProbeEnd = preflightWorkflow.indexOf("- name: Enter maintenance and drain the old app before backup", storageProbeStart);
     const storageProbe = preflightWorkflow.slice(storageProbeStart, storageProbeEnd);
+    expect(storageProbe).toContain('trap \'status=$?; failed_line=${LINENO}; echo "::error::Pre-maintenance probe failed at step-script line ${failed_line} (exit ${status}); maintenance was not entered."; exit "$status"\' ERR');
     expect(storageProbe).toContain("RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}");
     expect(storageProbe).toContain('if [[ -n "$RESUME_SOURCE_SHA" ]]; then');
     expect(storageProbe).toContain('"$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH"');

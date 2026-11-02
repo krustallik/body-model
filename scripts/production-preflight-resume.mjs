@@ -91,7 +91,7 @@ const EXPECTED_FINAL_WRITER_DRAIN_CHECKS = new Map([
   ["maintenance-route", true], ["maintenance-route-digest", true],
   ["writer-drain-freshness", false], ["topology-freshness", false],
 ]);
-const FINAL_PRISMA_WRITER_DRAIN_FAILURE = "Refusing Prisma DDL: final DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=";
+const FINAL_PRISMA_WRITER_DRAIN_FAILURE = "Refusing Prisma DDL: final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=";
 const EXPECTED_FINAL_PRISMA_WRITER_DRAIN_FAILURE_CHECKS = new Map([
   ["signed-database-identity-digest", true], ["canonical-postgres-identity", true],
   ["exact-database-identity-match", true], ["writer-drain-schema", true],
@@ -222,7 +222,7 @@ function hasExactFinalPrismaWriterDrainFailure(logRecords, normalizedLog) {
     || failureRecords.length !== 1 || failureRecords[0].job !== MIGRATION_FAILURE_JOB
     || failureRecords[0].step !== MIGRATION_FAILURE_STEP) return false;
   const recordText = normalizeActionLog(failureRecords[0].text);
-  const failureMatch = /^Refusing Prisma DDL: final DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=(\[[\s\S]*\])$/.exec(recordText);
+  const failureMatch = /^Refusing Prisma DDL: final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=(\[[\s\S]*\])$/.exec(recordText);
   if (!failureMatch) return false;
   let checks;
   try { checks = JSON.parse(failureMatch[1]); } catch { return false; }

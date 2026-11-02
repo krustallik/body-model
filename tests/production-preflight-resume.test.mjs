@@ -248,7 +248,7 @@ const writerDrainFreshnessLog = [
 ].join("\n");
 const finalPrismaWriterDrainLog = [
   writerDrainFreshnessLog.split("\n")[0],
-  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:10.0000000Z Refusing Prisma DDL: final DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=${JSON.stringify(finalPrismaWriterDrainChecks)}`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:10.0000000Z Refusing Prisma DDL: final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=${JSON.stringify(finalPrismaWriterDrainChecks)}`,
 ].join("\n");
 const migrationLog = [
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,

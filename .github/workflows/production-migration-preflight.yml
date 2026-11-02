@@ -615,8 +615,8 @@ jobs:
           DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
           APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
           APP_IMAGE_BYTES="$(docker image inspect --format '{{.Size}}' "$APP_IMAGE_ID")"
-          DB_FREE_BYTES="$(df -PB1 --output=avail "$DB_DATA_PATH" | tail -n1 | tr -d '[:space:]')"
-          DOCKER_FREE_BYTES="$(df -PB1 --output=avail "$DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
+          DB_FREE_BYTES="$(df -B1 --output=avail "$DB_DATA_PATH" | tail -n1 | tr -d '[:space:]')"
+          DOCKER_FREE_BYTES="$(df -B1 --output=avail "$DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
           DB_DEVICE="$(stat -c '%d' "$DB_DATA_PATH")"
           DOCKER_DEVICE="$(stat -c '%d' "$DOCKER_ROOT")"
           [[ "$DB_BYTES" =~ ^[1-9][0-9]*$ && "$APP_IMAGE_BYTES" =~ ^[1-9][0-9]*$ \
@@ -626,9 +626,9 @@ jobs:
           REMOTE
           )"
           read -r DB_BYTES DB_FREE_BYTES DOCKER_FREE_BYTES APP_IMAGE_BYTES DB_DEVICE DOCKER_DEVICE <<< "$HOST_CAPACITY"
-          RUNNER_FREE_BYTES="$(df -PB1 --output=avail "$RUNNER_TEMP" | tail -n1 | tr -d '[:space:]')"
+          RUNNER_FREE_BYTES="$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n1 | tr -d '[:space:]')"
           RUNNER_DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
-          RUNNER_DOCKER_FREE_BYTES="$(df -PB1 --output=avail "$RUNNER_DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
+          RUNNER_DOCKER_FREE_BYTES="$(df -B1 --output=avail "$RUNNER_DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
           RUNNER_TEMP_DEVICE="$(stat -c '%d' "$RUNNER_TEMP")"
           RUNNER_DOCKER_DEVICE="$(stat -c '%d' "$RUNNER_DOCKER_ROOT")"
           [[ "$RUNNER_FREE_BYTES" =~ ^[0-9]+$ && "$RUNNER_DOCKER_FREE_BYTES" =~ ^[0-9]+$ \

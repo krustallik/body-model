@@ -583,6 +583,8 @@ describe("workflow mutation boundary", () => {
     expect(workflow).not.toMatch(/(?:POSTGRES_IMAGE:\s+|--entrypoint pg_restore\s+)postgres@sha256:/);
     expect(workflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
     expect(workflow).toContain("scripts/filter-ssh-known-hosts.mjs");
+    expect(workflow).toContain('df -B1 --output=avail "$DB_DATA_PATH"');
+    expect(workflow).not.toContain("df -PB1 --output=avail");
     expect(safetyWorkflow).toContain('"scripts/filter-ssh-known-hosts.mjs"');
     expect(workflow).toContain("DATABASE_URL: postgresql://bodycast_restore:");
     expect(workflow).toMatch(/DATABASE_URL:\s+postgresql:\/\/[^@\s]+@127\.0\.0\.1:5432\/bodycast_restore\s*$/m);

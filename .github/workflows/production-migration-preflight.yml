@@ -611,6 +611,7 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA'" <<'REMOTE'
           set -Eeuo pipefail
+          trap 'status=$?; failed_line=${LINENO}; echo "Production read-only host probe failed at host-script line ${failed_line} (exit ${status})." >&2; exit "$status"' ERR
           CONTAINER_ID="$1"
           DB_DATA_PATH="$2"
           DEPLOY_PATH="$(printf '%s' "$3" | base64 --decode)"

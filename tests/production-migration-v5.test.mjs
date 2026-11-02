@@ -755,6 +755,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("isolated Garmin/Workout input mutation");
     expect(safetyWorkflow).toContain('"DailyHealthData" ("date", "weightKg", "rawPayload", "createdAt", "updatedAt")');
     expect(safetyWorkflow).toContain('"Workout" ("dailyHealthDataId", "sourceIdentity", "type", "startAt", "endAt", "activeEnergyKcal", "createdAt", "updatedAt")');
+    expect(safetyWorkflow).toContain("CREATE DATABASE bodycast_health_mutation_test TEMPLATE bodycast_restore");
+    expect(safetyWorkflow).toContain("CREATE DATABASE bodycast_workout_mutation_test TEMPLATE bodycast_restore");
+    expect(safetyWorkflow).toContain("Auth Health mutation clone does not match the migrated source-input baseline.");
+    expect(safetyWorkflow).toContain("Auth Workout mutation clone does not match the migrated source-input baseline.");
     const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
     const baselineMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"', rehearsalStart);

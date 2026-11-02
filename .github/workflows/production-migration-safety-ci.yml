@@ -539,26 +539,33 @@ jobs:
           [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]] || {
             echo "Auth ownership migration changed immutable source-input projection in isolated PostgreSQL." >&2; exit 1;
           }
+          psql postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE bodycast_health_mutation_test TEMPLATE bodycast_restore'
+          psql postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE bodycast_workout_mutation_test TEMPLATE bodycast_restore'
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_health_mutation_test
+          AUTH_HEALTH_BASELINE_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_HEALTH_BASELINE_FINGERPRINT" ]] || {
+            echo "Auth Health mutation clone does not match the migrated source-input baseline." >&2; exit 1;
+          }
           psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
             --command="UPDATE public.\"DailyHealthData\" SET \"rawPayload\" = '{\"source\":\"tampered\"}'::jsonb WHERE \"date\" = '2026-10-01'"
           AUTH_HEALTH_MUTATION_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
           [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" != "$AUTH_HEALTH_MUTATION_FINGERPRINT" ]] || {
             echo "Auth source-input projection failed to detect an isolated primary Health input mutation." >&2; exit 1;
           }
-          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
-            --command="UPDATE public.\"DailyHealthData\" SET \"rawPayload\" = '{\"source\":\"auth-migration-rehearsal\",\"weightKg\":80.25}'::jsonb WHERE \"date\" = '2026-10-01'"
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_workout_mutation_test
+          AUTH_WORKOUT_BASELINE_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_WORKOUT_BASELINE_FINGERPRINT" ]] || {
+            echo "Auth Workout mutation clone does not match the migrated source-input baseline." >&2; exit 1;
+          }
           psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
             --command="UPDATE public.\"Workout\" SET \"startAt\" = TIMESTAMPTZ '2026-10-01 12:01:00+00' WHERE \"sourceIdentity\" = 'auth-migration-rehearsal:garmin:1'"
           AUTH_WORKOUT_MUTATION_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
           [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" != "$AUTH_WORKOUT_MUTATION_FINGERPRINT" ]] || {
             echo "Auth source-input projection failed to detect an isolated Garmin/Workout input mutation." >&2; exit 1;
           }
-          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
-            --command="UPDATE public.\"Workout\" SET \"startAt\" = TIMESTAMPTZ '2026-10-01 12:00:00+00' WHERE \"sourceIdentity\" = 'auth-migration-rehearsal:garmin:1'"
-          AUTH_SOURCE_FINGERPRINT_RESTORED="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
-          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_SOURCE_FINGERPRINT_RESTORED" ]] || {
-            echo "Restored isolated raw inputs did not recover the exact Auth source-input fingerprint." >&2; exit 1;
-          }
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_restore
           psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 <<'SQL'
           INSERT INTO public."Profile" ("id", "locale", "sex", "dateOfBirth", "heightCm", "createdAt", "updatedAt")
           VALUES (2, 'uk', NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);

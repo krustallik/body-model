@@ -821,6 +821,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const target = await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8");
     const cutover = await readFile(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8");
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
+    const servingWorkflow = await readFile(new URL("../.github/workflows/deploy-production.yml", import.meta.url), "utf8");
     const writerDrain = await readFile(new URL("../scripts/production-writer-drain.sh", import.meta.url), "utf8");
     expect(deploy).toContain('production-db-target.sh" --preflight "$DB_CONTAINER"');
     expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools config --format json");
@@ -847,6 +848,16 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(preflight).toContain('production-db-target.sh\\" --preflight bodycast-db-prod');
     expect(preflight).toContain("Pre-maintenance tooling archive digest mismatch.");
     expect(preflight).toContain(`trap 'rm -rf -- "$stage"' EXIT`);
+    const productionCheckoutOriginGate = preflight.indexOf('ORIGIN_URL="$(git remote get-url origin)"');
+    const productionCheckoutFetch = preflight.indexOf('git fetch --no-tags origin "$RELEASE_SHA"');
+    const productionMaintenanceCutover = preflight.indexOf('exec bash scripts/production-traffic-cutover.sh maintenance');
+    expect(productionCheckoutOriginGate).toBeGreaterThan(-1);
+    expect(preflight.indexOf('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"', productionCheckoutOriginGate)).toBeGreaterThan(productionCheckoutOriginGate);
+    expect(preflight.indexOf('git ls-remote origin refs/heads/main >/dev/null', productionCheckoutOriginGate)).toBeLessThan(productionCheckoutFetch);
+    expect(productionCheckoutFetch).toBeLessThan(productionMaintenanceCutover);
+    expect(preflight).toContain('export GIT_SSH_COMMAND="ssh -i $GITHUB_DEPLOY_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"');
+    expect(servingWorkflow).toContain('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"');
+    expect(servingWorkflow).toContain('git ls-remote origin refs/heads/main >/dev/null');
     const archiveCreation = preflight.indexOf('tar -czf "$TOOL_ARCHIVE"');
     const runnerCapacityMeasurement = preflight.indexOf('RUNNER_FREE_BYTES="$(df');
     expect(archiveCreation).toBeGreaterThanOrEqual(0);

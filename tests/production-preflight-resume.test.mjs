@@ -250,6 +250,10 @@ const finalPrismaWriterDrainLog = [
   writerDrainFreshnessLog.split("\n")[0],
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:10.0000000Z Refusing Prisma DDL: final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=${JSON.stringify(finalPrismaWriterDrainChecks)}`,
 ].join("\n");
+const releaseMarkerSerializationLog = [
+  writerDrainFreshnessLog.split("\n")[0],
+  "Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:11.0000000Z refusing malformed release marker values",
+].join("\n");
 const migrationLog = [
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:27.8263452Z ${migrationFailure}`,
@@ -1205,6 +1209,34 @@ describe("verified resume after a migration failed before the DDL marker", () =>
       .replace("2026-11-02T20:43:10.0000000Z", "2026-11-02T20:43:37.0000000Z")}`;
     expect(() => verifyPreDdlResume({ migrationLogText: freshnessAndFinalFailure }))
       .toThrow("one exact reviewed pre-DDL failure");
+  });
+
+  it("accepts only the exact Auth marker-serialization failure before marker publication", () => {
+    expect(verifyPreDdlResume({ migrationLogText: releaseMarkerSerializationLog })).toMatchObject({
+      migrationFailureKind: "release-marker-serialization",
+      migrationFailureRunId: preDdlMigrationRunId,
+    });
+
+    expect(() => verifyPreDdlResume({
+      migrationLogText: `${releaseMarkerSerializationLog}\n${releaseMarkerSerializationLog.split("\n")[1]}`,
+    })).toThrow("one exact reviewed pre-DDL failure");
+    const wrongStep = releaseMarkerSerializationLog.replace(
+      "Run the fixed guarded migration script over SSH",
+      "Validate protected production SSH",
+    );
+    expect(() => verifyPreDdlResume({ migrationLogText: wrongStep })).toThrow("one exact reviewed pre-DDL failure");
+    const failureBeforeWriterDrain = releaseMarkerSerializationLog.split("\n").reverse().join("\n");
+    expect(() => verifyPreDdlResume({ migrationLogText: failureBeforeWriterDrain })).toThrow("one exact reviewed pre-DDL failure");
+
+    const importAndMarker = `${migrationLog}\n${releaseMarkerSerializationLog.split("\n")[1]
+      .replace("2026-11-02T20:43:11.0000000Z", "2026-10-10T00:08:29.9000000Z")}`;
+    expect(() => verifyPreDdlResume({ migrationLogText: importAndMarker })).toThrow("one exact reviewed pre-DDL failure");
+    const freshnessAndMarker = `${writerDrainFreshnessLog}\n${releaseMarkerSerializationLog.split("\n")[1]
+      .replace("2026-11-02T20:43:11.0000000Z", "2026-11-02T20:43:37.0000000Z")}`;
+    expect(() => verifyPreDdlResume({ migrationLogText: freshnessAndMarker })).toThrow("one exact reviewed pre-DDL failure");
+    const finalGuardAndMarker = `${finalPrismaWriterDrainLog}\n${releaseMarkerSerializationLog.split("\n")[1]
+      .replace("2026-11-02T20:43:11.0000000Z", "2026-11-02T20:43:11.5000000Z")}`;
+    expect(() => verifyPreDdlResume({ migrationLogText: finalGuardAndMarker })).toThrow("one exact reviewed pre-DDL failure");
   });
 
   it("parses wrapped runner logs while binding failures to the sole failed fixed migration step", () => {

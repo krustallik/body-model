@@ -116,7 +116,8 @@ read_bodycast_release_marker() {
       || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
         && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
           || "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ) ) \
+          || "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
+          || "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" ) ) \
       || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
         && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
           || "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" \

@@ -7,7 +7,7 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[1-9][0-9]*$/;
 const MANIFEST_IDS = new Set([
   "active-energy-unified-v2", "unified-v4-republication-v1", "programless-workouts-health-sync-v1",
-  "training-mutation-ledger-refresh-queue-v1",
+  "training-mutation-ledger-refresh-queue-v1", "auth-multiuser-v1",
 ]);
 const MARKER_NAME = "marker";
 const STATES = new Set([

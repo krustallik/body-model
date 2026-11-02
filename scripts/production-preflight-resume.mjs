@@ -82,6 +82,7 @@ const BLOCKED_NO_APP_PREFLIGHT_STEPS = Object.freeze({
 });
 const MIGRATION_PRE_DDL_FAILURE = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
 const WRITER_DRAIN_FRESHNESS_FAILURE = "Production writer-drain gate blocked: writer-drain or topology observation is stale or from the future";
+const RELEASE_MARKER_SERIALIZATION_FAILURE = "refusing malformed release marker values";
 const EXPECTED_FINAL_WRITER_DRAIN_CHECKS = new Map([
   ["inventory-schema", true], ["observer-pid", true], ["observed-at", true], ["observer-application", true],
   ["identity-policy", true], ["backend-inventory", true], ["zero-other-client-backends", true],
@@ -176,7 +177,8 @@ function isExpectedMigrationEvidenceRecord(record, migrationExecution, importFai
   const normalizedRecord = normalizeActionLog(record.text);
   const containsKnownMarker = normalizedRecord.includes(importFailure) || normalizedRecord.includes(writerDrainMarker)
     || normalizedRecord.includes(WRITER_DRAIN_FRESHNESS_FAILURE)
-    || normalizedRecord.includes(FINAL_PRISMA_WRITER_DRAIN_FAILURE);
+    || normalizedRecord.includes(FINAL_PRISMA_WRITER_DRAIN_FAILURE)
+    || normalizedRecord.includes(RELEASE_MARKER_SERIALIZATION_FAILURE);
   const nextStepStartedAt = Date.parse(nextStep?.started_at);
   // Jobs API step times are whole seconds. Accept a known marker in the completion second
   // only when the next step is the reviewed runner-credential cleanup and both boundaries
@@ -234,6 +236,14 @@ function hasExactFinalPrismaWriterDrainFailure(logRecords, normalizedLog) {
   }
   return observed.size === EXPECTED_FINAL_PRISMA_WRITER_DRAIN_FAILURE_CHECKS.size
     && [...EXPECTED_FINAL_PRISMA_WRITER_DRAIN_FAILURE_CHECKS].every(([id, passed]) => observed.get(id) === passed);
+}
+
+function hasExactReleaseMarkerSerializationFailure(logRecords, normalizedLog) {
+  const failureRecords = logRecords.filter((record) => normalizeActionLog(record.text).includes(RELEASE_MARKER_SERIALIZATION_FAILURE));
+  return findAllOccurrences(normalizedLog, RELEASE_MARKER_SERIALIZATION_FAILURE).length === 1
+    && failureRecords.length === 1 && failureRecords[0].job === MIGRATION_FAILURE_JOB
+    && failureRecords[0].step === MIGRATION_FAILURE_STEP
+    && normalizeActionLog(failureRecords[0].text) === RELEASE_MARKER_SERIALIZATION_FAILURE;
 }
 
 function workflowPath(run) {
@@ -764,11 +774,13 @@ export function verifyPreDdlMigrationFailureResume({
     && writerDrainOutsideMigrationStep === 0 && findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length === 1
     && findAllOccurrences(normalizedMigrationLog, WRITER_DRAIN_FRESHNESS_FAILURE).length === 0
     && findAllOccurrences(normalizedMigrationLog, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length === 0
+    && findAllOccurrences(normalizedMigrationLog, RELEASE_MARKER_SERIALIZATION_FAILURE).length === 0
     && failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP;
   const writerFreshnessFailurePosition = normalizedEvidenceLog.indexOf(WRITER_DRAIN_FRESHNESS_FAILURE);
   const writerFreshnessFailureIsExact = failurePositions.length === 0 && failuresOutsideMigrationStep === 0
     && writerDrainOutsideMigrationStep === 0 && findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length === 1
     && findAllOccurrences(normalizedMigrationLog, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length === 0
+    && findAllOccurrences(normalizedMigrationLog, RELEASE_MARKER_SERIALIZATION_FAILURE).length === 0
     && failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP
     && writerDrainReadyPosition >= 0 && writerDrainReadyPosition < writerFreshnessFailurePosition
     && hasExactWriterDrainFreshnessFailure(logRecords, normalizedMigrationLog);
@@ -779,11 +791,22 @@ export function verifyPreDdlMigrationFailureResume({
     && findAllOccurrences(normalizedEvidenceLog, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length === 1
     && findAllOccurrences(normalizedMigrationLog, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length === 1
     && findAllOccurrences(normalizedMigrationLog, WRITER_DRAIN_FRESHNESS_FAILURE).length === 0
+    && findAllOccurrences(normalizedMigrationLog, RELEASE_MARKER_SERIALIZATION_FAILURE).length === 0
     && findAllOccurrences(normalizedOtherLogs, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length === 0
     && findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length === 1
     && failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP
     && writerDrainReadyPosition >= 0 && writerDrainReadyPosition < finalPrismaWriterDrainFailurePosition
     && hasExactFinalPrismaWriterDrainFailure(logRecords, normalizedMigrationLog);
+  const releaseMarkerSerializationFailurePosition = normalizedEvidenceLog.indexOf(RELEASE_MARKER_SERIALIZATION_FAILURE);
+  const releaseMarkerSerializationFailureIsExact = manifestId === "auth-multiuser-v1"
+    && failurePositions.length === 0 && failuresOutsideMigrationStep === 0 && writerDrainOutsideMigrationStep === 0
+    && findAllOccurrences(normalizedMigrationLog, WRITER_DRAIN_FRESHNESS_FAILURE).length === 0
+    && findAllOccurrences(normalizedMigrationLog, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length === 0
+    && findAllOccurrences(normalizedMigrationLog, RELEASE_MARKER_SERIALIZATION_FAILURE).length === 1
+    && findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length === 1
+    && failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP
+    && writerDrainReadyPosition >= 0 && writerDrainReadyPosition < releaseMarkerSerializationFailurePosition
+    && hasExactReleaseMarkerSerializationFailure(logRecords, normalizedMigrationLog);
   let migrationFailureKind;
   if (importFailureSequenceIsExact) {
     migrationFailureKind = "authorization-helper-import";
@@ -791,6 +814,8 @@ export function verifyPreDdlMigrationFailureResume({
     migrationFailureKind = "writer-drain-freshness";
   } else if (finalPrismaWriterDrainFailureIsExact) {
     migrationFailureKind = "final-writer-drain-client";
+  } else if (releaseMarkerSerializationFailureIsExact) {
+    migrationFailureKind = "release-marker-serialization";
   } else {
     const observedMarkerRecordLabels = logRecords.flatMap((record) => {
       const normalizedRecord = normalizeActionLog(record.text);
@@ -798,8 +823,9 @@ export function verifyPreDdlMigrationFailureResume({
       const writerDrainOccurrences = findAllOccurrences(normalizedRecord, writerDrainMarker).length;
       const freshnessFailureOccurrences = findAllOccurrences(normalizedRecord, WRITER_DRAIN_FRESHNESS_FAILURE).length;
       const finalPrismaWriterDrainFailureOccurrences = findAllOccurrences(normalizedRecord, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length;
+      const releaseMarkerSerializationFailureOccurrences = findAllOccurrences(normalizedRecord, RELEASE_MARKER_SERIALIZATION_FAILURE).length;
       if (importFailureOccurrences === 0 && writerDrainOccurrences === 0 && freshnessFailureOccurrences === 0
-        && finalPrismaWriterDrainFailureOccurrences === 0) return [];
+        && finalPrismaWriterDrainFailureOccurrences === 0 && releaseMarkerSerializationFailureOccurrences === 0) return [];
       return [{
         job: sanitizeActionLogLabel(record.job),
         step: sanitizeActionLogLabel(record.step),
@@ -807,6 +833,7 @@ export function verifyPreDdlMigrationFailureResume({
         writerDrainOccurrences,
         freshnessFailureOccurrences,
         finalPrismaWriterDrainFailureOccurrences,
+        releaseMarkerSerializationFailureOccurrences,
       }];
     }).slice(0, 8);
     const diagnostics = {
@@ -818,6 +845,8 @@ export function verifyPreDdlMigrationFailureResume({
       exactFreshnessCheckSet: hasExactWriterDrainFreshnessFailure(logRecords, normalizedMigrationLog),
       finalPrismaWriterDrainFailures: findAllOccurrences(normalizedEvidenceLog, FINAL_PRISMA_WRITER_DRAIN_FAILURE).length,
       exactFinalPrismaWriterDrainChecks: hasExactFinalPrismaWriterDrainFailure(logRecords, normalizedMigrationLog),
+      releaseMarkerSerializationFailures: findAllOccurrences(normalizedEvidenceLog, RELEASE_MARKER_SERIALIZATION_FAILURE).length,
+      exactAuthReleaseMarkerSerializationFailure: hasExactReleaseMarkerSerializationFailure(logRecords, normalizedMigrationLog),
       writerDrainMarkersInFixedStep: findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length,
       writerDrainMarkersOutsideFixedStep: writerDrainOutsideMigrationStep,
       failedMigrationSteps: failedSteps.length,

@@ -86,6 +86,25 @@ grep -Fxq 'manifestId=unified-v4-republication-v1' "$BODYCAST_RELEASE_MARKER_PAT
   echo "New V4 migration manifest identity was not preserved during marker transition." >&2; exit 1;
 }
 
+# Auth multi-user migration handoff must remain readable by the host-side
+# validator after Prisma starts and through the normal schema/app-ready states.
+printf 'schemaVersion=2\nmanifestId=auth-multiuser-v1\nreleaseSha=%040d\nstate=ddl-starting\nworkflowRunId=390002\nworkflowRunAttempt=1\nauthorizationId=authorization-auth-marker-test\nlineageDigest=%064d\nspawnState=not-started\n' 3 4 \
+  > "$BODYCAST_RELEASE_MARKER_PATH"
+read_bodycast_release_marker
+[[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+  && "$BODYCAST_MARKER_STATE" == "ddl-starting" && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ]] || {
+  echo "Auth pre-spawn marker was not parsed and validated exactly." >&2; exit 1;
+}
+printf 'schemaVersion=2\nmanifestId=auth-multiuser-v1\nreleaseSha=%040d\nstate=ddl-started\nworkflowRunId=390002\nworkflowRunAttempt=1\nauthorizationId=authorization-auth-marker-test\nlineageDigest=%064d\nspawnState=started\n' 3 4 \
+  > "$BODYCAST_RELEASE_MARKER_PATH"
+read_bodycast_release_marker
+write_bodycast_release_marker "$(printf '%040d' 3)" schema-applied
+write_bodycast_release_marker "$(printf '%040d' 3)" app-ready
+read_bodycast_release_marker
+[[ "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {
+  echo "Auth migration manifest identity did not survive the host marker lifecycle." >&2; exit 1;
+}
+
 printf 'schemaVersion=1\nmanifestId=unified-v4-republication-v1\nreleaseSha=%040d\nstate=ddl-started\n' 1 \
   > "$BODYCAST_RELEASE_MARKER_PATH"
 status=0

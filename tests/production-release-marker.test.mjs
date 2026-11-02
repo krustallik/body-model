@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acknowledgePrismaSpawn, readProductionReleaseMarker, writeDdlStartingMarker } from "../scripts/production-release-marker.mjs";
+import { acknowledgePrismaSpawn, parseProductionReleaseMarker, readProductionReleaseMarker, writeDdlStartingMarker } from "../scripts/production-release-marker.mjs";
 
 const directories = [];
 async function markerFixture() {
@@ -20,6 +20,41 @@ afterEach(async () => {
 });
 
 describe("durable Prisma DDL marker handoff", () => {
+  it("accepts the reviewed Auth manifest in a canonical DDL marker", () => {
+    const marker = parseProductionReleaseMarker([
+      "schemaVersion=2",
+      "manifestId=auth-multiuser-v1",
+      `releaseSha=${markerArguments.releaseSha}`,
+      "state=ddl-starting",
+      `workflowRunId=${markerArguments.workflowRunId}`,
+      `workflowRunAttempt=${markerArguments.workflowRunAttempt}`,
+      `authorizationId=${markerArguments.authorizationId}`,
+      `lineageDigest=${markerArguments.lineageDigest}`,
+      "spawnState=not-started",
+      "",
+    ].join("\n"));
+    expect(marker).toMatchObject({ manifestId: "auth-multiuser-v1", state: "ddl-starting", spawnState: "not-started" });
+  });
+
+  it.skipIf(process.platform === "win32")("accepts the Auth manifest through the standard DDL marker lifecycle", async () => {
+    const fixture = await markerFixture();
+    const marker = await writeDdlStartingMarker({
+      markerDirectory: fixture.markerDirectory,
+      ...markerArguments,
+      manifestId: "auth-multiuser-v1",
+    });
+    expect(marker.marker.manifestId).toBe("auth-multiuser-v1");
+    const acknowledged = await acknowledgePrismaSpawn({ markerPath: fixture.markerPath, expectedDigest: marker.digest });
+    expect(acknowledged.marker).toMatchObject({ manifestId: "auth-multiuser-v1", state: "ddl-started", spawnState: "started" });
+  });
+
+  it.skipIf(process.platform === "win32")("removes the temporary marker lock when an unreviewed manifest is rejected before publication", async () => {
+    const fixture = await markerFixture();
+    await expect(writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments,
+      manifestId: "unreviewed-manifest" })).rejects.toThrow("refusing malformed release marker values");
+    expect(await readdir(fixture.markerDirectory)).toEqual([]);
+  });
+
   it.skipIf(process.platform === "win32")("atomically consumes one signed prior armed marker without reusing its run authorization", async () => {
     const fixture = await markerFixture();
     const prior = { workflowRunId: "38062632284", workflowRunAttempt: 1,

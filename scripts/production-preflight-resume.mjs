@@ -19,7 +19,7 @@ const MUTATION_WORKFLOW_PATHS = new Set([
 
 const REQUIRED_SOURCE_STEPS = Object.freeze({
   "Enter maintenance and drain the old app before backup": "success",
-  "Verify production container and PostgreSQL client versions": "success",
+  "Verify production container, PostgreSQL clients, and storage headroom": "success",
   "Read-only production identity, full migration set, schema signatures, and locks": "success",
   "Capture pg_dump start on production host and create encrypted backup": "success",
   "Restore snapshot, compare source state, and rehearse exact migrations": "failure",

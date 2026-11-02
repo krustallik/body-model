@@ -552,6 +552,37 @@ SELECT count(*),
 FROM current_events
 SQL
 )"
+activity_query="$(cat <<'SQL'
+WITH other_client_backends AS (
+  SELECT
+    CASE
+      WHEN application_name = 'bodycast-prisma-ddl-guard' THEN 'prisma_ddl_guard'
+      WHEN application_name = 'bodycast-production-preflight' THEN 'production_preflight'
+      WHEN application_name = 'bodycast-production-checkout-diagnostic' THEN 'checkout_diagnostic'
+      WHEN lower(application_name) LIKE '%prisma%' THEN 'other_prisma'
+      WHEN lower(application_name) LIKE 'bodycast%' THEN 'other_bodycast'
+      WHEN lower(application_name) LIKE '%psql%' THEN 'psql'
+      WHEN application_name = '' THEN 'unnamed'
+      ELSE 'other'
+    END || '_' || CASE state
+      WHEN 'active' THEN 'active'
+      WHEN 'idle' THEN 'idle'
+      WHEN 'idle in transaction' THEN 'idle_in_transaction'
+      ELSE 'other_state'
+    END AS category
+  FROM pg_stat_activity
+  WHERE datname = current_database()
+    AND backend_type = 'client backend'
+    AND pid <> pg_backend_pid()
+), activity_counts AS (
+  SELECT category, count(*) AS backend_count
+  FROM other_client_backends
+  GROUP BY category
+)
+SELECT COALESCE(string_agg(category || '=' || backend_count::text, ',' ORDER BY category), 'none')
+FROM activity_counts
+SQL
+)"
 if ! query_result="$(PGPASSFILE="$passfile" \
   PGAPPNAME=bodycast-production-checkout-diagnostic \
   PGCONNECT_TIMEOUT=5 \
@@ -559,7 +590,7 @@ if ! query_result="$(PGPASSFILE="$passfile" \
   psql --no-psqlrc --quiet --tuples-only --no-align --field-separator='|' --no-password \
     --set=ON_ERROR_STOP=1 --set=VERBOSITY=verbose \
     --host "$server_ip" --username="$POSTGRES_USER" --dbname=bodycast \
-    --command "BEGIN READ ONLY; $query; ROLLBACK" 2>"$error_file")"; then
+    --command "BEGIN READ ONLY; $query; $activity_query; ROLLBACK" 2>"$error_file")"; then
   sqlstate="$(sed -nE 's/^[A-Z]+:[[:space:]]+([0-9A-Z]{5})(:|$).*/\1/p' "$error_file" | head -n 1)"
   if [[ "$sqlstate" =~ ^[0-9A-Z]{5}$ ]]; then
     safe_object="$(sed -nE \
@@ -577,6 +608,12 @@ if ! query_result="$(PGPASSFILE="$passfile" \
   fi
   exit 0
 fi
+activity_summary="${query_result##*$'\n'}"
+query_result="${query_result%$'\n'*}"
+[[ "$activity_summary" =~ ^(none|[a-z_]+=[0-9]+(,[a-z_]+=[0-9]+)*)$ ]] || {
+  printf '__diagnostic_query_error__|invalid-activity-result-shape\n'
+  exit 0
+}
 printf '%s\n' "$query_result"
 BASH
 )" || return 1
@@ -588,11 +625,17 @@ BASH
     printf '%s\n' "$inventory"
     return 1
   fi
+  activity_summary="${inventory##*$'\n'}"
+  inventory="${inventory%$'\n'*}"
+  [[ "$activity_summary" =~ ^(none|[a-z_]+=[0-9]+(,[a-z_]+=[0-9]+)*)$ ]] || {
+    printf '__diagnostic_query_error__|invalid-activity-result-shape\n'
+    return 1
+  }
   shadow_payload_b64="${inventory##*|}"
   inventory="${inventory%|*}"
   [[ "$inventory" =~ ^([0-9]+\|){32}[0-9]+$ ]] || { printf '__diagnostic_query_error__|invalid-result-shape\n'; return 1; }
   [[ "$shadow_payload_b64" == none || "$shadow_payload_b64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || return 1
-  printf '%s\n%s\n' "$inventory" "$shadow_payload_b64"
+  printf '%s\n%s\n%s\n' "$inventory" "$shadow_payload_b64" "$activity_summary"
 }
 
 git_ro() {
@@ -890,6 +933,8 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit deploy_rollback_pin_image_id unavailable
   fi
   if [[ "$production_db_ready" == true ]] && energy_inventory="$(read_only_energy_diagnostic_inventory)"; then
+    energy_activity_summary="${energy_inventory##*$'\n'}"
+    energy_inventory="${energy_inventory%$'\n'*}"
     energy_shadow_payload_b64="${energy_inventory##*$'\n'}"
     energy_inventory="${energy_inventory%%$'\n'*}"
     IFS='|' read -r energy_total energy_with_superseded energy_with_current energy_with_both_alias_kinds energy_stair_climbing energy_strength_training energy_workout_source energy_strength_session_source energy_workout_ids energy_target_utc_window_matches energy_target_utc_window_missing_timezone energy_target_completed_matches energy_target_live_matches energy_target_unmatched_candidates energy_target_local_minute_matches energy_target_effective_local_minute_matches energy_target_web_started_local_minute_matches energy_target_strength_session_matches energy_before_strength_local_date energy_on_or_after_strength_local_date energy_w56_visible energy_w56_aliases energy_w56_events energy_w56_kind_matches energy_w56_identity_matches energy_w56_current energy_w56_resolution_revision_matches energy_w56_selected_candidate_matches energy_w56_raw_energy_inputs energy_w56_available_candidates energy_w56_selected_source_code energy_w56_workout_classification_code energy_w56_selected_identity_code <<< "$energy_inventory"
@@ -928,6 +973,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_workout_classification_code "$energy_w56_workout_classification_code"
     emit energy_diagnostic_workout_56_selected_identity_code "$energy_w56_selected_identity_code"
     emit energy_diagnostic_workout_56_shadow_payload_b64 "$energy_shadow_payload_b64"
+    emit energy_diagnostic_postgres_other_client_activity "$energy_activity_summary"
   else
     energy_inventory_status=unavailable
     if [[ "${energy_inventory:-}" =~ ^__diagnostic_query_error__\|sqlstate-([0-9A-Z]{5})\|object-([A-Za-z0-9_-]+)$ ]]; then
@@ -974,6 +1020,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit energy_diagnostic_workout_56_workout_classification_code unavailable
     emit energy_diagnostic_workout_56_selected_identity_code unavailable
     emit energy_diagnostic_workout_56_shadow_payload_b64 unavailable
+    emit energy_diagnostic_postgres_other_client_activity unavailable
   fi
 else
   emit docker_daemon_available no

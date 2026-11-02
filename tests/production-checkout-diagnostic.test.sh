@@ -137,6 +137,9 @@ MOCK_FETCH
   cat > "$DOCKER_EXEC_INPUT"
   grep -Fq "PGOPTIONS='-c default_transaction_read_only=on" "$DOCKER_EXEC_INPUT" || exit 97
   grep -Fq 'BEGIN READ ONLY;' "$DOCKER_EXEC_INPUT" || exit 96
+  grep -Fq 'FROM pg_stat_activity' "$DOCKER_EXEC_INPUT" || exit 65
+  grep -Fq "WHEN application_name = 'bodycast-prisma-ddl-guard' THEN 'prisma_ddl_guard'" "$DOCKER_EXEC_INPUT" || exit 64
+  grep -Fq "ELSE 'other'" "$DOCKER_EXEC_INPUT" || exit 63
   grep -Fq 'ActiveEnergyEventAlias' "$DOCKER_EXEC_INPUT" || exit 95
   grep -Fq 'ActiveEnergyCanonicalEvent' "$DOCKER_EXEC_INPUT" || exit 94
   grep -Fq 'Workout' "$DOCKER_EXEC_INPUT" || exit 93
@@ -166,7 +169,11 @@ MOCK_FETCH
   grep -Fq "'sourceFingerprint'" "$DOCKER_EXEC_INPUT" || exit 74
   grep -Fq "'modelRevision'" "$DOCKER_EXEC_INPUT" || exit 73
   grep -Fq "'result'" "$DOCKER_EXEC_INPUT" || exit 72
-  printf '%s\n' "${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}"
+  mock_result="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}"
+  printf '%s\n' "$mock_result"
+  if [[ "$mock_result" != __diagnostic_query_error__* ]]; then
+    printf '%s\n' "${DOCKER_ACTIVITY_RESULT:-none}"
+  fi
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90
@@ -310,6 +317,7 @@ run_inspector() {
     DOCKER_EXEC_FAIL="${DOCKER_EXEC_FAIL:-0}" \
     DOCKER_COMPOSE_ENV_MISMATCH="${DOCKER_COMPOSE_ENV_MISMATCH:-0}" \
     DOCKER_EXEC_RESULT="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}" \
+    DOCKER_ACTIVITY_RESULT="${DOCKER_ACTIVITY_RESULT:-none}" \
     DOCKER_EXEC_INPUT="$FIXTURE_ROOT/docker-exec-input" \
     AUTH_COMPOSE_CONFIG="$FIXTURE_ROOT/auth-compose-config.json" \
     AUTH_RUNTIME_ENV="$FIXTURE_ROOT/auth-runtime-env.json" \
@@ -401,6 +409,7 @@ assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_available_candidates 1
 assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_source_code 3
 assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_workout_classification_code 2
 assert_field "$CLEAN_REPORT" energy_diagnostic_workout_56_selected_identity_code 1
+assert_field "$CLEAN_REPORT" energy_diagnostic_postgres_other_client_activity none
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes
@@ -432,6 +441,15 @@ if [[ "$CLEAN_REPORT" == *"$AUTH_TEST_BETTER_AUTH_SECRET"* || "$CLEAN_REPORT" ==
   || "$CLEAN_REPORT" == *'fixture-ios-shortcut-secret'* || "$CLEAN_REPORT" == *'owner@example.test'* \
   || "$CLEAN_REPORT" == *'sender@example.test'* ]]; then
   echo 'Auth runtime diagnostic exposed a secret or email value.' >&2
+  exit 1
+fi
+
+ACTIVITY_REPORT="$(DOCKER_ACTIVITY_RESULT='prisma_ddl_guard_idle=1,other_active=2' run_inspector "$TEST_REPO")"
+assert_field "$ACTIVITY_REPORT" energy_diagnostic_postgres_other_client_activity 'prisma_ddl_guard_idle=1,other_active=2'
+ACTIVITY_REDACTION_REPORT="$(DOCKER_ACTIVITY_RESULT='external-secret-client=1' run_inspector "$TEST_REPO")"
+assert_field "$ACTIVITY_REDACTION_REPORT" energy_diagnostic_inventory_status unavailable
+if [[ "$ACTIVITY_REDACTION_REPORT" == *'external-secret-client'* ]]; then
+  echo 'Unknown PostgreSQL application metadata was emitted.' >&2
   exit 1
 fi
 

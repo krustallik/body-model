@@ -757,6 +757,21 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(authResumeGuard).toContain("RESUME_MIGRATION_FAILURE_RUN_ID");
     expect(authResumeGuard).toContain("RESUME_BLOCKED_CAPTURE_RUN_ID");
     expect(authResumeGuard).toContain("FORWARD_RESUME_FAILED_RUN_ID");
+    const storageProbeStart = preflightWorkflow.indexOf("- name: Verify production container, PostgreSQL clients, and storage headroom");
+    const storageProbeEnd = preflightWorkflow.indexOf("- name: Enter maintenance and drain the old app before backup", storageProbeStart);
+    const storageProbe = preflightWorkflow.slice(storageProbeStart, storageProbeEnd);
+    expect(storageProbe).toContain("RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}");
+    expect(storageProbe).toContain('if [[ -n "$RESUME_SOURCE_SHA" ]]; then');
+    expect(storageProbe).toContain('"$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH"');
+    expect(storageProbe).toContain('"$(git -C "$DEPLOY_PATH" rev-parse HEAD)" == "$RESUME_SOURCE_SHA"');
+    expect(storageProbe).toContain('git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all');
+    expect(storageProbe).toContain('git@github.com:krustallik/body-model.git|https://github.com/krustallik/body-model.git');
+    expect(storageProbe).toContain("--verify-record");
+    expect(storageProbe.indexOf('"$(git -C "$DEPLOY_PATH" rev-parse HEAD)"'))
+      .toBeLessThan(storageProbe.indexOf('node "$CAPTURE_HELPER" --verify-record'));
+    expect(storageProbe).toContain('CAPTURE_TARGET_SHA" == "$RESUME_SOURCE_SHA"');
+    expect(storageProbe).toContain('APP_IMAGE_ID" == "$CAPTURE_IMAGE_ID"');
+    expect(storageProbe).toContain("docker inspect --format '{{.Image}}' bodycast-app-prod");
     expect(safetyWorkflow).toContain("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     expect(safetyWorkflow).toContain("BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
     expect(safetyWorkflow).toContain("test \"$baseline_count\" = 74");
@@ -861,11 +876,14 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(preflight).toContain(`trap 'rm -rf -- "$stage"' EXIT`);
     const productionCheckoutOriginGate = preflight.indexOf('ORIGIN_URL="$(git remote get-url origin)"');
     const productionCheckoutFetch = preflight.indexOf('git fetch --no-tags origin "$RELEASE_SHA"');
+    const productionPreMaintenanceGate = preflight.indexOf('node scripts/production-migration-preflight.mjs --pre-maintenance');
     const productionMaintenanceCutover = preflight.indexOf('exec bash scripts/production-traffic-cutover.sh maintenance');
     expect(productionCheckoutOriginGate).toBeGreaterThan(-1);
     expect(preflight.indexOf('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"', productionCheckoutOriginGate)).toBeGreaterThan(productionCheckoutOriginGate);
     expect(preflight.indexOf('git ls-remote origin refs/heads/main >/dev/null', productionCheckoutOriginGate)).toBeLessThan(productionCheckoutFetch);
     expect(productionCheckoutFetch).toBeLessThan(productionMaintenanceCutover);
+    expect(productionPreMaintenanceGate).toBeGreaterThan(-1);
+    expect(productionPreMaintenanceGate).toBeLessThan(productionMaintenanceCutover);
     expect(preflight).toContain('export GIT_SSH_COMMAND="ssh -i $GITHUB_DEPLOY_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"');
     expect(servingWorkflow).toContain('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"');
     expect(servingWorkflow).toContain('git ls-remote origin refs/heads/main >/dev/null');

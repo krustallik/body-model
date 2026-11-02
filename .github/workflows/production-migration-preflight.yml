@@ -592,6 +592,7 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
+          RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -Eeuo pipefail
@@ -606,14 +607,49 @@ jobs:
           import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
           NODE
-          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH'" <<'REMOTE'
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA'" <<'REMOTE'
           set -Eeuo pipefail
           CONTAINER_ID="$1"
           DB_DATA_PATH="$2"
+          DEPLOY_PATH="$(printf '%s' "$3" | base64 --decode)"
+          RESUME_SOURCE_SHA="$4"
           [[ "$(docker inspect --format '{{.Id}}' bodycast-db-prod)" == "$CONTAINER_ID" ]] || { echo "Production PostgreSQL container changed during the pre-maintenance probe." >&2; exit 1; }
           DB_BYTES="$(docker exec "$CONTAINER_ID" sh -ec 'psql --no-psqlrc --quiet --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT pg_database_size(current_database())"')"
           DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
-          APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
+          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
+            [[ "$RESUME_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Verified previous-app source SHA is malformed." >&2; exit 1; }
+            [[ "$DEPLOY_PATH" == /* && -d "$DEPLOY_PATH" && ! -L "$DEPLOY_PATH" ]] || {
+              echo "Verified previous-app deployment checkout is unavailable or unsafe." >&2; exit 1;
+            }
+            [[ "$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH" \
+              && "$(git -C "$DEPLOY_PATH" rev-parse HEAD)" == "$RESUME_SOURCE_SHA" \
+              && -z "$(git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all)" ]] || {
+              echo "Previous-app provenance helper checkout is not the clean verified source revision." >&2; exit 1;
+            }
+            ORIGIN_URL="$(git -C "$DEPLOY_PATH" remote get-url origin)"
+            case "$ORIGIN_URL" in
+              git@github.com:krustallik/body-model.git|https://github.com/krustallik/body-model.git) ;;
+              *) echo "Previous-app provenance helper checkout origin is not the canonical BodyCast repository." >&2; exit 1 ;;
+            esac
+            DEPLOY_GIT_DIR="$(git -C "$DEPLOY_PATH" rev-parse --absolute-git-dir)"
+            CAPTURE_FILE="$DEPLOY_GIT_DIR/bodycast-production-pre-ddl-release"
+            CAPTURE_HELPER="$DEPLOY_PATH/scripts/production-previous-app-provenance.mjs"
+            [[ -f "$CAPTURE_FILE" && ! -L "$CAPTURE_FILE" && -f "$CAPTURE_HELPER" && ! -L "$CAPTURE_HELPER" ]] || {
+              echo "Verified previous-app capture or provenance helper is unavailable." >&2; exit 1;
+            }
+            CAPTURE_META="$(cat -- "$CAPTURE_FILE" | node "$CAPTURE_HELPER" --verify-record)"
+            read -r CAPTURE_TARGET_SHA CAPTURE_IMAGE_ID CAPTURE_IMAGE_PIN < <(node --input-type=module -e 'const value=JSON.parse(process.argv[1]); process.stdout.write([value.targetSha, value.previousImageId, value.previousImagePin].join(" "))' "$CAPTURE_META")
+            [[ "$CAPTURE_TARGET_SHA" == "$RESUME_SOURCE_SHA" && "$CAPTURE_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
+              && ( "$CAPTURE_IMAGE_PIN" == "bodycast-app:rollback" \
+                || "$CAPTURE_IMAGE_PIN" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) ]] || {
+              echo "Durable previous-app image capture does not match the verified resume source." >&2; exit 1;
+            }
+            APP_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$CAPTURE_IMAGE_PIN")"
+            [[ "$APP_IMAGE_ID" == "$CAPTURE_IMAGE_ID" ]] || { echo "Pinned previous-app image differs from its durable capture." >&2; exit 1; }
+          else
+            APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
+          fi
           APP_IMAGE_BYTES="$(docker image inspect --format '{{.Size}}' "$APP_IMAGE_ID")"
           DB_FREE_BYTES="$(df -B1 --output=avail "$DB_DATA_PATH" | tail -n1 | tr -d '[:space:]')"
           DOCKER_FREE_BYTES="$(df -B1 --output=avail "$DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
@@ -698,7 +734,6 @@ jobs:
             echo "- Runner temporary filesystem free bytes: $RUNNER_FREE_BYTES"
             echo "- Runner Docker filesystem free bytes: $RUNNER_DOCKER_FREE_BYTES"
           } >> "$GITHUB_STEP_SUMMARY"
-          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'

@@ -2,7 +2,10 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-COMPOSE_FILE="$ROOT_DIR/docker-compose.prod.yml"
+COMPOSE_FILE="${BODYCAST_PRODUCTION_COMPOSE_FILE:-$ROOT_DIR/docker-compose.prod.yml}"
+[[ "$COMPOSE_FILE" == /* && -f "$COMPOSE_FILE" ]] || {
+  echo "The production Compose file path is missing or invalid." >&2; exit 1;
+}
 readonly DB_NETWORK="bodycast-backend-prod"
 
 effective_psql_url() {

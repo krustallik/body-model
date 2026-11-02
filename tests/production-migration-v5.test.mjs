@@ -823,6 +823,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     expect(deploy).toContain('production-db-target.sh" --preflight "$DB_CONTAINER"');
     expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools config --format json");
+    expect(target).toContain('COMPOSE_FILE="${BODYCAST_PRODUCTION_COMPOSE_FILE:-$ROOT_DIR/docker-compose.prod.yml}"');
     expect(target).not.toContain("compose -f \"$COMPOSE_FILE\" --profile tools run --rm");
     expect(target).toContain("  --pre-maintenance-snapshot)");
     expect(cutover).toContain('production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod');
@@ -837,6 +838,16 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(target.indexOf(reportBinding, preflightTargetStart)).toBeLessThan(target.indexOf('DATA_FINGERPRINT="'));
     expect(target.indexOf(reportBinding, compatibilityTargetStart)).toBeLessThan(target.indexOf('printf \'%s\\n\' "$RAW_REPORT"', compatibilityTargetStart));
     expect(preflight).toContain('production-db-target.sh\\" --preflight bodycast-db-prod');
+    expect(preflight).toContain("Pre-maintenance tooling archive digest mismatch.");
+    expect(preflight).toContain(`trap 'rm -rf -- "$stage"' EXIT`);
+    const archiveCreation = preflight.indexOf('tar -czf "$TOOL_ARCHIVE"');
+    const runnerCapacityMeasurement = preflight.indexOf('RUNNER_FREE_BYTES="$(df');
+    expect(archiveCreation).toBeGreaterThanOrEqual(0);
+    expect(runnerCapacityMeasurement).toBeGreaterThan(archiveCreation);
+    for (const helper of ["production-db-target.sh", "production-db-target-url.mjs", "production-db-data-fingerprint.sh",
+      "production-db-endpoint-binding.mjs", "production-writer-drain.sh", "production-route-path.sh", "production-route-primitives.sh"]) {
+      expect(preflight).toContain(`scripts/${helper}`);
+    }
     expect(preflight).not.toContain("psql --username=bodycast --dbname=bodycast");
     expect(deploy).not.toContain('psql --username=bodycast --dbname=bodycast');
   });

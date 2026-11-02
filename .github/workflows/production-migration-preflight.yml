@@ -626,6 +626,19 @@ jobs:
           REMOTE
           )"
           read -r DB_BYTES DB_FREE_BYTES DOCKER_FREE_BYTES APP_IMAGE_BYTES DB_DEVICE DOCKER_DEVICE <<< "$HOST_CAPACITY"
+          TOOL_ARCHIVE="$RUNNER_TEMP/pre-maintenance-tooling.tar.gz"
+          PREFLIGHT_SQL="$RUNNER_TEMP/pre-maintenance.sql"
+          node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" > "$PREFLIGHT_SQL"
+          tar -czf "$TOOL_ARCHIVE" \
+            scripts/production-db-target.sh \
+            scripts/production-db-target-url.mjs \
+            scripts/production-db-data-fingerprint.sh \
+            scripts/production-db-endpoint-binding.mjs \
+            scripts/production-writer-drain.sh \
+            scripts/production-route-path.sh \
+            scripts/production-route-primitives.sh \
+            -C "$RUNNER_TEMP" pre-maintenance.sql
+          TOOL_ARCHIVE_SHA="$(sha256sum "$TOOL_ARCHIVE" | awk '{print $1}')"
           RUNNER_FREE_BYTES="$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n1 | tr -d '[:space:]')"
           RUNNER_DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
           RUNNER_DOCKER_FREE_BYTES="$(df -B1 --output=avail "$RUNNER_DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
@@ -688,9 +701,35 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
-          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --pre-maintenance-snapshot bodycast-db-prod'"
-          node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" \
-            | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" > "$RUNNER_TEMP/pre-maintenance-report.json"
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
+          set -Eeuo pipefail
+          expected_sha="$1"
+          [[ "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid pre-maintenance tooling digest." >&2; exit 2; }
+          stage="$(mktemp -d /tmp/bodycast-pre-maintenance.XXXXXX)"
+          trap 'rm -rf -- "$stage"' EXIT
+          archive="$stage/tooling.tar.gz"
+          cat > "$archive"
+          [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$expected_sha" ]] || {
+            echo "Pre-maintenance tooling archive digest mismatch." >&2; exit 1;
+          }
+          tar -xzf "$archive" -C "$stage" --no-same-owner
+          rm -- "$archive"
+          deploy_path="$(printf '%s' "$2" | base64 --decode)"
+          app_host="$(printf '%s' "$3" | base64 --decode)"
+          routes_path="$(printf '%s' "$4" | base64 --decode)"
+          [[ "$deploy_path" == /* && -f "$deploy_path/docker-compose.prod.yml" ]] || {
+            echo "The configured production Compose path is unavailable." >&2; exit 1;
+          }
+          BODYCAST_PRODUCTION_COMPOSE_FILE="$deploy_path/docker-compose.prod.yml" \
+            APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" \
+            bash "$stage/scripts/production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod \
+            < "$stage/pre-maintenance.sql"
+          REMOTE
+          )"
+          REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$TOOL_ARCHIVE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
+          "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
+            < "$TOOL_ARCHIVE" > "$RUNNER_TEMP/pre-maintenance-report.json"
           node scripts/production-migration-preflight.mjs --pre-maintenance --manifest "$MANIFEST_ID" \
             --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/pre-maintenance-report.json" > "$RUNNER_TEMP/pre-maintenance-result.json"

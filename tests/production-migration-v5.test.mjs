@@ -753,7 +753,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain('[[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]]');
     expect(safetyWorkflow).toContain("isolated primary Health input mutation");
     expect(safetyWorkflow).toContain("isolated Garmin/Workout input mutation");
-    expect(safetyWorkflow).toContain('"DailyHealthData" ("date", "weightKg", "rawPayload")');
+    expect(safetyWorkflow).toContain('"DailyHealthData" ("date", "weightKg", "rawPayload", "createdAt", "updatedAt")');
     expect(safetyWorkflow).toContain('"Workout" ("dailyHealthDataId", "sourceIdentity", "type", "startAt", "endAt", "activeEnergyKcal")');
     const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);

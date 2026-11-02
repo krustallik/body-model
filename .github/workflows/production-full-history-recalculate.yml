@@ -197,14 +197,17 @@ jobs:
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
           }
-          git -c remote.origin.url=https://github.com/krustallik/body-model.git fetch --no-tags origin "$RELEASE_SHA"
-          git -c remote.origin.url=https://github.com/krustallik/body-model.git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git -c url.https://github.com/krustallik/body-model.git.insteadOf=git@github.com:krustallik/body-model.git fetch --no-tags origin "$RELEASE_SHA"
+          git -c url.https://github.com/krustallik/body-model.git.insteadOf=git@github.com:krustallik/body-model.git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Canonical main advanced before backup." >&2; exit 1; }
           git checkout --detach "$RELEASE_SHA"
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
           APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
           APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy before backup." >&2; exit 1; }
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=url.https://github.com/krustallik/body-model.git.insteadOf \
+          GIT_CONFIG_VALUE_0=git@github.com:krustallik/body-model.git \
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
             exec bash scripts/production-traffic-cutover.sh maintenance
           REMOTE
@@ -296,8 +299,8 @@ jobs:
           [[ "$IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           source scripts/deploy-main-freshness.sh
           GIT_CONFIG_COUNT=1 \
-          GIT_CONFIG_KEY_0=remote.origin.url \
-          GIT_CONFIG_VALUE_0=https://github.com/krustallik/body-model.git \
+          GIT_CONFIG_KEY_0=url.https://github.com/krustallik/body-model.git.insteadOf \
+          GIT_CONFIG_VALUE_0=git@github.com:krustallik/body-model.git \
             bodycast_assert_current_main_sha "$RELEASE_SHA"
           BODYCAST_DEPLOY_SHA="$RELEASE_SHA" docker compose -f docker-compose.prod.yml up -d --no-deps --no-build app
           bash scripts/production-app-container-health-wait.sh "$RELEASE_SHA" "$IMAGE_ID"
@@ -405,8 +408,8 @@ jobs:
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
           }
-          git -c remote.origin.url=https://github.com/krustallik/body-model.git fetch --no-tags origin "$RELEASE_SHA"
-          git -c remote.origin.url=https://github.com/krustallik/body-model.git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git -c url.https://github.com/krustallik/body-model.git.insteadOf=git@github.com:krustallik/body-model.git fetch --no-tags origin "$RELEASE_SHA"
+          git -c url.https://github.com/krustallik/body-model.git.insteadOf=git@github.com:krustallik/body-model.git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Canonical main advanced before recalculation." >&2; exit 1; }
           git checkout --detach "$RELEASE_SHA"
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
@@ -414,8 +417,8 @@ jobs:
           APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
           GIT_CONFIG_COUNT=1 \
-          GIT_CONFIG_KEY_0=remote.origin.url \
-          GIT_CONFIG_VALUE_0=https://github.com/krustallik/body-model.git \
+          GIT_CONFIG_KEY_0=url.https://github.com/krustallik/body-model.git.insteadOf \
+          GIT_CONFIG_VALUE_0=git@github.com:krustallik/body-model.git \
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
             exec bash scripts/production-traffic-cutover.sh full-history-recalculate
           REMOTE

@@ -116,9 +116,9 @@ jobs:
             echo "::error::The nine-migration Training manifest does not accept historical resume evidence."; exit 1;
           fi
           if [[ "$MANIFEST_ID" == "auth-multiuser-v1" \
-            && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
+            && ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
-            echo "::error::The Auth migration manifest does not accept historical resume evidence."; exit 1;
+            echo "::error::The Auth migration manifest accepts only an exact failed-restore preflight resume; migration-failure and forward-resume evidence are not accepted."; exit 1;
           fi
           REFRESH_CAPTURE=0
           if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then

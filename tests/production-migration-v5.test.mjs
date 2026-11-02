@@ -749,7 +749,14 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(preflightWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
     expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
     expect(preflightWorkflow).toContain("auth-multiuser-v1");
-    expect(preflightWorkflow).toContain("The Auth migration manifest does not accept historical resume evidence.");
+    expect(preflightWorkflow).toContain("The Auth migration manifest accepts only an exact failed-restore preflight resume");
+    const authResumeGuardStart = preflightWorkflow.indexOf('if [[ "$MANIFEST_ID" == "auth-multiuser-v1"');
+    const authResumeGuardEnd = preflightWorkflow.indexOf("          fi", authResumeGuardStart);
+    const authResumeGuard = preflightWorkflow.slice(authResumeGuardStart, authResumeGuardEnd);
+    expect(authResumeGuard).not.toContain("RESUME_SOURCE_RUN_ID");
+    expect(authResumeGuard).toContain("RESUME_MIGRATION_FAILURE_RUN_ID");
+    expect(authResumeGuard).toContain("RESUME_BLOCKED_CAPTURE_RUN_ID");
+    expect(authResumeGuard).toContain("FORWARD_RESUME_FAILED_RUN_ID");
     expect(safetyWorkflow).toContain("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     expect(safetyWorkflow).toContain("BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
     expect(safetyWorkflow).toContain("test \"$baseline_count\" = 74");

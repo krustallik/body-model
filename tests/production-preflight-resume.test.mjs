@@ -592,6 +592,30 @@ describe("verified resume of a failed production preflight", () => {
       unverifiedHistoricalRunIds: [] });
   });
 
+  it("admits an Auth-manifest resume only for the exact owner run stopped at isolated restore", () => {
+    const authSourceSha = "d".repeat(40);
+    const authSourceId = "38000669125";
+    const authCurrentRunId = "38000669126";
+    const result = verify({
+      sourceRun: sourceRun({ id: Number(authSourceId), head_sha: authSourceSha,
+        display_title: `Preflight ${authSourceSha} auth-multiuser-v1` }),
+      sourceJobs: {
+        ...sourceJobs(),
+        jobs: sourceJobs().jobs.map((job) => ({ ...job, head_sha: authSourceSha })),
+      },
+      sourceRunId: authSourceId,
+      currentRunId: authCurrentRunId,
+      currentMainSha: targetSha,
+      manifestId: "auth-multiuser-v1",
+      laterRuns: [{ id: Number(authCurrentRunId),
+        path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress" }],
+    });
+    expect(result).toMatchObject({ schemaVersion: 2, sourceRunId: authSourceId, sourceRunAttempt: 1,
+      sourceSha: authSourceSha, targetSha, unverifiedHistoricalDeployRunIds: [],
+      unverifiedHistoricalPreflightRunIds: [], unverifiedHistoricalAuthorizationOnlyPreflightRunIds: [],
+      unverifiedHistoricalRunIds: [] });
+  });
+
   it("admits only unverified owner V4 capture retry history and ignores prior textual logs", () => {
     const priorCaptureGuard = captureBlockedRetryEvidence({
       run: captureBlockedRetryRun({ id: 38000669127 }),

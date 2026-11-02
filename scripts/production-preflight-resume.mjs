@@ -280,7 +280,7 @@ export function verifyResumablePreflightAttempt({
   } catch (error) {
     reject(error.message);
   }
-  if (!new Set(["active-energy-unified-v2", "unified-v4-republication-v1"]).has(manifestId)
+  if (!new Set(["active-energy-unified-v2", "unified-v4-republication-v1", "auth-multiuser-v1"]).has(manifestId)
     || (sourceRun.display_title ?? sourceRun.name) !== `Preflight ${sourceRun.head_sha} ${manifestId}`) {
     reject("the source preflight manifest does not match the exact current request.");
   }

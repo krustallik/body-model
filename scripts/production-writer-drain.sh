@@ -6,6 +6,7 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 readonly CONTRACT="bodycast-compose-internal-db-single-writer-v1"
 readonly PRE_MAINTENANCE_CONTRACT="bodycast-compose-internal-db-pre-maintenance-v1"
+export PRE_MAINTENANCE_CONTRACT
 readonly APP_CONTAINER="bodycast-app-prod"
 readonly DB_CONTAINER="bodycast-db-prod"
 readonly CADDY_CONTAINER="gymbeam-caddy"
@@ -114,7 +115,7 @@ if [[ "$MODE" == "--pre-maintenance-report" ]]; then
     DB_HEALTH="$db_health" DB_NETWORKS="$db_networks" BACKEND_CONTAINERS="$backend_containers" \
     CADDY_STATE="$caddy_state" CADDY_VALIDATED="$caddy_validated" ROUTE_SHA="$route_sha" \
     ROUTE_SERVING="$serving_response" ROUTE_MAINTENANCE="$maintenance_response" \
-    ROUTE_PROXY="$contains_reverse_proxy" OBSERVED_AT="$observed_at" PRE_MAINTENANCE_CONTRACT="$PRE_MAINTENANCE_CONTRACT" \
+    ROUTE_PROXY="$contains_reverse_proxy" OBSERVED_AT="$observed_at" \
     node --input-type=module <<'NODE'
 const appState = process.env.APP_STATE;
 const app = appState === "running"

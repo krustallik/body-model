@@ -821,6 +821,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const target = await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8");
     const cutover = await readFile(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8");
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
+    const writerDrain = await readFile(new URL("../scripts/production-writer-drain.sh", import.meta.url), "utf8");
     expect(deploy).toContain('production-db-target.sh" --preflight "$DB_CONTAINER"');
     expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools config --format json");
     expect(target).toContain('COMPOSE_FILE="${BODYCAST_PRODUCTION_COMPOSE_FILE:-$ROOT_DIR/docker-compose.prod.yml}"');
@@ -832,6 +833,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(target).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
     expect(target).toContain('readonly DB_NETWORK="bodycast-backend-prod"');
     expect(target).toContain('node "$ROOT_DIR/scripts/production-db-endpoint-binding.mjs" --verify-stdin "$FIXED_DB_ADDRESS"');
+    expect(writerDrain).toContain('readonly PRE_MAINTENANCE_CONTRACT="bodycast-compose-internal-db-pre-maintenance-v1"');
+    expect(writerDrain).toContain("export PRE_MAINTENANCE_CONTRACT");
+    expect(writerDrain).not.toContain('PRE_MAINTENANCE_CONTRACT="$PRE_MAINTENANCE_CONTRACT"');
     const preflightTargetStart = target.indexOf("  --preflight)");
     const compatibilityTargetStart = target.indexOf("  --previous-app-compatibility-snapshot)");
     const reportBinding = 'verify_report_endpoint "$RAW_REPORT"';

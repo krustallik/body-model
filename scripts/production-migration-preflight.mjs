@@ -145,6 +145,21 @@ export function safeBlockerCategories(blockers) {
   return [...categories].sort();
 }
 
+function safePreMaintenanceCheckIds(report, now) {
+  const failed = new Set();
+  if (report?.profileOneExists !== true) failed.add("profile-one-baseline");
+  if (report?.identity?.database !== "bodycast") failed.add("database-name");
+  if (report?.identity?.role !== "bodycast") failed.add("database-role");
+  if (!String(report?.identity?.serverVersion ?? "").startsWith("17.")) failed.add("postgres-major-version");
+  if (!isCanonicalPostgresDatabaseIdentity(report?.identity)) failed.add("database-endpoint-identity");
+  if (!/^[a-f0-9]{64}$/.test(String(report?.logicalDataFingerprint ?? ""))) failed.add("logical-data-fingerprint");
+  const readiness = evaluateProductionPreMaintenanceReadiness(report, { now });
+  for (const check of readiness.checks) {
+    if (check?.passed === false && typeof check.id === "string" && /^[a-z0-9-]+$/.test(check.id)) failed.add(check.id);
+  }
+  return [...failed].sort();
+}
+
 function canonicalHistory(migrations) {
   if (!Array.isArray(migrations)) return null;
   return migrations.map((entry) => ({
@@ -769,9 +784,11 @@ async function main() {
     const reportPath = value("--report");
     const report = await readJsonInput(reportPath);
     let result;
+    let preMaintenanceNow;
     if (mode === "--preflight" || mode === "--pre-maintenance") {
       const preMaintenance = mode === "--pre-maintenance";
-      result = evaluateProductionPreflight(report, migrationDirectories, manifestId, { preMaintenance });
+      preMaintenanceNow = preMaintenance ? Date.now() : undefined;
+      result = evaluateProductionPreflight(report, migrationDirectories, manifestId, { preMaintenance, now: preMaintenanceNow });
       const manifest = getProductionMigrationManifest(manifestId);
       const integrity = [];
       const reviewedMigrations = [...new Map([
@@ -807,7 +824,8 @@ async function main() {
       const summary = categories.length ? categories.join(",") : "unclassified";
       const label = mode === "--preflight" ? "Production migration preflight"
         : mode === "--pre-maintenance" ? "Production pre-maintenance preflight" : "Production migration postflight";
-      process.stderr.write(`${label} failed (blocker-count=${blockers.length}; categories=${summary}).\n`);
+      const checks = mode === "--pre-maintenance" ? `; check-ids=${safePreMaintenanceCheckIds(report, preMaintenanceNow).join(",") || "none"}` : "";
+      process.stderr.write(`${label} failed (blocker-count=${blockers.length}; categories=${summary}${checks}).\n`);
       process.exitCode = 1;
     }
     return;

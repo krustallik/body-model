@@ -2716,6 +2716,69 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     }
   });
 
+  it("reports only safe failed check IDs for pre-maintenance blockers", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-pre-maintenance-diagnostic-"));
+    const report = validV4RepublicationPreflightReport();
+    report.identity.database = "private-database-name";
+    report.writerDrain.observedAt = new Date().toISOString();
+    report.writerDrain.topology.observedAt = report.writerDrain.observedAt;
+    report.writerDrain.topology.routeFile.servingResponse = false;
+    const reportPath = path.join(directory, "pre-maintenance.json");
+    try {
+      await writeFile(reportPath, JSON.stringify(report));
+      const run = spawnSync(process.execPath, [
+        path.resolve("scripts/production-migration-preflight.mjs"), "--pre-maintenance",
+        "--manifest", V4_REPUBLICATION_MANIFEST.id,
+        "--release-sha", "fe55468321b9ef8e9783aa3874e1b42c2736b514",
+        "--repository", process.cwd(), "--report", reportPath,
+      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain("categories=database-identity");
+      expect(run.stderr).toContain("check-ids=database-name");
+      expect(run.stderr).not.toContain("private-database-name");
+      expect(run.stderr).not.toContain(JSON.stringify(report.identity));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["database", "topology"])("reports stale %s snapshot without exposing its value", async (staleSnapshot) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-pre-maintenance-freshness-"));
+    const report = validV4RepublicationPreflightReport();
+    const fresh = new Date().toISOString();
+    report.writerDrain.observedAt = fresh;
+    report.writerDrain.topology.observedAt = fresh;
+    report.writerDrain.topology.contract = PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT;
+    report.writerDrain.topology.app.containerId = null;
+    report.writerDrain.topology.app.imageId = null;
+    report.writerDrain.topology.app.health = null;
+    report.writerDrain.topology.database.containerId = "b".repeat(64);
+    report.writerDrain.topology.routeFile.servingResponse = false;
+    const stale = new Date(Date.now() - 31_000).toISOString();
+    if (staleSnapshot === "database") report.writerDrain.observedAt = stale;
+    else report.writerDrain.topology.observedAt = stale;
+    const reportPath = path.join(directory, "pre-maintenance.json");
+    try {
+      await writeFile(reportPath, JSON.stringify(report));
+      const run = spawnSync(process.execPath, [
+        path.resolve("scripts/production-migration-preflight.mjs"), "--pre-maintenance",
+        "--manifest", V4_REPUBLICATION_MANIFEST.id,
+        "--release-sha", "fe55468321b9ef8e9783aa3874e1b42c2736b514",
+        "--repository", process.cwd(), "--report", reportPath,
+      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`pre-maintenance-${staleSnapshot}-freshness`);
+      expect(run.stderr).toContain("check-ids=");
+      expect(run.stderr).not.toContain(stale);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("binds the post-DDL raw source to the signed pre-DDL backup and owner DDL authorization", () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const keyId = "synthetic-v4-ddl-source-key";

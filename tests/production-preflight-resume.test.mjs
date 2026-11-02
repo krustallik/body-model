@@ -212,6 +212,7 @@ const preDdlMigrationRunId = "38000669121";
 const blockedCaptureRunId = "38000669122";
 const safePreflightRetryRunId = "38000669123";
 const currentResumeRunId = "38000669124";
+const authManifestId = "auth-multiuser-v1";
 const successfulPreflightSteps = [
   "Enter maintenance and drain the old app before backup",
   "Verify production container and PostgreSQL client versions",
@@ -254,19 +255,21 @@ const migrationExecutionSteps = [
     : {}),
 }));
 
-function ownerRun({ id, workflowId, path, sha, conclusion }) {
+function ownerRun({ id, workflowId, path, sha, conclusion, ...overrides }) {
   return {
     id: Number(id), workflow_id: Number(workflowId),
     path: `${path}@refs/heads/main`, event: "workflow_dispatch", head_branch: "main", head_sha: sha,
     status: "completed", conclusion, run_attempt: 1,
     actor: { id: 126446430 }, triggering_actor: { id: 126446430 },
     repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
+    ...overrides,
   };
 }
 
 function successfulSourceRun() {
   return ownerRun({ id: successfulSourceRunId, workflowId: preflightWorkflowId,
-    path: ".github/workflows/production-migration-preflight.yml", sha: sourceSha, conclusion: "success" });
+    path: ".github/workflows/production-migration-preflight.yml", sha: sourceSha, conclusion: "success",
+    display_title: `Preflight ${sourceSha} ${authManifestId}` });
 }
 
 function successfulSourceJobs() {
@@ -275,7 +278,11 @@ function successfulSourceJobs() {
     jobs: [
       { name: "Authorize read-only preflight", conclusion: "success", head_sha: sourceSha, run_attempt: 1 },
       { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "success",
-        head_sha: sourceSha, run_attempt: 1, steps: successfulPreflightSteps.map((name) => ({ name, conclusion: "success" })) },
+        head_sha: sourceSha, run_attempt: 1, steps: successfulPreflightSteps.map((name) => ({
+          name: name === "Verify production container and PostgreSQL client versions"
+            ? "Verify production container, PostgreSQL clients, and storage headroom" : name,
+          conclusion: "success",
+        })) },
     ],
   };
 }
@@ -284,9 +291,9 @@ function successfulSourceArtifacts() {
   return {
     total_count: 2,
     artifacts: [
-      { name: `bodycast-backup-${sourceSha}-active-energy-unified-v2-${successfulSourceRunId}-1`, expired: false,
+      { name: `bodycast-backup-${sourceSha}-${authManifestId}-${successfulSourceRunId}-1`, expired: false,
         size_in_bytes: 58_687_970, digest: `sha256:${"c".repeat(64)}` },
-      { name: `bodycast-preflight-evidence-${sourceSha}-active-energy-unified-v2-${successfulSourceRunId}-1`, expired: false,
+      { name: `bodycast-preflight-evidence-${sourceSha}-${authManifestId}-${successfulSourceRunId}-1`, expired: false,
         size_in_bytes: 18_965, digest: `sha256:${"d".repeat(64)}` },
     ],
   };
@@ -311,7 +318,8 @@ function preDdlMigrationJobs() {
 
 function blockedCapturePreflightRun() {
   return ownerRun({ id: blockedCaptureRunId, workflowId: preflightWorkflowId,
-    path: ".github/workflows/production-migration-preflight.yml", sha: blockedCaptureSha, conclusion: "failure" });
+    path: ".github/workflows/production-migration-preflight.yml", sha: blockedCaptureSha, conclusion: "failure",
+    display_title: `Preflight ${blockedCaptureSha} ${authManifestId}` });
 }
 
 function blockedCapturePreflightJobs() {
@@ -329,9 +337,40 @@ function blockedCapturePreflightJobs() {
   return {
     total_count: 2,
     jobs: [
-      { name: "Authorize read-only preflight", conclusion: "success", head_sha: blockedCaptureSha, run_attempt: 1 },
-      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "failure",
-        head_sha: blockedCaptureSha, run_attempt: 1, steps: conclusions.map(([name, conclusion]) => ({ name, conclusion })) },
+      { name: "Authorize read-only preflight", status: "completed", conclusion: "success",
+        head_sha: blockedCaptureSha, run_attempt: 1, steps: [] },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", status: "completed", conclusion: "failure",
+        head_sha: blockedCaptureSha, run_attempt: 1, steps: conclusions.map(([name, conclusion], index) => ({
+          name, conclusion, status: "completed", number: index + 1,
+        })) },
+    ],
+  };
+}
+
+const noAppFailureLog = "Inspect, back up, restore, and rehearse on disposable PostgreSQL\tVerify production container, PostgreSQL clients, and storage headroom\t2026-11-02T20:56:46.7612573Z error: no such object: bodycast-app-prod";
+
+function noAppBlockedPreflightJobs({ maintenanceConclusion = "skipped" } = {}) {
+  const conclusions = [
+    ["Verify production container, PostgreSQL clients, and storage headroom", "failure"],
+    ["Enter maintenance and drain the old app before backup", maintenanceConclusion],
+    ["Read-only production identity, full migration set, schema signatures, and locks", "skipped"],
+    ["Capture pg_dump start on production host and create encrypted backup", "skipped"],
+    ["Restore snapshot, compare source state, and rehearse exact migrations", "skipped"],
+    ["Bind forward-resume authorization to the fresh live snapshot and rehearsal", "skipped"],
+    ["Create preflight evidence bundle", "skipped"],
+    ["Upload encrypted production backup artifact", "skipped"],
+    ["Upload immutable preflight and restore evidence artifact", "skipped"],
+    ["Report read-only completion", "skipped"],
+  ];
+  return {
+    total_count: 2,
+    jobs: [
+      { name: "Authorize read-only preflight", status: "completed", conclusion: "success",
+        head_sha: blockedCaptureSha, run_attempt: 1, steps: [] },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", status: "completed", conclusion: "failure",
+        head_sha: blockedCaptureSha, run_attempt: 1, steps: conclusions.map(([name, conclusion], index) => ({
+          name, conclusion, status: "completed", number: index + 1,
+        })) },
     ],
   };
 }
@@ -486,6 +525,7 @@ function verifyWithCaptureBlockedRetries(retryEvidenceList, overrides = {}) {
 
 function verifyPreDdlResume(overrides = {}) {
   return verifyPreDdlMigrationFailureResume({
+    manifestId: authManifestId,
     sourceRun: successfulSourceRun(), sourceJobs: successfulSourceJobs(), sourceArtifacts: successfulSourceArtifacts(),
     migrationRun: preDdlMigrationRun(), migrationJobs: preDdlMigrationJobs(),
     migrationLogText: migrationLog,
@@ -1028,6 +1068,36 @@ describe("verified resume after a migration failed before the DDL marker", () =>
       blockedCaptureRunId,
       unverifiedHistoricalAuthorizationOnlyPreflightRunIds: [safePreflightRetryRunId],
     });
+  });
+
+  it("resumes the captured Auth app only after the exact no-app pre-maintenance blocker", () => {
+    expect(verifyPreDdlResume({
+      blockedCaptureJobs: noAppBlockedPreflightJobs(),
+      blockedCaptureLogText: noAppFailureLog,
+    })).toMatchObject({
+      resumeKind: "verified-pre-ddl-migration-failure",
+      sourceRunId: successfulSourceRunId,
+      migrationFailureRunId: preDdlMigrationRunId,
+      blockedCaptureRunId,
+    });
+  });
+
+  it.each([
+    ["moves the missing-container error outside the exact probe step", {
+      blockedCaptureJobs: noAppBlockedPreflightJobs(),
+      blockedCaptureLogText: noAppFailureLog.replace("\tVerify production container, PostgreSQL clients, and storage headroom\t", "\tPin production SSH host key\t"),
+    }],
+    ["duplicates the missing-container error", {
+      blockedCaptureJobs: noAppBlockedPreflightJobs(),
+      blockedCaptureLogText: `${noAppFailureLog}\n${noAppFailureLog}`,
+    }],
+    ["starts maintenance despite the failed app probe", {
+      blockedCaptureJobs: noAppBlockedPreflightJobs({ maintenanceConclusion: "success" }),
+      blockedCaptureLogText: noAppFailureLog,
+    }],
+    ["uses source artifacts for a different manifest", { manifestId: "active-energy-unified-v2" }],
+  ])("rejects a no-app resume when it %s", (_label, overrides) => {
+    expect(() => verifyPreDdlResume(overrides)).toThrow("cannot be safely resumed");
   });
 
   it.each([

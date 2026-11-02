@@ -749,11 +749,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(preflightWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
     expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
     expect(preflightWorkflow).toContain("auth-multiuser-v1");
-    expect(preflightWorkflow).toContain("The Auth migration manifest accepts only an exact failed-restore preflight resume");
+    expect(preflightWorkflow).toContain("Auth resume requires an exact failed-restore source alone or the complete source/migration-failure/blocked-preflight tuple");
     const authResumeGuardStart = preflightWorkflow.indexOf('if [[ "$MANIFEST_ID" == "auth-multiuser-v1"');
     const authResumeGuardEnd = preflightWorkflow.indexOf("          fi", authResumeGuardStart);
     const authResumeGuard = preflightWorkflow.slice(authResumeGuardStart, authResumeGuardEnd);
-    expect(authResumeGuard).not.toContain("RESUME_SOURCE_RUN_ID");
+    expect(authResumeGuard).toContain('( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" )');
+    expect(authResumeGuard).toContain('( -z "$RESUME_MIGRATION_FAILURE_RUN_ID" && -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" )');
+    expect(authResumeGuard).toContain('( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ID" )');
     expect(authResumeGuard).toContain("RESUME_MIGRATION_FAILURE_RUN_ID");
     expect(authResumeGuard).toContain("RESUME_BLOCKED_CAPTURE_RUN_ID");
     expect(authResumeGuard).toContain("FORWARD_RESUME_FAILED_RUN_ID");

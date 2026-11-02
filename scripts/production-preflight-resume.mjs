@@ -30,7 +30,6 @@ const REQUIRED_SOURCE_STEPS = Object.freeze({
 });
 const SUCCESSFUL_PREFLIGHT_STEPS = Object.freeze({
   "Enter maintenance and drain the old app before backup": "success",
-  "Verify production container and PostgreSQL client versions": "success",
   "Read-only production identity, full migration set, schema signatures, and locks": "success",
   "Capture pg_dump start on production host and create encrypted backup": "success",
   "Restore snapshot, compare source state, and rehearse exact migrations": "success",
@@ -39,6 +38,14 @@ const SUCCESSFUL_PREFLIGHT_STEPS = Object.freeze({
   "Upload immutable preflight and restore evidence artifact": "success",
   "Report read-only completion": "success",
 });
+const SUCCESSFUL_PREFLIGHT_APP_PROBE_STEPS = Object.freeze([
+  "Verify production container and PostgreSQL client versions",
+  "Verify production container, PostgreSQL clients, and storage headroom",
+]);
+const REVIEWED_MANIFESTS = new Set([
+  "active-energy-unified-v2", "unified-v4-republication-v1",
+  "training-mutation-ledger-refresh-queue-v1", "auth-multiuser-v1",
+]);
 
 export function serializePreflightRetryRunIds(runIds) {
   if (!Array.isArray(runIds)) throw new TypeError("Preflight retry run IDs must be an array.");
@@ -54,6 +61,20 @@ const BLOCKED_CAPTURE_PREFLIGHT_STEPS = Object.freeze({
   "Read-only production identity, full migration set, schema signatures, and locks": "skipped",
   "Capture pg_dump start on production host and create encrypted backup": "skipped",
   "Restore snapshot, compare source state, and rehearse exact migrations": "skipped",
+  "Create preflight evidence bundle": "skipped",
+  "Upload encrypted production backup artifact": "skipped",
+  "Upload immutable preflight and restore evidence artifact": "skipped",
+  "Report read-only completion": "skipped",
+});
+const NO_APP_PREFLIGHT_FAILURE_STEP = "Verify production container, PostgreSQL clients, and storage headroom";
+const NO_APP_PREFLIGHT_FAILURE = "error: no such object: bodycast-app-prod";
+const BLOCKED_NO_APP_PREFLIGHT_STEPS = Object.freeze({
+  [NO_APP_PREFLIGHT_FAILURE_STEP]: "failure",
+  "Enter maintenance and drain the old app before backup": "skipped",
+  "Read-only production identity, full migration set, schema signatures, and locks": "skipped",
+  "Capture pg_dump start on production host and create encrypted backup": "skipped",
+  "Restore snapshot, compare source state, and rehearse exact migrations": "skipped",
+  "Bind forward-resume authorization to the fresh live snapshot and rehearsal": "skipped",
   "Create preflight evidence bundle": "skipped",
   "Upload encrypted production backup artifact": "skipped",
   "Upload immutable preflight and restore evidence artifact": "skipped",
@@ -596,10 +617,10 @@ function assertMigrationRun(run, { runId, workflowId, sha }) {
   }
 }
 
-function assertSuccessfulPreflightArtifacts(artifacts, sha, runId) {
+function assertSuccessfulPreflightArtifacts(artifacts, sha, runId, manifestId) {
   const expected = new Set([
-    `bodycast-backup-${sha}-active-energy-unified-v2-${runId}-1`,
-    `bodycast-preflight-evidence-${sha}-active-energy-unified-v2-${runId}-1`,
+    `bodycast-backup-${sha}-${manifestId}-${runId}-1`,
+    `bodycast-preflight-evidence-${sha}-${manifestId}-${runId}-1`,
   ]);
   const actual = artifacts?.artifacts ?? [];
   if (artifacts?.total_count !== expected.size || actual.length !== expected.size
@@ -613,9 +634,9 @@ function assertSuccessfulPreflightArtifacts(artifacts, sha, runId) {
 /**
  * Resume a durable previous-app capture only for the narrowly verified incident
  * where a successful owner preflight was followed by the known final-guard
- * import failure before the DDL marker, then a retry republished and publicly
- * confirmed maintenance before stopping at the existing capture guard. No
- * old-app stop or DB inspection follows that capture failure. The host still performs fresh marker, maintenance, app,
+ * import failure before the DDL marker, then a retry stopped at the existing
+ * capture guard or because the captured app container was already absent. No
+ * new maintenance transition or DB inspection follows that early stop. The host still performs fresh marker, maintenance, app,
  * writer-drain, DB identity/history/schema, and immutable-image checks before
  * rebinding. This proof does not reuse the old backup; the current preflight
  * must create a new backup and pass a new isolated restore rehearsal.
@@ -624,7 +645,7 @@ export function verifyPreDdlMigrationFailureResume({
   sourceRun, sourceJobs, sourceArtifacts,
   migrationRun, migrationJobs, migrationLogText,
   blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
-  laterRuns, safeFailedPreflightRetries, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha,
+  laterRuns, safeFailedPreflightRetries, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha, manifestId,
   preflightWorkflowId, migrationWorkflowId, sourceIsAncestor, sourceIsAncestorOfBlockedCapture,
   blockedCaptureIsAncestorOfCurrentMain,
 }) {
@@ -634,8 +655,10 @@ export function verifyPreDdlMigrationFailureResume({
   }
   const sourceSha = sourceRun?.head_sha;
   assertPreflightRun(sourceRun, { runId: sourceRunId, workflowId: preflightWorkflowId, sha: sourceSha, conclusion: "success" });
-  if (!/^[a-f0-9]{40}$/.test(String(sourceSha ?? "")) || sourceIsAncestor !== true) {
-    reject("the successful source preflight SHA is malformed or is not an ancestor of current main.");
+  if (!REVIEWED_MANIFESTS.has(manifestId)
+    || (sourceRun?.display_title ?? sourceRun?.name) !== `Preflight ${sourceSha} ${manifestId}`
+    || !/^[a-f0-9]{40}$/.test(String(sourceSha ?? "")) || sourceIsAncestor !== true) {
+    reject("the successful source preflight does not match the reviewed manifest or current-main ancestry.");
   }
   const sourceJobInventory = sourceJobs?.jobs;
   if (sourceJobs?.total_count !== 2 || !Array.isArray(sourceJobInventory) || sourceJobInventory.length !== 2) {
@@ -645,7 +668,11 @@ export function verifyPreDdlMigrationFailureResume({
   const sourceInspect = jobByName(sourceJobs,
     "Inspect, back up, restore, and rehearse on disposable PostgreSQL", { conclusion: "success", headSha: sourceSha, attempt: 1 });
   assertStepResults(sourceInspect, SUCCESSFUL_PREFLIGHT_STEPS, "source preflight");
-  assertSuccessfulPreflightArtifacts(sourceArtifacts, sourceSha, String(sourceRunId));
+  const appProbeSteps = (sourceInspect.steps ?? []).filter((step) => SUCCESSFUL_PREFLIGHT_APP_PROBE_STEPS.includes(step.name));
+  if (appProbeSteps.length !== 1 || appProbeSteps[0].conclusion !== "success") {
+    reject("the successful source preflight lacks exactly one recognized healthy app/storage probe.");
+  }
+  assertSuccessfulPreflightArtifacts(sourceArtifacts, sourceSha, String(sourceRunId), manifestId);
 
   assertMigrationRun(migrationRun, { runId: migrationRunId, workflowId: migrationWorkflowId, sha: sourceSha });
   if (!Number.isSafeInteger(migrationRun?.run_attempt) || migrationRun.run_attempt !== 1) reject("migration attempt reruns cannot support capture resumption.");
@@ -708,20 +735,47 @@ export function verifyPreDdlMigrationFailureResume({
   assertPreflightRun(blockedCaptureRun, {
     runId: blockedCaptureRunId, workflowId: preflightWorkflowId, sha: blockedCaptureSha, conclusion: "failure",
   });
-  if (!/^[a-f0-9]{40}$/.test(String(blockedCaptureSha ?? ""))
+  if ((blockedCaptureRun?.display_title ?? blockedCaptureRun?.name) !== `Preflight ${blockedCaptureSha} ${manifestId}`
+    || !/^[a-f0-9]{40}$/.test(String(blockedCaptureSha ?? ""))
     || sourceIsAncestorOfBlockedCapture !== true || blockedCaptureIsAncestorOfCurrentMain !== true) {
     reject("the blocked capture retry SHA is not on the verified source-to-current-main ancestry chain.");
   }
   if (blockedCaptureJobs?.total_count !== 2 || !Array.isArray(blockedCaptureJobs.jobs) || blockedCaptureJobs.jobs.length !== 2) {
-    reject("the capture-blocked preflight job inventory is incomplete or unexpected.");
+    reject("the blocked preflight retry job inventory is incomplete or unexpected.");
   }
-  jobByName(blockedCaptureJobs, "Authorize read-only preflight", { conclusion: "success", headSha: blockedCaptureSha, attempt: 1 });
+  const authorizeBlockedRetry = jobByName(blockedCaptureJobs, "Authorize read-only preflight", {
+    conclusion: "success", headSha: blockedCaptureSha, attempt: 1,
+  });
   const blockedInspect = jobByName(blockedCaptureJobs,
     "Inspect, back up, restore, and rehearse on disposable PostgreSQL", { conclusion: "failure", headSha: blockedCaptureSha, attempt: 1 });
-  assertStepResults(blockedInspect, BLOCKED_CAPTURE_PREFLIGHT_STEPS, "capture-blocked preflight");
-  if (blockedCaptureArtifacts?.total_count !== 0 || (blockedCaptureArtifacts?.artifacts ?? []).length !== 0
-    || !String(blockedCaptureLogText ?? "").includes(PRIOR_CAPTURE_FAILURE)) {
-    reject("the later preflight did not stop at the existing capture guard without publishing artifacts.");
+  if (authorizeBlockedRetry.status !== "completed" || blockedInspect.status !== "completed"
+    || !Array.isArray(blockedInspect.steps)
+    || new Set(blockedInspect.steps.map((step) => step.name)).size !== blockedInspect.steps.length
+    || blockedInspect.steps.some((step) => step.status !== "completed")) {
+    reject("the blocked preflight retry has an incomplete or duplicate step inventory.");
+  }
+  const failedBlockedSteps = blockedInspect.steps.filter((step) => step.conclusion === "failure");
+  const stoppedBeforeMaintenance = failedBlockedSteps.length === 1
+    && failedBlockedSteps[0].name === NO_APP_PREFLIGHT_FAILURE_STEP;
+  if (stoppedBeforeMaintenance) {
+    assertStepResults(blockedInspect, BLOCKED_NO_APP_PREFLIGHT_STEPS, "no-app preflight blocker");
+    const normalizedLog = normalizeActionLog(blockedCaptureLogText);
+    const exactFailureRecords = parseActionLogRecords(blockedCaptureLogText).filter((record) =>
+      record.step === NO_APP_PREFLIGHT_FAILURE_STEP
+      && normalizeActionLog(record.text).includes(NO_APP_PREFLIGHT_FAILURE));
+    if (findAllOccurrences(normalizedLog, NO_APP_PREFLIGHT_FAILURE).length !== 1 || exactFailureRecords.length !== 1) {
+      reject("the retry did not stop at the exact absent-app check before maintenance or database inspection.");
+    }
+  } else {
+    assertStepResults(blockedInspect, BLOCKED_CAPTURE_PREFLIGHT_STEPS, "capture-blocked preflight");
+    if (failedBlockedSteps.length !== 1
+      || failedBlockedSteps[0].name !== "Enter maintenance and drain the old app before backup"
+      || !String(blockedCaptureLogText ?? "").includes(PRIOR_CAPTURE_FAILURE)) {
+      reject("the later preflight did not stop at the existing capture guard.");
+    }
+  }
+  if (blockedCaptureArtifacts?.total_count !== 0 || (blockedCaptureArtifacts?.artifacts ?? []).length !== 0) {
+    reject("the blocked preflight retry unexpectedly published backup or evidence artifacts.");
   }
 
   const sourceId = BigInt(String(sourceRunId));
@@ -786,10 +840,10 @@ async function main() {
   const isAncestor = (ancestor, descendant) => {
     try { execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore" }); return true; } catch { return false; }
   };
-  if (mode === "--verify-pre-ddl-migration-failure" && args.length === 19) {
+  if (mode === "--verify-pre-ddl-migration-failure" && args.length === 20) {
     const [sourceRunPath, sourceJobsPath, sourceArtifactsPath, migrationRunPath, migrationJobsPath, migrationLogPath,
       blockedRunPath, blockedJobsPath, blockedArtifactsPath, blockedLogPath, laterRunsPath, safeRetriesPath, sourceRunId,
-      migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha, preflightWorkflowId, migrationWorkflowId] = args;
+      migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha, preflightWorkflowId, migrationWorkflowId, manifestId] = args;
     const [sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs, migrationLogText, blockedCaptureRun,
       blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText, laterRunsText, safeRetriesText] = await Promise.all([
       readJson(sourceRunPath), readJson(sourceJobsPath), readJson(sourceArtifactsPath), readJson(migrationRunPath),
@@ -808,13 +862,16 @@ async function main() {
     const proof = verifyPreDdlMigrationFailureResume({ sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs,
       migrationLogText, blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
       laterRuns: parseNdjson(laterRunsText), safeFailedPreflightRetries, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId,
-      currentMainSha, preflightWorkflowId, migrationWorkflowId, sourceIsAncestor,
+      currentMainSha, preflightWorkflowId, migrationWorkflowId, manifestId, sourceIsAncestor,
       sourceIsAncestorOfBlockedCapture, blockedCaptureIsAncestorOfCurrentMain });
     process.stdout.write(`${JSON.stringify(proof)}\n`);
     return;
   }
   if (mode !== "--verify-source" || args.length !== 14) {
-    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <historical-deploy-runs.ndjson> <historical-preflight-runs.ndjson> <historical-no-app-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
+    if (mode !== "--verify-pre-ddl-migration-failure") {
+      throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <historical-deploy-runs.ndjson> <historical-preflight-runs.ndjson> <historical-no-app-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
+    }
+    throw new Error("Usage: production-preflight-resume.mjs --verify-pre-ddl-migration-failure <source-run.json> <source-jobs.json> <source-artifacts.json> <migration-run.json> <migration-jobs.json> <migration-log.txt> <blocked-run.json> <blocked-jobs.json> <blocked-artifacts.json> <blocked-log.txt> <later-runs.ndjson> <safe-retries.ndjson> <source-run-id> <migration-run-id> <blocked-run-id> <current-run-id> <current-main-sha> <preflight-workflow-id> <migration-workflow-id> <manifest-id>");
   }
   const [runPath, jobsPath, artifactsPath, laterRunsPath, historicalDeployRunsPath, safePreflightRetriesPath,
     safeNoAppRunsPath, sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId] = args;

@@ -34,7 +34,7 @@ on:
         required: false
         type: string
       resume_blocked_capture_preflight_run_id:
-        description: Required with the migration failure run to identify the retry that stopped at the existing capture guard
+        description: Required with the migration failure run to identify the retry that stopped at the existing capture guard or exact absent-app check before maintenance
         required: false
         type: string
       forward_resume_failed_migration_run_id:
@@ -116,9 +116,11 @@ jobs:
             echo "::error::The nine-migration Training manifest does not accept historical resume evidence."; exit 1;
           fi
           if [[ "$MANIFEST_ID" == "auth-multiuser-v1" \
-            && ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
-              || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
-            echo "::error::The Auth migration manifest accepts only an exact failed-restore preflight resume; migration-failure and forward-resume evidence are not accepted."; exit 1;
+            && ( -n "$FORWARD_RESUME_FAILED_RUN_ID" \
+              || ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" ) \
+              || ( -z "$RESUME_MIGRATION_FAILURE_RUN_ID" && -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" ) \
+              || ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ID" ) ) ]]; then
+            echo "::error::Auth resume requires an exact failed-restore source alone or the complete source/migration-failure/blocked-preflight tuple; forward-resume is not accepted."; exit 1;
           fi
           REFRESH_CAPTURE=0
           if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then
@@ -281,6 +283,7 @@ jobs:
               "$RUNNER_TEMP/resume-later-runs.ndjson" "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson" \
               "$RESUME_SOURCE_RUN_ID" "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               "$RESUME_BLOCKED_CAPTURE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$PREFLIGHT_WORKFLOW_ID" "$MIGRATION_WORKFLOW_ID" \
+              "$MANIFEST_ID" \
               > "$RUNNER_TEMP/preflight-resume-proof.json"
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
@@ -289,7 +292,7 @@ jobs:
             {
               echo "- verified pre-DDL resume source preflight: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
               echo "- verified failed migration run: $RESUME_MIGRATION_FAILURE_RUN_ID; exact final-guard import failure occurred before the marker/Prisma boundary"
-              echo "- verified blocked capture retry: $RESUME_BLOCKED_CAPTURE_RUN_ID; this preflight still creates a fresh backup and isolated rehearsal"
+              echo "- verified blocked preflight retry: $RESUME_BLOCKED_CAPTURE_RUN_ID; this preflight still verifies the captured image and creates a fresh backup and isolated rehearsal"
               while IFS= read -r auth_retry_id; do
                 [[ "$auth_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
                 echo "- historical authorization-only preflight run $auth_retry_id: UNVERIFIED; its in-step side effects were not established and it grants no DDL authorization"

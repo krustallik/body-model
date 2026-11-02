@@ -186,10 +186,27 @@ const PUBLICATION_SOURCE_CHECK_SIGNATURE = `${PUBLICATION_SOURCE_SIGNATURE_PREFI
 const PUBLICATION_SOURCE_CHECK_RESTORED_SIGNATURE = `${PUBLICATION_SOURCE_SIGNATURE_PREFIX}ARRAY[${PUBLICATION_SOURCE_VALUES.map((value) => `'${value}'::character varying::text`).join(", ")}]))`;
 
 const TRAINING_PG17_RESTORED_CONSTRAINT_SIGNATURES = Object.freeze({
-  UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
-  StepperCreateOperation_payloadVersion_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
-  StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
-  StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+  UnifiedPublicationBlock_source_check: Object.freeze([
+    `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
+    `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying::text, 'day'::character varying::text, 'training'::character varying::text, 'stepper'::character varying::text, 'active_energy'::character varying::text]))`,
+  ]),
+  StepperCreateOperation_payloadVersion_check: Object.freeze([
+    `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
+  ]),
+  StepperCreateOperation_state_check: Object.freeze([
+    `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
+    `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying::text, 'COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text]))`,
+  ]),
+  StepperCreateOperation_result_check: Object.freeze([
+    `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+    `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text])) AND "workoutId" IS NOT NULL)`,
+  ]),
+  TrainingSetCreateOperation_state_check: Object.freeze([
+    `c|validated=true|table="TrainingSetCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying::text, 'COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text, 'REJECTED'::character varying::text]))`,
+  ]),
+  TrainingSetCreateOperation_result_check: Object.freeze([
+    `c|validated=true|table="TrainingSetCreateOperation"|definition=CHECK ((state::text = ANY (ARRAY['PENDING'::character varying::text, 'REJECTED'::character varying::text])) AND "canonicalSetId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text])) AND "canonicalSetId" IS NOT NULL)`,
+  ]),
 });
 
 function canonicalInventorySignature(object) {
@@ -210,9 +227,9 @@ function canonicalInventorySignature(object) {
   // PostgreSQL 17.11's pg_get_constraintdef emits these exact forms for the
   // reviewed Training DDL. Canonicalize only the complete observed signature
   // for each named constraint; any changed predicate remains a mismatch.
-  const trainingPg17Signature = TRAINING_PG17_RESTORED_CONSTRAINT_SIGNATURES[object?.name];
+  const trainingPg17Signatures = TRAINING_PG17_RESTORED_CONSTRAINT_SIGNATURES[object?.name];
   if (object?.present === true && object.kind === "constraint"
-    && typeof trainingPg17Signature === "string" && object.signature === trainingPg17Signature) {
+    && Array.isArray(trainingPg17Signatures) && trainingPg17Signatures.includes(object.signature)) {
     return TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[object.name]
       ?? TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureIncludes[object.name]
       ?? object.signature;

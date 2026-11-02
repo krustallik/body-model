@@ -211,7 +211,7 @@ describe("production schema signature normalization", () => {
     }
   });
 
-  it("canonicalizes only the four exact PostgreSQL 17.11 Training constraint renderings", async () => {
+  it("canonicalizes only exact PostgreSQL 17.11 pg_dump/pg_restore constraint renderings", async () => {
     const [convergenceMigration, stepperMigration] = await Promise.all([
       readFile(new URL("../prisma/migrations/20261017140000_active_energy_convergence_fence/migration.sql", import.meta.url), "utf8"),
       readFile(new URL("../prisma/migrations/20261017130000_stepper_operation_recovery/migration.sql", import.meta.url), "utf8"),
@@ -222,10 +222,12 @@ describe("production schema signature normalization", () => {
     expect(stepperMigration).toContain('("state" = \'PENDING\' AND "workoutId" IS NULL)');
 
     const actualPg17 = {
-      UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying, 'day'::character varying, 'training'::character varying, 'stepper'::character varying, 'active_energy'::character varying]::text[]))`,
+      UnifiedPublicationBlock_source_check: `c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (ARRAY['health'::character varying::text, 'day'::character varying::text, 'training'::character varying::text, 'stepper'::character varying::text, 'active_energy'::character varying::text]))`,
       StepperCreateOperation_payloadVersion_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK ("payloadVersion" = 1)`,
-      StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying, 'COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[]))`,
-      StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying, 'TOMBSTONED'::character varying]::text[])) AND "workoutId" IS NOT NULL)`,
+      StepperCreateOperation_state_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying::text, 'COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text]))`,
+      StepperCreateOperation_result_check: `c|validated=true|table="StepperCreateOperation"|definition=CHECK (state::text = 'PENDING'::text AND "workoutId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text])) AND "workoutId" IS NOT NULL)`,
+      TrainingSetCreateOperation_state_check: `c|validated=true|table="TrainingSetCreateOperation"|definition=CHECK (state::text = ANY (ARRAY['PENDING'::character varying::text, 'COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text, 'REJECTED'::character varying::text]))`,
+      TrainingSetCreateOperation_result_check: `c|validated=true|table="TrainingSetCreateOperation"|definition=CHECK ((state::text = ANY (ARRAY['PENDING'::character varying::text, 'REJECTED'::character varying::text])) AND "canonicalSetId" IS NULL OR (state::text = ANY (ARRAY['COMMITTED'::character varying::text, 'TOMBSTONED'::character varying::text])) AND "canonicalSetId" IS NOT NULL)`,
     };
 
     for (const [name, signature] of Object.entries(actualPg17)) {
@@ -243,6 +245,8 @@ describe("production schema signature normalization", () => {
       ["StepperCreateOperation_payloadVersion_check", (signature) => signature.replace("= 1", "= 2")],
       ["StepperCreateOperation_state_check", (signature) => signature.replace("'TOMBSTONED'", "'DELETED'")],
       ["StepperCreateOperation_result_check", (signature) => signature.replace("'COMMITTED'", "'PENDING'")],
+      ["TrainingSetCreateOperation_state_check", (signature) => signature.replace("'REJECTED'", "'COMMITTED'")],
+      ["TrainingSetCreateOperation_result_check", (signature) => signature.replace("'REJECTED'", "'COMMITTED'")],
     ]) {
       const expected = TRAINING_MUTATION_LEDGER_MANIFEST.postflightSignatureEquals[name];
       const sourceObject = { name, present: true, kind: "constraint", signature: expected };

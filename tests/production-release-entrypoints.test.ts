@@ -269,6 +269,13 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("production-app-container-health-wait.sh \"$RELEASE_SHA\" \"$IMAGE_ID\"");
     expect(workflow).toContain("source scripts/deploy-main-freshness.sh");
     expect(workflow).toContain('bodycast_assert_current_main_sha "$RELEASE_SHA"');
+    expect(workflow.match(/git -c remote\.origin\.url=https:\/\/github\.com\/krustallik\/body-model\.git fetch --no-tags origin/g))
+      .toHaveLength(4);
+    expect(workflow).toContain("GIT_CONFIG_KEY_0=remote.origin.url");
+    expect(workflow).toContain("GIT_CONFIG_VALUE_0=https://github.com/krustallik/body-model.git");
+    const finalCutover = workflow.indexOf("exec bash scripts/production-traffic-cutover.sh full-history-recalculate");
+    expect(finalCutover).toBeGreaterThan(-1);
+    expect(workflow.slice(finalCutover - 350, finalCutover)).toContain("GIT_CONFIG_KEY_0=remote.origin.url");
     const restartStep = workflow.slice(appRestart, workflow.indexOf("\n      - name:", appRestart + 1));
     const restartMainFence = restartStep.indexOf('bodycast_assert_current_main_sha "$RELEASE_SHA"');
     const appMutation = restartStep.indexOf('docker compose -f docker-compose.prod.yml up -d --no-deps --no-build app');

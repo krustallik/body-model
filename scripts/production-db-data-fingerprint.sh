@@ -21,12 +21,20 @@ if (url.protocol !== "postgresql:" || !["127.0.0.1", "localhost", "::1"].include
 }
 NODE
   fingerprint_mode="full"
-  if [[ "${2:-}" == "--v4-replay-inputs" || "${2:-}" == "--v4-replay-stable-state" || "${2:-}" == "--auth-multiuser-source-inputs" ]]; then
+  if [[ "${2:-}" == "--v4-replay-inputs" || "${2:-}" == "--v4-replay-stable-state" ]]; then
     fingerprint_mode="${2#--}"
     node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
 const url = new URL(process.argv[2]);
 if (decodeURIComponent(url.pathname.slice(1)) !== "bodycast_restore") {
   throw new Error("V4 replay fingerprints are restricted to the isolated bodycast_restore database.");
+}
+NODE
+  elif [[ "${2:-}" == "--auth-multiuser-source-inputs" ]]; then
+    fingerprint_mode="${2#--}"
+    node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
+const url = new URL(process.argv[2]);
+if (!["bodycast_restore", "bodycast_health_mutation_test", "bodycast_workout_mutation_test"].includes(decodeURIComponent(url.pathname.slice(1)))) {
+  throw new Error("Auth source fingerprints accept only reviewed isolated rehearsal databases.");
 }
 NODE
   fi

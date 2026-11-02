@@ -710,10 +710,11 @@ describe("V5 closed migration manifest and full pending set", () => {
   });
 
   it("keeps the Training manifest intact and rehearses the complete Auth release from its pinned 74-migration baseline", async () => {
-    const [migrationWorkflow, preflightWorkflow, safetyWorkflow] = await Promise.all([
+    const [migrationWorkflow, preflightWorkflow, safetyWorkflow, fingerprintScript] = await Promise.all([
       readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8"),
+      readFile(new URL("../scripts/production-db-data-fingerprint.sh", import.meta.url), "utf8"),
     ]);
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations).toHaveLength(65);
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(9);
@@ -759,6 +760,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("CREATE DATABASE bodycast_workout_mutation_test TEMPLATE bodycast_restore");
     expect(safetyWorkflow).toContain("Auth Health mutation clone does not match the migrated source-input baseline.");
     expect(safetyWorkflow).toContain("Auth Workout mutation clone does not match the migrated source-input baseline.");
+    expect(fingerprintScript).toContain('["bodycast_restore", "bodycast_health_mutation_test", "bodycast_workout_mutation_test"]');
+    expect(fingerprintScript).toContain('decodeURIComponent(url.pathname.slice(1)) !== "bodycast_restore"');
+    expect(fingerprintScript).toContain("V4 replay fingerprints are restricted to the isolated bodycast_restore database.");
     const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
     const baselineMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"', rehearsalStart);

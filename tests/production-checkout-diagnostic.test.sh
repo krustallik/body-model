@@ -170,10 +170,11 @@ MOCK_FETCH
   grep -Fq "'modelRevision'" "$DOCKER_EXEC_INPUT" || exit 73
   grep -Fq "'result'" "$DOCKER_EXEC_INPUT" || exit 72
   mock_result="${DOCKER_EXEC_RESULT:-7|2|5|0|2|1|6|1|6|1|0|1|1|1|1|1|1|1|5|2|1|1|1|1|1|1|1|1|1|1|3|2|1|none}"
-  printf '%s\n' "$mock_result"
   if [[ "$mock_result" != __diagnostic_query_error__* ]]; then
-    printf '%s\n' "${DOCKER_ACTIVITY_RESULT:-none}"
+    mock_shadow_payload="${mock_result##*|}"
+    mock_result="${mock_result%|*}|${DOCKER_ACTIVITY_RESULT:-none}|$mock_shadow_payload"
   fi
+  printf '%s\n' "$mock_result"
   exit 0
 fi
 [[ "$1" == inspect ]] || exit 90

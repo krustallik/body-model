@@ -235,9 +235,20 @@ const writerDrainFreshnessChecks = [
   ["maintenance-route", true], ["maintenance-route-digest", true],
   ["writer-drain-freshness", false], ["topology-freshness", false],
 ].map(([id, passed]) => ({ id, passed }));
+const finalPrismaWriterDrainChecks = [
+  ["signed-database-identity-digest", true], ["canonical-postgres-identity", true],
+  ["exact-database-identity-match", true], ["writer-drain-schema", true],
+  ["writer-drain-observer-pid", true], ["fixed-observer-application", true],
+  ["zero-other-client-policy", true], ["complete-backend-inventory", true],
+  ["zero-other-client-backends", false], ["fresh-writer-drain-observation", true],
+].map(([id, passed]) => ({ id, passed }));
 const writerDrainFreshnessLog = [
   'Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:42:47.1460792Z {"schemaVersion":1,"contract":"bodycast-compose-internal-db-single-writer-v1","ready":true,"blockers":[],"observedAt":"2026-11-02T20:42:47Z","app":{"name":"bodycast-app-prod","state":"absent","restartPolicy":null},"database":{"name":"bodycast-db-prod","state":"running","health":"healthy","publishedPostgresPort":false,"networks":["bodycast-backend-prod"]},"backendNetwork":{"name":"bodycast-backend-prod","containers":["bodycast-db-prod"]},"caddy":{"name":"gymbeam-caddy","state":"running","configValidated":true},"routeFile":{"verified":true,"maintenanceResponse":true,"containsReverseProxy":false,"sha256":"cebcdecb1e464cd547f63bde509a29633c8675dd1188d27421c98027562fb2f7"}}',
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:36.1750783Z ${writerDrainFreshnessFailure}; checks=${JSON.stringify(writerDrainFreshnessChecks)}`,
+].join("\n");
+const finalPrismaWriterDrainLog = [
+  writerDrainFreshnessLog.split("\n")[0],
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:10.0000000Z Refusing Prisma DDL: final DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=${JSON.stringify(finalPrismaWriterDrainChecks)}`,
 ].join("\n");
 const migrationLog = [
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,
@@ -1160,6 +1171,40 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     expect(() => verifyPreDdlResume({ migrationLogText: beforeMarker })).toThrow("one exact reviewed pre-DDL failure");
     const mixedFailureKinds = `${migrationLog}\n${writerDrainFreshnessLog.split("\n")[1]}`;
     expect(() => verifyPreDdlResume({ migrationLogText: mixedFailureKinds })).toThrow("one exact reviewed pre-DDL failure");
+  });
+
+  it("accepts only the exact final Prisma writer-drain failure with no other failed identity predicate", () => {
+    expect(verifyPreDdlResume({ migrationLogText: finalPrismaWriterDrainLog })).toMatchObject({
+      migrationFailureKind: "final-writer-drain-client",
+      migrationFailureRunId: preDdlMigrationRunId,
+    });
+
+    const changedIdentity = finalPrismaWriterDrainLog.replace(
+      '"signed-database-identity-digest","passed":true',
+      '"signed-database-identity-digest","passed":false',
+    );
+    expect(() => verifyPreDdlResume({ migrationLogText: changedIdentity })).toThrow("one exact reviewed pre-DDL failure");
+    const zeroBackendRecovered = finalPrismaWriterDrainLog.replace(
+      '"zero-other-client-backends","passed":false',
+      '"zero-other-client-backends","passed":true',
+    );
+    expect(() => verifyPreDdlResume({ migrationLogText: zeroBackendRecovered })).toThrow("one exact reviewed pre-DDL failure");
+    expect(() => verifyPreDdlResume({ migrationLogText: `${finalPrismaWriterDrainLog}\n${finalPrismaWriterDrainLog.split("\n")[1]}` }))
+      .toThrow("one exact reviewed pre-DDL failure");
+    const wrongStepLines = finalPrismaWriterDrainLog.split("\n");
+    wrongStepLines[1] = wrongStepLines[1].replace("Run the fixed guarded migration script over SSH", "Validate protected production SSH");
+    expect(() => verifyPreDdlResume({ migrationLogText: wrongStepLines.join("\n") })).toThrow("one exact reviewed pre-DDL failure");
+    const markerAfterFailure = finalPrismaWriterDrainLog.split("\n").reverse().join("\n");
+    expect(() => verifyPreDdlResume({ migrationLogText: markerAfterFailure })).toThrow("one exact reviewed pre-DDL failure");
+    const finalFailureRecord = finalPrismaWriterDrainLog.split("\n")[1]
+      .replace("2026-11-02T20:43:10.0000000Z", "2026-10-10T00:08:29.0000000Z");
+    const mixedFailureKinds = `${migrationLog}\n${finalFailureRecord}`;
+    expect(() => verifyPreDdlResume({ migrationLogText: mixedFailureKinds }))
+      .toThrow("one exact reviewed pre-DDL failure");
+    const freshnessAndFinalFailure = `${writerDrainFreshnessLog}\n${finalPrismaWriterDrainLog.split("\n")[1]
+      .replace("2026-11-02T20:43:10.0000000Z", "2026-11-02T20:43:37.0000000Z")}`;
+    expect(() => verifyPreDdlResume({ migrationLogText: freshnessAndFinalFailure }))
+      .toThrow("one exact reviewed pre-DDL failure");
   });
 
   it("parses wrapped runner logs while binding failures to the sole failed fixed migration step", () => {

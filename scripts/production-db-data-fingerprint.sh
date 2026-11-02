@@ -7,6 +7,7 @@ set -Eeuo pipefail
 
 mode="${1:-}"
 fingerprint_mode="full"
+auth_components_out="${BODYCAST_AUTH_SOURCE_COMPONENTS_OUT:-}"
 if [[ "$mode" == "--test-url" ]]; then
   [[ ( "$#" -eq 1 || ( "$#" -eq 2 && ( "$2" == "--v4-replay-inputs" || "$2" == "--v4-replay-stable-state" || "$2" == "--auth-multiuser-source-inputs" ) ) ) && -n "${BODYCAST_TEST_DATABASE_URL:-}" ]] || {
     echo "An isolated test PostgreSQL URL is required." >&2; exit 2;
@@ -41,6 +42,7 @@ NODE
   psql_args=("$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1)
   run_psql() { psql "${psql_args[@]}" "$@"; }
 elif [[ "$mode" == "--production-container" ]]; then
+  [[ -z "$auth_components_out" ]] || { echo "Per-table source diagnostics are restricted to isolated PostgreSQL." >&2; exit 2; }
   [[ ( "$#" -eq 2 || ( "$#" -eq 3 && ( "$3" == "--v4-replay-inputs" || "$3" == "--v4-replay-stable-state" || "$3" == "--auth-multiuser-source-inputs" ) ) ) && "$2" == "bodycast-db-prod" ]] || {
     echo "Only the fixed production PostgreSQL container and reviewed V4 fingerprint projections are supported." >&2; exit 2;
   }
@@ -54,6 +56,14 @@ elif [[ "$mode" == "--production-container" ]]; then
 else
   echo "Usage: production-db-data-fingerprint.sh --test-url [--v4-replay-inputs|--v4-replay-stable-state|--auth-multiuser-source-inputs]|--production-container bodycast-db-prod [--v4-replay-inputs|--v4-replay-stable-state|--auth-multiuser-source-inputs]" >&2
   exit 2
+fi
+
+if [[ -n "$auth_components_out" ]]; then
+  [[ "$mode" == "--test-url" && "$fingerprint_mode" == "auth-multiuser-source-inputs" && "$auth_components_out" == /* ]] || {
+    echo "Auth source component diagnostics require an isolated auth-source fingerprint and an absolute output path." >&2; exit 2;
+  }
+  : > "$auth_components_out"
+  chmod 600 "$auth_components_out"
 fi
 
 tables="$(run_psql --command "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' ORDER BY tablename;")"
@@ -101,6 +111,7 @@ elif [[ "$fingerprint_mode" == "auth-multiuser-source-inputs" ]]; then
     fi
   done
 fi
+fingerprint_digest="$(
 {
   if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
     printf 'bodycast-v4-replay-source-fingerprint-v3\n'
@@ -178,3 +189,41 @@ fi
     run_psql --command "COPY (SELECT schemaname || '.' || sequencename || ':' || COALESCE(last_value::text, 'null') FROM pg_catalog.pg_sequences WHERE schemaname='public' ORDER BY sequencename) TO STDOUT;"
   fi
 } | sha256sum | awk '{print $1}'
+)"
+printf '%s\n' "$fingerprint_digest"
+
+if [[ -n "$auth_components_out" ]]; then
+  while IFS= read -r table; do
+    [[ "$table" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || exit 1
+    if [[ "$table" == "User" || "$table" == "Session" || "$table" == "Account" \
+      || "$table" == "Verification" || "$table" == "ProfileApiKey" \
+      || "$table" == "AuthRateLimitBucket" || "$table" == "_prisma_migrations" ]]; then
+      continue
+    fi
+    component_digest="$(
+      {
+        printf 'table:%s\n' "$table"
+        case "$table" in
+          ActivationRollbackEntry|ActiveEnergyCandidate|ActiveEnergyResolutionRevision|DailyHealthData|ExerciseLoadConfiguration|HealthActivityInterval|HealthMetricSample|HealthSyncAudit|HealthSyncSnapshot|ProgramExercise|StepperReconciliationCandidate|StrengthSessionExercise|TrainingProgramVersion|WorkInterval|Workout)
+            run_psql --command "COPY (SELECT (to_jsonb(row_value) - 'profileId')::text FROM public.\"${table}\" AS row_value ORDER BY (to_jsonb(row_value) - 'profileId')::text) TO STDOUT;"
+            ;;
+          Profile)
+            run_psql --command "COPY (SELECT (to_jsonb(row_value) - 'userId')::text FROM public.\"${table}\" AS row_value ORDER BY (to_jsonb(row_value) - 'userId')::text) TO STDOUT;"
+            ;;
+          *)
+            run_psql --command "COPY (SELECT to_jsonb(row_value)::text FROM public.\"${table}\" AS row_value ORDER BY to_jsonb(row_value)::text) TO STDOUT;"
+            ;;
+        esac
+        printf '\n'
+      } | sha256sum | awk '{print $1}'
+    )"
+    printf '%s\t%s\n' "$table" "$component_digest" >> "$auth_components_out"
+  done <<< "$tables"
+  sequence_digest="$(
+    {
+      printf 'sequence-state\n'
+      run_psql --command "COPY (SELECT schemaname || '.' || sequencename || ':' || COALESCE(last_value::text, 'null') FROM pg_catalog.pg_sequences WHERE schemaname='public' AND sequencename <> 'profile_id_seq' ORDER BY sequencename) TO STDOUT;"
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '__sequence_state__\t%s\n' "$sequence_digest" >> "$auth_components_out"
+fi

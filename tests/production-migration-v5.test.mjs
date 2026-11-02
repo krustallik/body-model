@@ -804,6 +804,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).not.toMatch(/PGAPPNAME=bodycast-production-preflight\s+\\\s*\n\s*node scripts\/production-db-preflight\.mjs/);
     expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1 --release-sha \"$GITHUB_SHA\"");
     expect(safetyWorkflow).toContain('--release-sha "$GITHUB_SHA"');
+    expect(preflightWorkflow).toContain('BODYCAST_AUTH_SOURCE_COMPONENTS_OUT="$AUTH_SOURCE_COMPONENTS_BEFORE"');
+    expect(preflightWorkflow).toContain("Auth source fingerprint changed components:");
+    expect(fingerprintScript).toContain("Per-table source diagnostics are restricted to isolated PostgreSQL.");
   });
 
   it("renders Auth baseline tables and DDL locks from its reviewed manifest", async () => {

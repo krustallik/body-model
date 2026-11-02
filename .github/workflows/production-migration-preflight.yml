@@ -1118,8 +1118,9 @@ jobs:
           RESTORED_DATA_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           [[ "$RESTORED_DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated restore logical data fingerprint is malformed."; exit 1; }
           AUTH_SOURCE_FINGERPRINT_BEFORE=""
+          AUTH_SOURCE_COMPONENTS_BEFORE="$RUNNER_TEMP/auth-source-components-before.tsv"
           if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
-            AUTH_SOURCE_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+            AUTH_SOURCE_FINGERPRINT_BEFORE="$(BODYCAST_AUTH_SOURCE_COMPONENTS_OUT="$AUTH_SOURCE_COMPONENTS_BEFORE" bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
             [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated Auth source-input fingerprint before migration is malformed."; exit 1; }
           fi
           node --input-type=module - "$RUNNER_TEMP/restored-base-report.json" "$RESTORED_DATA_FINGERPRINT" <<'NODE'
@@ -1141,8 +1142,27 @@ jobs:
           DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
           AUTH_SOURCE_FINGERPRINT_AFTER=""
           if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
-            AUTH_SOURCE_FINGERPRINT_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+            AUTH_SOURCE_COMPONENTS_AFTER="$RUNNER_TEMP/auth-source-components-after.tsv"
+            AUTH_SOURCE_FINGERPRINT_AFTER="$(BODYCAST_AUTH_SOURCE_COMPONENTS_OUT="$AUTH_SOURCE_COMPONENTS_AFTER" bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
             [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated Auth source-input fingerprint after migration is malformed."; exit 1; }
+            if [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" != "$AUTH_SOURCE_FINGERPRINT_AFTER" ]]; then
+              node --input-type=module - "$AUTH_SOURCE_COMPONENTS_BEFORE" "$AUTH_SOURCE_COMPONENTS_AFTER" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [beforePath, afterPath] = process.argv.slice(2);
+          const read = (path) => new Map(readFileSync(path, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => {
+            const [name, digest] = line.split("\t");
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name !== "__sequence_state__") throw new Error("Unsafe component name.");
+            if (!/^[a-f0-9]{64}$/.test(digest ?? "")) throw new Error("Malformed component digest.");
+            return [name, digest];
+          }));
+          const before = read(beforePath);
+          const after = read(afterPath);
+          const changed = [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)).sort();
+          process.stderr.write(`Auth source fingerprint changed components: ${changed.join(",") || "none (projection header)"}\n`);
+          NODE
+              echo "::error::Auth ownership migration changed immutable source-input projection in isolated PostgreSQL."
+              exit 1
+            fi
           fi
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
           node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" --repository "$GITHUB_WORKSPACE" \

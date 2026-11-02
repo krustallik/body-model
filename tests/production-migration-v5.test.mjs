@@ -2553,6 +2553,12 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     const restored = { ...source, migrations: source.migrations.map((row) => ({ ...row })), objects: source.objects.map((row) => ({ ...row })) };
     const readability = { readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])) };
     expect(verifyBaseRestore(source, restored, readability).verified).toBe(true);
+    const changedHistory = { ...restored, migrations: restored.migrations.map((row, index) => index === 0
+      ? { ...row, startedAt: "2026-10-01T02:00:00.000+02:00" } : row) };
+    const historyMismatch = verifyBaseRestore(source, changedHistory, readability);
+    expect(historyMismatch.verified).toBe(false);
+    expect(historyMismatch.migrationHistoryDifferences?.differences).toMatchObject([{ index: 0, changedFields: ["startedAt"] }]);
+    expect(JSON.stringify(historyMismatch.migrationHistoryDifferences)).not.toContain("2026-10-01T02:00:00.000+02:00");
     expect(verifyRestoredBackup(source, { ...restored, logicalDataFingerprint: "0".repeat(64) }).blockers)
       .toContain("Restored public-table rows or sequence state differ from the source snapshot.");
     restored.objects[0].signature = "changed";
@@ -2699,6 +2705,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     const restored = {
       ...source,
       logicalDataFingerprint: "e".repeat(64),
+      migrations: source.migrations.map((row, index) => index === 0 ? { ...row, checksum: "f".repeat(64) } : { ...row }),
       objects: source.objects.map((row, index) => ({ ...row, ...(index === targetIndex ? { signature: privateSignature } : {}) })),
     };
     const readability = { readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])) };
@@ -2719,8 +2726,10 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       expect(run.error).toBeUndefined();
       expect(run.status).toBe(1);
       expect(JSON.parse(run.stdout).verified).toBe(false);
-      expect(run.stderr).toContain("categories=data-fingerprint,schema-inventory");
+      expect(run.stderr).toContain("categories=data-fingerprint,migration-history,schema-inventory");
       expect(run.stderr).toContain("Sanitized schema inventory differences:");
+      expect(run.stderr).toContain("Sanitized migration history differences:");
+      expect(run.stderr).toContain('"changedFields":["checksum"]');
       expect(run.stderr).toContain(target.name);
       expect(run.stderr).not.toContain("Restored public-table rows");
       expect(run.stderr).not.toContain("e".repeat(64));

@@ -17,6 +17,7 @@ export function verifyBaseRestore(sourceReport, restoredReport, readabilityRepor
     verified: result.verified,
     blockers: result.blockers,
     migrationCount: result.migrationCount,
+    migrationHistoryDifferences: result.migrationHistoryDifferences,
     schemaDigest: Array.isArray(restoredReport?.objects) ? schemaInventoryDigest(restoredReport.objects) : null,
     readability: readabilityReport?.readability ?? null,
     logicalDataFingerprint: restoredReport?.logicalDataFingerprint ?? null,
@@ -166,6 +167,7 @@ export function combineRestoreResults(baseResult, postflightResult, {
     postflightReady,
     blockers,
     migrationCount: baseResult?.migrationCount ?? null,
+    migrationHistoryDifferences: baseResult?.migrationHistoryDifferences ?? null,
     baseSchemaDigest: baseResult?.schemaDigest ?? null,
     postSchemaDigest: postflightResult?.postSchemaDigest ?? null,
     pending: postflightResult?.pending ?? null,
@@ -182,6 +184,9 @@ async function readJson(pathname) { return JSON.parse(await readFile(pathname, "
 
 function writeVerificationResult(label, result, safeSchemaDiagnostic = null) {
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  if (result.migrationHistoryDifferences?.differences?.length) {
+    process.stderr.write(`Sanitized migration history differences: ${JSON.stringify(result.migrationHistoryDifferences)}\n`);
+  }
   if (safeSchemaDiagnostic) {
     process.stderr.write(`Sanitized schema inventory differences: ${JSON.stringify(safeSchemaDiagnostic)}\n`);
   }

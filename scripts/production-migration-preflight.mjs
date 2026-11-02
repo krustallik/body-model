@@ -172,6 +172,27 @@ function canonicalHistory(migrations) {
   })).sort((a, b) => a.name.localeCompare(b.name) || String(a.startedAt).localeCompare(String(b.startedAt)));
 }
 
+export function migrationHistoryDifferenceSummary(sourceMigrations, restoredMigrations) {
+  const source = canonicalHistory(sourceMigrations);
+  const restored = canonicalHistory(restoredMigrations);
+  if (!source || !restored) return null;
+  const fields = ["name", "checksum", "startedAt", "finishedAt", "rolledBackAt", "logsSha256"];
+  const differences = [];
+  for (let index = 0; index < Math.max(source.length, restored.length); index += 1) {
+    const left = source[index];
+    const right = restored[index];
+    const changedFields = fields.filter((field) => (left?.[field] ?? null) !== (right?.[field] ?? null));
+    if (!changedFields.length) continue;
+    const candidateName = left?.name ?? right?.name ?? null;
+    differences.push({
+      index,
+      name: typeof candidateName === "string" && /^\d{14}_[A-Za-z0-9_]+$/.test(candidateName) ? candidateName : null,
+      changedFields,
+    });
+  }
+  return { sourceCount: source.length, restoredCount: restored.length, differences };
+}
+
 const LIFECYCLE_REVISION_CONSTRAINT = "PhysiologyV7Lifecycle_unifiedTargetRevision_supported";
 const LIFECYCLE_REVISION_VALUES = [
   "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics",
@@ -708,6 +729,10 @@ export function verifyRestoredBackup(sourceReport, restoredReport) {
   }
   const sourceHistory = canonicalHistory(sourceReport?.migrations);
   const restoredHistory = canonicalHistory(restoredReport?.migrationHistory ?? restoredReport?.migrations);
+  const migrationHistoryDifferences = migrationHistoryDifferenceSummary(
+    sourceReport?.migrations,
+    restoredReport?.migrationHistory ?? restoredReport?.migrations,
+  );
   if (!sourceHistory || !restoredHistory) blockers.push("Source or restored migration history is missing.");
   else if (JSON.stringify(sourceHistory) !== JSON.stringify(restoredHistory)) blockers.push("Restored _prisma_migrations rows do not match the source snapshot.");
   if (Array.isArray(sourceReport?.objects) && Array.isArray(restoredReport?.objects)
@@ -718,7 +743,7 @@ export function verifyRestoredBackup(sourceReport, restoredReport) {
     const count = restoredReport?.readability?.[tableName]?.rowCount;
     if (!Number.isSafeInteger(count) || count < 0) blockers.push(`Restored baseline table ${tableName} could not be read.`);
   }
-  return { verified: blockers.length === 0, blockers, migrationCount: restoredHistory?.length ?? null };
+  return { verified: blockers.length === 0, blockers, migrationCount: restoredHistory?.length ?? null, migrationHistoryDifferences };
 }
 
 export function verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {

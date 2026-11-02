@@ -88,7 +88,7 @@ describe("Auth migration data projection and pre-maintenance headroom", () => {
     expect(restored).toMatchObject({
       verified: true,
       authMultiuserSourceDataFingerprint: digest,
-      authMultiuserSourceDataProjection: "bodycast-auth-multiuser-source-input-fingerprint-v1",
+      authMultiuserSourceDataProjection: "bodycast-auth-multiuser-source-input-fingerprint-v2",
     });
     expect(assertAuthSourceProjectionMatchesRestore({ manifestId: AUTH_MULTIUSER_MANIFEST.id, restoreResult: restored, liveFingerprint: digest })).toBe(true);
     const changedOwnership = combineRestoreResults(base, postflight, {
@@ -779,6 +779,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1");
     expect(safetyWorkflow).toContain("--test-url --auth-multiuser-source-inputs");
     expect(safetyWorkflow).toContain('[[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]]');
+    expect(safetyWorkflow).toContain('"PhysiologyV7Lifecycle" (');
+    expect(safetyWorkflow).toContain("Derived V7 lifecycle refresh changed the isolated immutable source-input projection.");
+    expect(fingerprintScript).toContain("bodycast-auth-multiuser-source-input-fingerprint-v2");
+    expect(fingerprintScript).toContain("excluded-derived-tables:PhysiologyV7Lifecycle");
     expect(safetyWorkflow).toContain("isolated primary Health input mutation");
     expect(safetyWorkflow).toContain("isolated Garmin/Workout input mutation");
     expect(safetyWorkflow).toContain('"DailyHealthData" ("date", "weightKg", "rawPayload", "createdAt", "updatedAt")');

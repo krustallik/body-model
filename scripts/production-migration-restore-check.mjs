@@ -175,7 +175,7 @@ export function combineRestoreResults(baseResult, postflightResult, {
     logicalDataFingerprint: baseResult?.logicalDataFingerprint ?? null,
     ...(isAuthManifest && authSourceFingerprintReady ? {
       authMultiuserSourceDataFingerprint: authSourceFingerprintBefore,
-      authMultiuserSourceDataProjection: "bodycast-auth-multiuser-source-input-fingerprint-v1",
+      authMultiuserSourceDataProjection: "bodycast-auth-multiuser-source-input-fingerprint-v2",
     } : {}),
   };
 }

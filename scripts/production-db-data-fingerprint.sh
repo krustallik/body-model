@@ -121,7 +121,8 @@ fingerprint_digest="$(
     printf 'excluded-bookkeeping-columns:PhysiologyV7Lifecycle.createdAt,PhysiologyV7Lifecycle.updatedAt,UnifiedExperimentalPhysiologyStateV2.createdAt,UnifiedExperimentalPhysiologyStateV2.updatedAt\n'
     printf 'excluded-owned-sequences:UnifiedExperimentalPhysiologyStateV2\n'
   elif [[ "$fingerprint_mode" == "auth-multiuser-source-inputs" ]]; then
-    printf 'bodycast-auth-multiuser-source-input-fingerprint-v1\n'
+    printf 'bodycast-auth-multiuser-source-input-fingerprint-v2\n'
+    printf 'excluded-derived-tables:PhysiologyV7Lifecycle\n'
     printf 'excluded-new-auth-tables:Account,AuthRateLimitBucket,ProfileApiKey,Session,User,Verification,_prisma_migrations\n'
     printf 'excluded-ownership-columns:ActivationRollbackEntry.profileId,ActiveEnergyCandidate.profileId,ActiveEnergyResolutionRevision.profileId,DailyHealthData.profileId,ExerciseLoadConfiguration.profileId,HealthActivityInterval.profileId,HealthMetricSample.profileId,HealthSyncAudit.profileId,HealthSyncSnapshot.profileId,Profile.userId,ProgramExercise.profileId,StepperReconciliationCandidate.profileId,StrengthSessionExercise.profileId,TrainingProgramVersion.profileId,WorkInterval.profileId,Workout.profileId\n'
     printf 'excluded-owned-sequences:profile_id_seq\n'
@@ -132,13 +133,14 @@ fingerprint_digest="$(
     [[ "$table" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
       echo "Public database contains a table name outside the reviewed identifier contract." >&2; exit 1;
     }
-    # These derived tables and migration bookkeeping are checked by separate V4/schema contracts.
+    # Derived lifecycle state and migration bookkeeping are checked by separate release gates.
     if [[ ( "$fingerprint_mode" == "v4-replay-inputs" && ( "$table" == "PhysiologyV7Lifecycle" \
       || "$table" == "UnifiedExperimentalPhysiologyStateV2" || "$table" == "ExperimentalTransientExerciseWaterShadow" \
       || "$table" == "UnifiedPublicationBlock" || "$table" == "_prisma_migrations" ) ) \
       || ( "$fingerprint_mode" == "auth-multiuser-source-inputs" && ( "$table" == "User" || "$table" == "Session" \
       || "$table" == "Account" || "$table" == "Verification" || "$table" == "ProfileApiKey" \
-      || "$table" == "AuthRateLimitBucket" || "$table" == "_prisma_migrations" ) ) ]]; then
+      || "$table" == "AuthRateLimitBucket" || "$table" == "PhysiologyV7Lifecycle" \
+      || "$table" == "_prisma_migrations" ) ) ]]; then
       continue
     fi
     printf 'table:%s\n' "$table"
@@ -197,7 +199,8 @@ if [[ -n "$auth_components_out" ]]; then
     [[ "$table" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || exit 1
     if [[ "$table" == "User" || "$table" == "Session" || "$table" == "Account" \
       || "$table" == "Verification" || "$table" == "ProfileApiKey" \
-      || "$table" == "AuthRateLimitBucket" || "$table" == "_prisma_migrations" ]]; then
+      || "$table" == "AuthRateLimitBucket" || "$table" == "PhysiologyV7Lifecycle" \
+      || "$table" == "_prisma_migrations" ]]; then
       continue
     fi
     component_digest="$(

@@ -61,7 +61,7 @@ export function assertLiveDataMatchesBackupFingerprint(preflightResult, evidence
 export function assertAuthSourceProjectionMatchesRestore({ manifestId, restoreResult, liveFingerprint }) {
   if (manifestId !== "auth-multiuser-v1") return true;
   const expected = restoreResult?.authMultiuserSourceDataFingerprint;
-  if (restoreResult?.authMultiuserSourceDataProjection !== "bodycast-auth-multiuser-source-input-fingerprint-v1"
+  if (restoreResult?.authMultiuserSourceDataProjection !== "bodycast-auth-multiuser-source-input-fingerprint-v2"
     || !/^[a-f0-9]{64}$/.test(String(expected ?? ""))
     || !/^[a-f0-9]{64}$/.test(String(liveFingerprint ?? ""))
     || liveFingerprint !== expected) {

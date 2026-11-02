@@ -497,6 +497,19 @@ jobs:
           SELECT id, 'auth-migration-rehearsal:garmin:1', 'Traditional Strength Training',
             TIMESTAMPTZ '2026-10-01 12:00:00+00', TIMESTAMPTZ '2026-10-01 12:30:00+00', 145.0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
           FROM public."DailyHealthData" WHERE "date" = '2026-10-01';
+          INSERT INTO public."PhysiologyV7Lifecycle" (
+            "profileId", "stateVersion", "sourceNormalizationVersion", "dailyRuntimeVersion",
+            "rangeRebuildVersion", "rebuildServiceVersion", "updatedAt"
+          ) VALUES (
+            1, 'auth-rehearsal-state-v1', 'auth-rehearsal-source-v1', 'auth-rehearsal-runtime-v1',
+            'auth-rehearsal-range-v1', 'auth-rehearsal-service-v1', CURRENT_TIMESTAMP
+          ) ON CONFLICT ("profileId") DO UPDATE SET
+            "stateVersion" = EXCLUDED."stateVersion",
+            "sourceNormalizationVersion" = EXCLUDED."sourceNormalizationVersion",
+            "dailyRuntimeVersion" = EXCLUDED."dailyRuntimeVersion",
+            "rangeRebuildVersion" = EXCLUDED."rangeRebuildVersion",
+            "rebuildServiceVersion" = EXCLUDED."rebuildServiceVersion",
+            "updatedAt" = EXCLUDED."updatedAt";
           SQL
           node scripts/production-migration-preflight.mjs --verify-release-tree \
             --manifest auth-multiuser-v1 --repository "$GITHUB_WORKSPACE"
@@ -539,13 +552,23 @@ jobs:
           [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]] || {
             echo "Auth ownership migration changed immutable source-input projection in isolated PostgreSQL." >&2; exit 1;
           }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 <<'SQL'
+          UPDATE public."PhysiologyV7Lifecycle"
+          SET "invalidationGeneration" = "invalidationGeneration" + 1,
+              "updatedAt" = "updatedAt" + INTERVAL '1 second'
+          WHERE "profileId" = 1;
+          SQL
+          AUTH_LIFECYCLE_REFRESH_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_LIFECYCLE_REFRESH_FINGERPRINT" ]] || {
+            echo "Derived V7 lifecycle refresh changed the isolated immutable source-input projection." >&2; exit 1;
+          }
           psql postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
             --command='CREATE DATABASE bodycast_health_mutation_test TEMPLATE bodycast_restore'
           psql postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
             --command='CREATE DATABASE bodycast_workout_mutation_test TEMPLATE bodycast_restore'
           export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_health_mutation_test
           AUTH_HEALTH_BASELINE_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
-          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_HEALTH_BASELINE_FINGERPRINT" ]] || {
+          [[ "$AUTH_LIFECYCLE_REFRESH_FINGERPRINT" == "$AUTH_HEALTH_BASELINE_FINGERPRINT" ]] || {
             echo "Auth Health mutation clone does not match the migrated source-input baseline." >&2; exit 1;
           }
           psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
@@ -556,7 +579,7 @@ jobs:
           }
           export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_workout_mutation_test
           AUTH_WORKOUT_BASELINE_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
-          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_WORKOUT_BASELINE_FINGERPRINT" ]] || {
+          [[ "$AUTH_LIFECYCLE_REFRESH_FINGERPRINT" == "$AUTH_WORKOUT_BASELINE_FINGERPRINT" ]] || {
             echo "Auth Workout mutation clone does not match the migrated source-input baseline." >&2; exit 1;
           }
           psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \

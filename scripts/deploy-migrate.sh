@@ -141,14 +141,9 @@ bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
   > "$CONTEXT_DIR/live-report.json"
 
-# Re-evaluate the live full pending set and signed provenance immediately before DDL.
+# Complete slow read-only checks before taking the final freshness-bound writer
+# drain; otherwise these fingerprints can age out its 30-second evidence window.
 GUARD_RECEIPT="$CONTEXT_DIR/final-guard-receipt.json"
-# Re-sample PostgreSQL sessions and host topology immediately before the DDL
-# boundary. The signed preflight is verified, but never reused as the final drain.
-bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
-  > "$CONTEXT_DIR/live-report-final.json"
-bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]]; then
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --pre-training-migration \
@@ -164,6 +159,13 @@ if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
     || fail "Pre-DDL Auth source-input fingerprint is malformed."
   AUTH_SOURCE_GUARD_ARGS=(--env "BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT=$AUTH_SOURCE_DATA_FINGERPRINT")
 fi
+# This host-only topology assertion and final DB report remain fail-closed.
+# The DB report fingerprints all logical rows first, then samples PostgreSQL
+# writers and Docker/Caddy topology for immediate final-guard consumption.
+bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
+  > "$CONTEXT_DIR/live-report-final.json"
 [[ ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a final guard receipt already exists in the private context."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \

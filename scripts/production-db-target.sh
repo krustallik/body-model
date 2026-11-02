@@ -44,6 +44,12 @@ case "${1:-}" in
     DB_CONTAINER="${2:-}"
     [[ "$DB_CONTAINER" == "bodycast-db-prod" ]] || { echo "Refusing preflight against an unreviewed PostgreSQL container." >&2; exit 1; }
     inspect_fixed_database_target
+    # The logical fingerprint can be expensive on a large production history.
+    # Capture it before the writer/topology observation so the timestamps in
+    # the final report still satisfy the migration guard's freshness window.
+    DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
+    [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
+    assert_fixed_database_container_unchanged
     TARGET_URL="$(effective_psql_url)"
     TOPOLOGY_REPORT="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
       bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
@@ -57,9 +63,6 @@ case "${1:-}" in
     )"
     unset BODYCAST_PSQL_DATABASE_URL
     verify_report_endpoint "$RAW_REPORT"
-    DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
-    [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
-    assert_fixed_database_container_unchanged
     printf '%s\n' "$RAW_REPORT" | node --input-type=module -e '
       import { readFileSync } from "node:fs";
       const report = JSON.parse(readFileSync(0, "utf8"));

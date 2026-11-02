@@ -875,7 +875,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     const preMaintenanceTargetStart = target.indexOf("  --pre-maintenance-snapshot)");
     const compatibilityTargetStart = target.indexOf("  --previous-app-compatibility-snapshot)");
     const reportBinding = 'verify_report_endpoint "$RAW_REPORT"';
-    expect(target.indexOf(reportBinding, preflightTargetStart)).toBeLessThan(target.indexOf('DATA_FINGERPRINT="'));
+    const preflightFingerprint = target.indexOf('DATA_FINGERPRINT="', preflightTargetStart);
+    const preflightTopology = target.indexOf("TOPOLOGY_REPORT=", preflightTargetStart);
+    expect(preflightFingerprint).toBeLessThan(preflightTopology);
+    expect(preflightTopology).toBeLessThan(target.indexOf(reportBinding, preflightTargetStart));
     expect(target.indexOf('DATA_FINGERPRINT="', preMaintenanceTargetStart)).toBeLessThan(target.indexOf('RAW_REPORT="', preMaintenanceTargetStart));
     expect(target.indexOf('DATA_FINGERPRINT="', preMaintenanceTargetStart)).toBeLessThan(target.indexOf(reportBinding, preMaintenanceTargetStart));
     expect(target.indexOf(reportBinding, compatibilityTargetStart)).toBeLessThan(target.indexOf('printf \'%s\\n\' "$RAW_REPORT"', compatibilityTargetStart));
@@ -905,6 +908,14 @@ describe("V5 closed migration manifest and full pending set", () => {
     }
     expect(preflight).not.toContain("psql --username=bodycast --dbname=bodycast");
     expect(deploy).not.toContain('psql --username=bodycast --dbname=bodycast');
+    const authFingerprint = deploy.indexOf('AUTH_SOURCE_DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh"');
+    const hostDrain = deploy.indexOf('bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert');
+    const finalLiveReport = deploy.indexOf('> "$CONTEXT_DIR/live-report-final.json"');
+    const finalGuard = deploy.indexOf('--before-ddl');
+    expect(authFingerprint).toBeGreaterThan(-1);
+    expect(authFingerprint).toBeLessThan(hostDrain);
+    expect(hostDrain).toBeLessThan(finalLiveReport);
+    expect(finalLiveReport).toBeLessThan(finalGuard);
   });
 
   it("uses the canonical preflight lock field and blocker wording in PostgreSQL smoke assertions", async () => {

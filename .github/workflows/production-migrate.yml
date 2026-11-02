@@ -20,6 +20,11 @@ on:
         description: Type MIGRATE_PRODUCTION to request a signed, current-state authorization
         required: true
         type: string
+      confirm_profile_one_ownership_backfill:
+        description: Explicitly authorize the Profile 1 ownership backfill bundled in auth-multiuser-v1; leave false for every other manifest
+        required: true
+        default: false
+        type: boolean
       execution_mode:
         description: Standard migration or the separately owner-authorized single forward-resume attempt
         required: true
@@ -63,6 +68,7 @@ jobs:
       ci_url: ${{ steps.select.outputs.ci_url }}
       execution_mode: ${{ steps.select.outputs.execution_mode }}
       forward_resume_failed_run_id: ${{ steps.select.outputs.forward_resume_failed_run_id }}
+      profile_one_backfill_authorized: ${{ steps.select.outputs.profile_one_backfill_authorized }}
     steps:
       - name: Checkout exact current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -77,6 +83,7 @@ jobs:
           DISPATCH_SHA: ${{ inputs.release_sha }}
           MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          PROFILE_ONE_BACKFILL_AUTHORIZATION: ${{ inputs.confirm_profile_one_ownership_backfill }}
           EXECUTION_MODE: ${{ inputs.execution_mode }}
           FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
@@ -112,6 +119,13 @@ jobs:
           fi
           if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" && "$EXECUTION_MODE" != "standard" ]]; then
             echo "::error::The V4 republication manifest does not accept historical forward-resume evidence."; exit 1;
+          fi
+          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+            [[ "$PROFILE_ONE_BACKFILL_AUTHORIZATION" == "true" ]] || {
+              echo "::error::The Auth manifest includes existing-row Profile 1 ownership updates and requires their explicit owner authorization."; exit 1;
+            }
+          elif [[ "$PROFILE_ONE_BACKFILL_AUTHORIZATION" != "false" ]]; then
+            echo "::error::Profile 1 ownership-backfill authorization applies only to auth-multiuser-v1."; exit 1;
           fi
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
           git fetch --no-tags origin main
@@ -169,6 +183,7 @@ jobs:
           echo "ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
           echo "execution_mode=$EXECUTION_MODE" >> "$GITHUB_OUTPUT"
           echo "forward_resume_failed_run_id=$FORWARD_RESUME_FAILED_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "profile_one_backfill_authorized=$PROFILE_ONE_BACKFILL_AUTHORIZATION" >> "$GITHUB_OUTPUT"
           {
             echo "## Signed production migration request"
             echo ""
@@ -177,6 +192,7 @@ jobs:
             echo "- current-main CI: $CI_URL"
             echo "- selected latest exact preflight: $PRE_URL (run $PRE_RUN_ID attempt $PRE_ATTEMPT)"
             echo "- backup artifact: $ARTIFACT_ID ($ARTIFACT_DIGEST)"
+            echo "- Profile 1 ownership backfill explicitly authorized: $PROFILE_ONE_BACKFILL_AUTHORIZATION"
             echo "- this job did not access production credentials or run DDL"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -253,6 +269,7 @@ jobs:
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           BODYCAST_MIGRATION_EXECUTION_MODE: ${{ needs.authorize.outputs.execution_mode }}
           BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: ${{ needs.authorize.outputs.forward_resume_failed_run_id }}
+          BODYCAST_PROFILE_ONE_BACKFILL_AUTHORIZED: ${{ needs.authorize.outputs.profile_one_backfill_authorized }}
           PRODUCTION_MIGRATION_SIGNING_KEY_ID: ${{ secrets.PRODUCTION_MIGRATION_SIGNING_KEY_ID }}
           PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY: ${{ secrets.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY }}
           EVIDENCE_BUNDLE: ${{ steps.evidence.outputs.bundle }}

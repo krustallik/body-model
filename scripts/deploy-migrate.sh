@@ -154,10 +154,21 @@ if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" ]]; then
     /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --pre-training-migration \
     || fail "Unified V4 must already be current before Training DDL; no Training replay is authorized by this manifest."
 fi
+AUTH_SOURCE_DATA_FINGERPRINT=""
+AUTH_SOURCE_GUARD_ARGS=()
+if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+  AUTH_SOURCE_DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" \
+    --production-container "$DB_CONTAINER" --auth-multiuser-source-inputs)" \
+    || fail "Could not capture the pre-DDL Auth source-input fingerprint."
+  [[ "$AUTH_SOURCE_DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "Pre-DDL Auth source-input fingerprint is malformed."
+  AUTH_SOURCE_GUARD_ARGS=(--env "BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT=$AUTH_SOURCE_DATA_FINGERPRINT")
+fi
 [[ ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a final guard receipt already exists in the private context."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  "${AUTH_SOURCE_GUARD_ARGS[@]}" \
   --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
   --before-ddl \
   --envelope /run/bodycast/authorization-envelope.json \
@@ -238,9 +249,19 @@ read_bodycast_release_marker || fail "the guarded Prisma handoff did not leave a
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
   > "$CONTEXT_DIR/live-report-postflight.json"
+AUTH_SOURCE_GUARD_ARGS=()
+if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+  AUTH_SOURCE_DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" \
+    --production-container "$DB_CONTAINER" --auth-multiuser-source-inputs)" \
+    || fail "Could not capture the post-DDL Auth source-input fingerprint."
+  [[ "$AUTH_SOURCE_DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "Post-DDL Auth source-input fingerprint is malformed."
+  AUTH_SOURCE_GUARD_ARGS=(--env "BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT=$AUTH_SOURCE_DATA_FINGERPRINT")
+fi
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  "${AUTH_SOURCE_GUARD_ARGS[@]}" \
   --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
   --after-ddl \
   --report /run/bodycast/live-report-postflight.json \
@@ -248,5 +269,8 @@ compose --profile tools run --rm --no-deps \
   --manifest "$MANIFEST_ID" \
   --repository /app \
   > "$CONTEXT_DIR/postflight-result.json"
+if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+  echo "Post-DDL Auth source-input projection matches the isolated migration rehearsal."
+fi
 write_bodycast_release_marker "$RELEASE_SHA" schema-applied
 echo "Reviewed migrations completed and read-only postflight passed; production remains in maintenance until exact-SHA non-serving deploy and V3/V4 gates pass."

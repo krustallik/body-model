@@ -6,15 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
-import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, evaluateProductionMigrationTree, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
+import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertPreMaintenanceStorageHeadroom, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, evaluateProductionMigrationTree, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
 import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
 import { renderProductionDbPreflightSql, getExpectedSchemaObjectNames } from "../scripts/production-db-preflight.mjs";
-import { verifyBaseRestore, verifyDisposablePostflight, verifyDisposableRehearsalAdmission } from "../scripts/production-migration-restore-check.mjs";
+import { combineRestoreResults, verifyBaseRestore, verifyDisposablePostflight, verifyDisposableRehearsalAdmission } from "../scripts/production-migration-restore-check.mjs";
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
-import { assertLiveDataMatchesBackupReadability, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
+import { assertAuthSourceProjectionMatchesRestore, assertLiveDataMatchesBackupReadability, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-database-identity.mjs";
@@ -24,12 +24,85 @@ import { PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, PRODUCTION_WRITER_TOPOLOG
 import { assertPreDdlBackupArtifactMetadata, assertPreDdlRecoverySource, assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayBoundary, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
+const validPreMaintenanceStorageHeadroom = Object.freeze({
+  contract: "bodycast-auth-migration-pre-maintenance-headroom-v1",
+  databaseBytes: 100,
+  databaseFilesystemFreeBytes: 300,
+  dockerFilesystemFreeBytes: 300,
+  priorAppImageBytes: 100,
+  runnerTemporaryFilesystemFreeBytes: 300,
+  runnerDockerFilesystemFreeBytes: 300,
+  sharedFilesystem: true,
+  runnerTemporaryAndDockerSharedFilesystem: true,
+  requiredDatabaseFreeBytes: 300,
+  requiredDockerFreeBytes: 300,
+  requiredRunnerFreeBytes: 300,
+  requiredRunnerDockerFreeBytes: 300,
+});
 const dirs = [
   "20260821000000_init",
   ...STAGE_02_MANIFEST.migrations.map((migration) => migration.name),
   ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migration.name),
 ];
 const fullDirs = [...dirs, ...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migration.name)];
+
+describe("Auth migration data projection and pre-maintenance headroom", () => {
+  it("requires correctly measured database, Docker, and runner capacity before maintenance", () => {
+    expect(assertPreMaintenanceStorageHeadroom(validPreMaintenanceStorageHeadroom)).toBe(true);
+    expect(assertPreMaintenanceStorageHeadroom({
+      ...validPreMaintenanceStorageHeadroom,
+      sharedFilesystem: false,
+      runnerTemporaryAndDockerSharedFilesystem: false,
+      databaseFilesystemFreeBytes: 100,
+      dockerFilesystemFreeBytes: 200,
+      runnerTemporaryFilesystemFreeBytes: 100,
+      runnerDockerFilesystemFreeBytes: 200,
+      requiredDatabaseFreeBytes: 100,
+      requiredDockerFreeBytes: 200,
+      requiredRunnerFreeBytes: 100,
+      requiredRunnerDockerFreeBytes: 200,
+    })).toBe(true);
+    expect(() => assertPreMaintenanceStorageHeadroom({
+      ...validPreMaintenanceStorageHeadroom, databaseFilesystemFreeBytes: 299,
+    })).toThrow("below the conservative release requirement");
+    expect(() => assertPreMaintenanceStorageHeadroom({
+      ...validPreMaintenanceStorageHeadroom, requiredDockerFreeBytes: 299,
+    })).toThrow("below the conservative release requirement");
+    expect(() => assertPreMaintenanceStorageHeadroom({
+      ...validPreMaintenanceStorageHeadroom, runnerDockerFilesystemFreeBytes: 299,
+    })).toThrow("below the conservative release requirement");
+    expect(() => assertPreMaintenanceStorageHeadroom({
+      ...validPreMaintenanceStorageHeadroom, sharedFilesystem: "true",
+    })).toThrow("missing or malformed");
+  });
+
+  it("keeps the source-input projection unchanged across the Auth backfill and rejects changed input rows", () => {
+    const digest = "a".repeat(64);
+    const base = { verified: true, blockers: [], migrationCount: 74, schemaDigest: "b".repeat(64), logicalDataFingerprint: "c".repeat(64) };
+    const postflight = { postflightReady: true, postSchemaDigest: "d".repeat(64), blockers: [], pending: [] };
+    const restored = combineRestoreResults(base, postflight, {
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      authSourceFingerprintBefore: digest,
+      authSourceFingerprintAfter: digest,
+    });
+    expect(restored).toMatchObject({
+      verified: true,
+      authMultiuserSourceDataFingerprint: digest,
+      authMultiuserSourceDataProjection: "bodycast-auth-multiuser-source-input-fingerprint-v1",
+    });
+    expect(assertAuthSourceProjectionMatchesRestore({ manifestId: AUTH_MULTIUSER_MANIFEST.id, restoreResult: restored, liveFingerprint: digest })).toBe(true);
+    const changedOwnership = combineRestoreResults(base, postflight, {
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      authSourceFingerprintBefore: digest,
+      authSourceFingerprintAfter: "e".repeat(64),
+    });
+    expect(changedOwnership.verified).toBe(false);
+    expect(changedOwnership.blockers.join(" ")).toContain("did not prove the reviewed source-input projection unchanged");
+    expect(() => assertAuthSourceProjectionMatchesRestore({
+      manifestId: AUTH_MULTIUSER_MANIFEST.id, restoreResult: restored, liveFingerprint: "e".repeat(64),
+    })).toThrow("does not match the unchanged isolated migration rehearsal");
+  });
+});
 
 function migrationRow(migration, checksum = migration.sha256) {
   return { name: migration.name, checksum, startedAt: "2026-10-01T00:00:00.000Z", finishedAt: "2026-10-01T00:00:01.000Z", rolledBackAt: null, hasLogs: false, logsFingerprint: "d41d8cd98f00b204e9800998ecf8427e" };
@@ -676,6 +749,12 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
     expect(safetyWorkflow).toContain("test \"$baseline_count\" = 74");
     expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1");
+    expect(safetyWorkflow).toContain("--test-url --auth-multiuser-source-inputs");
+    expect(safetyWorkflow).toContain('[[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]]');
+    expect(safetyWorkflow).toContain("isolated primary Health input mutation");
+    expect(safetyWorkflow).toContain("isolated Garmin/Workout input mutation");
+    expect(safetyWorkflow).toContain('"DailyHealthData" ("date", "weightKg", "rawPayload")');
+    expect(safetyWorkflow).toContain('"Workout" ("dailyHealthDataId", "sourceIdentity", "type", "startAt", "endAt", "activeEnergyKcal")');
     const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
     const baselineMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"', rehearsalStart);
@@ -2016,6 +2095,33 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
     expect(verifyAuthorizationEnvelope(serialized, { allowlist, live: liveContext(), now }).verified).toBe(true);
   });
 
+  it("binds explicit Profile 1 ownership-backfill consent only to the Auth manifest", () => {
+    const authPending = AUTH_MULTIUSER_MANIFEST.migrations.map(({ name }) => name).sort();
+    const authConsent = claims({
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      pendingMigrationNames: authPending,
+      pendingSetDigest: canonicalSha256(authPending),
+      profileOneOwnershipBackfillAuthorized: true,
+    });
+    const authLive = liveContext({
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      pendingMigrationNames: authPending,
+      pendingSetDigest: canonicalSha256(authPending),
+      profileOneOwnershipBackfillAuthorized: true,
+    });
+    const serialized = createAuthorizationEnvelope(authConsent, { keyId, privateKeyPem, allowlist });
+    expect(verifyAuthorizationEnvelope(serialized, { allowlist, live: authLive, now }).verified).toBe(true);
+    expect(() => createAuthorizationEnvelope({
+      ...authConsent, profileOneOwnershipBackfillAuthorized: false,
+    }, { keyId, privateKeyPem, allowlist })).toThrow("explicitly true only for the Auth manifest");
+    expect(() => createAuthorizationEnvelope({
+      ...claims(), profileOneOwnershipBackfillAuthorized: true,
+    }, { keyId, privateKeyPem, allowlist })).toThrow("unsupported claims");
+    expect(() => verifyAuthorizationEnvelope(serialized, {
+      allowlist, live: { ...authLive, profileOneOwnershipBackfillAuthorized: false }, now,
+    })).toThrow("does not match the signed claim");
+  });
+
   const mismatches = [
     ["wrong repository", { repository: "someone/body-model" }, { repository: "krustallik/body-model" }],
     ["wrong workflow id", { workflowId: "other-workflow" }, { workflowId: "production-migrate" }],
@@ -2109,6 +2215,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
   it("binds the signed workflow run to the executing run and blocks replay after live migration state changes", () => {
     const liveReport = validPreflightReport();
     const preflightResult = evaluateProductionPreflight(liveReport, dirs);
+    preflightResult.preMaintenanceStorageHeadroom = validPreMaintenanceStorageHeadroom;
     preflightResult.identity = {
       ...preflightResult.identity,
       serverAddress: `${liveReport.identity.serverAddress}/32`,

@@ -57,10 +57,15 @@ grep -Fq 'BODYCAST_NON_SERVING_DEPLOY="$NON_SERVING"' "$DEPLOY_WORKFLOW"
 grep -Fq 'Deployment SHA/state does not match' "$DEPLOY_SCRIPT"
 grep -Fq 'Automatic prior-app restoration is disabled' "$DEPLOY_SCRIPT"
 PREFLIGHT_MAINTENANCE_LINE="$(grep -nF 'Enter maintenance and drain the old app before backup' "$PREFLIGHT" | cut -d: -f1)"
+PREFLIGHT_TARGET_LINE="$(grep -nF 'Verify production container, PostgreSQL clients, and storage headroom' "$PREFLIGHT" | cut -d: -f1)"
+PREFLIGHT_EARLY_DB_LINE="$(grep -nF 'production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod' "$PREFLIGHT" | cut -d: -f1)"
+PREFLIGHT_POST_MAINTENANCE_DB_LINE="$(grep -nF 'Read-only production identity, full migration set, schema signatures, and locks' "$PREFLIGHT" | cut -d: -f1)"
 PREFLIGHT_BACKUP_LINE="$(grep -nF 'Capture pg_dump start on production host and create encrypted backup' "$PREFLIGHT" | cut -d: -f1)"
 PREFLIGHT_RESTORE_LINE="$(grep -nF 'Restore snapshot, compare source state, and rehearse exact migrations' "$PREFLIGHT" | cut -d: -f1)"
-[[ -n "$PREFLIGHT_MAINTENANCE_LINE" && -n "$PREFLIGHT_BACKUP_LINE" && -n "$PREFLIGHT_RESTORE_LINE" ]]
-[[ "$PREFLIGHT_MAINTENANCE_LINE" -lt "$PREFLIGHT_BACKUP_LINE" && "$PREFLIGHT_BACKUP_LINE" -lt "$PREFLIGHT_RESTORE_LINE" ]]
+[[ -n "$PREFLIGHT_TARGET_LINE" && -n "$PREFLIGHT_EARLY_DB_LINE" && -n "$PREFLIGHT_MAINTENANCE_LINE" && -n "$PREFLIGHT_POST_MAINTENANCE_DB_LINE" && -n "$PREFLIGHT_BACKUP_LINE" && -n "$PREFLIGHT_RESTORE_LINE" ]]
+[[ "$PREFLIGHT_TARGET_LINE" -lt "$PREFLIGHT_EARLY_DB_LINE" && "$PREFLIGHT_EARLY_DB_LINE" -lt "$PREFLIGHT_MAINTENANCE_LINE" && "$PREFLIGHT_MAINTENANCE_LINE" -lt "$PREFLIGHT_POST_MAINTENANCE_DB_LINE" && "$PREFLIGHT_POST_MAINTENANCE_DB_LINE" -lt "$PREFLIGHT_BACKUP_LINE" && "$PREFLIGHT_BACKUP_LINE" -lt "$PREFLIGHT_RESTORE_LINE" ]]
+grep -Fq 'preMaintenanceStorageHeadroom' "$PREFLIGHT"
+grep -Fq 'assertPreMaintenanceStorageHeadroom' "$ROOT/scripts/production-migration-sign.mjs" "$ROOT/scripts/production-migration-final-guard.mjs"
 FINAL_GUARD_LINE="$(grep -nF '  --before-ddl' "$DEPLOY" | cut -d: -f1)"
 MIGRATE_LINE="$(grep -nF 'run-prisma-migrate-with-lock-timeout.mjs' "$DEPLOY" | cut -d: -f1)"
 POSTFLIGHT_LINE="$(grep -nF '  --after-ddl' "$DEPLOY" | cut -d: -f1)"

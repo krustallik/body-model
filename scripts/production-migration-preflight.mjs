@@ -42,6 +42,40 @@ export const ALL_REVIEWED_OBJECTS = [...new Set([
   ]),
 ])];
 
+export function assertPreMaintenanceStorageHeadroom(value) {
+  const fields = ["contract", "databaseBytes", "databaseFilesystemFreeBytes", "dockerFilesystemFreeBytes",
+    "priorAppImageBytes", "runnerTemporaryFilesystemFreeBytes", "runnerDockerFilesystemFreeBytes", "sharedFilesystem",
+    "runnerTemporaryAndDockerSharedFilesystem", "requiredDatabaseFreeBytes", "requiredDockerFreeBytes",
+    "requiredRunnerFreeBytes", "requiredRunnerDockerFreeBytes"].sort();
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(fields)
+    || value.contract !== "bodycast-auth-migration-pre-maintenance-headroom-v1"
+    || typeof value.sharedFilesystem !== "boolean"
+    || typeof value.runnerTemporaryAndDockerSharedFilesystem !== "boolean"
+    || [value.databaseBytes, value.databaseFilesystemFreeBytes, value.dockerFilesystemFreeBytes, value.priorAppImageBytes,
+      value.runnerTemporaryFilesystemFreeBytes, value.runnerDockerFilesystemFreeBytes, value.requiredDatabaseFreeBytes,
+      value.requiredDockerFreeBytes, value.requiredRunnerFreeBytes, value.requiredRunnerDockerFreeBytes]
+      .some((item) => !Number.isSafeInteger(item) || item < 1)) {
+    throw new Error("Pre-maintenance storage/headroom evidence is missing or malformed.");
+  }
+  const expectedDatabaseFree = value.sharedFilesystem ? value.databaseBytes + 2 * value.priorAppImageBytes : value.databaseBytes;
+  const expectedDockerFree = value.sharedFilesystem ? expectedDatabaseFree : 2 * value.priorAppImageBytes;
+  const expectedRunnerTempFree = value.runnerTemporaryAndDockerSharedFilesystem ? 3 * value.databaseBytes : value.databaseBytes;
+  const expectedRunnerDockerFree = value.runnerTemporaryAndDockerSharedFilesystem ? 3 * value.databaseBytes : 2 * value.databaseBytes;
+  if (![expectedDatabaseFree, expectedDockerFree, expectedRunnerTempFree, expectedRunnerDockerFree].every(Number.isSafeInteger)
+    || value.requiredDatabaseFreeBytes !== expectedDatabaseFree
+    || value.requiredDockerFreeBytes !== expectedDockerFree
+    || value.requiredRunnerFreeBytes !== expectedRunnerTempFree
+    || value.requiredRunnerDockerFreeBytes !== expectedRunnerDockerFree
+    || value.databaseFilesystemFreeBytes < expectedDatabaseFree
+    || value.dockerFilesystemFreeBytes < expectedDockerFree
+    || value.runnerTemporaryFilesystemFreeBytes < expectedRunnerTempFree
+    || value.runnerDockerFilesystemFreeBytes < expectedRunnerDockerFree) {
+    throw new Error("Pre-maintenance database, Docker, or backup/restore filesystem headroom is below the conservative release requirement.");
+  }
+  return true;
+}
+
 function sorted(values) { return [...values].sort(); }
 function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right)); }
 

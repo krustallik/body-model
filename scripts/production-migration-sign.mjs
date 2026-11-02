@@ -6,12 +6,16 @@ import { createClaimsFromPreflight, createAuthorizationEnvelope, canonicalSha256
 import { verifyPreflightArtifactMetadata } from "./production-migration-release.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
 import { verifyForwardResumeContext, FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID } from "./production-forward-resume.mjs";
+import { assertPreMaintenanceStorageHeadroom } from "./production-migration-preflight.mjs";
 
 async function json(file) { return JSON.parse(await readFile(file, "utf8")); }
 
 export async function createSignedAuthorization({ evidence, report, restore, run, artifact, allowlist, keyId, privateKeyPem,
-  executionMode = "standard", forwardResumeFailedRunId = "", now = Date.now() }) {
+  executionMode = "standard", forwardResumeFailedRunId = "", profileOneOwnershipBackfillAuthorized = false, now = Date.now() }) {
   const repository = "krustallik/body-model";
+  if (profileOneOwnershipBackfillAuthorized !== (evidence?.manifestId === "auth-multiuser-v1")) {
+    throw new Error("Production migration authorization must explicitly bind Profile 1 ownership-backfill consent to the Auth manifest.");
+  }
   if (evidence?.evidenceKind === "database-only-no-app-v1" || evidence?.ddlAuthorization === false
     || evidence?.previousAppProvenance === null) {
     throw new Error("Preparation-only no-app evidence cannot authorize production DDL.");
@@ -35,6 +39,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     throw new Error("Selected preflight run lacks trusted admission metadata.");
   }
   if (canonicalSha256(report) !== evidence.preflightResultDigest) throw new Error("Preflight report digest differs from the attested digest.");
+  assertPreMaintenanceStorageHeadroom(report?.preMaintenanceStorageHeadroom);
   if (canonicalSha256(restore) !== evidence.restoreResultDigest || restore?.verified !== true) throw new Error("Restore result digest or verified status is invalid.");
   if (canonicalSha256(report.identity) !== evidence.productionIdentityDigest) throw new Error("Production identity digest differs from the verified preflight report.");
   if (!/^[a-f0-9]{64}$/.test(String(report.logicalDataFingerprint ?? ""))
@@ -100,6 +105,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     expiresAt: new Date(expiresMs).toISOString(),
     authorizationId: randomUUID(),
     nonce: randomUUID(),
+    profileOneOwnershipBackfillAuthorized,
   });
   const serialized = createAuthorizationEnvelope(claims, { keyId, privateKeyPem, allowlist });
   return { serialized, claims, digest: canonicalSha256(JSON.parse(serialized)) };
@@ -120,6 +126,7 @@ async function main() {
     privateKeyPem: process.env.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY,
     executionMode: process.env.BODYCAST_MIGRATION_EXECUTION_MODE ?? "standard",
     forwardResumeFailedRunId: process.env.BODYCAST_FORWARD_RESUME_FAILED_RUN_ID ?? "",
+    profileOneOwnershipBackfillAuthorized: process.env.BODYCAST_PROFILE_ONE_BACKFILL_AUTHORIZED === "true",
   });
   await writeFile(path.resolve(outputPath), `${result.serialized}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(JSON.stringify({ authorizationId: result.claims.authorizationId, digest: result.digest }) + "\n");

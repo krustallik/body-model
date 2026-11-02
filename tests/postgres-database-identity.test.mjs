@@ -91,15 +91,32 @@ describe("canonical PostgreSQL endpoint identity", () => {
 
   it("keeps the standard encrypted backup tied to the captured container ID", async () => {
     const workflow = (await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
-    const targetStart = workflow.indexOf("      - name: Verify production container and PostgreSQL client versions");
+    const targetStart = workflow.indexOf("      - name: Verify production container, PostgreSQL clients, and storage headroom");
+    const preMaintenanceDbProbe = workflow.indexOf("--pre-maintenance-snapshot bodycast-db-prod", targetStart);
+    const preMaintenanceEvaluator = workflow.indexOf("production-migration-preflight.mjs --pre-maintenance --manifest", targetStart);
+    const maintenanceStart = workflow.indexOf("      - name: Enter maintenance and drain the old app before backup");
+    const postMaintenancePreflight = workflow.indexOf("production-migration-preflight.mjs --preflight --manifest");
     const backupStart = workflow.indexOf("      - name: Capture pg_dump start on production host and create encrypted backup");
     const restoreStart = workflow.indexOf("      - name: Restore snapshot, compare source state, and rehearse exact migrations");
     expect(targetStart).toBeGreaterThanOrEqual(0);
+    expect(preMaintenanceDbProbe).toBeGreaterThan(targetStart);
+    expect(preMaintenanceEvaluator).toBeGreaterThan(preMaintenanceDbProbe);
+    expect(preMaintenanceEvaluator).toBeLessThan(maintenanceStart);
+    expect(maintenanceStart).toBeGreaterThan(targetStart);
+    expect(postMaintenancePreflight).toBeGreaterThan(maintenanceStart);
+    expect(postMaintenancePreflight).toBeLessThan(backupStart);
+    expect(backupStart).toBeGreaterThan(maintenanceStart);
     expect(backupStart).toBeGreaterThan(targetStart);
     expect(restoreStart).toBeGreaterThan(backupStart);
     const targetStep = workflow.slice(targetStart, backupStart);
-    expect(targetStep).toContain('[[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]]');
+    expect(targetStep).toContain('[[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ &&');
     expect(targetStep).toContain('"docker exec \'$CONTAINER_ID\' pg_dump --version"');
+    expect(targetStep).toContain("RUNNER_DOCKER_ROOT=\"$(docker info --format '{{.DockerRootDir}}')\"");
+    expect(targetStep).toContain("RUNNER_DOCKER_FREE_BYTES");
+    expect(targetStep).toContain("RUNNER_TEMP_DEVICE");
+    expect(targetStep).toContain("--pre-maintenance --manifest \"$MANIFEST_ID\"");
+    expect(targetStep).toContain("--release-sha \"$RELEASE_SHA\"");
+    expect(workflow).toContain("STORAGE_RUNNER_DOCKER_FREE_BYTES: ${{ steps.target.outputs.runner_docker_free_bytes }}");
     expect(targetStep).not.toContain("docker exec bodycast-db-prod pg_dump --version");
     const backupStep = workflow.slice(backupStart, restoreStart);
     expect(backupStep).toContain('[[ "$EXPECTED_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]]');

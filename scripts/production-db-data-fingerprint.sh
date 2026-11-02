@@ -8,7 +8,7 @@ set -Eeuo pipefail
 mode="${1:-}"
 fingerprint_mode="full"
 if [[ "$mode" == "--test-url" ]]; then
-  [[ ( "$#" -eq 1 || ( "$#" -eq 2 && ( "$2" == "--v4-replay-inputs" || "$2" == "--v4-replay-stable-state" ) ) ) && -n "${BODYCAST_TEST_DATABASE_URL:-}" ]] || {
+  [[ ( "$#" -eq 1 || ( "$#" -eq 2 && ( "$2" == "--v4-replay-inputs" || "$2" == "--v4-replay-stable-state" || "$2" == "--auth-multiuser-source-inputs" ) ) ) && -n "${BODYCAST_TEST_DATABASE_URL:-}" ]] || {
     echo "An isolated test PostgreSQL URL is required." >&2; exit 2;
   }
   node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
@@ -21,7 +21,7 @@ if (url.protocol !== "postgresql:" || !["127.0.0.1", "localhost", "::1"].include
 }
 NODE
   fingerprint_mode="full"
-  if [[ "${2:-}" == "--v4-replay-inputs" || "${2:-}" == "--v4-replay-stable-state" ]]; then
+  if [[ "${2:-}" == "--v4-replay-inputs" || "${2:-}" == "--v4-replay-stable-state" || "${2:-}" == "--auth-multiuser-source-inputs" ]]; then
     fingerprint_mode="${2#--}"
     node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
 const url = new URL(process.argv[2]);
@@ -33,18 +33,18 @@ NODE
   psql_args=("$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1)
   run_psql() { psql "${psql_args[@]}" "$@"; }
 elif [[ "$mode" == "--production-container" ]]; then
-  [[ ( "$#" -eq 2 || ( "$#" -eq 3 && ( "$3" == "--v4-replay-inputs" || "$3" == "--v4-replay-stable-state" ) ) ) && "$2" == "bodycast-db-prod" ]] || {
+  [[ ( "$#" -eq 2 || ( "$#" -eq 3 && ( "$3" == "--v4-replay-inputs" || "$3" == "--v4-replay-stable-state" || "$3" == "--auth-multiuser-source-inputs" ) ) ) && "$2" == "bodycast-db-prod" ]] || {
     echo "Only the fixed production PostgreSQL container and reviewed V4 fingerprint projections are supported." >&2; exit 2;
   }
   db_container="$2"
-  if [[ "${3:-}" == "--v4-replay-inputs" || "${3:-}" == "--v4-replay-stable-state" ]]; then fingerprint_mode="${3#--}"; fi
+  if [[ "${3:-}" == "--v4-replay-inputs" || "${3:-}" == "--v4-replay-stable-state" || "${3:-}" == "--auth-multiuser-source-inputs" ]]; then fingerprint_mode="${3#--}"; fi
   run_psql() {
     docker exec "$db_container" sh -c \
       'exec psql --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname=bodycast "$@"' \
       _ "$@"
   }
 else
-  echo "Usage: production-db-data-fingerprint.sh --test-url [--v4-replay-inputs|--v4-replay-stable-state]|--production-container bodycast-db-prod [--v4-replay-inputs|--v4-replay-stable-state]" >&2
+  echo "Usage: production-db-data-fingerprint.sh --test-url [--v4-replay-inputs|--v4-replay-stable-state|--auth-multiuser-source-inputs]|--production-container bodycast-db-prod [--v4-replay-inputs|--v4-replay-stable-state|--auth-multiuser-source-inputs]" >&2
   exit 2
 fi
 
@@ -62,6 +62,36 @@ elif [[ "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
       echo "V4 replay stable-state fingerprint is missing a reviewed replay target table." >&2; exit 1;
     }
   done
+elif [[ "$fingerprint_mode" == "auth-multiuser-source-inputs" ]]; then
+  for source in ActivationRollbackEntry ActiveEnergyCandidate ActiveEnergyResolutionRevision DailyHealthData ExerciseLoadConfiguration HealthActivityInterval HealthMetricSample HealthSyncAudit HealthSyncSnapshot Profile ProgramExercise StepperReconciliationCandidate StrengthSessionExercise TrainingProgramVersion WorkInterval Workout; do
+    grep -Fqx "$source" <<< "$tables" || {
+      echo "Auth source-input fingerprint is missing a reviewed pre-existing table." >&2; exit 1;
+    }
+  done
+  for owner_table in ActivationRollbackEntry ActiveEnergyCandidate ActiveEnergyResolutionRevision DailyHealthData ExerciseLoadConfiguration HealthActivityInterval HealthMetricSample HealthSyncSnapshot ProgramExercise StepperReconciliationCandidate StrengthSessionExercise TrainingProgramVersion WorkInterval Workout; do
+    has_profile_id="$(run_psql --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='${owner_table}' AND column_name='profileId')")"
+    if [[ "$has_profile_id" == "t" ]]; then
+      invalid_owner="$(run_psql --command "SELECT EXISTS (SELECT 1 FROM public.\"${owner_table}\" WHERE \"profileId\" IS DISTINCT FROM 1)")"
+      [[ "$invalid_owner" == "f" ]] || {
+        echo "Auth ownership backfill contains a non-Profile-1 value in a reviewed source table." >&2; exit 1;
+      }
+    elif [[ "$has_profile_id" != "f" ]]; then
+      echo "Auth ownership column inventory is unavailable." >&2; exit 1;
+    fi
+  done
+  for nullable_column in 'HealthSyncAudit.profileId' 'Profile.userId'; do
+    table="${nullable_column%%.*}"
+    column="${nullable_column#*.}"
+    has_column="$(run_psql --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}' AND column_name='${column}')")"
+    if [[ "$has_column" == "t" ]]; then
+      unexpected_value="$(run_psql --command "SELECT EXISTS (SELECT 1 FROM public.\"${table}\" WHERE \"${column}\" IS NOT NULL)")"
+      [[ "$unexpected_value" == "f" ]] || {
+        echo "Auth migration unexpectedly assigned an audit/profile identity before explicit owner bootstrap." >&2; exit 1;
+      }
+    elif [[ "$has_column" != "f" ]]; then
+      echo "Auth ownership column inventory is unavailable." >&2; exit 1;
+    fi
+  done
 fi
 {
   if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
@@ -71,6 +101,11 @@ fi
     printf 'bodycast-v4-replay-stable-state-fingerprint-v1\n'
     printf 'excluded-bookkeeping-columns:PhysiologyV7Lifecycle.createdAt,PhysiologyV7Lifecycle.updatedAt,UnifiedExperimentalPhysiologyStateV2.createdAt,UnifiedExperimentalPhysiologyStateV2.updatedAt\n'
     printf 'excluded-owned-sequences:UnifiedExperimentalPhysiologyStateV2\n'
+  elif [[ "$fingerprint_mode" == "auth-multiuser-source-inputs" ]]; then
+    printf 'bodycast-auth-multiuser-source-input-fingerprint-v1\n'
+    printf 'excluded-new-auth-tables:Account,AuthRateLimitBucket,ProfileApiKey,Session,User,Verification,_prisma_migrations\n'
+    printf 'excluded-ownership-columns:ActivationRollbackEntry.profileId,ActiveEnergyCandidate.profileId,ActiveEnergyResolutionRevision.profileId,DailyHealthData.profileId,ExerciseLoadConfiguration.profileId,HealthActivityInterval.profileId,HealthMetricSample.profileId,HealthSyncAudit.profileId,HealthSyncSnapshot.profileId,Profile.userId,ProgramExercise.profileId,StepperReconciliationCandidate.profileId,StrengthSessionExercise.profileId,TrainingProgramVersion.profileId,WorkInterval.profileId,Workout.profileId\n'
+    printf 'excluded-owned-sequences:profile_id_seq\n'
   else
     printf 'bodycast-logical-data-fingerprint-v1\n'
   fi
@@ -79,13 +114,28 @@ fi
       echo "Public database contains a table name outside the reviewed identifier contract." >&2; exit 1;
     }
     # These derived tables and migration bookkeeping are checked by separate V4/schema contracts.
-    if [[ "$fingerprint_mode" == "v4-replay-inputs" && ( "$table" == "PhysiologyV7Lifecycle" \
+    if [[ ( "$fingerprint_mode" == "v4-replay-inputs" && ( "$table" == "PhysiologyV7Lifecycle" \
       || "$table" == "UnifiedExperimentalPhysiologyStateV2" || "$table" == "ExperimentalTransientExerciseWaterShadow" \
-      || "$table" == "UnifiedPublicationBlock" || "$table" == "_prisma_migrations" ) ]]; then
+      || "$table" == "UnifiedPublicationBlock" || "$table" == "_prisma_migrations" ) ) \
+      || ( "$fingerprint_mode" == "auth-multiuser-source-inputs" && ( "$table" == "User" || "$table" == "Session" \
+      || "$table" == "Account" || "$table" == "Verification" || "$table" == "ProfileApiKey" \
+      || "$table" == "AuthRateLimitBucket" || "$table" == "_prisma_migrations" ) ) ]]; then
       continue
     fi
     printf 'table:%s\n' "$table"
-    if [[ "$fingerprint_mode" == "v4-replay-stable-state" \
+    if [[ "$fingerprint_mode" == "auth-multiuser-source-inputs" ]]; then
+      case "$table" in
+        ActivationRollbackEntry|ActiveEnergyCandidate|ActiveEnergyResolutionRevision|DailyHealthData|ExerciseLoadConfiguration|HealthActivityInterval|HealthMetricSample|HealthSyncAudit|HealthSyncSnapshot|ProgramExercise|StepperReconciliationCandidate|StrengthSessionExercise|TrainingProgramVersion|WorkInterval|Workout)
+          run_psql --command "COPY (SELECT (to_jsonb(row_value) - 'profileId')::text FROM public.\"${table}\" AS row_value ORDER BY (to_jsonb(row_value) - 'profileId')::text) TO STDOUT;"
+          ;;
+        Profile)
+          run_psql --command "COPY (SELECT (to_jsonb(row_value) - 'userId')::text FROM public.\"${table}\" AS row_value ORDER BY (to_jsonb(row_value) - 'userId')::text) TO STDOUT;"
+          ;;
+        *)
+          run_psql --command "COPY (SELECT to_jsonb(row_value)::text FROM public.\"${table}\" AS row_value ORDER BY to_jsonb(row_value)::text) TO STDOUT;"
+          ;;
+      esac
+    elif [[ "$fingerprint_mode" == "v4-replay-stable-state" \
       && ( "$table" == "PhysiologyV7Lifecycle" || "$table" == "UnifiedExperimentalPhysiologyStateV2" ) ]]; then
       run_psql --command "COPY (SELECT (to_jsonb(row_value) - 'createdAt' - 'updatedAt')::text FROM public.\"${table}\" AS row_value ORDER BY (to_jsonb(row_value) - 'createdAt' - 'updatedAt')::text) TO STDOUT;"
     else
@@ -94,7 +144,11 @@ fi
     printf '\n'
   done <<< "$tables"
   printf 'sequence-state\n'
-  if [[ "$fingerprint_mode" == "v4-replay-inputs" || "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
+  if [[ "$fingerprint_mode" == "auth-multiuser-source-inputs" ]]; then
+    run_psql --command "COPY (SELECT schemaname || '.' || sequencename || ':' || COALESCE(last_value::text, 'null')
+      FROM pg_catalog.pg_sequences WHERE schemaname='public' AND sequencename <> 'profile_id_seq'
+      ORDER BY sequencename) TO STDOUT;"
+  elif [[ "$fingerprint_mode" == "v4-replay-inputs" || "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
     if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
       sequence_owners="'PhysiologyV7Lifecycle', 'UnifiedExperimentalPhysiologyStateV2', 'ExperimentalTransientExerciseWaterShadow', '_prisma_migrations'"
     else

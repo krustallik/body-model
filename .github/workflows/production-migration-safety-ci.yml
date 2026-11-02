@@ -491,6 +491,12 @@ jobs:
           psql "$DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 <<'SQL'
           INSERT INTO public."Profile" ("id", "sex", "dateOfBirth", "heightCm", "createdAt", "updatedAt")
           VALUES (DEFAULT, 'female', DATE '1990-01-01', 170.00, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+          INSERT INTO public."DailyHealthData" ("date", "weightKg", "rawPayload")
+          VALUES ('2026-10-01', 80.25, '{"source":"auth-migration-rehearsal","weightKg":80.25}'::jsonb);
+          INSERT INTO public."Workout" ("dailyHealthDataId", "sourceIdentity", "type", "startAt", "endAt", "activeEnergyKcal")
+          SELECT id, 'auth-migration-rehearsal:garmin:1', 'Traditional Strength Training',
+            TIMESTAMPTZ '2026-10-01 12:00:00+00', TIMESTAMPTZ '2026-10-01 12:30:00+00', 145.0
+          FROM public."DailyHealthData" WHERE "date" = '2026-10-01';
           SQL
           node scripts/production-migration-preflight.mjs --verify-release-tree \
             --manifest auth-multiuser-v1 --repository "$GITHUB_WORKSPACE"
@@ -518,7 +524,7 @@ jobs:
           psql postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/postgres --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
             --command='CREATE DATABASE bodycast_restore TEMPLATE bodycast'
           export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_restore
-          fingerprint="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          fingerprint="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
           node --input-type=module - "$RUNNER_TEMP/bodycast-auth-preflight-report.json" "$fingerprint" <<'NODE'
           import { readFileSync, writeFileSync } from 'node:fs';
           const [reportPath, fingerprint] = process.argv.slice(2);
@@ -527,6 +533,50 @@ jobs:
           report.logicalDataFingerprint = fingerprint;
           writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
           NODE
+          AUTH_SOURCE_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          DATABASE_URL="$BODYCAST_TEST_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
+          AUTH_SOURCE_FINGERPRINT_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]] || {
+            echo "Auth ownership migration changed immutable source-input projection in isolated PostgreSQL." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"DailyHealthData\" SET \"rawPayload\" = '{\"source\":\"tampered\"}'::jsonb WHERE \"date\" = '2026-10-01'"
+          AUTH_HEALTH_MUTATION_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" != "$AUTH_HEALTH_MUTATION_FINGERPRINT" ]] || {
+            echo "Auth source-input projection failed to detect an isolated primary Health input mutation." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"DailyHealthData\" SET \"rawPayload\" = '{\"source\":\"auth-migration-rehearsal\",\"weightKg\":80.25}'::jsonb WHERE \"date\" = '2026-10-01'"
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"Workout\" SET \"startAt\" = TIMESTAMPTZ '2026-10-01 12:01:00+00' WHERE \"sourceIdentity\" = 'auth-migration-rehearsal:garmin:1'"
+          AUTH_WORKOUT_MUTATION_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" != "$AUTH_WORKOUT_MUTATION_FINGERPRINT" ]] || {
+            echo "Auth source-input projection failed to detect an isolated Garmin/Workout input mutation." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"Workout\" SET \"startAt\" = TIMESTAMPTZ '2026-10-01 12:00:00+00' WHERE \"sourceIdentity\" = 'auth-migration-rehearsal:garmin:1'"
+          AUTH_SOURCE_FINGERPRINT_RESTORED="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+          [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" == "$AUTH_SOURCE_FINGERPRINT_RESTORED" ]] || {
+            echo "Restored isolated raw inputs did not recover the exact Auth source-input fingerprint." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO public."Profile" ("id", "locale", "sex", "dateOfBirth", "heightCm", "createdAt", "updatedAt")
+          VALUES (2, 'uk', NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+          INSERT INTO public."HealthMetricSample" ("profileId", "date", "metric", "timestamp", "value")
+          VALUES (2, '2026-10-02', 'auth-migration-invalid-owner-test', TIMESTAMPTZ '2026-10-02 12:00:00+00', 1);
+          SQL
+          if bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs \
+            > "$RUNNER_TEMP/auth-invalid-owner-fingerprint.out" 2>&1; then
+            echo "Auth source-input fingerprint accepted a non-Profile-1 ownership row." >&2; exit 1;
+          fi
+          grep -Fq 'non-Profile-1 value' "$RUNNER_TEMP/auth-invalid-owner-fingerprint.out" || {
+            echo "Auth ownership regression failed for an unexpected reason." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 <<'SQL'
+          DELETE FROM public."HealthMetricSample" WHERE "metric" = 'auth-migration-invalid-owner-test';
+          DELETE FROM public."Profile" WHERE "id" = 2;
+          SQL
+          # Independently exercise the existing rehearsal path on the canonical test DB too.
           node scripts/production-migration-preflight.mjs --preflight \
             --manifest auth-multiuser-v1 --release-sha "$GITHUB_SHA" \
             --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-auth-preflight-report.json"

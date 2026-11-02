@@ -144,12 +144,23 @@ export function verifyDisposablePostflight(report, migrationDirectories, manifes
   return { verified: evaluation.ready, postflightReady: evaluation.ready, blockers: evaluation.blockers, pending: evaluation.pending, postSchemaDigest: digest };
 }
 
-export function combineRestoreResults(baseResult, postflightResult) {
+export function combineRestoreResults(baseResult, postflightResult, {
+  manifestId = null,
+  authSourceFingerprintBefore = null,
+  authSourceFingerprintAfter = null,
+} = {}) {
   const blockers = [...(baseResult?.blockers ?? []), ...(postflightResult?.blockers ?? [])];
   const baseVerified = baseResult?.verified === true;
   const postflightReady = postflightResult?.postflightReady === true && /^[a-f0-9]{64}$/.test(String(postflightResult.postSchemaDigest ?? ""));
+  const isAuthManifest = manifestId === "auth-multiuser-v1";
+  const authSourceFingerprintReady = /^[a-f0-9]{64}$/.test(String(authSourceFingerprintBefore ?? ""))
+    && authSourceFingerprintBefore === authSourceFingerprintAfter;
   if (!baseVerified) blockers.push("Base backup restore was not verified.");
   if (!postflightReady) blockers.push("Disposable target migration rehearsal was not verified.");
+  if (isAuthManifest && !authSourceFingerprintReady) blockers.push("Auth migration rehearsal did not prove the reviewed source-input projection unchanged across the ownership backfill.");
+  if (!isAuthManifest && (authSourceFingerprintBefore !== null || authSourceFingerprintAfter !== null)) {
+    blockers.push("Auth source-input projection was supplied for a non-Auth manifest.");
+  }
   return {
     verified: baseVerified && postflightReady && blockers.length === 0,
     postflightReady,
@@ -160,6 +171,10 @@ export function combineRestoreResults(baseResult, postflightResult) {
     pending: postflightResult?.pending ?? null,
     readability: baseResult?.readability ?? null,
     logicalDataFingerprint: baseResult?.logicalDataFingerprint ?? null,
+    ...(isAuthManifest && authSourceFingerprintReady ? {
+      authMultiuserSourceDataFingerprint: authSourceFingerprintBefore,
+      authMultiuserSourceDataProjection: "bodycast-auth-multiuser-source-input-fingerprint-v1",
+    } : {}),
   };
 }
 
@@ -220,7 +235,12 @@ async function main() {
   }
   if (mode === "--combine") {
     const [base, postflight] = await Promise.all([readJson(value("--base")), readJson(value("--postflight"))]);
-    const result = combineRestoreResults(base, postflight);
+    const manifestId = value("--manifest");
+    const result = combineRestoreResults(base, postflight, {
+      manifestId,
+      authSourceFingerprintBefore: value("--auth-source-fingerprint-before"),
+      authSourceFingerprintAfter: value("--auth-source-fingerprint-after"),
+    });
     writeVerificationResult("Combined disposable restore verification", result);
     return;
   }

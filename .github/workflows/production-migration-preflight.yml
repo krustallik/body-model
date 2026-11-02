@@ -581,6 +581,121 @@ jobs:
           test -s "$RUNNER_TEMP/bodycast-ssh/candidate"
           node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-ssh/candidate" "$BODYCAST_KNOWN_HOSTS"
           chmod 600 "$BODYCAST_KNOWN_HOSTS"
+      - name: Verify production container, PostgreSQL clients, and storage headroom
+        id: target
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -Eeuo pipefail
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}" bodycast-db-prod')"
+          [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy|"* ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
+          IFS='|' read -r CONTAINER_ID _ _ _ _ DB_DATA_PATH <<< "$META"
+          [[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ && "$DB_DATA_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "::error::Production PostgreSQL container or data mount identity is malformed."; exit 1; }
+          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "docker exec '$CONTAINER_ID' pg_dump --version")"
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
+          node --input-type=module - "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION" <<'NODE'
+          import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
+          assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
+          NODE
+          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH'" <<'REMOTE'
+          set -Eeuo pipefail
+          CONTAINER_ID="$1"
+          DB_DATA_PATH="$2"
+          [[ "$(docker inspect --format '{{.Id}}' bodycast-db-prod)" == "$CONTAINER_ID" ]] || { echo "Production PostgreSQL container changed during the pre-maintenance probe." >&2; exit 1; }
+          DB_BYTES="$(docker exec "$CONTAINER_ID" sh -ec 'psql --no-psqlrc --quiet --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT pg_database_size(current_database())"')"
+          DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
+          APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
+          APP_IMAGE_BYTES="$(docker image inspect --format '{{.Size}}' "$APP_IMAGE_ID")"
+          DB_FREE_BYTES="$(df -PB1 --output=avail "$DB_DATA_PATH" | tail -n1 | tr -d '[:space:]')"
+          DOCKER_FREE_BYTES="$(df -PB1 --output=avail "$DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
+          DB_DEVICE="$(stat -c '%d' "$DB_DATA_PATH")"
+          DOCKER_DEVICE="$(stat -c '%d' "$DOCKER_ROOT")"
+          [[ "$DB_BYTES" =~ ^[1-9][0-9]*$ && "$APP_IMAGE_BYTES" =~ ^[1-9][0-9]*$ \
+            && "$DB_FREE_BYTES" =~ ^[0-9]+$ && "$DOCKER_FREE_BYTES" =~ ^[0-9]+$ \
+            && "$DB_DEVICE" =~ ^[0-9]+$ && "$DOCKER_DEVICE" =~ ^[0-9]+$ ]] || { echo "Production storage measurements are malformed." >&2; exit 1; }
+          printf '%s %s %s %s %s %s\n' "$DB_BYTES" "$DB_FREE_BYTES" "$DOCKER_FREE_BYTES" "$APP_IMAGE_BYTES" "$DB_DEVICE" "$DOCKER_DEVICE"
+          REMOTE
+          )"
+          read -r DB_BYTES DB_FREE_BYTES DOCKER_FREE_BYTES APP_IMAGE_BYTES DB_DEVICE DOCKER_DEVICE <<< "$HOST_CAPACITY"
+          RUNNER_FREE_BYTES="$(df -PB1 --output=avail "$RUNNER_TEMP" | tail -n1 | tr -d '[:space:]')"
+          RUNNER_DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
+          RUNNER_DOCKER_FREE_BYTES="$(df -PB1 --output=avail "$RUNNER_DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
+          RUNNER_TEMP_DEVICE="$(stat -c '%d' "$RUNNER_TEMP")"
+          RUNNER_DOCKER_DEVICE="$(stat -c '%d' "$RUNNER_DOCKER_ROOT")"
+          [[ "$RUNNER_FREE_BYTES" =~ ^[0-9]+$ && "$RUNNER_DOCKER_FREE_BYTES" =~ ^[0-9]+$ \
+            && "$RUNNER_TEMP_DEVICE" =~ ^[0-9]+$ && "$RUNNER_DOCKER_DEVICE" =~ ^[0-9]+$ \
+            && "$DB_BYTES" =~ ^[1-9][0-9]*$ && "$APP_IMAGE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Runner or production storage measurements are malformed."; exit 1; }
+          (( DB_BYTES <= 9007199254740991 / 3 && APP_IMAGE_BYTES <= 9007199254740991 / 2 )) || { echo "::error::Measured production sizes exceed the safe arithmetic range."; exit 1; }
+          REQUIRED_RUNNER_SHARED_BYTES=$((DB_BYTES * 3))
+          REQUIRED_RUNNER_TEMP_BYTES=$DB_BYTES
+          REQUIRED_RUNNER_DOCKER_BYTES=$((DB_BYTES * 2))
+          if [[ "$RUNNER_TEMP_DEVICE" == "$RUNNER_DOCKER_DEVICE" ]]; then
+            REQUIRED_RUNNER_TEMP_BYTES=$REQUIRED_RUNNER_SHARED_BYTES
+            REQUIRED_RUNNER_DOCKER_BYTES=$REQUIRED_RUNNER_SHARED_BYTES
+          fi
+          REQUIRED_DOCKER_BYTES=$((APP_IMAGE_BYTES * 2))
+          if [[ "$DB_DEVICE" == "$DOCKER_DEVICE" ]]; then
+            (( DB_BYTES <= 9007199254740991 - REQUIRED_DOCKER_BYTES )) || {
+              echo "::error::Combined production storage measurements exceed the safe arithmetic range; maintenance was not entered."; exit 1;
+            }
+            REQUIRED_SHARED_BYTES=$((DB_BYTES + REQUIRED_DOCKER_BYTES))
+            REQUIRED_DATABASE_FREE_BYTES=$REQUIRED_SHARED_BYTES
+            REQUIRED_DOCKER_FREE_BYTES=$REQUIRED_SHARED_BYTES
+            (( DB_FREE_BYTES >= REQUIRED_SHARED_BYTES && DOCKER_FREE_BYTES >= REQUIRED_SHARED_BYTES )) || {
+              echo "::error::Production shared data/Docker filesystem lacks DB-plus-candidate image headroom; maintenance was not entered."; exit 1;
+            }
+          else
+            REQUIRED_DATABASE_FREE_BYTES=$DB_BYTES
+            REQUIRED_DOCKER_FREE_BYTES=$REQUIRED_DOCKER_BYTES
+            (( DB_FREE_BYTES >= DB_BYTES && DOCKER_FREE_BYTES >= REQUIRED_DOCKER_BYTES )) || {
+              echo "::error::Production database or Docker filesystem lacks migration/app image headroom; maintenance was not entered."; exit 1;
+            }
+          fi
+          (( RUNNER_FREE_BYTES >= REQUIRED_RUNNER_TEMP_BYTES && RUNNER_DOCKER_FREE_BYTES >= REQUIRED_RUNNER_DOCKER_BYTES )) || {
+            echo "::error::Runner temporary/Docker filesystems lack encrypted backup plus isolated restore/rehearsal headroom; maintenance was not entered."; exit 1;
+          }
+          echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "database_bytes=$DB_BYTES" >> "$GITHUB_OUTPUT"
+          echo "database_free_bytes=$DB_FREE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "docker_free_bytes=$DOCKER_FREE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "prior_app_image_bytes=$APP_IMAGE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "runner_free_bytes=$RUNNER_FREE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "runner_docker_free_bytes=$RUNNER_DOCKER_FREE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "runner_temp_docker_shared_filesystem=$([[ "$RUNNER_TEMP_DEVICE" == "$RUNNER_DOCKER_DEVICE" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "shared_filesystem=$([[ "$DB_DEVICE" == "$DOCKER_DEVICE" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "required_database_free_bytes=$REQUIRED_DATABASE_FREE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "required_docker_free_bytes=$REQUIRED_DOCKER_FREE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "required_runner_free_bytes=$REQUIRED_RUNNER_TEMP_BYTES" >> "$GITHUB_OUTPUT"
+          echo "required_runner_docker_free_bytes=$REQUIRED_RUNNER_DOCKER_BYTES" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pre-maintenance storage headroom"
+            echo "- Database bytes: $DB_BYTES"
+            echo "- Database filesystem free bytes: $DB_FREE_BYTES"
+            echo "- Docker filesystem free bytes: $DOCKER_FREE_BYTES"
+            echo "- Prior app image bytes: $APP_IMAGE_BYTES"
+            echo "- Runner temporary filesystem free bytes: $RUNNER_FREE_BYTES"
+            echo "- Runner Docker filesystem free bytes: $RUNNER_DOCKER_FREE_BYTES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --pre-maintenance-snapshot bodycast-db-prod'"
+          node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" \
+            | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" > "$RUNNER_TEMP/pre-maintenance-report.json"
+          node scripts/production-migration-preflight.mjs --pre-maintenance --manifest "$MANIFEST_ID" \
+            --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/pre-maintenance-report.json" > "$RUNNER_TEMP/pre-maintenance-result.json"
+          echo "Read-only database identity, schema, migration set, locks, and Profile 1 baseline passed before maintenance." \
+            >> "$GITHUB_STEP_SUMMARY"
       - name: Enter maintenance and drain the old app before backup
         id: maintenance
         env:
@@ -716,26 +831,6 @@ jobs:
             }
             echo "forward_resume_marker_observation_b64=${MARKER_LINES[0]}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Verify production container and PostgreSQL client versions
-        id: target
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-        run: |
-          set -Eeuo pipefail
-          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" bodycast-db-prod')"
-          [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy" ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
-          CONTAINER_ID="${META%%|*}"
-          [[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Production PostgreSQL container ID is malformed."; exit 1; }
-          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "docker exec '$CONTAINER_ID' pg_dump --version")"
-          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
-          node --input-type=module - "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION" <<'NODE'
-          import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
-          assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
-          NODE
-          echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
       - name: Read-only production identity, full migration set, schema signatures, and locks
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -746,6 +841,18 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
+          STORAGE_DATABASE_BYTES: ${{ steps.target.outputs.database_bytes }}
+          STORAGE_DATABASE_FREE_BYTES: ${{ steps.target.outputs.database_free_bytes }}
+          STORAGE_DOCKER_FREE_BYTES: ${{ steps.target.outputs.docker_free_bytes }}
+          STORAGE_PRIOR_APP_IMAGE_BYTES: ${{ steps.target.outputs.prior_app_image_bytes }}
+          STORAGE_RUNNER_FREE_BYTES: ${{ steps.target.outputs.runner_free_bytes }}
+          STORAGE_RUNNER_DOCKER_FREE_BYTES: ${{ steps.target.outputs.runner_docker_free_bytes }}
+          STORAGE_RUNNER_TEMP_DOCKER_SHARED: ${{ steps.target.outputs.runner_temp_docker_shared_filesystem }}
+          STORAGE_SHARED_FILESYSTEM: ${{ steps.target.outputs.shared_filesystem }}
+          STORAGE_REQUIRED_DATABASE_FREE_BYTES: ${{ steps.target.outputs.required_database_free_bytes }}
+          STORAGE_REQUIRED_DOCKER_FREE_BYTES: ${{ steps.target.outputs.required_docker_free_bytes }}
+          STORAGE_REQUIRED_RUNNER_FREE_BYTES: ${{ steps.target.outputs.required_runner_free_bytes }}
+          STORAGE_REQUIRED_RUNNER_DOCKER_FREE_BYTES: ${{ steps.target.outputs.required_runner_docker_free_bytes }}
           RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
           RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
           RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
@@ -791,6 +898,7 @@ jobs:
             > "$RUNNER_TEMP/previous-app-provenance-verification.json"
           node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" "$RUNNER_TEMP/preflight-report.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
+          import { assertPreMaintenanceStorageHeadroom } from "./scripts/production-migration-preflight.mjs";
           import { previousAppDatabaseCompatibilityDigests, validatePreviousAppProvenanceBinding } from "./scripts/production-previous-app-provenance.mjs";
           import { validateCaptureResumeReceipt } from "./scripts/production-capture-resume-receipt.mjs";
           import { verifyForwardResumeMarkerObservation } from "./scripts/production-forward-resume.mjs";
@@ -804,6 +912,29 @@ jobs:
           }
           validatePreviousAppProvenanceBinding(binding);
           result.previousAppProvenance = binding;
+          const storageValues = [process.env.STORAGE_DATABASE_BYTES, process.env.STORAGE_DATABASE_FREE_BYTES,
+            process.env.STORAGE_DOCKER_FREE_BYTES, process.env.STORAGE_PRIOR_APP_IMAGE_BYTES, process.env.STORAGE_RUNNER_FREE_BYTES,
+            process.env.STORAGE_RUNNER_DOCKER_FREE_BYTES,
+            process.env.STORAGE_REQUIRED_DATABASE_FREE_BYTES, process.env.STORAGE_REQUIRED_DOCKER_FREE_BYTES,
+            process.env.STORAGE_REQUIRED_RUNNER_FREE_BYTES, process.env.STORAGE_REQUIRED_RUNNER_DOCKER_FREE_BYTES];
+          if (storageValues.some((value) => !/^[1-9][0-9]*$/.test(String(value ?? "")))
+            || !["true", "false"].includes(process.env.STORAGE_SHARED_FILESYSTEM ?? "")
+            || !["true", "false"].includes(process.env.STORAGE_RUNNER_TEMP_DOCKER_SHARED ?? "")) {
+            throw new Error("Pre-maintenance storage headroom evidence is incomplete.");
+          }
+          const headroom = {
+            contract: "bodycast-auth-migration-pre-maintenance-headroom-v1",
+            databaseBytes: Number(storageValues[0]), databaseFilesystemFreeBytes: Number(storageValues[1]),
+            dockerFilesystemFreeBytes: Number(storageValues[2]), priorAppImageBytes: Number(storageValues[3]),
+            runnerTemporaryFilesystemFreeBytes: Number(storageValues[4]),
+            runnerDockerFilesystemFreeBytes: Number(storageValues[5]),
+            sharedFilesystem: process.env.STORAGE_SHARED_FILESYSTEM === "true",
+            runnerTemporaryAndDockerSharedFilesystem: process.env.STORAGE_RUNNER_TEMP_DOCKER_SHARED === "true",
+            requiredDatabaseFreeBytes: Number(storageValues[6]), requiredDockerFreeBytes: Number(storageValues[7]),
+            requiredRunnerFreeBytes: Number(storageValues[8]), requiredRunnerDockerFreeBytes: Number(storageValues[9]),
+          };
+          assertPreMaintenanceStorageHeadroom(headroom);
+          result.preMaintenanceStorageHeadroom = headroom;
           if (process.env.RESUME_SOURCE_SHA) {
             if (!process.env.RESUME_RECEIPT_B64 || !/^[A-Za-z0-9+/]+=*$/.test(process.env.RESUME_RECEIPT_B64)) {
               throw new Error("Validated preflight capture resume receipt is missing or malformed.");
@@ -895,6 +1026,11 @@ jobs:
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-base-report.json"
           RESTORED_DATA_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           [[ "$RESTORED_DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated restore logical data fingerprint is malformed."; exit 1; }
+          AUTH_SOURCE_FINGERPRINT_BEFORE=""
+          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+            AUTH_SOURCE_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+            [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated Auth source-input fingerprint before migration is malformed."; exit 1; }
+          fi
           node --input-type=module - "$RUNNER_TEMP/restored-base-report.json" "$RESTORED_DATA_FINGERPRINT" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           const [path, digest] = process.argv.slice(2);
@@ -912,12 +1048,24 @@ jobs:
             > "$RUNNER_TEMP/execution-integrity.json"
           PRISMA_DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
           DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
+          AUTH_SOURCE_FINGERPRINT_AFTER=""
+          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+            AUTH_SOURCE_FINGERPRINT_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
+            [[ "$AUTH_SOURCE_FINGERPRINT_AFTER" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Isolated Auth source-input fingerprint after migration is malformed."; exit 1; }
+          fi
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
           node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"
-          node scripts/production-migration-restore-check.mjs --combine \
-            --base "$RUNNER_TEMP/restore-base-result.json" --postflight "$RUNNER_TEMP/restore-postflight-result.json" \
-            > "$RUNNER_TEMP/restore-result.json"
+          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
+            node scripts/production-migration-restore-check.mjs --combine \
+              --base "$RUNNER_TEMP/restore-base-result.json" --postflight "$RUNNER_TEMP/restore-postflight-result.json" \
+              --manifest "$MANIFEST_ID" --auth-source-fingerprint-before "$AUTH_SOURCE_FINGERPRINT_BEFORE" \
+              --auth-source-fingerprint-after "$AUTH_SOURCE_FINGERPRINT_AFTER" > "$RUNNER_TEMP/restore-result.json"
+          else
+            node scripts/production-migration-restore-check.mjs --combine \
+              --base "$RUNNER_TEMP/restore-base-result.json" --postflight "$RUNNER_TEMP/restore-postflight-result.json" \
+              --manifest "$MANIFEST_ID" > "$RUNNER_TEMP/restore-result.json"
+          fi
           cat "$RUNNER_TEMP/restore-result.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Bind forward-resume authorization to the fresh live snapshot and rehearsal
         if: inputs.forward_resume_failed_migration_run_id != ''

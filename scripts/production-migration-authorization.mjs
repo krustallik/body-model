@@ -55,13 +55,26 @@ function validateClaimsShape(claims) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) reject("signed claims are missing.");
   const keys = Object.keys(claims).sort();
   const required = [...REQUIRED_AUTHORIZATION_CLAIMS].sort();
-  const baseWithSnapshot = [...required, "snapshotDataFingerprint"].sort();
-  const baseWithForwardResume = [...required, "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS].sort();
-  if (![required, baseWithSnapshot, baseWithForwardResume].some((expected) => JSON.stringify(keys) === JSON.stringify(expected))) {
+  const claimSets = [
+    required,
+    [...required, "snapshotDataFingerprint"].sort(),
+    [...required, "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS].sort(),
+  ];
+  if (claims.manifestId === "auth-multiuser-v1") {
+    claimSets.push(
+      [...required, "profileOneOwnershipBackfillAuthorized"].sort(),
+      [...required, "profileOneOwnershipBackfillAuthorized", "snapshotDataFingerprint"].sort(),
+    );
+  }
+  if (!claimSets.some((expected) => JSON.stringify(keys) === JSON.stringify(expected))) {
     reject("claim set is incomplete or contains unsupported claims.");
   }
   if (Object.hasOwn(claims, "snapshotDataFingerprint") && !/^[a-f0-9]{64}$/.test(String(claims.snapshotDataFingerprint))) {
     reject("snapshotDataFingerprint must be a lowercase SHA-256 digest.");
+  }
+  if ((claims.manifestId === "auth-multiuser-v1" && claims.profileOneOwnershipBackfillAuthorized !== true)
+    || (claims.manifestId !== "auth-multiuser-v1" && Object.hasOwn(claims, "profileOneOwnershipBackfillAuthorized"))) {
+    reject("Profile 1 ownership-backfill consent must be explicitly true only for the Auth manifest.");
   }
   if (Object.hasOwn(claims, "executionMode")) {
     if (claims.executionMode !== "forward-resume") reject("executionMode is not a supported owner-authorized mode.");
@@ -116,6 +129,7 @@ function compareLiveClaims(claims, live, { requireTrustedActorId = true } = {}) 
     "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
     "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest", "writerDrainDigest", "writerTopologyDigest",
     "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS,
+    "profileOneOwnershipBackfillAuthorized",
   ];
   for (const field of fields) {
     if (!(field in live)) continue;
@@ -225,6 +239,7 @@ export function createClaimsFromPreflight({
   backupArtifactId, backupArtifactDigest, backupSnapshotAt, restoreResultDigest, productionIdentityDigest,
   writerDrainDigest, writerTopologyDigest,
   issuedAt, expiresAt, authorizationId, nonce, snapshotDataFingerprint, forwardResume,
+  profileOneOwnershipBackfillAuthorized = false,
 }) {
   const names = [...pendingMigrationNames].sort();
   const claims = {
@@ -233,6 +248,7 @@ export function createClaimsFromPreflight({
     preflightRunAttempt, preflightRunStartedAt, preflightResultDigest, backupArtifactId, backupArtifactDigest, backupSnapshotAt,
     restoreResultDigest, productionIdentityDigest, writerDrainDigest, writerTopologyDigest, issuedAt, expiresAt, authorizationId, nonce,
   };
+  if (profileOneOwnershipBackfillAuthorized) claims.profileOneOwnershipBackfillAuthorized = true;
   if (snapshotDataFingerprint !== undefined) claims.snapshotDataFingerprint = snapshotDataFingerprint;
   if (forwardResume !== undefined) {
     if (!forwardResume || typeof forwardResume !== "object") reject("forward-resume authorization context is malformed.");

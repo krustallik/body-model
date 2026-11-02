@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
-import { assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
+import { assertPreMaintenanceStorageHeadroom, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
 import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
 import { matchesPostgresDatabaseIdentityDigest } from "./postgres-database-identity.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
@@ -58,9 +58,22 @@ export function assertLiveDataMatchesBackupFingerprint(preflightResult, evidence
   return expected;
 }
 
+export function assertAuthSourceProjectionMatchesRestore({ manifestId, restoreResult, liveFingerprint }) {
+  if (manifestId !== "auth-multiuser-v1") return true;
+  const expected = restoreResult?.authMultiuserSourceDataFingerprint;
+  if (restoreResult?.authMultiuserSourceDataProjection !== "bodycast-auth-multiuser-source-input-fingerprint-v1"
+    || !/^[a-f0-9]{64}$/.test(String(expected ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(liveFingerprint ?? ""))
+    || liveFingerprint !== expected) {
+    throw new Error("Migration blocked: live Auth source-input projection does not match the unchanged isolated migration rehearsal.");
+  }
+  return true;
+}
+
 export function verifyFinalMigrationAuthorization({ envelope, preflightResult, evidence, restoreResult, artifactMetadata, liveReport, liveMainSha, releaseSha, manifestId, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, now = Date.now() }) {
   assertSignedAuthorizationRequired({ envelope, confirmation: process.env.CONFIRM_PRODUCTION_MIGRATE });
   const manifest = getProductionMigrationManifest(manifestId);
+  assertPreMaintenanceStorageHeadroom(preflightResult?.preMaintenanceStorageHeadroom);
   if (releaseSha !== liveMainSha) throw new Error("Migration blocked: release SHA is not the freshly fetched canonical main tip.");
   if (evidence?.verified !== true || evidence.repository !== "krustallik/body-model"
     || evidence.releaseSha !== releaseSha || evidence.manifestId !== manifest.id) {
@@ -80,6 +93,11 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   }
   assertLiveDataMatchesBackupReadability(restoreResult.readability, liveReport?.readability);
   const snapshotDataFingerprint = assertLiveDataMatchesBackupFingerprint(preflightResult, evidence, restoreResult, liveReport);
+  assertAuthSourceProjectionMatchesRestore({
+    manifestId: manifest.id,
+    restoreResult,
+    liveFingerprint: process.env.BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT,
+  });
   assertProductionDatabaseIdentityMatches(preflightResult?.identity, liveReport?.identity);
   if (canonicalSha256(preflightResult.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: signed preflight identity digest is inconsistent.");
   if (!matchesPostgresDatabaseIdentityDigest(liveReport?.identity, evidence.productionIdentityDigest)) throw new Error("Migration blocked: production identity changed after preflight.");
@@ -128,6 +146,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
       writerDrainDigest: evidence.writerDrainDigest,
       writerTopologyDigest: evidence.writerTopologyDigest,
       snapshotDataFingerprint,
+      ...(manifest.id === "auth-multiuser-v1" ? { profileOneOwnershipBackfillAuthorized: true } : {}),
       ...forwardResumeClaims(forwardContext),
     },
   });
@@ -310,8 +329,13 @@ function manifestTreeNames(manifest) {
   return parsed;
 }
 
-export function verifyPostflightResult({ report, restoreResult, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id }) {
-  return verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId);
+export function verifyPostflightResult({ report, restoreResult, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+  authSourceDataFingerprint = process.env.BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT }) {
+  const result = verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId);
+  if (result.ready) {
+    assertAuthSourceProjectionMatchesRestore({ manifestId, restoreResult, liveFingerprint: authSourceDataFingerprint });
+  }
+  return result;
 }
 
 async function main() {

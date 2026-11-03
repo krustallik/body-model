@@ -721,8 +721,20 @@ elif [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
     strength_event="{\"eventId\":\"workout-34\",\"source\":\"matched\",\"type\":\"Traditional Strength Training\",\"occurrenceAt\":\"2026-10-22T12:30:00.000Z\",\"activeEnergyKcal\":245.5,\"energySource\":\"bodycast-strength-estimate\",\"diarySessionId\":$strength_session_id}"
     response_body="{\"trainingDays\":[{\"date\":\"2026-10-21\",\"events\":[$history_events]},{\"date\":\"2026-10-22\",\"events\":[$strength_event]}]}"
   fi
+  if [[ "\${BODYCAST_AUTH_MULTIUSER_SERVE:-0}" == "1" && "$url" == *"/api/v1/days?"* \
+      && "\${AUTH_PRIVATE_API_UNEXPECTED_200:-0}" != "1" ]]; then
+    status=401
+    response_body='{"error":"unauthorized"}'
+    response_headers=$'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n'
+  fi
   if [[ "$url" == */api/v1/workouts/*/stepper-diagnostic ]]; then
     response_body='{"diagnostic":{"activeEnergyResolution":{},"programEnergy":{}}}'
+  fi
+  if [[ "\${BODYCAST_AUTH_MULTIUSER_SERVE:-0}" == "1" && "$url" == */api/v1/workouts/*/stepper-diagnostic \
+      && "\${AUTH_PRIVATE_API_UNEXPECTED_200:-0}" != "1" ]]; then
+    status=401
+    response_body='{"error":"unauthorized"}'
+    response_headers=$'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n'
   fi
 else
   status=502

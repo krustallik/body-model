@@ -273,9 +273,57 @@ describe("serving-route commit boundary", () => {
     expect(events).toContain("unified-v4-raw-fingerprint-assertion");
     expect(events).toContain("training-refresh-generations-current");
     expect(events).toContain("unified-v4-fence-committed");
+    expect(events).toContain("public-probe:200:https://bodycast.example.test/login");
+    expect(events).toContain("public-probe:401:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
+    expect(events).toContain("public-probe:401:https://bodycast.example.test/api/v1/workouts/1/stepper-diagnostic");
+    expect(result.stdout).toContain("BODYCAST_AUTH_HISTORY_ANONYMOUS=unauthorized");
+    expect(result.stdout).toContain("BODYCAST_AUTH_STEPPER_DIAGNOSTIC_ANONYMOUS=unauthorized");
     expect(events.indexOf("training-refresh-generations-current")).toBeLessThan(events.indexOf("live-route-mutation:serving"));
     expect(events.indexOf("live-route-mutation:serving")).toBeLessThan(events.indexOf("unified-v4-fence-committed"));
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toMatch(/prisma\s+migrate\s+deploy|prisma\s+migrate\s+reset/);
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps Auth migration-free traffic in maintenance if anonymous history access is exposed", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    for (const migration of ["20261025000000_auth_test_001", "20261025000001_auth_test_002", "20261025000002_auth_test_003"]) {
+      const migrationFile = path.join(fixture.repo, "prisma", "migrations", migration, "migration.sql");
+      mkdirSync(path.dirname(migrationFile), { recursive: true });
+      writeFileSync(migrationFile, `-- ${migration}\n`);
+    }
+    writeFileSync(markerPath, [
+      "schemaVersion=3",
+      "manifestId=auth-multiuser-v1",
+      "migrationOriginSha=18e67d53856af1f4742bbe9626abbd005b70e8bf",
+      `deploySha=${trainingReleaseSha}`,
+      "state=app-ready",
+      "workflowRunId=40123456790",
+      "workflowRunAttempt=1",
+      "authorizationId=auth-migration-authorization-01",
+      `lineageDigest=${"b".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"c".repeat(64)}`,
+      `compatibilityDigest=${"d".repeat(64)}`,
+      "",
+    ].join("\n"));
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_AUTH_MULTIUSER_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+      PRODUCTION_MIGRATION_LEDGER_STATE: "77|0",
+      AUTH_PRIVATE_API_UNEXPECTED_200: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
+    expect(result.stderr).toContain("Auth candidate did not keep anonymous Training history access protected.");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("unified-v4-fence-aborted");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps Auth serving in maintenance when the app-ready marker belongs to another schema manifest", () => {

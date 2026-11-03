@@ -209,6 +209,58 @@ bodycast_probe_public_candidate_observational() {
   fi
   rm -f -- "$headers" "$body"
 
+  # Auth releases correctly require a session for personal history APIs. The
+  # currentness fence above already verifies the selected Training data and
+  # provenance directly against the production database; an unauthenticated
+  # public probe must therefore verify the auth boundary, not expect user data.
+  if [[ "${BODYCAST_AUTH_MULTIUSER_SERVE:-0}" == "1" ]]; then
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 20 \
+      --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
+      "https://${APP_HOST}/login")" \
+        || [[ "$status" != "200" ]]; then
+      rm -f -- "$headers" "$body"
+      echo "Public BodyCast login page probe failed for /login." >&2
+      return 1
+    fi
+    rm -f -- "$headers" "$body"
+
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 20 \
+      --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
+      "https://${APP_HOST}/api/v1/days?to=2026-10-22&limit=100&offset=0")" \
+        || [[ "$status" != "401" ]] \
+        || ! grep -Eq '"error"[[:space:]]*:[[:space:]]*"unauthorized"' "$body"; then
+      rm -f -- "$headers" "$body"
+      echo "Auth candidate did not keep anonymous Training history access protected." >&2
+      return 1
+    fi
+    rm -f -- "$headers" "$body"
+
+    diagnostic_id="${BODYCAST_STEPPER_DIAGNOSTIC_WORKOUT_ID:-}"
+    [[ "$diagnostic_id" =~ ^[1-9][0-9]*$ ]] || {
+      echo "Auth candidate probe has no accepted Stepper diagnostic target." >&2
+      return 1
+    }
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 20 \
+      --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
+      "https://${APP_HOST}/api/v1/workouts/${diagnostic_id}/stepper-diagnostic")" \
+        || [[ "$status" != "401" ]] \
+        || ! grep -Eq '"error"[[:space:]]*:[[:space:]]*"unauthorized"' "$body"; then
+      rm -f -- "$headers" "$body"
+      echo "Auth candidate did not keep anonymous Stepper diagnostics protected." >&2
+      return 1
+    fi
+    rm -f -- "$headers" "$body"
+    printf '%s\n' "BODYCAST_AUTH_LOGIN_PUBLIC=yes" "BODYCAST_AUTH_HISTORY_ANONYMOUS=unauthorized"
+    printf '%s\n' "BODYCAST_AUTH_STEPPER_DIAGNOSTIC_ANONYMOUS=unauthorized"
+    return 0
+  fi
+
   headers="$(mktemp)"
   body="$(mktemp)"
   if ! status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \

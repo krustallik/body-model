@@ -190,7 +190,8 @@ describe("active production release entrypoints", () => {
       .toBeLessThan(workflow.indexOf('git fetch --no-tags origin "$DEPLOY_SHA"'));
 
     expect(deploy).toContain("BODYCAST_MIGRATION_FREE_CANDIDATE");
-    expect(deploy).toContain("BODYCAST_EXPECTED_MIGRATION_COUNT=74");
+    expect(deploy).toContain("migration_free_expected_migration_count=74");
+    expect(deploy).toContain('BODYCAST_EXPECTED_MIGRATION_COUNT="$migration_free_expected_migration_count"');
     expect(deploy).toContain("--capture-raw-input-fingerprint");
     expect(deploy).toContain("production-writer-drain.sh\" --assert");
     expect(deploy).toContain('production-traffic-cutover.sh" migration-free-serving');

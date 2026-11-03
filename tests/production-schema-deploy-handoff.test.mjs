@@ -273,7 +273,7 @@ describe("schema deploy compatibility handoff", () => {
     expect(compatibility.changedPaths.every((changed) => changed.startsWith("tests/")
       || changed === ".github/workflows/production-full-history-recalculate.yml"
       || ["scripts/deploy.sh", "scripts/production-release-marker.sh", "scripts/production-schema-deploy-handoff.mjs",
-        "scripts/production-traffic-cutover.sh"].includes(changed))).toBe(true);
+        "scripts/production-traffic-cutover.sh", "scripts/production-route-primitives.sh"].includes(changed))).toBe(true);
 
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-handoff-"));
     directories.push(directory);
@@ -290,6 +290,16 @@ describe("schema deploy compatibility handoff", () => {
       workflowRunId: "40123456791",
     } });
     expect(evaluateSchemaDeployHandoff({ markerText: handoff.bytes, deploySha, ...compatibility }).action).toBe("replay");
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText(), deploySha, ...compatibility,
+      changedPathObjects: {
+        ...compatibility.changedPathObjects,
+        "scripts/production-route-primitives.sh": {
+          ...compatibility.changedPathObjects["scripts/production-route-primitives.sh"],
+          deployBlob: "e".repeat(40),
+        },
+      },
+    })).toThrow(/exact reviewed content binding/);
     expect(() => evaluateSchemaDeployHandoff({
       markerText: authMultiuserMarkerText(), deploySha, ...compatibility,
       changedPaths: [...compatibility.changedPaths, "src/app/page.tsx"],

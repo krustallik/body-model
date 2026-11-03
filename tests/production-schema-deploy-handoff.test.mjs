@@ -8,6 +8,7 @@ import {
   V4_REPUBLICATION_HANDOFF_PROVENANCE, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
   applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
   readGitCompatibility, renderSchemaDeployTransition,
+  validateSchemaDeployHandoffMarker,
 } from "../scripts/production-schema-deploy-handoff.mjs";
 import {
   DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST,
@@ -225,6 +226,42 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
+  it("keeps the existing Auth app-ready marker valid while advancing only reviewed release-tool blobs", () => {
+    const previousDeploySha = "c616eba0f874c8c481cb889fade149b68f9ba590";
+    const previousCompatibility = readGitCompatibility(process.cwd(), previousDeploySha,
+      AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
+    const previousHandoff = evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText(),
+      deploySha: previousDeploySha,
+      ...previousCompatibility,
+    });
+    const previousAppReadyMarker = renderSchemaDeployTransition(previousHandoff.bytes, "app-ready");
+
+    expect(validateSchemaDeployHandoffMarker(previousAppReadyMarker)).toMatchObject({
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      deploySha: previousDeploySha,
+      state: "app-ready",
+    });
+    expect(evaluateSchemaDeployHandoff({
+      markerText: previousAppReadyMarker,
+      deploySha: previousDeploySha,
+      ...previousCompatibility,
+    }).action).toBe("replay");
+
+    const currentDeploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const currentCompatibility = readGitCompatibility(process.cwd(), currentDeploySha,
+      AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
+    expect(evaluateSchemaDeployHandoff({
+      markerText: previousAppReadyMarker,
+      deploySha: currentDeploySha,
+      ...currentCompatibility,
+    })).toMatchObject({ action: "write", marker: {
+      migrationOriginSha: AUTH_MULTIUSER_MIGRATION_APP_SHA,
+      deploySha: currentDeploySha,
+      state: "schema-applied",
+    } });
+  });
+
   it("hands off the Auth V2 app-ready marker only for an exact migration tree and unchanged runtime", async () => {
     const deploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const compatibility = readGitCompatibility(process.cwd(), deploySha,
@@ -235,7 +272,8 @@ describe("schema deploy compatibility handoff", () => {
     expect(compatibility.criticalObjects).toHaveProperty("Dockerfile");
     expect(compatibility.changedPaths.every((changed) => changed.startsWith("tests/")
       || changed === ".github/workflows/production-full-history-recalculate.yml"
-      || ["scripts/deploy.sh", "scripts/production-release-marker.sh", "scripts/production-schema-deploy-handoff.mjs"].includes(changed))).toBe(true);
+      || ["scripts/deploy.sh", "scripts/production-release-marker.sh", "scripts/production-schema-deploy-handoff.mjs",
+        "scripts/production-traffic-cutover.sh"].includes(changed))).toBe(true);
 
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-handoff-"));
     directories.push(directory);

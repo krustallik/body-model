@@ -162,7 +162,7 @@ if [[ "$1" == "inspect" && "$2" == "--format" && "$4" == "bodycast-db-prod" ]]; 
   esac
 fi
 if [[ "$1" == "exec" && "$joined" == *" bodycast-db-prod "* && "$joined" == *"count(*) FILTER"* ]]; then
-  printf '%s\n' "74|0"
+  printf '%s\n' "\${PRODUCTION_MIGRATION_LEDGER_STATE:-74|0}"
   exit 0
 fi
 if [[ "$1" == "exec" && "$joined" == *" bodycast-db-prod "* && "$joined" == *"pg_control_system()"* ]]; then

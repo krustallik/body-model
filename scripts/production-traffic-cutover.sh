@@ -677,7 +677,7 @@ restore_training_maintenance_after_fence_failure() {
 serve_training_release() {
   local expected_release_sha="$1" migration_free_serving="${2:-false}" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
-  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha
+  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha auth_multiuser_serving=false expected_migration_count=74
   stepper_diagnostic_workout_id=""
   target_strength_session_id=""
   local recovered_v4_release=false recovery_marker_path recovery_marker_digest
@@ -696,12 +696,38 @@ serve_training_release() {
     }
     bodycast_assert_migration_free_attestation_receipt "$expected_release_sha" \
       "${BODYCAST_RELEASE_WORKFLOW_RUN_ID:-}" "${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT:-}" || return 1
-    if read_bodycast_release_marker; then
-      echo "Migration-free serving is blocked by any present schema/release marker." >&2
-      return 1
+    [[ "${BODYCAST_AUTH_MULTIUSER_SERVE:-0}" == "0" || "${BODYCAST_AUTH_MULTIUSER_SERVE:-0}" == "1" ]] || {
+      echo "Migration-free Auth serving selector is malformed." >&2; return 1;
+    }
+    if [[ "${BODYCAST_AUTH_MULTIUSER_SERVE:-0}" == "1" ]]; then
+      if ! read_bodycast_release_marker; then
+        echo "Auth migration-free serving requires the exact app-ready Auth handoff marker." >&2
+        return 1
+      fi
+      [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+        && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+        && "$BODYCAST_MARKER_STATE" == "app-ready" \
+        && "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" \
+        && "$BODYCAST_MARKER_DEPLOY_SHA" == "$expected_release_sha" ]] || {
+        echo "Auth migration-free serving is bound to the exact current-SHA app-ready Auth marker." >&2
+        return 1
+      }
+      node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
+        "$BODYCAST_MARKER_FILE_PATH" "$expected_release_sha" "$ROOT_DIR"
+      marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+      [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Auth release marker digest is invalid." >&2; return 1; }
+      auth_multiuser_serving=true
+      expected_migration_count=77
     else
-      local release_marker_status=$?
-      [[ "$release_marker_status" -eq 1 ]] || return 1
+      if read_bodycast_release_marker; then
+        echo "Migration-free serving is blocked by any present schema/release marker." >&2
+        return 1
+      else
+        local release_marker_status=$?
+        [[ "$release_marker_status" -eq 1 ]] || return 1
+      fi
+      require_absent_marker=true
+      route_marker_sha=""
     fi
     expected_raw_source_fingerprint="${BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT:-}"
     [[ "$expected_raw_source_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
@@ -719,8 +745,6 @@ serve_training_release() {
       echo "Migration-free serving requires the Prisma endpoint identity bound to the fixed production database." >&2; return 1;
     }
     bodycast_assert_prisma_database_identity_matches "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
-    require_absent_marker=true
-    route_marker_sha=""
   elif [[ "${BODYCAST_RECOVERED_V4_SERVE:-0}" == "1" ]]; then
     [[ "${BODYCAST_RECOVERED_V4_SERVE}" == "1" ]] || return 1
     if read_bodycast_release_marker; then
@@ -770,7 +794,7 @@ serve_training_release() {
   compose --profile tools build migrate
   if [[ "$migration_free_serving" == "true" ]]; then
     bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
-    BODYCAST_EXPECTED_MIGRATION_COUNT=74 BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="${BODYCAST_EXPECTED_DB_IDENTITY:-}" \
+    BODYCAST_EXPECTED_MIGRATION_COUNT="$expected_migration_count" BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="${BODYCAST_EXPECTED_DB_IDENTITY:-}" \
       bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
     bodycast_assert_prisma_database_identity_matches "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
     if ! timeout 20m docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
@@ -970,6 +994,12 @@ serve_training_release() {
     restore_training_maintenance_after_fence_failure || true
     return 1
   }
+  if [[ "$auth_multiuser_serving" == "true" ]] \
+    && ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest"; then
+    echo "Auth app-ready handoff changed during the held currentness fence; restoring maintenance." >&2
+    restore_training_maintenance_after_fence_failure || true
+    return 1
+  fi
   if [[ "$recovered_v4_release" != "true" && "$migration_free_serving" != "true" ]] \
     && ! assert_bodycast_release_marker_matches "$expected_release_sha" "app-ready" "$marker_digest"; then
     echo "Training serving was committed by the PostgreSQL fence, but final marker/route verification failed; the serving route and recovery evidence are retained for operator inspection." >&2
@@ -988,7 +1018,7 @@ serve_training_release() {
     fi
     return 1
   fi
-  if [[ "$migration_free_serving" == "true" ]]; then
+  if [[ "$migration_free_serving" == "true" && "$auth_multiuser_serving" != "true" ]]; then
     if [[ -n "${BODYCAST_TRAINING_MAINTENANCE_BACKUP:-}" ]]; then
       if ! rm -f -- "$BODYCAST_TRAINING_MAINTENANCE_BACKUP"; then
         echo "POST-COMMIT CLEANUP WARNING: migration-free serving is committed; the prior maintenance route backup remains at $BODYCAST_TRAINING_MAINTENANCE_BACKUP." >&2
@@ -1037,7 +1067,11 @@ serve_training_release() {
     BODYCAST_TRAINING_MAINTENANCE_BACKUP=""
   fi
   cleanup_pre_ddl_recovery_pin_after_serving_commit "$expected_release_sha"
-  echo "Training exact-SHA route is serving after V3 marker, immutable image, and fenced Unified V4 currentness checks."
+  if [[ "$auth_multiuser_serving" == "true" ]]; then
+    echo "Exact Auth 77-migration SHA is serving after unchanged DB/raw-input identity and the held Training/Unified currentness fence."
+  else
+    echo "Training exact-SHA route is serving after V3 marker, immutable image, and fenced Unified V4 currentness checks."
+  fi
 }
 
 cleanup_pre_ddl_recovery_pin_after_serving_commit() {

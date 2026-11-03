@@ -377,4 +377,20 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain('[[ "$deployed_container_image_id" == "$candidate_image_id" ]]');
     expect(cutoverSh).toContain("SERVING_COMMIT_OCCURRED=true");
   });
+
+  it("advances a compatible Auth schema handoff only after exact schema preflight and maintenance", () => {
+    const authCheck = deploySh.indexOf('BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1"');
+    const schemaPreflight = deploySh.indexOf("run_schema_preflight", authCheck);
+    const maintenance = deploySh.indexOf("publish_and_confirm_maintenance", schemaPreflight);
+    const authAdvance = deploySh.indexOf("# Advance only the audited app-ready handoff", maintenance);
+    const handoffApply = deploySh.indexOf('production-schema-deploy-handoff.mjs" --apply', authAdvance);
+
+    expect(authCheck).toBeGreaterThan(-1);
+    expect(deploySh).toContain("migration_free_expected_migration_count=77");
+    expect(schemaPreflight).toBeGreaterThan(authCheck);
+    expect(maintenance).toBeGreaterThan(schemaPreflight);
+    expect(authAdvance).toBeGreaterThan(maintenance);
+    expect(handoffApply).toBeGreaterThan(authAdvance);
+    expect(deploySh).toContain('&& ! ( "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" )');
+  });
 });

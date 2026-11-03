@@ -229,6 +229,75 @@ describe("serving-route commit boundary", () => {
     expect(dockerLog).toContain('-e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=bodycast|16384|7419276301947620311|bodycast|17.5|172.20.0.2|5432');
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("serves the exact app-ready Auth release on 77/77 schema through the same raw-integrity and held-currentness gates", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    for (const migration of ["20261025000000_auth_test_001", "20261025000001_auth_test_002", "20261025000002_auth_test_003"]) {
+      const migrationFile = path.join(fixture.repo, "prisma", "migrations", migration, "migration.sql");
+      mkdirSync(path.dirname(migrationFile), { recursive: true });
+      writeFileSync(migrationFile, `-- ${migration}\n`);
+    }
+    writeFileSync(markerPath, [
+      "schemaVersion=3",
+      "manifestId=auth-multiuser-v1",
+      "migrationOriginSha=18e67d53856af1f4742bbe9626abbd005b70e8bf",
+      `deploySha=${trainingReleaseSha}`,
+      "state=app-ready",
+      "workflowRunId=40123456790",
+      "workflowRunAttempt=1",
+      "authorizationId=auth-migration-authorization-01",
+      `lineageDigest=${"b".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"c".repeat(64)}`,
+      `compatibilityDigest=${"d".repeat(64)}`,
+      "",
+    ].join("\n"));
+
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_AUTH_MULTIUSER_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+      PRODUCTION_MIGRATION_LEDGER_STATE: "77|0",
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(existsSync(markerPath)).toBe(false);
+    expect(result.stdout).toContain("Exact Auth 77-migration SHA is serving");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    expect(events).toContain("unified-v4-raw-fingerprint-assertion");
+    expect(events).toContain("training-refresh-generations-current");
+    expect(events).toContain("unified-v4-fence-committed");
+    expect(events.indexOf("training-refresh-generations-current")).toBeLessThan(events.indexOf("live-route-mutation:serving"));
+    expect(events.indexOf("live-route-mutation:serving")).toBeLessThan(events.indexOf("unified-v4-fence-committed"));
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toMatch(/prisma\s+migrate\s+deploy|prisma\s+migrate\s+reset/);
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps Auth serving in maintenance when the app-ready marker belongs to another schema manifest", () => {
+    const { fixture, trainingReleaseSha } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_AUTH_MULTIUSER_SERVE: "1",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(result.stderr).toContain("exact current-SHA app-ready Auth marker");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("allows additional current historical events beyond the accepted 33-event baseline", () => {
     const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
     rmSync(markerPath, { force: true });

@@ -220,7 +220,17 @@ const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "557dafb14f1b68e3cd0d904a8668a1f1073bd025",
-    deployBlob: "019604bb624322d2099b8f05c8f9d63f218cf256",
+    deployBlob: Object.freeze([
+      "019604bb624322d2099b8f05c8f9d63f218cf256",
+      "d61f76029dd457bae62ccdeec25b212c0094c9f6",
+    ]),
+  }),
+  "scripts/production-traffic-cutover.sh": Object.freeze({
+    migrationOriginBlob: "3fd321d857e2aa024e4875a2689a588dc07078ee",
+    deployBlob: Object.freeze([
+      "3fd321d857e2aa024e4875a2689a588dc07078ee",
+      "4b7ed6e33ad583bc058b6a17bdd95a1269ae3f5c",
+    ]),
   }),
   "scripts/production-release-marker.sh": Object.freeze({
     migrationOriginBlob: "3aea7779d5a3b5e8438367be7e372a224672fb8d",
@@ -474,14 +484,19 @@ function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentB
     }
     const proof = changedPathObjects?.[changed];
     if (reviewedBlobs) {
+      const allowedDeployBlobs = Array.isArray(reviewedBlobs.deployBlob)
+        ? reviewedBlobs.deployBlob
+        : [reviewedBlobs.deployBlob];
       if (!proof || typeof proof !== "object" || Array.isArray(proof)
         || Object.keys(proof).sort().join(",") !== "deployBlob,migrationOriginBlob"
+        || allowedDeployBlobs.length === 0
+        || allowedDeployBlobs.some((blob) => typeof blob !== "string" || !/^[a-f0-9]{40}$/.test(blob))
         || (reviewedBlobs.migrationOriginBlob === null
           ? proof.migrationOriginBlob !== null
           : typeof proof.migrationOriginBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.migrationOriginBlob))
         || typeof proof.deployBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.deployBlob)
         || proof.migrationOriginBlob !== reviewedBlobs.migrationOriginBlob
-        || proof.deployBlob !== reviewedBlobs.deployBlob) {
+        || !allowedDeployBlobs.includes(proof.deployBlob)) {
         reject(`path ${changed} does not match its exact reviewed content binding`);
       }
       continue;

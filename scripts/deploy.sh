@@ -362,6 +362,9 @@ if [[ "$active_recovered_v4_release" != "true" && "$BODYCAST_NON_SERVING_DEPLOY"
       || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
         && "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" \
         && "$BODYCAST_MARKER_STATE" == "app-ready" ) \
+      || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
+        && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+        && "$BODYCAST_MARKER_STATE" == "app-ready" ) \
       || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
         && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ) \
     ) ) \

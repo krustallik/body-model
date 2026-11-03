@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST } from "./production-migration-manifests.mjs";
+import { AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST } from "./production-migration-manifests.mjs";
 import { PROGRAMLESS_STRENGTH_SESSIONS_CAPABILITY, readProductionAppCapabilitiesAtSha } from "./production-app-capabilities.mjs";
 
 export const SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA = "62b6961dde7036100c8af7281e7bfab75bb662db";
@@ -28,9 +28,11 @@ export const V4_REPUBLICATION_HANDOFF_PROVENANCE = Object.freeze({
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
+const AUTH_MULTIUSER_MANIFEST_ID = AUTH_MULTIUSER_MANIFEST.id;
 const DYNAMIC_WORKOUT_MANIFEST_ID = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id;
 const TRAINING_MUTATION_LEDGER_MANIFEST_ID = TRAINING_MUTATION_LEDGER_MANIFEST.id;
 const DYNAMIC_WORKOUT_NON_RUNTIME_PATH = /^(?:tests\/|docs\/development\/)/;
+const AUTH_MULTIUSER_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/app\/api\/forecast\/(?:action\/)?route\.ts$|src\/app\/api\/v1\/model\/recalculate\/route\.ts$|src\/lib\/logger\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
@@ -209,6 +211,22 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
 /** Schema/runtime identity that must remain identical to the migration origin. */
 const CRITICAL_TREES = ["prisma"];
 const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];
+const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma", "src"]);
+const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
+const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+  ".github/workflows/production-full-history-recalculate.yml": Object.freeze({
+    migrationOriginBlob: "4853dd4994278c6d7bfaa067fd3577b354c4c6dc",
+    deployBlob: "f307319a0016e422156a2db4caebdd614c167d5d",
+  }),
+  "scripts/deploy.sh": Object.freeze({
+    migrationOriginBlob: "557dafb14f1b68e3cd0d904a8668a1f1073bd025",
+    deployBlob: "019604bb624322d2099b8f05c8f9d63f218cf256",
+  }),
+  "scripts/production-release-marker.sh": Object.freeze({
+    migrationOriginBlob: "3aea7779d5a3b5e8438367be7e372a224672fb8d",
+    deployBlob: "c2d45ada47d6c63eaa744a365bce8200d23e61e2",
+  }),
+});
 const ADVANCEABLE_V3_STATES = new Set(["schema-applied", "app-ready"]);
 const DYNAMIC_WORKOUT_CRITICAL_TREES = Object.freeze([...CRITICAL_TREES, "src/modules/training", ".github/workflows"]);
 const DYNAMIC_WORKOUT_CRITICAL_FILES = Object.freeze([
@@ -312,6 +330,18 @@ function dynamicWorkoutSourceMarkerMatches(marker) {
     && marker.spawnState === "started";
 }
 
+function authMultiuserSourceMarkerMatches(marker) {
+  return marker.schemaVersion === 2
+    && marker.manifestId === AUTH_MULTIUSER_MANIFEST_ID
+    && SHA.test(String(marker.releaseSha ?? ""))
+    && marker.state === "app-ready"
+    && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+    && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+    && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+    && DIGEST.test(String(marker.lineageDigest ?? ""))
+    && marker.spawnState === "started";
+}
+
 function trainingMutationSourceMarkerMatches(marker) {
   return marker.schemaVersion === 2
     && marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID
@@ -341,6 +371,17 @@ function trainingMutationSourceDigest(marker) {
 }
 
 function admittedV3Marker(marker) {
+  if (marker.manifestId === AUTH_MULTIUSER_MANIFEST_ID) {
+    return SHA.test(String(marker.migrationOriginSha ?? ""))
+      && SHA.test(String(marker.deploySha ?? ""))
+      && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+      && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+      && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+      && DIGEST.test(String(marker.lineageDigest ?? ""))
+      && marker.spawnState === "started"
+      && DIGEST.test(String(marker.sourceMarkerDigest ?? ""))
+      && DIGEST.test(String(marker.compatibilityDigest ?? ""));
+  }
   if (marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
     return SHA.test(String(marker.migrationOriginSha ?? ""))
       && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
@@ -447,7 +488,7 @@ function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentB
     }
     if (unboundNonRuntimePath) {
       if (unboundNonRuntimePath.test(changed)) continue;
-      reject(`path ${changed} is not content-bound for this V4 deploy handoff`);
+      reject(`path ${changed} is not allowlisted for this schema handoff`);
     }
     if (ALLOWED_PATH.test(changed)) continue;
     reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
@@ -517,6 +558,32 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
   if (!SHA.test(String(deploySha ?? ""))) reject("deploy candidate SHA is malformed");
   const observed = parseSchemaDeployMarker(markerText);
   const marker = observed.marker;
+  if (marker.schemaVersion === 2 && marker.manifestId === AUTH_MULTIUSER_MANIFEST_ID) {
+    if (!authMultiuserSourceMarkerMatches(marker)) {
+      reject("Auth migration marker run, lineage, origin, or state is not admitted");
+    }
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, AUTH_MULTIUSER_CONTENT_BOUND_PATHS, AUTH_MULTIUSER_NON_RUNTIME_PATH);
+    assertCriticalObjects(criticalObjects, AUTH_MULTIUSER_CRITICAL_TREES, AUTH_MULTIUSER_CRITICAL_FILES);
+    if (isAncestor !== true) reject("deploy candidate is not a descendant of the Auth migration app-ready release");
+    if (deploySha === marker.releaseSha) reject("an app-ready Auth marker cannot be reused as a schema-applied deploy marker");
+    return buildHandoffWrite({
+      observed,
+      migrationOriginSha: marker.releaseSha,
+      deploySha,
+      state: "schema-applied",
+      changedPaths,
+      changedPathObjects,
+      criticalObjects,
+      workflowRunId: marker.workflowRunId,
+      workflowRunAttempt: marker.workflowRunAttempt,
+      authorizationId: marker.authorizationId,
+      lineageDigest: marker.lineageDigest,
+      spawnState: marker.spawnState,
+      provenance: { manifestId: AUTH_MULTIUSER_MANIFEST_ID },
+      contentBoundPaths: AUTH_MULTIUSER_CONTENT_BOUND_PATHS,
+      unboundNonRuntimePath: AUTH_MULTIUSER_NON_RUNTIME_PATH,
+    });
+  }
   if (marker.schemaVersion === 2 && marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
     if (marker.state === "schema-applied" && marker.releaseSha === deploySha
       && marker.spawnState === "started" && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
@@ -614,17 +681,22 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       || marker.spawnState !== "started" || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)) {
       reject("existing handoff provenance is malformed");
     }
+    const authMultiuserRelease = marker.manifestId === AUTH_MULTIUSER_MANIFEST_ID;
     const dynamicWorkoutRelease = marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID;
     const trainingRelease = marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID;
-    const contentBoundPaths = dynamicWorkoutRelease || trainingRelease ? Object.freeze({})
+    const contentBoundPaths = authMultiuserRelease ? AUTH_MULTIUSER_CONTENT_BOUND_PATHS
+      : dynamicWorkoutRelease || trainingRelease ? Object.freeze({})
       : marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
-    const unboundNonRuntimePath = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_NON_RUNTIME_PATH
+    const unboundNonRuntimePath = authMultiuserRelease ? AUTH_MULTIUSER_NON_RUNTIME_PATH
+      : dynamicWorkoutRelease ? DYNAMIC_WORKOUT_NON_RUNTIME_PATH
       : marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_UNBOUND_NON_RUNTIME_PATH : undefined;
     assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths, unboundNonRuntimePath);
     assertCriticalObjects(criticalObjects,
-      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES
+      authMultiuserRelease ? AUTH_MULTIUSER_CRITICAL_TREES
+        : dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES
         : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_TREES : CRITICAL_TREES,
-      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES
+      authMultiuserRelease ? AUTH_MULTIUSER_CRITICAL_FILES
+        : dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES
         : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_FILES : CRITICAL_FILES);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
     if (trainingRelease && marker.migrationOriginSha !== deploySha) {
@@ -762,6 +834,26 @@ function assertDynamicWorkoutOriginContract(repo, originSha) {
   }
 }
 
+function assertAuthMultiuserOriginContract(repo, originSha) {
+  const migrations = [...AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations, ...AUTH_MULTIUSER_MANIFEST.migrations];
+  const expectedDirectories = migrations.map(({ name }) => name).sort();
+  let directories;
+  try {
+    directories = git(repo, ["ls-tree", "-d", "--name-only", `${originSha}:prisma/migrations`]).split("\n").filter(Boolean).sort();
+  } catch {
+    reject("Auth migration origin does not contain its reviewed Prisma migration tree");
+  }
+  if (JSON.stringify(directories) !== JSON.stringify(expectedDirectories)) {
+    reject("Auth migration origin does not match the exact reviewed migration directory set");
+  }
+  for (const migration of migrations) {
+    let bytes;
+    try { bytes = execFileSync("git", ["cat-file", "blob", `${originSha}:prisma/migrations/${migration.name}/migration.sql`], { cwd: repo }); }
+    catch { reject(`Auth migration ${migration.name} is unavailable at the migration origin`); }
+    if (sha256(bytes) !== migration.sha256) reject(`Auth migration ${migration.name} differs from its reviewed checksum`);
+  }
+}
+
 function assertTrainingMutationOriginContract(repo, originSha) {
   const manifest = TRAINING_MUTATION_LEDGER_MANIFEST;
   const migrations = [...manifest.requiredAppliedMigrations, ...manifest.migrations];
@@ -789,6 +881,7 @@ function assertTrainingMutationOriginContract(repo, originSha) {
 export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA, manifestId = null) {
   if (!SHA.test(deploySha)) reject("deploy candidate SHA is malformed");
   const origin = migrationOriginSha;
+  const authMultiuserRelease = manifestId === AUTH_MULTIUSER_MANIFEST_ID;
   const dynamicWorkoutRelease = manifestId === DYNAMIC_WORKOUT_MANIFEST_ID;
   const trainingRelease = manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID;
   try {
@@ -797,6 +890,7 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
   } catch {
     reject("migration origin or deploy candidate commit is unavailable");
   }
+  if (authMultiuserRelease) assertAuthMultiuserOriginContract(repo, origin);
   if (dynamicWorkoutRelease) assertDynamicWorkoutOriginContract(repo, origin);
   if (trainingRelease) assertTrainingMutationOriginContract(repo, origin);
   let isAncestor = false;
@@ -817,9 +911,11 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
       }
     });
   const criticalObjects = {};
-  const criticalTrees = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES
+  const criticalTrees = authMultiuserRelease ? AUTH_MULTIUSER_CRITICAL_TREES
+    : dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES
     : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_TREES : CRITICAL_TREES;
-  const criticalFiles = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES
+  const criticalFiles = authMultiuserRelease ? AUTH_MULTIUSER_CRITICAL_FILES
+    : dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES
     : trainingRelease ? TRAINING_MUTATION_LEDGER_CRITICAL_FILES : CRITICAL_FILES;
   for (const objectPath of [...criticalTrees, ...criticalFiles]) {
     const originId = objectId(repo, origin, objectPath);
@@ -828,7 +924,8 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
     criticalObjects[objectPath] = originId;
   }
   const changedPathObjects = {};
-  const contentBoundPaths = dynamicWorkoutRelease ? Object.freeze({})
+  const contentBoundPaths = authMultiuserRelease ? AUTH_MULTIUSER_CONTENT_BOUND_PATHS
+    : dynamicWorkoutRelease ? Object.freeze({})
     : migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
   for (const objectPath of changedPaths.filter((changed) => Object.hasOwn(contentBoundPaths, changed))) {
     changedPathObjects[objectPath] = {
@@ -840,6 +937,13 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
 }
 
 function readCompatibilityForMarker(repo, marker, deploySha) {
+  if (marker.schemaVersion === 2 && authMultiuserSourceMarkerMatches(marker)) {
+    return readGitCompatibility(repo, deploySha, marker.releaseSha, AUTH_MULTIUSER_MANIFEST_ID);
+  }
+  if (marker.schemaVersion === 3 && marker.manifestId === AUTH_MULTIUSER_MANIFEST_ID
+    && admittedV3Marker(marker)) {
+    return readGitCompatibility(repo, deploySha, marker.migrationOriginSha, AUTH_MULTIUSER_MANIFEST_ID);
+  }
   if (marker.schemaVersion === 2 && marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
     assertDynamicWorkoutOriginContract(repo, marker.releaseSha);
     return readGitCompatibility(repo, deploySha, marker.releaseSha, DYNAMIC_WORKOUT_MANIFEST_ID);

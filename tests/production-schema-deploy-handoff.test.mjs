@@ -11,6 +11,7 @@ import {
 } from "../scripts/production-schema-deploy-handoff.mjs";
 import {
   DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST,
+  AUTH_MULTIUSER_MANIFEST,
   TRAINING_MUTATION_LEDGER_MANIFEST,
 } from "../scripts/production-migration-manifests.mjs";
 
@@ -20,6 +21,7 @@ const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d
 const V4_COMPATIBLE_TEST_CANDIDATE_SHA = "f910d2a45dfa676fada5fab42c9e8946c97872b1";
 const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
 const TRAINING_MIGRATION_SHA = "73f0e49aa2fbb4595f7acfc00d16f76bfa2e2da1";
+const AUTH_MULTIUSER_MIGRATION_APP_SHA = "18e67d53856af1f4742bbe9626abbd005b70e8bf";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -146,6 +148,32 @@ function trainingMutationMarkerText(overrides = {}) {
   ].join("\n");
 }
 
+function authMultiuserMarkerText(overrides = {}) {
+  const marker = {
+    manifestId: AUTH_MULTIUSER_MANIFEST.id,
+    releaseSha: AUTH_MULTIUSER_MIGRATION_APP_SHA,
+    state: "app-ready",
+    workflowRunId: "40123456791",
+    workflowRunAttempt: 1,
+    authorizationId: "auth-multiuser-migration-auth",
+    lineageDigest: "c".repeat(64),
+    spawnState: "started",
+    ...overrides,
+  };
+  return [
+    "schemaVersion=2",
+    `manifestId=${marker.manifestId}`,
+    `releaseSha=${marker.releaseSha}`,
+    `state=${marker.state}`,
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    `spawnState=${marker.spawnState}`,
+    "",
+  ].join("\n");
+}
+
 async function createDynamicWorkoutHandoffRepository() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-dynamic-handoff-"));
   directories.push(directory);
@@ -197,6 +225,73 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
+  it("hands off the Auth V2 app-ready marker only for an exact migration tree and unchanged runtime", async () => {
+    const deploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const compatibility = readGitCompatibility(process.cwd(), deploySha,
+      AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
+    expect(compatibility.isAncestor).toBe(true);
+    expect(compatibility.criticalObjects).toHaveProperty("prisma");
+    expect(compatibility.criticalObjects).toHaveProperty("src");
+    expect(compatibility.criticalObjects).toHaveProperty("Dockerfile");
+    expect(compatibility.changedPaths.every((changed) => changed.startsWith("tests/")
+      || changed === ".github/workflows/production-full-history-recalculate.yml"
+      || ["scripts/deploy.sh", "scripts/production-release-marker.sh", "scripts/production-schema-deploy-handoff.mjs"].includes(changed))).toBe(true);
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-handoff-"));
+    directories.push(directory);
+    const markerPath = path.join(directory, "marker");
+    await writeFile(markerPath, authMultiuserMarkerText(), { flag: "wx", mode: 0o600 });
+    const handoff = evaluateSchemaDeployHandoff({
+      markerText: await readFile(markerPath, "utf8"), deploySha, ...compatibility,
+    });
+    expect(handoff).toMatchObject({ action: "write", marker: {
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      migrationOriginSha: AUTH_MULTIUSER_MIGRATION_APP_SHA,
+      deploySha,
+      state: "schema-applied",
+      workflowRunId: "40123456791",
+    } });
+    expect(evaluateSchemaDeployHandoff({ markerText: handoff.bytes, deploySha, ...compatibility }).action).toBe("replay");
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText(), deploySha, ...compatibility,
+      changedPaths: [...compatibility.changedPaths, "src/app/page.tsx"],
+    })).toThrow(/not allowlisted for this schema handoff/);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText({ state: "schema-applied" }), deploySha, ...compatibility,
+    })).toThrow(/Auth migration marker run, lineage, origin, or state is not admitted/);
+  }, 30_000);
+
+  it.skipIf(process.platform === "win32")("atomically publishes and replays the Auth V3 handoff through the normal marker path", async () => {
+    const deploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-handoff-"));
+    directories.push(directory);
+    const markerPath = path.join(directory, "marker");
+    await writeFile(markerPath, authMultiuserMarkerText(), { flag: "wx", mode: 0o600 });
+    const handoff = await applySchemaDeployHandoff({ markerPath, deploySha, repo: process.cwd() });
+    expect(handoff).toMatchObject({ action: "write", marker: {
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      migrationOriginSha: AUTH_MULTIUSER_MIGRATION_APP_SHA,
+      deploySha,
+      state: "schema-applied",
+    } });
+    expect((await applySchemaDeployHandoff({ markerPath, deploySha, repo: process.cwd() })).action).toBe("replay");
+  }, 30_000);
+
+  it("rejects Auth marker handoff when runtime source changed after the migration app-ready release", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-runtime-drift-"));
+    directories.push(directory);
+    const repository = path.join(directory, "repo");
+    execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+    const runtimePath = path.join(repository, "src/modules/profile/profile.repository.ts");
+    await writeFile(runtimePath, `${await readFile(runtimePath, "utf8")}\n// incompatible auth runtime fixture\n`);
+    execFileSync("git", ["-C", repository, "add", "src/modules/profile/profile.repository.ts"]);
+    execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+      "commit", "--quiet", "-m", "Auth runtime compatibility fixture"]);
+    const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(() => readGitCompatibility(repository, candidateSha,
+      AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id)).toThrow(/src differs from the migration origin/);
+  }, 30_000);
+
   it("hands off the dynamic-workout marker only across an exact migration tree and unchanged nullable-session reader", async () => {
     const { repository, originSha, candidateSha } = await createDynamicWorkoutHandoffRepository();
     const compatibility = readGitCompatibility(repository, candidateSha, originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id);
@@ -428,7 +523,7 @@ describe("schema deploy compatibility handoff", () => {
       expect(() => evaluateSchemaDeployHandoff({
         markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
         changedPaths: [...compatibility.changedPaths, changedPath],
-      })).toThrow(/not content-bound/);
+      })).toThrow(/not allowlisted for this schema handoff/);
     }
     const alteredRuntime = {
       ...compatibility.changedPathObjects,

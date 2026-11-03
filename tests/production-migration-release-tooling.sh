@@ -74,7 +74,7 @@ FINAL_IDENTITY_LINE="$(grep -nF 'assertPrismaTargetMatchesSignedIdentity(finalGu
 MARKER_WRITE_LINE="$(grep -nF 'const marker = await markerWriter({' "$WRAPPER" | cut -d: -f1)"
 PRISMA_SPAWN_LINE="$(grep -nF 'child = spawn(' "$WRAPPER" | cut -d: -f1)"
 SPAWN_ACK_LINE="$(grep -nF 'spawnAcknowledger({' "$WRAPPER" | cut -d: -f1)"
-APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$DEPLOY_SCRIPT" | cut -d: -f1)"
+APP_READY_LINE="$(grep -m1 -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$DEPLOY_SCRIPT" | cut -d: -f1)"
 APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
 [[ -n "$FINAL_GUARD_LINE" && -n "$MIGRATE_LINE" && -n "$POSTFLIGHT_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
 [[ "$FINAL_GUARD_LINE" -lt "$MIGRATE_LINE" && "$MIGRATE_LINE" -lt "$POSTFLIGHT_LINE" && "$POSTFLIGHT_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]

@@ -58,9 +58,15 @@ async function clearIsolatedQaDatabase() {
   // Keep migration history and exercise catalog/config rows used by the picker.
   const tables = rows.map(({ tableName }) => tableName)
     .filter((tableName) => tableName !== "_prisma_migrations"
+      // Profile 1 is a migration prerequisite and is referenced by the
+      // migration-seeded catalog and Auth User relation; reset its fixture
+      // fields below instead of truncating the parent row.
+      && tableName !== "Profile"
+      && tableName !== "User"
       && tableName !== "ExerciseCatalog"
       && tableName !== "ExerciseLoadConfiguration");
-  if (!tables.includes("Profile") || !tables.includes("DailyHealthData")) {
+  if (!rows.some(({ tableName }) => tableName === "Profile")
+    || !tables.includes("DailyHealthData")) {
     throw new Error("Expected BodyCast application tables were not found; refusing to clear the database");
   }
   const quotedTables = tables.map((tableName) => `"${tableName.replaceAll('"', '""')}"`).join(", ");
@@ -277,7 +283,7 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
           const catalogRow = program.config.exercises[exerciseIndex]!;
           const isBodyweight = exercise.resistanceType === "BODYWEIGHT";
           return {
-            profileId: 1, sourceExerciseCatalogId: exercise.exerciseCatalogId, snapshotExerciseName: catalogRow.name,
+            sourceExerciseCatalogId: exercise.exerciseCatalogId, snapshotExerciseName: catalogRow.name,
             sortOrder: exercise.sortOrder, plannedSets: exercise.plannedSets,
             resistanceType: exercise.resistanceType, origin: "PLANNED",
             sets: { create: Array.from({ length: exercise.plannedSets }, (_, setIndex) => ({
@@ -306,7 +312,6 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
       status: "ACTIVE", entryMode: "LIVE", matchStatus: "PENDING", matchMethod: null,
       webStartedAt: activeWorkoutStart,
       exercises: { create: activeProgram.version.exercises.slice(0, 3).map((exercise, exerciseIndex) => ({
-        profileId: 1,
         sourceExerciseCatalogId: exercise.exerciseCatalogId,
         snapshotExerciseName: activeProgram.config.exercises[exerciseIndex]!.name,
         sortOrder: exercise.sortOrder, plannedSets: exercise.plannedSets,
@@ -336,9 +341,15 @@ async function main() {
     throw new Error("QA database URL changed before reset; refusing to seed");
   }
   await clearIsolatedQaDatabase();
-  await prisma.profile.create({
-    data: {
+  await prisma.profile.upsert({
+    where: { id: 1 },
+    create: {
       id: 1, locale: "uk", sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
+      heightCm: 180, targetWeightKg: 78, targetDate: new Date("2027-03-01T00:00:00.000Z"),
+      autoAdvanceExercises: true,
+    },
+    update: {
+      locale: "uk", sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
       heightCm: 180, targetWeightKg: 78, targetDate: new Date("2027-03-01T00:00:00.000Z"),
       autoAdvanceExercises: true,
     },

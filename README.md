@@ -1,30 +1,112 @@
 # BodyCast
 
-BodyCast — персональний full-stack застосунок на Next.js, PostgreSQL і Prisma. Поточна версія містить health endpoint та idempotent Apple Health synchronization API. Математична модель прогнозування ще не реалізована.
+BodyCast is a personal health and training analytics application. It brings daily health measurements, workout history, strength training, and model-based body-composition estimates into one inspectable timeline.
 
-## Local Development
+The project emphasizes source provenance and data quality: missing measurements remain unknown, workout energy shows where an estimate came from, and model outputs expose freshness and coverage instead of presenting one unexplained score.
 
-Вимоги: Docker Engine і Docker Compose v2. Для запуску поза Docker потрібен Node.js 24 LTS та npm.
+> BodyCast provides estimates and planning scenarios, not medical advice or guaranteed outcomes.
 
-```bash
-cp .env.example .env
-docker compose up --build
-```
+## Screenshots
 
-Development URL: <http://localhost:3000>
+These captures use synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records.
 
-Зміни TypeScript/React підхоплюються через bind mount. Контейнерні `node_modules` і `.next` зберігаються в окремих volumes.
+| Daily overview | Health history |
+| --- | --- |
+| ![BodyCast dashboard with synthetic daily health and activity data](docs/images/bodycast-dashboard.png) | ![BodyCast history with synthetic weight, heart-rate, and nutrition trends](docs/images/bodycast-history.png) |
 
-```bash
-docker compose up
-docker compose down
-docker compose logs -f app
-```
+| Training diary | Model diagnostics |
+| --- | --- |
+| ![BodyCast training diary with synthetic programs and sessions](docs/images/bodycast-training.png) | ![BodyCast model coverage and readiness diagnostics](docs/images/bodycast-diagnostics.png) |
 
-## Testing
+## What it does
+
+- **Health history:** stores daily measurements and timestamped health samples, with charts for weight, nutrition, heart rate, sleep, and activity.
+- **Health sync:** accepts Apple Shortcut payloads through a validated API and retains point-level timestamps where supplied.
+- **Training diary:** manages strength programs, sessions, exercises, sets, retrospective workout matching, and Stepper activity.
+- **Active Energy:** resolves workout energy from available device and BodyCast evidence while retaining source and provenance information.
+- **Model transparency:** shows input coverage, gaps, model status, and the distinction between observed values and derived estimates.
+- **Forecast and goal planning:** explores scenario-based weight trajectories and target feasibility when the required current model state is available.
+- **Body Map:** presents mapped training exposure through the application's 3D-first anatomy view.
+- **Profile and access:** supports email-verified accounts, profile-scoped API keys, and profile-scoped application data.
+
+Forecast and goal outputs depend on the freshness and availability of upstream model state. The local screenshot fixture used for this README currently renders those pages but returns `initial-state-unavailable` when asked to calculate a new scenario; no forecast result is shown here.
+
+## Technology
+
+| Area | Technologies |
+| --- | --- |
+| Web application | Next.js 16 App Router, React 19, TypeScript 5, CSS Modules |
+| Data and persistence | PostgreSQL 17, Prisma 6 |
+| Authentication | Better Auth 1.7 with email OTP and profile-scoped API keys |
+| Validation and charts | Zod 4, Recharts 3 |
+| Local infrastructure | Docker Compose |
+| Quality checks | ESLint 9, TypeScript, Vitest 3, Playwright 1, GitHub Actions |
+
+Pinned versions are defined by `package.json`, `package-lock.json`, `.nvmrc`, and the Dockerfiles.
+
+## Architecture
+
+The application uses the Next.js App Router for pages and HTTP endpoints. Route handlers validate requests, resolve a session or API-key principal, and delegate work to feature services and repositories. Prisma persists source records and versioned derived results in PostgreSQL.
+
+Health and training changes invalidate affected calculations and enqueue durable refresh work. Model and energy publication uses source fingerprints, generations, and currentness fences so readers can distinguish current results from stale or unavailable outputs. The complete component diagram and data-layer notes are in [the architecture overview](docs/architecture/project-overview.md).
+
+## Getting started
+
+### Requirements
+
+- Node.js 24 (the version pinned by `.nvmrc` and Docker)
+- npm
+- Docker Engine with Docker Compose v2 for the containerized development stack
+
+Install dependencies and copy the safe example environment:
 
 ```bash
 npm ci
+cp .env.example .env
+```
+
+Set local-only values in `.env`. Never use a production `DATABASE_URL`, API key, Auth secret, or mail-provider credential for local development.
+
+### Database setup caveat
+
+The latest Auth migration requires an existing legacy Profile 1 row. Consequently, applying the complete migration tree to a brand-new empty database is not a supported one-command setup: `docker compose up --build` can stop at `20261027120000_auth_multiuser` unless the local database has first been prepared with the legacy baseline and a synthetic Profile 1. The PostgreSQL integration job in [CI](.github/workflows/ci.yml) documents that preparation order. Do not work around this by pointing local commands at production.
+
+The repository's seeded full-site preview is described in [the local QA guide](docs/qa/fullsite-preview.md). The seed refuses any database other than `bodycast_qa` at `127.0.0.1:55434` with the expected QA database role, then populates synthetic records and rebuilds model outputs through application services.
+
+Once a local database has been prepared, the supported development container command is:
+
+```bash
+docker compose up --build
+```
+
+The development app is available at <http://localhost:3000>. Its Compose startup runs Prisma client generation and `prisma migrate deploy` against the local Compose database. Integration tests require a dedicated isolated PostgreSQL database; follow the CI workflow rather than reusing a production or personal database.
+
+## Apple Shortcut sync API
+
+Create a profile-scoped key while signed in under **Profile → Personal API keys**. The secret is shown only once. Send the complete key in the `X-API-Key` header; do not use a key ID or a `Bearer` prefix.
+
+```bash
+curl -X POST http://localhost:3000/api/v1/health/sync \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_PERSONAL_API_KEY" \
+  -d '{
+    "days": [{
+      "Date": "2026-08-22",
+      "Weightkg": "89.15",
+      "Steps": "23"
+    }]
+  }'
+```
+
+The sync API also accepts the newer range format with timestamped series such as `caloriesKcal`, `proteinG`, `fatG`, `carbsG`, `weightKg`, `bodyFatPercent`, and `averageWalkingSpeedKmh`. The server validates timestamps and series lengths, normalizes the payload, and retains individual observations for later analysis. See the health sync route schemas for the current request contract.
+
+The range format can represent up to three calendar days. Calories and macros require one value per day; weight and body-fat use the last value recorded that day; walking speed is averaged. The server derives strength-training minutes from the latest workout's start and end times and leaves the value unknown when that workout started on another date. In legacy daily fields, `0` means no recorded value and is stored/read as `null`; repeated syncs update the daily record for that date.
+
+## Testing and validation
+
+Useful local commands:
+
+```bash
 npm run prisma:generate
 npm run lint
 npm run typecheck
@@ -32,187 +114,34 @@ npm run test:unit
 npm run test:coverage
 ```
 
-Integration tests потребують окремої PostgreSQL database зі застосованими migrations:
+PostgreSQL integration tests require the isolated database identity and migration preconditions configured in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). `npm run test:integration` must not be pointed at production. The full CI workflow also runs model smoke validations and a production build.
 
-```bash
-npm run prisma:migrate:deploy
-npm run test:integration
-```
+## Repository map
 
-У development Compose їх можна запустити так:
-
-```bash
-docker compose exec app npm run test:integration
-```
-
-GitHub Actions використовує окремий PostgreSQL service container `bodycast_test`; production database у тестах не використовується. Coverage показує statements, branches, functions і lines. Global thresholds навмисно не встановлені на 100%.
-
-## Apple Health API
-
-```bash
-curl -X POST http://localhost:3000/api/v1/health/sync \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: YOUR_KEY" \
-  -d '{
-    "days": [{
-      "Date": "2026-08-22",
-      "Weightkg": "89.15",
-      "Steps": "23",
-      "Strengthtrainingminutes": "22. 8. 2026, 13:01 22. 8. 2026, 14:16"
-    }]
-  }'
-```
-
-Legacy `days` може містити денні записи. Новий Shortcut надсилає один range-запис,
-де `days[0].date` є моментом запуску, а `caloriesKcal`, `proteinG`, `fatG`,
-`carbsG`, `weightKg`, `bodyFatPercent` і `averageWalkingSpeedKmh` містять
-timestamped серії. Сервер відновлює з них до трьох календарних днів: КБЖВ має
-рівно одне значення на день, для ваги й body fat використовується останнє
-значення дня, а швидкість ходьби усереднюється. Усі окремі точки цих серій
-зберігаються для подальшого аналізу. Некоректна JSON-строка, timestamp або
-нерівна кількість timestamps/значень відхиляє весь запит.
-
-Сервер сам обчислює
-`strengthTrainingMinutes` з часу початку та завершення останнього тренування. Якщо
-останнє тренування почалося не в дату цього денного запису, сервер зберігає `null` — запису про тривалість тренування немає.
-Для всіх денних показників `0` означає відсутній запис (`null`), зокрема для
-калорій, БЖВ, кроків та силового тренування. Старі нулі також читаються як відсутні. Повторний запит за ту саму дату оновлює наявний
-daily record.
-
-## Production Build
-
-Next.js використовує standalone output. Production container запускається від непривілейованого користувача `nextjs` і не містить повного development source tree.
-
-```bash
-npm run build
-docker build --target production -t bodycast-app:latest .
-docker compose --env-file .env.production.example -f docker-compose.prod.yml config
-```
-
-Prisma CLI ізольований в окремому `migrator` image і не додається до runtime app image.
-
-## Server Setup
-
-BodyCast використовує вже наявні на сервері Docker, Caddy, wildcard DNS і external network `gymbeam-internal`. Другий Caddy та порти `80/443` не створюються. App і PostgreSQL не публікують host ports.
-
-Одноразова підготовка:
-
-```bash
-sudo mkdir -p /srv/bodycast
-sudo chown -R DEPLOY_USER:DEPLOY_USER /srv/bodycast
-cd /srv
-git clone git@github.com:OWNER/BODYCAST.git bodycast
-cd /srv/bodycast
-cp .env.production.example .env
-chmod 600 .env
-```
-
-Заповніть `.env` реальними випадковими secrets. Password у `DATABASE_URL` має бути URL-encoded. Перевірте доступ сервера до repository:
-
-```bash
-git fetch origin main
-docker network inspect gymbeam-internal
-```
-
-Production resources мають окремі назви: `bodycast-app-prod`, `bodycast-db-prod`, `bodycast-postgres-prod`, `bodycast-backend-prod`.
-
-## GitHub Secrets
-
-Створіть GitHub Environment `production` і додайте:
-
-| Secret | Приклад/призначення |
+| Path | Responsibility |
 | --- | --- |
-| `SSH_HOST` | IP Ubuntu-сервера |
-| `SSH_USER` | deployment user |
-| `SSH_PRIVATE_KEY` | ключ GitHub Actions → server |
-| `SSH_PORT` | SSH port, зазвичай `22` |
-| `DEPLOY_PATH` | `/srv/bodycast` |
-| `APP_HOST` | `bodycast.mapa-svietidiel.sk` |
-| `CADDY_ROUTES_PATH` | `/srv/gymbeam/runtime/caddy-dynamic` |
+| `src/app/` | App Router pages, route handlers, and page-level UI |
+| `src/modules/health/` | Health sync, source normalization, retention, and workout feed handling |
+| `src/modules/training/` | Strength diary, Stepper, workout matching, load accounting, and training refresh |
+| `src/modules/model-episodes/` | Model episodes, persisted physiology state, and publication lifecycle |
+| `src/modules/activity/` | Active Energy materialization, invalidation, and canonical publication |
+| `src/modules/model-forecast/`, `model-goal-planning/` | Forecast and goal scenario calculations |
+| `prisma/` | PostgreSQL schema and migration history |
+| `tests/` | Unit and PostgreSQL integration coverage |
+| `scripts/qa/` | Guarded local-only preview setup and screenshot tooling |
+| `docs/` | Architecture, QA, research, and operational runbooks |
 
-SSH key дозволяє Actions зайти на сервер. Для private repository окремо перевірте, що сервер має deploy key/read access до BodyCast repository.
+## Project status and operational notes
 
-## First Deployment
+This repository contains a feature-rich personal application and active experimental model work. A route existing in the UI does not guarantee that every derived result is currently publishable; source coverage, model generation, and freshness gates remain visible parts of the product.
 
-Після server setup можна запустити workflow вручну або виконати:
+Production operations are separate from local development. Deployment and migration procedures are documented in [`docs/development/production-deploy.md`](docs/development/production-deploy.md), [`docs/development/production-migration-v5-runbook.md`](docs/development/production-migration-v5-runbook.md), and the related recovery runbooks. Ordinary application release and production schema change are distinct workflows; production migrations require their own authorization. This README does not claim that production was verified as part of the portfolio work.
 
-```bash
-cd /srv/bodycast
-APP_HOST=bodycast.mapa-svietidiel.sk \
-CADDY_ROUTES_PATH=/srv/gymbeam/runtime/caddy-dynamic \
-bash scripts/deploy.sh
-```
+No license file is present in this checkout. Add an appropriate license before inviting external contributions or granting redistribution rights.
 
-Deploy script:
+## Possible next improvements
 
-1. перевіряє production Compose;
-2. зберігає попередній app image для rollback;
-3. збирає runtime і migrator images;
-4. очікує healthy PostgreSQL;
-5. запускає `prisma migrate deploy`;
-6. оновлює тільки BodyCast app;
-7. перевіряє container health;
-8. atomically записує `bodycast.caddy`, validate/reload існуючого `gymbeam-caddy`;
-9. перевіряє HTTPS `/api/health`.
-
-Deployment workflow запускається лише для push у `main` після успішного CI job.
-
-## Database Migrations
-
-Production використовує тільки:
-
-```bash
-docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
-```
-
-Ця команда виконує `prisma migrate deploy`. `prisma migrate dev` дозволений лише локально для створення нових migrations:
-
-```bash
-docker compose exec app npm run prisma:migrate -- --name describe_change
-```
-
-## Rollback
-
-Якщо новий app не стає healthy, `scripts/deploy.sh` автоматично повертає `bodycast-app:rollback` і recreates app container. PostgreSQL volume не видаляється.
-
-Database migrations автоматично назад не відкочуються. Production migrations мають бути backward-compatible; для destructive schema change потрібна окрема reviewed forward-fix migration.
-
-Ручний rollback image:
-
-```bash
-docker image tag bodycast-app:rollback bodycast-app:latest
-docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app
-```
-
-## Logs
-
-```bash
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f app
-docker compose -f docker-compose.prod.yml logs --tail=100 db
-docker logs --tail=100 gymbeam-caddy
-curl -fsS https://bodycast.mapa-svietidiel.sk/api/health
-```
-
-API keys і database passwords не логуються application code.
-
-## Backup
-
-Створити timestamped PostgreSQL backup на сервері:
-
-```bash
-mkdir -p /srv/bodycast/backups
-docker compose -f docker-compose.prod.yml exec -T db \
-  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc \
-  > "/srv/bodycast/backups/bodycast-$(date +%Y%m%d-%H%M%S).dump"
-```
-
-Змінні shell можна завантажити без виводу secrets:
-
-```bash
-set -a
-source .env
-set +a
-```
-
-Регулярно копіюйте backups за межі цього сервера та періодично перевіряйте відновлення на окремій test database.
+- Add a single, disposable local database bootstrap that prepares the legacy Profile 1 prerequisite before the current Auth migrations.
+- Provide a local-only email capture method for OTP-based preview accounts without using production email credentials.
+- Update the full-site screenshot helper to attach an authenticated local session to its API preflight requests.
+- Make the seeded local preview publish a forecast-ready current model state, or label the forecast section as unavailable in that fixture.

@@ -68,9 +68,10 @@ Open <http://127.0.0.1:3001/dashboard>. `BODYCAST_FULLSITE_PREVIEW=1` gives Next
 
 ## Current preview limitations
 
-- The seeded fixture currently writes no Unified V4 rows. Forecast and Goal render their forms, but their calculate APIs return `initial-state-unavailable`; this preview cannot demonstrate a completed forecast result.
+- The seed creates V7 outputs but does not publish Unified V4. A fresh seed alone therefore leaves Forecast and Goal without a current upstream state. The README forecast capture was generated only after publishing synthetic V4 output in the disposable local QA database.
 - `scripts/qa/capture-fullsite-preview.ts` performs API preflight requests without forwarding a session cookie. It is not currently compatible with the session-protected API routes until its auth handling is updated.
 - The checked-in README screenshots were captured from this synthetic database using a transient local test session and an in-memory OTP mail stub. No real email was sent and no production account was used.
+- The seed sets the Profile 1 preview locale to English and uses English names for its synthetic training programs and exercise snapshots.
 
 To stop the disposable database, stop only the container created for this preview:
 

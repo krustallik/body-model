@@ -244,9 +244,15 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
   const catalog = await prisma.exerciseCatalog.findMany({ where: { profileId: 1, isActive: true }, orderBy: { id: "asc" }, take: 10 });
   if (catalog.length < 6) throw new Error(`Expected at least six migration-seeded exercises, found ${catalog.length}`);
 
+  const previewExerciseNames = [
+    "30° incline dumbbell press", "Flat-bench dumbbell fly", "Handle push-up", "Seated dumbbell press",
+    "Single-arm lateral raise", "Single-arm cable triceps extension", "Bent-over single-arm dumbbell extension",
+    "Single-arm seated cable row", "Hyperextension", "Kneeling single-arm dumbbell curl",
+  ];
+  const previewExerciseNameById = new Map(catalog.map((exercise, index) => [exercise.id, previewExerciseNames[index] ?? exercise.name]));
   const programConfigs = [
-    { name: "Сила A — база", exercises: catalog.slice(0, 5) },
-    { name: "Сила B — обсяг", exercises: catalog.slice(5, 10) },
+    { name: "Strength A · Foundations", exercises: catalog.slice(0, 5) },
+    { name: "Strength B · Volume", exercises: catalog.slice(5, 10) },
   ];
   const programs = [];
   for (const [programIndex, config] of programConfigs.entries()) {
@@ -283,7 +289,8 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
           const catalogRow = program.config.exercises[exerciseIndex]!;
           const isBodyweight = exercise.resistanceType === "BODYWEIGHT";
           return {
-            sourceExerciseCatalogId: exercise.exerciseCatalogId, snapshotExerciseName: catalogRow.name,
+            sourceExerciseCatalogId: exercise.exerciseCatalogId,
+            snapshotExerciseName: previewExerciseNameById.get(catalogRow.id) ?? catalogRow.name,
             sortOrder: exercise.sortOrder, plannedSets: exercise.plannedSets,
             resistanceType: exercise.resistanceType, origin: "PLANNED",
             sets: { create: Array.from({ length: exercise.plannedSets }, (_, setIndex) => ({
@@ -313,7 +320,8 @@ async function seedProgramsAndSessions(workouts: Awaited<ReturnType<typeof seedD
       webStartedAt: activeWorkoutStart,
       exercises: { create: activeProgram.version.exercises.slice(0, 3).map((exercise, exerciseIndex) => ({
         sourceExerciseCatalogId: exercise.exerciseCatalogId,
-        snapshotExerciseName: activeProgram.config.exercises[exerciseIndex]!.name,
+        snapshotExerciseName: previewExerciseNameById.get(activeProgram.config.exercises[exerciseIndex]!.id)
+          ?? activeProgram.config.exercises[exerciseIndex]!.name,
         sortOrder: exercise.sortOrder, plannedSets: exercise.plannedSets,
         resistanceType: exercise.resistanceType, origin: "PLANNED",
         sets: { create: exerciseIndex === 0 ? [
@@ -344,12 +352,12 @@ async function main() {
   await prisma.profile.upsert({
     where: { id: 1 },
     create: {
-      id: 1, locale: "uk", sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
+      id: 1, locale: "en", sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
       heightCm: 180, targetWeightKg: 78, targetDate: new Date("2027-03-01T00:00:00.000Z"),
       autoAdvanceExercises: true,
     },
     update: {
-      locale: "uk", sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
+      locale: "en", sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
       heightCm: 180, targetWeightKg: 78, targetDate: new Date("2027-03-01T00:00:00.000Z"),
       autoAdvanceExercises: true,
     },

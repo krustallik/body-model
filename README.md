@@ -8,7 +8,7 @@ The project emphasizes source provenance and data quality: missing measurements 
 
 ## Screenshots
 
-These captures use synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records.
+All screenshots use the English UI and synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records. The Body Map preview displays the 3D anatomy view; training exposure is not connected in this fixture.
 
 | Daily overview | Health history |
 | --- | --- |
@@ -18,6 +18,14 @@ These captures use synthetic data created in an isolated local PostgreSQL databa
 | --- | --- |
 | ![BodyCast training diary with synthetic programs and sessions](docs/images/bodycast-training.png) | ![BodyCast model coverage and readiness diagnostics](docs/images/bodycast-diagnostics.png) |
 
+| 3D Body Map | Forecast and uncertainty |
+| --- | --- |
+| ![Interactive 3D anatomy view in BodyCast](docs/images/bodycast-body-map.png) | ![BodyCast forecast chart with recent history, projection, and uncertainty bands](docs/images/bodycast-forecast.png) |
+
+| Stepper workout diagnostics | |
+| --- | --- |
+| ![Stepper workout diagnostics with observed steps and active energy estimates](docs/images/bodycast-stepper-diagnostic.png) | |
+
 ## What it does
 
 - **Health history:** stores daily measurements and timestamped health samples, with charts for weight, nutrition, heart rate, sleep, and activity.
@@ -26,10 +34,10 @@ These captures use synthetic data created in an isolated local PostgreSQL databa
 - **Active Energy:** resolves workout energy from available device and BodyCast evidence while retaining source and provenance information.
 - **Model transparency:** shows input coverage, gaps, model status, and the distinction between observed values and derived estimates.
 - **Forecast and goal planning:** explores scenario-based weight trajectories and target feasibility when the required current model state is available.
-- **Body Map:** presents mapped training exposure through the application's 3D-first anatomy view.
+- **Body Map:** provides an interactive 3D anatomy view for mapped exercise exposure when exercise-to-muscle data are available.
 - **Profile and access:** supports email-verified accounts, profile-scoped API keys, and profile-scoped application data.
 
-Forecast and goal outputs depend on the freshness and availability of upstream model state. The local screenshot fixture used for this README currently renders those pages but returns `initial-state-unavailable` when asked to calculate a new scenario; no forecast result is shown here.
+Forecast and goal outputs depend on the freshness and availability of upstream model state. The forecast screenshot shows an application-generated result based on the synthetic local preview data.
 
 ## Technology
 

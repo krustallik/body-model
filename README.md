@@ -8,23 +8,27 @@ The project emphasizes source provenance and data quality: missing measurements 
 
 ## Screenshots
 
-All screenshots use the English UI and synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records. The Body Map preview displays the 3D anatomy view; training exposure is not connected in this fixture.
+All screenshots use the English UI and synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records. Desktop captures use a 1600px-wide viewport; phone captures use a 390px-wide mobile viewport. The Body Map preview displays the 3D anatomy view; training exposure is not connected in this fixture.
+
+### Desktop
 
 | Daily overview | Health history |
 | --- | --- |
 | ![BodyCast dashboard with synthetic daily health and activity data](docs/images/bodycast-dashboard.png) | ![BodyCast history with synthetic weight, heart-rate, and nutrition trends](docs/images/bodycast-history.png) |
 
-| Training diary | Model diagnostics |
-| --- | --- |
-| ![BodyCast training diary with synthetic programs and sessions](docs/images/bodycast-training.png) | ![BodyCast model coverage and readiness diagnostics](docs/images/bodycast-diagnostics.png) |
-
 | 3D Body Map | Forecast and uncertainty |
 | --- | --- |
 | ![Interactive 3D anatomy view in BodyCast](docs/images/bodycast-body-map.png) | ![BodyCast forecast chart with recent history, projection, and uncertainty bands](docs/images/bodycast-forecast.png) |
 
-| Stepper workout diagnostics | |
+### Phone
+
+| Training diary | Active strength session |
 | --- | --- |
-| ![Stepper workout diagnostics with observed steps and active energy estimates](docs/images/bodycast-stepper-diagnostic.png) | |
+| ![BodyCast training diary adapted to a phone screen](docs/images/bodycast-training.png) | ![Phone view of an active strength session with set logging controls](docs/images/bodycast-strength-session.png) |
+
+| Model diagnostics | Stepper energy diagnostics |
+| --- | --- |
+| ![BodyCast model status and coverage on a phone screen](docs/images/bodycast-diagnostics.png) | ![Phone view of Stepper diagnostics with observed steps and active energy](docs/images/bodycast-stepper-diagnostic.png) |
 
 ## What it does
 

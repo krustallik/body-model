@@ -23,6 +23,7 @@ const V4_COMPATIBLE_TEST_CANDIDATE_SHA = "f910d2a45dfa676fada5fab42c9e8946c97872
 const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
 const TRAINING_MIGRATION_SHA = "73f0e49aa2fbb4595f7acfc00d16f76bfa2e2da1";
 const AUTH_MULTIUSER_MIGRATION_APP_SHA = "18e67d53856af1f4742bbe9626abbd005b70e8bf";
+const AUTH_PREVIOUS_DEPLOY_SHA = "c616eba0f874c8c481cb889fade149b68f9ba590";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -226,8 +227,8 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
-  it("keeps the existing Auth app-ready marker valid while advancing only reviewed release-tool blobs", () => {
-    const previousDeploySha = "c616eba0f874c8c481cb889fade149b68f9ba590";
+  it("keeps the existing Auth app-ready marker valid and blocks an unreviewed README change", () => {
+    const previousDeploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const previousCompatibility = readGitCompatibility(process.cwd(), previousDeploySha,
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
     const previousHandoff = evaluateSchemaDeployHandoff({
@@ -251,19 +252,16 @@ describe("schema deploy compatibility handoff", () => {
     const currentDeploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const currentCompatibility = readGitCompatibility(process.cwd(), currentDeploySha,
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
-    expect(evaluateSchemaDeployHandoff({
+    expect(currentCompatibility.changedPaths).toContain("README.md");
+    expect(() => evaluateSchemaDeployHandoff({
       markerText: previousAppReadyMarker,
       deploySha: currentDeploySha,
       ...currentCompatibility,
-    })).toMatchObject({ action: "write", marker: {
-      migrationOriginSha: AUTH_MULTIUSER_MIGRATION_APP_SHA,
-      deploySha: currentDeploySha,
-      state: "schema-applied",
-    } });
-  });
+    })).toThrow("Schema deploy handoff blocked: path README.md is not allowlisted for this schema handoff");
+  }, 30_000);
 
-  it("hands off the Auth V2 app-ready marker only for an exact migration tree and unchanged runtime", async () => {
-    const deploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  it("hands off the Auth V2 app-ready marker only from the exact reviewed migration tree", async () => {
+    const deploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const compatibility = readGitCompatibility(process.cwd(), deploySha,
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
     expect(compatibility.isAncestor).toBe(true);
@@ -294,8 +292,8 @@ describe("schema deploy compatibility handoff", () => {
       markerText: authMultiuserMarkerText(), deploySha, ...compatibility,
       changedPathObjects: {
         ...compatibility.changedPathObjects,
-        "scripts/production-route-primitives.sh": {
-          ...compatibility.changedPathObjects["scripts/production-route-primitives.sh"],
+        ".github/workflows/production-full-history-recalculate.yml": {
+          ...compatibility.changedPathObjects[".github/workflows/production-full-history-recalculate.yml"],
           deployBlob: "e".repeat(40),
         },
       },
@@ -310,7 +308,7 @@ describe("schema deploy compatibility handoff", () => {
   }, 30_000);
 
   it.skipIf(process.platform === "win32")("atomically publishes and replays the Auth V3 handoff through the normal marker path", async () => {
-    const deploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const deploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-handoff-"));
     directories.push(directory);
     const markerPath = path.join(directory, "marker");

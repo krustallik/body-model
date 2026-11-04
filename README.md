@@ -8,7 +8,7 @@ The project emphasizes source provenance and data quality: missing measurements 
 
 ## Screenshots
 
-All screenshots use the English UI and synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records. Desktop captures use a 1600px-wide viewport; phone captures use a 390px-wide mobile viewport. The Body Map preview displays the 3D anatomy view; training exposure is not connected in this fixture.
+All screenshots use the English UI and synthetic data created in an isolated local PostgreSQL database. They do not show a user's production records. Exercise names retain their stored language. Desktop captures use a 1600px-wide viewport; phone captures use a 390px-wide mobile viewport. The Body Map preview displays the 3D anatomy view; training exposure is not connected in this fixture.
 
 ### Desktop
 
@@ -24,7 +24,7 @@ All screenshots use the English UI and synthetic data created in an isolated loc
 
 | Training diary | Active strength session |
 | --- | --- |
-| ![BodyCast training diary adapted to a phone screen](docs/images/bodycast-training.png) | ![Phone view of an active strength session with set logging controls](docs/images/bodycast-strength-session.png) |
+| ![BodyCast training diary adapted to a phone screen](docs/images/bodycast-training.png) | ![Phone view of an active strength exercise with its illustration and set logging controls](docs/images/bodycast-strength-session.png) |
 
 | Model diagnostics | Stepper energy diagnostics |
 | --- | --- |

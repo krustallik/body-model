@@ -151,6 +151,9 @@ describe("conservative deterministic personalization", () => {
     expect(Math.abs(result.parameters.activityCalibration - 0.88)).toBeLessThan(0.03);
     expect(result.diagnostics.twoParameterIdentifiability).toBe("adequate");
     expect(result.diagnostics.personalizationAccepted).toBe(true);
+    expect(result.diagnostics.attemptedFullOffsetKcalPerDay).toBe(result.parameters.personalOffsetKcalPerDay);
+    expect(result.diagnostics.attemptedFullActivityCalibration).toBe(result.parameters.activityCalibration);
+    expect(result.diagnostics.attemptedFullValidationNis).toBe(result.diagnostics.validationNis);
     expect(result.diagnostics.validationNis!)
       .toBeLessThan(result.diagnostics.defaultValidationNis!);
   });
@@ -165,6 +168,9 @@ describe("conservative deterministic personalization", () => {
     expect(result.status).toBe("offset-only");
     expect(result.parameters.personalOffsetKcalPerDay).toBeCloseTo(140, -1);
     expect(result.parameters.activityCalibration).toBe(1);
+    expect(result.diagnostics.attemptedOffsetKcalPerDay)
+      .toBe(result.parameters.personalOffsetKcalPerDay);
+    expect(result.diagnostics.attemptedOffsetValidationNis).toBe(result.diagnostics.validationNis);
   });
 
   it("does not fit two parameters when Activity is nearly constant", () => {
@@ -199,6 +205,10 @@ describe("conservative deterministic personalization", () => {
   it("uses observation span zero/one semantics before any optimization", () => {
     const none = calibratePersonalization(context([]));
     expect(none.diagnostics.observationSpanDays).toBe(0);
+    expect(none.diagnostics.attemptedOffsetKcalPerDay).toBeNull();
+    expect(none.diagnostics.attemptedOffsetValidationNis).toBeNull();
+    expect(none.diagnostics.attemptedFullActivityCalibration).toBeNull();
+    expect(none.diagnostics.attemptedFullValidationNis).toBeNull();
     const one = calibratePersonalization(context(syntheticHistory({
       count: 1,
       varied: false,
@@ -207,6 +217,16 @@ describe("conservative deterministic personalization", () => {
     })));
     expect(one.diagnostics.observationSpanDays).toBe(1);
     expect(one.status).toBe("insufficient-history");
+  });
+
+  it("does not report a full fit when the observation span is below its gate", () => {
+    const result = calibratePersonalization(context(syntheticHistory({
+      count: 55, varied: true, personalOffsetKcalPerDay: 120, activityCalibration: 0.88,
+    })));
+    expect(result.diagnostics.observationSpanDays).toBe(55);
+    expect(result.diagnostics.attemptedFullOffsetKcalPerDay).toBeNull();
+    expect(result.diagnostics.attemptedFullActivityCalibration).toBeNull();
+    expect(result.diagnostics.attemptedFullValidationNis).toBeNull();
   });
 
   it("retains scientific defaults when defaults generated the observations", () => {
@@ -223,6 +243,7 @@ describe("conservative deterministic personalization", () => {
       activityCalibration: 1,
     });
     expect(result.diagnostics.personalizationAccepted).toBe(false);
+    expect(result.diagnostics.warnings).toContain("validation-improvement-too-small");
   });
 
   it("limits parameter movement from one large positive scale-weight outlier", () => {
@@ -457,27 +478,71 @@ describe("conservative deterministic personalization", () => {
   });
 
   it("flags a bound solution and refuses to present it as trustworthy", () => {
-    const result = calibratePersonalization(context(syntheticHistory({
+    const history = syntheticHistory({
       count: 42,
       varied: false,
       personalOffsetKcalPerDay: 900,
       activityCalibration: 1,
-    })));
+    });
+    const result = calibratePersonalization(context(history));
     expect(result.status).toBe("defaults-retained");
     expect(result.diagnostics.parameterAtBound).toContain("personalOffsetKcalPerDay");
     expect(result.diagnostics.warnings).toContain("parameter-at-bound");
+    expect(result.parameters.personalOffsetKcalPerDay).toBe(0);
+    const attemptedOffset = result.diagnostics.attemptedOffsetKcalPerDay!;
+    expect(attemptedOffset).toBeGreaterThanOrEqual(490);
+    const observations = evaluatePersonalization({
+      ...context(history),
+      personalization: { personalOffsetKcalPerDay: attemptedOffset, activityCalibration: 1 },
+    }).observations.slice(-result.diagnostics.validationObservationCount);
+    const attemptedNis = observations.reduce((sum, observation) => (
+      sum + observation.normalizedInnovationSquared
+    ), 0) / observations.length;
+    expect(result.diagnostics.attemptedOffsetValidationNis).toBeCloseTo(attemptedNis, 12);
+    expect(attemptedNis).toBeLessThan(result.diagnostics.defaultValidationNis! * 0.98);
+    expect(result.diagnostics.validationNis).toBe(result.diagnostics.defaultValidationNis);
+    expect(result.diagnostics.warnings).not.toContain("validation-improvement-too-small");
+  });
+
+  it("also reports insufficient validation improvement when a bound fit worsens validation", () => {
+    const training = syntheticHistory({
+      count: 42, varied: false, personalOffsetKcalPerDay: 900, activityCalibration: 1,
+    });
+    const validation = syntheticHistory({
+      count: 42, varied: false, personalOffsetKcalPerDay: 0, activityCalibration: 1,
+    });
+    const history = training.map((day, index) => (
+      index < 33 ? day : { ...day, measuredWeightKg: validation[index].measuredWeightKg }
+    ));
+    const result = calibratePersonalization(context(history));
+    expect(result.status).toBe("defaults-retained");
+    expect(result.diagnostics.parameterAtBound).toContain("personalOffsetKcalPerDay");
+    expect(result.diagnostics.attemptedOffsetValidationNis!)
+      .toBeGreaterThan(result.diagnostics.defaultValidationNis!);
+    expect(result.diagnostics.warnings).toContain("validation-improvement-too-small");
   });
 
   it("reports an attempted Activity multiplier at its bound", () => {
-    const result = calibratePersonalization(context(syntheticHistory({
+    const history = syntheticHistory({
       count: 100,
       varied: true,
       personalOffsetKcalPerDay: 0,
       activityCalibration: 0.2,
-    })));
+    });
+    const result = calibratePersonalization(context(history));
     expect(result.status).not.toBe("fully-calibrated");
     expect(result.diagnostics.parameterAtBound).toContain("activityCalibration");
     expect(result.diagnostics.warnings).toContain("parameter-at-bound");
+    const offset = result.diagnostics.attemptedFullOffsetKcalPerDay;
+    const activity = result.diagnostics.attemptedFullActivityCalibration;
+    expect(offset).not.toBeNull();
+    expect(activity).not.toBeNull();
+    const observations = evaluatePersonalization({
+      ...context(history),
+      personalization: { personalOffsetKcalPerDay: offset!, activityCalibration: activity! },
+    }).observations.slice(-result.diagnostics.validationObservationCount);
+    const nis = observations.reduce((sum, observation) => sum + observation.normalizedInnovationSquared, 0) / observations.length;
+    expect(result.diagnostics.attemptedFullValidationNis).toBeCloseTo(nis, 12);
   });
 
   it("falls back when the configured local loss probe detects a ridge", () => {

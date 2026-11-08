@@ -179,13 +179,13 @@ function personalizationCopy(status: DiagnosticsDto["personalization"]["status"]
     "invalid-history": ["Історію важко порахувати", "Один або кілька днів не вдалося безпечно порахувати."],
     "offset-only": ["Просте підлаштування увімкнено", "Загальний зсув калорій прийнято; рух лишився типовим."],
     "fully-calibrated": ["Повне підлаштування увімкнено", "І загальний зсув, і масштаб руху пройшли перевірку."],
-    "defaults-retained": ["Залишили типові налаштування", "Даних вистачило спробувати, але підлаштування не пройшло перевірки надійності."],
+    "defaults-retained": ["Залишили типові налаштування", "Даних вистачило спробувати, але підлаштування не покращило перевірку."],
   } : {
     "insufficient-history": ["More history needed", "The model is still using typical settings, not finely tuned to you."],
     "invalid-history": ["History is hard to calculate", "One or more days could not be calculated safely."],
     "offset-only": ["Simple tuning is on", "An overall calorie offset was accepted; movement scaling stays typical."],
     "fully-calibrated": ["Full tuning is on", "Both the overall offset and movement scaling passed checks."],
-    "defaults-retained": ["Typical settings kept", "There was enough data to try, but tuning did not pass the reliability checks."],
+    "defaults-retained": ["Typical settings kept", "There was enough data to try, but tuning did not improve the check."],
   };
   return copy[status];
 }

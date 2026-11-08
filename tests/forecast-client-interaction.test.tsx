@@ -212,7 +212,7 @@ describe("ForecastClient interaction", () => {
     expect(screen.getByText("Future forecast")).toBeTruthy();
     expect(screen.getByText("25–75% forecast interval")).toBeTruthy();
     expect(screen.getByText("5–95% forecast interval")).toBeTruthy();
-    expect(screen.getByText(/historical weight line is recalculated from available records.*some data may have arrived later/i)).toBeTruthy();
+    expect(screen.getByText(/historical model estimate uses measurements available/i)).toBeTruthy();
     expect(screen.getByText(/The forecast updates after you change the horizon, mode, or a number/)).toBeTruthy();
     expect(screen.queryByText(/After changing the horizon, mode, or a number/)).toBeNull();
     expect(requests).toHaveLength(1);
@@ -340,7 +340,7 @@ describe("ForecastClient interaction", () => {
     expect(screen.getByText("Майбутній прогноз")).toBeTruthy();
     expect(screen.getByText("25–75% прогнозу")).toBeTruthy();
     expect(screen.getByText("5–95% прогнозу")).toBeTruthy();
-    expect(screen.getByText(/історичну лінію ваги перераховано.*частина даних могла надійти пізніше/i)).toBeTruthy();
+    expect(screen.getByText(/історична оцінка моделі враховує вимірювання/i)).toBeTruthy();
     expect(screen.getByText(/це не прогноз, зроблений до вимірювання/i)).toBeTruthy();
   });
 

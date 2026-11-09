@@ -294,6 +294,15 @@ test("two-timescale projection is causal, fast residual decays, and the slow sta
     "slow-state decay must account for elapsed days between residual observations");
 });
 
+test("two-timescale projection caps scale-only outlier corrections", () => {
+  const residuals = dailyResiduals([0.2, 0.3, 0.1, 0.25, 0.2, 0.3, 0.1, 12]);
+  const estimate = estimateTwoTimescaleResidual(residuals);
+  assert.equal(estimate.predictResidualKg(1), 2);
+  assert.ok(Math.abs(estimate.predictResidualKg(30)) <= 2);
+  assert.ok(estimate.predictResidualKg(30) < estimate.predictResidualKg(1));
+  assert.throws(() => estimateTwoTimescaleResidual(residuals, { maxAbsPredictionKg: 0 }), /prediction cap/);
+});
+
 test("persistent bias is robust to one extreme residual and bounded independently of energy", () => {
   const ordinary = estimatePersistentBias(dailyResiduals(Array(20).fill(0.4)));
   const outlier = estimatePersistentBias(dailyResiduals([...Array(19).fill(0.4), 9]));

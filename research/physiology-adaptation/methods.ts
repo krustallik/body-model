@@ -154,11 +154,14 @@ export function filterOnlyStateCorrection(state: MinimalMassState, correctionKg:
 /** Candidate C: causal, robust slow/fast decomposition of model residuals. */
 export function estimateTwoTimescaleResidual(
   residuals: readonly DatedResidual[],
-  input: { slowTimeConstantDays?: number; fastTimeConstantDays?: number } = {},
+  input: { slowTimeConstantDays?: number; fastTimeConstantDays?: number; maxAbsPredictionKg?: number } = {},
 ): { state: TwoTimescaleState; predictResidualKg: (horizonDays: number) => number } {
   const slowTau = input.slowTimeConstantDays ?? 21;
   const fastTau = input.fastTimeConstantDays ?? 3;
-  if (!(slowTau > fastTau && fastTau > 0)) throw new RangeError("slow time constant must exceed positive fast time constant");
+  const maxAbsPrediction = input.maxAbsPredictionKg ?? 2;
+  if (!(slowTau > fastTau && fastTau > 0 && maxAbsPrediction > 0)) {
+    throw new RangeError("slow time constant must exceed positive fast time constant and prediction cap must be positive");
+  }
   if (residuals.length === 0) throw new RangeError("residual history required");
   const rows = sortDatedResiduals(residuals);
   let slow = clamp(rows[0]!.residualKg, -2, 2);
@@ -176,7 +179,7 @@ export function estimateTwoTimescaleResidual(
     state,
     predictResidualKg: (horizonDays) => {
       if (!Number.isFinite(horizonDays) || horizonDays < 0) throw new RangeError("horizon must be nonnegative");
-      return state.slowKg + state.fastKg * Math.exp(-horizonDays / fastTau);
+      return clamp(state.slowKg + state.fastKg * Math.exp(-horizonDays / fastTau), -maxAbsPrediction, maxAbsPrediction);
     },
   };
 }

@@ -274,7 +274,7 @@ describe("multidimensional diagnostic composition", () => {
     });
 
     expect(result.episode.latestModeledDate).toBeNull();
-    expect(result.dataContinuity).toMatchObject({ windowStartDate: null, windowEndDate: null, modeledDayCount: 0 });
+    expect(result.dataContinuity).toMatchObject({ level: "limited", windowStartDate: null, windowEndDate: null, modeledDayCount: 0 });
     expect(result.energyHistory).toEqual({ latestModeledDay: null, previousCompletedDays: [] });
   });
 

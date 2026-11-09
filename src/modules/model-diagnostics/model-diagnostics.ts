@@ -196,7 +196,8 @@ export function buildDiagnosticsDto(input: {
       modeledTdeeKcalPerDay: source === "deterministic" && hasCurrentState ? status.currentModeledTdeeKcalPerDay : null,
     },
     dataContinuity: {
-      level: status.unknownIntervalCount > 0
+      level: fullHistoryEndDate === null
+        || status.unknownIntervalCount > 0
         || (fullHistoryEndDate !== null && status.unbridgeableNutritionDays > 0)
         || (fullHistoryEndDate !== null && status.incompleteDays > 0)
         || fullHistoryCalendarDayCount > fullHistoryModeledDayCount

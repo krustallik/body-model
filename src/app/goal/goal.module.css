@@ -278,7 +278,7 @@
 .formSection:nth-of-type(3) { --section-accent: var(--primary); }
 .formSection:nth-of-type(4):has(input[type="checkbox"]:checked) { --section-accent: var(--info); }
 .sectionHeading > div > span {
-  color: var(--section-accent);
+  color: var(--ink);
   background: color-mix(in srgb, var(--section-accent) 13%, var(--surface-2));
 }
 @media (hover: hover) and (pointer: fine) {

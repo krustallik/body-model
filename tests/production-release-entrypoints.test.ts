@@ -322,7 +322,7 @@ describe("active production release entrypoints", () => {
   });
 
   it("captures versioned previous-app and DB history provenance before stopping the app, then binds it to the checked preflight", () => {
-    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8").replace(/\r\n/g, "\n");
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const captureOrder = [
       'node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha"',

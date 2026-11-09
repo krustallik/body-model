@@ -43,6 +43,22 @@ describe("personalization diagnostic boundary matrix", () => {
     expect(result.evidence).toMatchObject({ observationCount: 35, observationSpanDays: 56, activityStandardDeviationKcalPerDay: 75 });
     expect(result.gates.every((gate) => gate.met)).toBe(true);
   });
+
+  it("separates attempt eligibility, rejection reason, and whether validation actually ran", () => {
+    const bound = personalizationDiagnostics({
+      status: "defaults-retained", personalOffsetKcalPerDay: 0, activityCalibration: 1,
+      diagnostics: { ...baseCalibration, warnings: ["parameter-at-bound"] },
+    });
+    expect(bound.calibrationDecision).toEqual({
+      attemptEligibility: "full", outcome: "rejected", validation: "not-run", reasons: ["parameter-at-bound"],
+    });
+
+    const heldOutFailure = personalizationDiagnostics({
+      status: "defaults-retained", personalOffsetKcalPerDay: 0, activityCalibration: 1,
+      diagnostics: { ...baseCalibration, warnings: ["validation-improvement-too-small"] },
+    });
+    expect(heldOutFailure.calibrationDecision.validation).toBe("failed");
+  });
 });
 
 function episode(): PersistedEpisode {
@@ -73,9 +89,32 @@ function status(recoveryRequired: boolean): ModelStatusDto {
   };
 }
 
-const evidence = { modeledDayCount: 28, completeDayCount: 27, incompleteDayCount: 1, observedNutritionDayCount: 20, imputedNutritionDayCount: 7, unresolvedNutritionDayCount: 1, weightObservationCount: 0 };
+const evidence = { modeledDayCount: 28, completeDayCount: 27, incompleteDayCount: 1, observedNutritionDayCount: 20, imputedNutritionDayCount: 7, unresolvedNutritionDayCount: 1, weightObservationCount: 0, fullHistoryWeightObservationCount: 53 };
 
 describe("multidimensional diagnostic composition", () => {
+  it("reports full episode coverage separately from the rolling 28-day window across DST", () => {
+    const result = buildDiagnosticsDto({
+      episode: { ...episode(), startDate: "2026-03-01" },
+      status: {
+        ...status(false), episodeStartDate: "2026-03-01", latestModeledDate: "2026-04-25",
+        daysModeled: 50, incompleteDays: 2, observedNutritionDays: 40,
+        imputedNutritionDays: 10, unbridgeableNutritionDays: 2,
+      },
+      evidence: { ...evidence, fullHistoryWeightObservationCount: 39 },
+      windowStartDate: "2026-03-29",
+      recovery: null,
+    });
+
+    expect(result.dataContinuity.fullHistory).toEqual({
+      startDate: "2026-03-01", endDate: "2026-04-25", calendarDayCount: 56,
+      modeledDayCount: 52, completeDayCount: 50, incompleteDayCount: 2,
+      unmodeledCalendarDayCount: 4, observedNutritionDayCount: 40,
+      imputedNutritionDayCount: 10, unresolvedNutritionDayCount: 2,
+      weightObservationCount: 39,
+    });
+    expect(result.dataContinuity.windowStartDate).toBe("2026-03-29");
+    expect(result.dataContinuity.recentWindowDays).toBe(28);
+  });
   it.each([
     ["not-required", false, null, true, "deterministic"],
     ["recovered", true, "recovered", true, "recovered"],
@@ -228,7 +267,7 @@ describe("multidimensional diagnostic composition", () => {
       evidence: {
         modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0,
         observedNutritionDayCount: 0, imputedNutritionDayCount: 0,
-        unresolvedNutritionDayCount: 0, weightObservationCount: 0,
+        unresolvedNutritionDayCount: 0, weightObservationCount: 0, fullHistoryWeightObservationCount: 0,
       },
       windowStartDate: null,
       recovery: null,

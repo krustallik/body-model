@@ -187,8 +187,8 @@ describe("forecast application helpers", () => {
   });
 
   it("prioritizes recovery, degraded evidence, and long-horizon numerical warnings", () => {
-    expect(qualityPresentation(result()).title).toBe("Forecast ready");
-    expect(qualityPresentation(result(), "insufficient-history").title).toBe("Forecast is still rough");
+    expect(qualityPresentation(result()).title).toBe("Forecast calculated");
+    expect(qualityPresentation(result(), "insufficient-history").title).toBe("Forecast calculated without personalization");
     expect(qualityPresentation(result({ initialStateQuality: "recovered" })).title).toBe("A data gap was filled in");
     expect(qualityPresentation(result({ status: "degraded" })).title).toBe("Forecast is rough right now");
     const long = result();
@@ -204,12 +204,12 @@ describe("forecast application helpers", () => {
 
   it("explains forecast readiness from actual history and donor counts in both languages", () => {
     const high = forecastReadiness({ status: modelStatus(), mode: "recent-behavior", donorDayCount: 20, successfulForecast: true, locale: "uk" });
-    expect(high).toMatchObject({ canForecast: true, level: "high" });
-    expect(high.factors.join(" ")).toMatch(/Модель порахувала 55 днів/);
+    expect(high).toMatchObject({ canForecast: true, level: "available" });
+    expect(high.factors.join(" ")).toMatch(/55 календарних днів.*55 модельних/);
 
     const missingDonors = forecastReadiness({ status: modelStatus(), mode: "recent-behavior", donorDayCount: 8, scenarioEvidenceMissing: true });
-    expect(missingDonors).toMatchObject({ canForecast: false, level: "low" });
-    expect(missingDonors.factors.join(" ")).toMatch(/needs at least 14/);
+    expect(missingDonors).toMatchObject({ canForecast: false, level: "blocked" });
+    expect(missingDonors.factors.join(" ")).toMatch(/Only 8 behavior-example days.*evidence is limited/);
 
     const emptyModel = forecastReadiness({
       status: modelStatus({ daysModeled: 0, observedNutritionDays: 0, currentPredictedWeightKg: null, latestModeledDate: null, calibrationStatus: "insufficient-history" }),
@@ -218,11 +218,12 @@ describe("forecast application helpers", () => {
       successfulForecast: true,
       locale: "uk",
     });
-    expect(emptyModel.score).toBe(21);
+    expect(emptyModel).not.toHaveProperty("score");
     expect(emptyModel.factors.join(" ")).toMatch(/ще не пораховані моделлю/);
 
     const unavailable = forecastReadiness({ status: null, mode: "fixed", locale: "uk" });
-    expect(unavailable).toMatchObject({ score: null, title: "Прогноз поки недоступний" });
+    expect(unavailable).toMatchObject({ level: "blocked", title: "Прогноз поки недоступний" });
+    expect(unavailable).not.toHaveProperty("score");
     expect(unavailable.detail).toMatch(/запустити модель/i);
     expect(unavailable.factors.join(" ")).toMatch(/калорії, і вагу/);
   });

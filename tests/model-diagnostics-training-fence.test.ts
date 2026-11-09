@@ -54,7 +54,7 @@ describe("model diagnostics Training currentness fence", () => {
     fence.pending.mockReturnValue(false);
     fence.changed.mockResolvedValue(false);
     fence.owns.mockResolvedValue(false);
-    repositories.getActive.mockResolvedValue({ id: 7, startDate: "2026-01-01", latestModeledDate: "2026-09-01" });
+    repositories.getActive.mockResolvedValue({ id: 7, profileId: 1, startDate: "2026-01-01", latestModeledDate: "2026-09-01" });
     repositories.status.mockResolvedValue({ productionCurrent: true, latestModeledDate: "2026-09-01" });
     repositories.loadEvidence.mockResolvedValue({ modeledDayCount: 1 });
     repositories.latestStatus.mockResolvedValue({ status: "current" });
@@ -73,7 +73,7 @@ describe("model diagnostics Training currentness fence", () => {
     fence.changed.mockResolvedValue(true);
 
     await expect(getModelDiagnostics(1)).rejects.toBeInstanceOf(TrainingRefreshPendingDiagnosticsError);
-    expect(repositories.loadEvidence).toHaveBeenCalled();
+    expect(repositories.loadEvidence).toHaveBeenCalledWith(expect.objectContaining({ profileId: 1 }));
     expect(repositories.latestStatus).toHaveBeenCalled();
     expect(repositories.buildDiagnosticsDto).not.toHaveBeenCalled();
   });

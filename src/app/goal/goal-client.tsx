@@ -10,7 +10,7 @@ import { ModelStateSource } from "@/components/model-state-source";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import { ForecastChart } from "@/app/forecast/forecast-chart";
 import { attachObservedBodyFatPercent } from "@/app/forecast/forecast-chart-measurements";
-import { beginForecastRequest, formatDate, formatValue, isCurrentForecastRequest, type PlanValues } from "@/modules/model-forecast/forecast-ui";
+import { beginForecastRequest, formatDate, formatValue, forecastAccuracyEvidence, isCurrentForecastRequest, type PlanValues } from "@/modules/model-forecast/forecast-ui";
 import { forecastChartLabels } from "@/modules/model-forecast/forecast-chart-data";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 import type { ProfileDto } from "@/modules/profile/profile.types";
@@ -309,6 +309,7 @@ export function GoalClient() {
   }
 
   const statusCopy = result ? goalStatusPresentation(result.status, locale) : null;
+  const accuracyEvidence = forecastAccuracyEvidence(locale);
   const displayCalories = typeof result?.control.solvedCaloriesKcal === "number"
     && Number.isFinite(result.control.solvedCaloriesKcal) && result.control.solvedCaloriesKcal > 0
     ? result.control.solvedCaloriesKcal : null;
@@ -398,6 +399,7 @@ export function GoalClient() {
       <section className={styles.resultColumn} aria-label={uk ? "Результат цілі" : "Goal result"}>
         {!result && !solving && <section className={styles.emptyResult}><span>{uk ? "Що покаже розрахунок" : "What the result shows"}</span><strong>{uk ? "Ціль, траєкторія та ймовірність" : "Target, trajectory, and attainment"}</strong><p>{uk ? "Після розрахунку тут з’являться медіанний результат, інтервали невизначеності та графік із цільовою датою." : "After calculation, the median outcome, uncertainty ranges, and target-date chart appear here."}</p></section>}
     {result && statusCopy && <section className={`${styles.statusCard} ${styles[statusCopy.tone]}`}><p className={styles.eyebrow}>{uk ? "Результат планування" : "Planning result"}</p><h2>{statusCopy.title}</h2><p>{statusCopy.detail}</p></section>}
+    {result && <section className={`${styles.statusCard} ${styles.warning}`} role="note"><p className={styles.eyebrow}>{uk ? "Перевірка прогнозу" : "Forecast evidence"}</p><h2>{accuracyEvidence.title}</h2><p>{accuracyEvidence.detail}</p></section>}
     {result && <>
       <section className={styles.summaryGrid} aria-label={uk ? "Основний результат" : "Goal result summary"}>
         <article className={styles.attainmentMetric}>

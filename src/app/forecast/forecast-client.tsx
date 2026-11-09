@@ -19,6 +19,7 @@ import {
   formatDate,
   formatValue,
   forecastReadiness,
+  forecastAccuracyEvidence,
   initializationFailureMessage,
   modelNeedsRecalculation,
   qualityPresentation,
@@ -447,6 +448,7 @@ export function ForecastClient() {
     scenarioEvidenceMissing,
     forecastQuality: result?.experimentalQuality,
   });
+  const accuracyEvidence = forecastAccuracyEvidence(locale);
   const showStartModel = errorCode === "no_active_episode" || errorCode === "initialization_failed";
   const busy = loading || actionLoading !== null;
   const needsRecalculation = modelNeedsRecalculation(context?.status ?? null);
@@ -545,9 +547,11 @@ export function ForecastClient() {
           : `It used “${scenarioLabel(result.scenarioProvenance.mode)}” for ${result.horizonDays} days. The current selection is “${scenarioLabel(mode)}” for ${horizon} days. The result and assumptions below belong to the previous run.`}</span>
       </section>}
 
-      <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Повнота та готовність даних" : "Data coverage and forecast readiness"}>
-        <div className={styles.readinessHeading}><p className={styles.eyebrow}>{uk ? "Повнота та готовність даних" : "Data coverage and readiness"}</p><div className={styles.readinessScore}><strong>{readiness.score ?? "—"}</strong><span>/ 100</span></div></div>
-        <div><h2>{readiness.title}</h2><p>{readiness.detail}</p><p className={styles.readinessClarifier}>{uk ? "Це складений індикатор повноти історії, її цілісності та персоналізації моделі — не ймовірність і не відсоток точності." : "This index combines history coverage, continuity, and model calibration. It is not a probability or an accuracy percentage."}</p><details className={styles.readinessBreakdown}><summary>{uk ? "Що враховано в оцінці" : "What goes into this score"}</summary><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></details></div>
+      <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Доступність даних для сценарію" : "Data availability for the scenario"}>
+        <div className={styles.readinessHeading}><p className={styles.eyebrow}>{uk ? "Доступність входів" : "Input availability"}</p><span className={styles.readinessLabel}>{readiness.level === "available" ? (uk ? "Сценарій доступний" : "Scenario available") : readiness.level === "limited" ? (uk ? "Є обмеження" : "Limited") : (uk ? "Заблоковано" : "Blocked")}</span></div>
+        <div><h2>{readiness.title}</h2><p>{readiness.detail}</p><details className={styles.readinessBreakdown}><summary>{uk ? "Показати дані та умови" : "Show data and conditions"}</summary><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></details>
+          <aside className={styles.accuracyEvidence} role="note"><strong>{accuracyEvidence.title}</strong><span>{accuracyEvidence.detail}</span></aside>
+        </div>
       </section>
 
       {error && showStartModel && !hasForecastResult && <section className={styles.blocked} role="alert">

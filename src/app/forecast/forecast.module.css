@@ -20,7 +20,7 @@
 .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 2rem; padding: 4.25rem 0 2rem; }
 .hero h1 { max-width: 53rem; margin: 0; font-size: clamp(2.7rem, 6vw, 5.6rem); line-height: .94; letter-spacing: -.06em; }
 .hero > div > p:last-child { max-width: 42rem; margin: 1.15rem 0 0; color: var(--muted); line-height: 1.55; }
-.eyebrow { margin: 0 0 .7rem; color: var(--text-muted); font-size: .72rem; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+.eyebrow { margin: 0 0 .7rem; color: var(--text-secondary); font-size: .72rem; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
 .readiness { display: flex; align-items: center; gap: .65rem; flex: 0 0 auto; padding: .7rem .9rem; border: 1px solid var(--line); border-radius: 999px; font-size: .8rem; font-weight: 750; background: var(--elevated); }
 .readiness span { width: .55rem; height: .55rem; border-radius: 50%; }
 .readyDot { background: var(--success); box-shadow: 0 0 0 .25rem var(--success-soft); }
@@ -101,12 +101,17 @@
 .info { color: var(--info-strong); background: var(--info-soft); border-color: color-mix(in srgb, var(--info) 28%, var(--border)); }
 .warning { color: var(--warning-strong); background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 28%, var(--border)); }
 .blocked { color: var(--danger-strong); }
-.readinessCard { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1.2rem; margin-top: 1rem; padding: 1.2rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-left: .35rem solid var(--accent); border-radius: 1rem; }
-.readinessCard.high { border-left-color: var(--success); }
-.readinessCard.medium { border-left-color: var(--warning); }
-.readinessCard.low, .readinessCard.unavailable { border-left-color: var(--danger); }
+.readinessCard { display: grid; grid-template-columns: 1fr; gap: .6rem; margin-top: 1rem; padding: 1.2rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-left: .35rem solid var(--info); border-radius: 1rem; }
+.readinessCard.available { border-left-color: var(--info); }
+.readinessCard.limited { border-left-color: var(--warning); }
+.readinessCard.blocked { border-left-color: var(--danger); }
 .readinessCard h2, .readinessCard p { margin: 0; }.readinessCard h2 { font-size: 1.15rem; }.readinessCard > div:last-child > p:not(.eyebrow) { margin-top: .35rem; color: var(--muted); line-height: 1.5; }.readinessCard ul { margin: .8rem 0 0; padding-left: 1.15rem; color: var(--muted); font-size: .78rem; line-height: 1.55; }
-.readinessScore { display: grid; align-content: center; justify-items: center; width: 5.2rem; height: 5.2rem; background: var(--soft); border-radius: 50%; font-variant-numeric: tabular-nums; }.readinessScore strong { font-size: 1.65rem; line-height: 1; }.readinessScore span { margin-top: .2rem; color: var(--muted); font-size: .68rem; }
+.readinessLabel { padding: .3rem .55rem; color: var(--info-strong); background: var(--info-soft); border-radius: 999px; font-size: .72rem; font-weight: 800; }
+.readinessCard.limited .readinessLabel { color: var(--warning-strong); background: var(--warning-soft); }
+.readinessCard.blocked .readinessLabel { color: var(--danger-strong); background: var(--danger-soft); }
+.accuracyEvidence { display: grid; gap: .25rem; margin-top: .8rem; padding: .75rem .85rem; color: var(--ink); background: var(--inset); border-inline-start: 2px solid var(--warning); border-radius: .55rem; }
+.accuracyEvidence strong { font-size: .78rem; }
+.accuracyEvidence span { color: var(--muted); font-size: .72rem; line-height: 1.5; }
 .summaryGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin-top: 1rem; }
 .summaryGrid article { padding: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: .9rem; }
 .summaryGrid span { display: block; min-height: 2rem; color: var(--muted); font-size: .72rem; font-weight: 750; }
@@ -157,7 +162,7 @@
 
 @media (max-width: 900px) { .summaryGrid { grid-template-columns: repeat(2, 1fr); }.chartHeader { align-items: stretch; flex-direction: column; }.metricTabs { min-width: 0; }.controlGroup { grid-template-columns: 1fr; } }
 @media (max-width: 620px) {
-  .page { padding-block: 1rem 2.5rem; }.topbar { align-items: flex-start; flex-direction: column; }.topbar nav { width: 100%; }.hero { align-items: flex-start; flex-direction: column; padding: 3rem 0 1.5rem; }.readiness { align-self: stretch; justify-content: center; }.scenarioGrid, .planForm, .detailGrid { grid-template-columns: 1fr; }.formGrid { grid-template-columns: 1fr 1fr; }.summaryGrid { grid-template-columns: 1fr 1fr; }.summaryGrid strong { font-size: 1.25rem; }.metricTabs { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; }.metricTabs button { min-width: 0; }.qualityBanner { align-items: flex-start; flex-direction: column; }.readinessCard { grid-template-columns: 1fr; }.readinessScore { width: 4.4rem; height: 4.4rem; }.diagnostics dl { grid-template-columns: 1fr 1fr; }
+  .page { padding-block: 1rem 2.5rem; }.topbar { align-items: flex-start; flex-direction: column; }.topbar nav { width: 100%; }.hero { align-items: flex-start; flex-direction: column; padding: 3rem 0 1.5rem; }.readiness { align-self: stretch; justify-content: center; }.scenarioGrid, .planForm, .detailGrid { grid-template-columns: 1fr; }.formGrid { grid-template-columns: 1fr 1fr; }.summaryGrid { grid-template-columns: 1fr 1fr; }.summaryGrid strong { font-size: 1.25rem; }.metricTabs { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; }.metricTabs button { min-width: 0; }.qualityBanner { align-items: flex-start; flex-direction: column; }.readinessCard { grid-template-columns: 1fr; }.diagnostics dl { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 390px) { .formGrid { grid-template-columns: 1fr; }.segmented button { padding-inline: .45rem; } }
 @media (max-width: 620px) {
@@ -224,17 +229,10 @@
 .outcomeColumn { display: grid; min-width: 0; gap: .75rem; }
 .outcomeColumn > :first-child { margin-top: 0; }
 .readinessCard { grid-template-columns: 1fr; gap: .55rem; margin: 0; padding: 1rem 1.1rem; border-left-width: 1px; border-top: .2rem solid var(--accent); }
-.readinessCard.high { border-top-color: var(--success); }
-.readinessCard.medium { border-top-color: var(--warning); }
-.readinessCard.low, .readinessCard.unavailable { border-top-color: var(--danger); }
 .readinessHeading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .readinessHeading .eyebrow { margin: 0; }
-.readinessScore { display: flex; align-items: baseline; gap: .2rem; width: auto; height: auto; padding: .3rem .5rem; color: var(--ink); background: var(--soft); border: 1px solid var(--line); border-radius: .45rem; }
-.readinessScore strong { font-size: 1rem; }
-.readinessScore span { margin: 0; font-size: .65rem; }
 .readinessCard h2 { font-size: 1rem; }
 .readinessCard > div:last-child > p:not(.eyebrow) { margin-top: .25rem; font-size: .78rem; }
-.readinessClarifier { color: var(--muted); font-size: .7rem !important; line-height: 1.45; }
 .readinessBreakdown { margin-top: .5rem; }
 .readinessBreakdown summary { width: fit-content; color: var(--info-strong); font-size: .73rem; font-weight: 750; cursor: pointer; }
 .readinessBreakdown ul { margin: .55rem 0 0; }
@@ -312,9 +310,8 @@
 .warning strong { color: var(--warning-strong); }
 .qualityBanner div span { color: var(--muted); opacity: 1; }
 .readinessCard { border-color: var(--line); border-top-color: var(--info); }
-.readinessCard.high { border-top-color: var(--success); }
-.readinessCard.medium { border-top-color: var(--warning); }
-.readinessCard.low, .readinessCard.unavailable { border-top-color: var(--danger); }
+.readinessCard.limited { border-top-color: var(--warning); }
+.readinessCard.blocked { border-top-color: var(--danger); }
 .chartTools { display: grid; justify-items: end; gap: .5rem; min-width: 0; }
 .historyRange { display: flex; gap: .15rem; padding: .2rem; background: var(--inset); border: 1px solid var(--line); border-radius: .7rem; }
 .historyRange button { min-height: 2.5rem; padding: .5rem .75rem; color: var(--muted); background: transparent; border: 0; border-radius: .5rem; font: inherit; font-size: .72rem; font-weight: 780; cursor: pointer; }

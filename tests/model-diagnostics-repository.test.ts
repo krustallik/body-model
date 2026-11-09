@@ -20,11 +20,12 @@ describe("ModelDiagnosticsRepository", () => {
       ]);
     const latestDay = vi.fn().mockResolvedValue({ date: "2026-08-25", status: "incomplete", energyExpenditureKcal: null });
     const client = { dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay }, dailyHealthData: { count: weightCount } } as unknown as ModelDatabaseClient;
-    const result = await new ModelDiagnosticsRepository(client).loadEvidence(7, "2026-07-29", "2026-08-25", "2026-08-25");
+    const result = await new ModelDiagnosticsRepository(client).loadEvidence({ episodeId: 7, profileId: 11, historyStartDate: "2026-01-01", recentFromDate: "2026-07-29", recentToDate: "2026-08-25", latestModeledDate: "2026-08-25" });
     expect(result).toEqual({
       modeledDayCount: 28, completeDayCount: 25, incompleteDayCount: 3,
       observedNutritionDayCount: 18, imputedNutritionDayCount: 6,
       unresolvedNutritionDayCount: 1, weightObservationCount: 9,
+      fullHistoryWeightObservationCount: 9,
       energyHistory: {
         latestModeledDay: { date: "2026-08-25", status: "incomplete", expenditureKcalPerDay: null },
         previousCompletedDays: [
@@ -44,7 +45,10 @@ describe("ModelDiagnosticsRepository", () => {
       where: { episodeId: 7, date: { gte: "2026-08-18", lt: "2026-08-25" } },
       orderBy: { date: "asc" },
     }));
-    expect(weightCount).toHaveBeenCalledWith({ where: { date: { gte: "2026-07-29", lte: "2026-08-25" }, weightKg: { gt: 0 } } });
+    expect(weightCount).toHaveBeenCalledWith({ where: { profileId: 11, date: { gte: "2026-07-29", lte: "2026-08-25" }, weightKg: { gt: 0 } } });
+    expect(weightCount).toHaveBeenCalledWith({ where: { profileId: 11, date: { gte: "2026-01-01", lte: "2026-08-25" }, weightKg: { gt: 0 } } });
+    expect(weightCount).toHaveBeenCalledTimes(2);
+    expect(weightCount.mock.calls.every(([query]) => query.where.profileId === 11)).toBe(true);
     expect(client).not.toHaveProperty("workInterval");
   });
 
@@ -73,7 +77,7 @@ describe("ModelDiagnosticsRepository", () => {
     } as unknown as ModelDatabaseClient;
 
     const result = await new ModelDiagnosticsRepository(client)
-      .loadEvidence(7, "2026-10-01", "2026-10-09", "2026-10-09");
+      .loadEvidence({ episodeId: 7, profileId: 4, historyStartDate: "2026-10-01", recentFromDate: "2026-10-01", recentToDate: "2026-10-09", latestModeledDate: "2026-10-09" });
 
     expect(result).toMatchObject({
       modeledDayCount: 9,
@@ -99,9 +103,8 @@ describe("ModelDiagnosticsRepository", () => {
     expect(latestDay).toHaveBeenCalledWith(expect.objectContaining({
       where: { episodeId: 7, date: { equals: "2026-10-09", lte: "2026-10-09" } },
     }));
-    expect(weightCount).toHaveBeenCalledWith({
-      where: { date: { gte: "2026-10-01", lte: "2026-10-09" }, weightKg: { gt: 0 } },
-    });
+    expect(weightCount).toHaveBeenCalledWith({ where: { profileId: 4, date: { gte: "2026-10-01", lte: "2026-10-09" }, weightKg: { gt: 0 } } });
+    expect(weightCount).toHaveBeenCalledWith({ where: { profileId: 4, date: { gte: "2026-10-01", lte: "2026-10-09" }, weightKg: { gt: 0 } } });
     expect(storedRows.slice(9).map((row) => row.date)).toEqual([
       "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15",
     ]);
@@ -123,7 +126,7 @@ describe("ModelDiagnosticsRepository", () => {
     } as unknown as ModelDatabaseClient;
 
     const result = await new ModelDiagnosticsRepository(client)
-      .loadEvidence(7, "2026-09-11", "2026-10-08", "2026-10-08");
+      .loadEvidence({ episodeId: 7, profileId: 8, historyStartDate: "2026-09-11", recentFromDate: "2026-09-11", recentToDate: "2026-10-08", latestModeledDate: "2026-10-08" });
 
     expect(dailyCount).toHaveBeenCalledTimes(5);
     expect(dailyCount.mock.calls.every(([args]) => args.where.date.lte === "2026-10-08")).toBe(true);
@@ -157,7 +160,7 @@ describe("ModelDiagnosticsRepository", () => {
     } as unknown as ModelDatabaseClient;
 
     const result = await new ModelDiagnosticsRepository(client)
-      .loadEvidence(7, "2026-09-01", "2026-09-28", "2026-09-28");
+      .loadEvidence({ episodeId: 7, profileId: 2, historyStartDate: "2026-09-01", recentFromDate: "2026-09-01", recentToDate: "2026-09-28", latestModeledDate: "2026-09-28" });
 
     expect(result.experimentalEnergySummary).toMatchObject({
       recentTypicalMaintenanceKcalPerDay: 2_606.25,
@@ -193,7 +196,7 @@ describe("ModelDiagnosticsRepository", () => {
     } as unknown as ModelDatabaseClient;
 
     const result = await new ModelDiagnosticsRepository(client)
-      .loadEvidence(7, "2026-09-01", "2026-09-28", "2026-09-28");
+      .loadEvidence({ episodeId: 7, profileId: 2, historyStartDate: "2026-09-01", recentFromDate: "2026-09-01", recentToDate: "2026-09-28", latestModeledDate: "2026-09-28" });
 
     expect(result.experimentalEnergySummary).toMatchObject({
       recentTypicalMaintenanceKcalPerDay: expectedAverage,

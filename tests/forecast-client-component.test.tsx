@@ -117,12 +117,13 @@ describe("ForecastClient", () => {
       locale: "en",
     });
     expect(readiness.canForecast).toBe(true);
-    expect(readiness.score).toBeGreaterThan(0);
-    expect(readiness.title).toBe("History supports a steadier forecast");
+    expect(readiness).not.toHaveProperty("score");
+    expect(readiness.level).toBe("available");
+    expect(readiness.title).toBe("Data allow the scenario to be calculated");
     expect(readiness.title).not.toMatch(/accurate|accuracy|probability|precise/i);
 
     const quality = qualityPresentation(forecastResult(), "fully-calibrated", "en");
-    expect(quality.tone).toBe("good");
-    expect(quality.title).toBe("Forecast ready");
+    expect(quality.tone).toBe("info");
+    expect(quality.title).toBe("Forecast calculated; calibration accepted");
   });
 });

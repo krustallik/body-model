@@ -307,6 +307,7 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByLabelText(/Starting calories/)).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => expect(posted).toBeTruthy());
+    expect(await screen.findByText("Forecast accuracy is not yet sufficiently validated")).toBeTruthy();
     const request = posted as unknown as { goal: { targetValueKg: number; goalDate: string }; constraints: { minCaloriesKcal: number; maxCaloriesKcal: number }; scenarioTemplate: { mode: string; schedule: { defaultDay: { nutrition: { caloriesKcal: number } }; byDate: Record<string, { occupation?: Array<{ category: string }> }> } } };
     expect(request.goal).toMatchObject({ targetValueKg: 77.4, goalDate: "2026-11-22" });
     expect(request.constraints).toMatchObject({ minCaloriesKcal: 1650, maxCaloriesKcal: 2550 });

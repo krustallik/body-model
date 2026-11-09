@@ -7,20 +7,29 @@ import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 export class ModelDiagnosticsRepository {
   constructor(private readonly client: ModelDatabaseClient = prisma) {}
 
-  async loadEvidence(episodeId: number, from: string, to: string, latestModeledDate: string | null): Promise<DiagnosticsEvidence> {
-    const [modeledDayCount, completeDayCount, observedNutritionDayCount, imputedNutritionDayCount, unresolvedNutritionDayCount, weightObservationCount] = await Promise.all([
-      this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to } } }),
-      this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, status: "complete" } }),
-      this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: "observed" } }),
-      this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } } }),
-      this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: "missing" } }),
-      this.client.dailyHealthData.count({ where: { date: { gte: from, lte: to }, weightKg: { gt: 0 } } }),
+  async loadEvidence(input: {
+    episodeId: number;
+    profileId: number;
+    historyStartDate: string;
+    recentFromDate: string;
+    recentToDate: string;
+    latestModeledDate: string | null;
+  }): Promise<DiagnosticsEvidence> {
+    const { episodeId, profileId, historyStartDate, recentFromDate, recentToDate, latestModeledDate } = input;
+    const [modeledDayCount, completeDayCount, observedNutritionDayCount, imputedNutritionDayCount, unresolvedNutritionDayCount, weightObservationCount, fullHistoryWeightObservationCount] = await Promise.all([
+      this.client.dailyModelState.count({ where: { episodeId, date: { gte: recentFromDate, lte: recentToDate } } }),
+      this.client.dailyModelState.count({ where: { episodeId, date: { gte: recentFromDate, lte: recentToDate }, status: "complete" } }),
+      this.client.dailyModelState.count({ where: { episodeId, date: { gte: recentFromDate, lte: recentToDate }, nutritionSource: "observed" } }),
+      this.client.dailyModelState.count({ where: { episodeId, date: { gte: recentFromDate, lte: recentToDate }, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } } }),
+      this.client.dailyModelState.count({ where: { episodeId, date: { gte: recentFromDate, lte: recentToDate }, nutritionSource: "missing" } }),
+      this.client.dailyHealthData.count({ where: { profileId, date: { gte: recentFromDate, lte: recentToDate }, weightKg: { gt: 0 } } }),
+      this.client.dailyHealthData.count({ where: { profileId, date: { gte: historyStartDate, lte: recentToDate }, weightKg: { gt: 0 } } }),
     ]);
     const unified = (this.client as unknown as { unifiedExperimentalPhysiologyState?: { findMany: (args: unknown) => Promise<unknown[]> } }).unifiedExperimentalPhysiologyState;
     const [energyRows, latestModeledDay, previousCalendarRows] = await Promise.all([
-      this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: from, lte: to } }, orderBy: { date: "asc" }, select: { date: true, status: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } }),
+      this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: recentFromDate, lte: recentToDate } }, orderBy: { date: "asc" }, select: { date: true, status: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } }),
       latestModeledDate
-        ? this.client.dailyModelState.findFirst({ where: { episodeId, date: { equals: latestModeledDate, lte: to } }, select: { date: true, status: true, energyExpenditureKcal: true } })
+        ? this.client.dailyModelState.findFirst({ where: { episodeId, date: { equals: latestModeledDate, lte: recentToDate } }, select: { date: true, status: true, energyExpenditureKcal: true } })
         : Promise.resolve(null),
       latestModeledDate
         ? this.client.dailyModelState.findMany({
@@ -80,6 +89,7 @@ export class ModelDiagnosticsRepository {
       imputedNutritionDayCount,
       unresolvedNutritionDayCount,
       weightObservationCount,
+      fullHistoryWeightObservationCount,
       ...(experimentalEnergySummary === null ? {} : { experimentalEnergySummary }),
       energyHistory: {
         latestModeledDay: latestModeledDay && (latestModeledDay.status === "complete" || latestModeledDay.status === "incomplete")

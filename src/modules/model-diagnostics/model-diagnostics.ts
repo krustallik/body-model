@@ -4,6 +4,7 @@ import {
   type PersonalizationCalibrationStatus,
 } from "@/model/personalization-calibration";
 import type { ModelStatusDto, PersistedEpisode } from "@/modules/model-episodes/model-episode.types";
+import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import type { DiagnosticsDto, DiagnosticsEvidence, DiagnosticGate } from "./model-diagnostics.types";
 
 type RecoverySnapshot = {
@@ -60,13 +61,31 @@ export function personalizationDiagnostics(input: {
   if (input.status === "fully-calibrated") activeParameters.push("activity-calibration");
   const accepted = input.status === "offset-only" || input.status === "fully-calibrated";
   const offsetReady = gates[0].met && gates[1].met;
+  const fullReady = gates.every((gate) => gate.met);
+  const warnings = stringList(d.warnings);
   const nextGate = !offsetReady ? gates.find((gate) => !gate.met && (gate.id === "offset-observations" || gate.id === "offset-span")) ?? null
     : gates.find((gate) => !gate.met && (gate.id === "full-observations" || gate.id === "full-span" || gate.id.startsWith("activity-"))) ?? null;
+  const outcome: DiagnosticsDto["personalization"]["calibrationDecision"]["outcome"] = input.status === "invalid-history"
+    ? "invalid"
+    : input.status === "offset-only"
+      ? "accepted-offset"
+      : input.status === "fully-calibrated"
+        ? "accepted-full"
+        : input.status === "defaults-retained"
+          ? "rejected"
+          : "not-attempted";
   return {
     level: accepted ? "good" : input.status === "invalid-history" ? "blocked" : "limited",
     status: input.status,
     accepted,
     activeParameters,
+    calibrationDecision: {
+      attemptEligibility: fullReady ? "full" : offsetReady ? "offset-only" : "ineligible",
+      outcome,
+      validation: accepted ? "passed"
+        : warnings.includes("validation-improvement-too-small") ? "failed" : "not-run",
+      reasons: warnings,
+    },
     personalOffsetKcalPerDay: input.personalOffsetKcalPerDay,
     activityCalibration: input.activityCalibration,
     evidence: {
@@ -76,7 +95,7 @@ export function personalizationDiagnostics(input: {
     },
     gates,
     nextGate,
-    warnings: stringList(d.warnings),
+    warnings,
   };
 }
 
@@ -154,6 +173,12 @@ export function buildDiagnosticsDto(input: {
     diagnostics: episode.calibrationDiagnostics,
   });
   const initializationConfidence = episode.initializationStatus ?? "insufficient";
+  const fullHistoryStartDate = episode.startDate;
+  const fullHistoryEndDate = status.latestModeledDate;
+  const fullHistoryCalendarDayCount = fullHistoryEndDate && fullHistoryEndDate >= fullHistoryStartDate
+    ? calendarDayIndex(fullHistoryEndDate) - calendarDayIndex(fullHistoryStartDate) + 1
+    : 0;
+  const fullHistoryModeledDayCount = fullHistoryEndDate ? status.daysModeled + status.incompleteDays : 0;
   return {
     episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: status.latestModeledDate, updatedAt: episode.updatedAt },
     refreshPending: status.productionCurrent === false && status.productionDirtyFromDate != null,
@@ -171,13 +196,30 @@ export function buildDiagnosticsDto(input: {
       modeledTdeeKcalPerDay: source === "deterministic" && hasCurrentState ? status.currentModeledTdeeKcalPerDay : null,
     },
     dataContinuity: {
-      level: status.unknownIntervalCount > 0 || evidence.unresolvedNutritionDayCount > 0 || evidence.incompleteDayCount > 0 ? "limited" : "good",
+      level: status.unknownIntervalCount > 0
+        || (fullHistoryEndDate !== null && status.unbridgeableNutritionDays > 0)
+        || (fullHistoryEndDate !== null && status.incompleteDays > 0)
+        || fullHistoryCalendarDayCount > fullHistoryModeledDayCount
+        ? "limited" : "good",
       recentWindowDays: MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS, windowStartDate: input.windowStartDate, windowEndDate: status.latestModeledDate,
       modeledDayCount: evidence.modeledDayCount, completeDayCount: evidence.completeDayCount, incompleteDayCount: evidence.incompleteDayCount,
       nutrition: { observedDayCount: evidence.observedNutritionDayCount, imputedDayCount: evidence.imputedNutritionDayCount, unresolvedDayCount: evidence.unresolvedNutritionDayCount },
       weightObservationCount: evidence.weightObservationCount,
       unknownIntervalCount: status.unknownIntervalCount, unresolvedDayCount: status.unresolvedDayCount,
       noWorkIntervalSemantics: "zero-occupational-work-not-missing",
+      fullHistory: {
+        startDate: fullHistoryStartDate,
+        endDate: fullHistoryEndDate,
+        calendarDayCount: fullHistoryCalendarDayCount,
+        modeledDayCount: fullHistoryModeledDayCount,
+        completeDayCount: fullHistoryEndDate ? status.daysModeled : 0,
+        incompleteDayCount: fullHistoryEndDate ? status.incompleteDays : 0,
+        unmodeledCalendarDayCount: Math.max(0, fullHistoryCalendarDayCount - fullHistoryModeledDayCount),
+        observedNutritionDayCount: fullHistoryEndDate ? status.observedNutritionDays : 0,
+        imputedNutritionDayCount: fullHistoryEndDate ? status.imputedNutritionDays : 0,
+        unresolvedNutritionDayCount: fullHistoryEndDate ? status.unbridgeableNutritionDays : 0,
+        weightObservationCount: fullHistoryEndDate ? evidence.fullHistoryWeightObservationCount : 0,
+      },
     },
     personalization: { ...personalization, initialization: {
       estimatedCorrectionKcalPerDay: episode.initialPersonalOffsetKcalPerDay ?? 0,

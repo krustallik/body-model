@@ -396,6 +396,9 @@ describe("ForecastClient interaction", () => {
       expect(screen.getByTestId("forecast-chart")).toBeTruthy();
     });
     expect(screen.queryByText("Calculating possible weight paths")).toBeNull();
+    expect(screen.getByText("Input availability")).toBeTruthy();
+    expect(screen.getByText("Forecast accuracy is not yet sufficiently validated")).toBeTruthy();
+    expect(screen.queryByText("/ 100")).toBeNull();
     expect((screen.getByRole("button", { name: "Run forecast" }) as HTMLButtonElement).disabled)
       .toBe(false);
   });

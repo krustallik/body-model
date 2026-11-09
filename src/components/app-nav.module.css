@@ -29,7 +29,7 @@
 
 .nav a {
   padding: 0.55rem 0.85rem;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border-radius: 0.55rem;
   font-size: 0.88rem;
   font-weight: 750;

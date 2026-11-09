@@ -43,7 +43,7 @@ describe("getModelDiagnostics", () => {
   });
 
   it("uses an inclusive 28-day calendar window and composes read-only sources", async () => {
-    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-08-25" };
+    const episode = { id: 2, profileId: 1, startDate: "2026-01-01", latestModeledDate: "2026-08-25" };
     const status = { episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: "2026-08-25" };
     const evidence = { modeledDayCount: 28 };
     dependencies.getActive.mockResolvedValue(episode);
@@ -51,17 +51,17 @@ describe("getModelDiagnostics", () => {
     dependencies.evidence.mockResolvedValue(evidence);
     dependencies.recovery.mockResolvedValue({ status: "recovered" });
     expect(await getModelDiagnostics(1)).toEqual({ ok: true });
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-07-29", "2026-08-25", "2026-08-25");
+    expect(dependencies.evidence).toHaveBeenCalledWith({ episodeId: 2, profileId: 1, historyStartDate: "2026-01-01", recentFromDate: "2026-07-29", recentToDate: "2026-08-25", latestModeledDate: "2026-08-25" });
     expect(dependencies.build).toHaveBeenCalledWith({ episode, status, evidence, windowStartDate: "2026-07-29", recovery: { status: "recovered" } });
   });
 
   it("does not count source evidence from before a short episode", async () => {
-    const episode = { id: 2, startDate: "2026-08-20", latestModeledDate: "2026-08-25" };
+    const episode = { id: 2, profileId: 1, startDate: "2026-08-20", latestModeledDate: "2026-08-25" };
     dependencies.getActive.mockResolvedValue(episode);
     dependencies.status.mockResolvedValue({ episodeId: 2, productionCurrent: true, productionDirtyFromDate: null, latestModeledDate: "2026-08-25" });
     dependencies.evidence.mockResolvedValue({ modeledDayCount: 6 });
     await getModelDiagnostics(1);
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-08-20", "2026-08-25", "2026-08-25");
+    expect(dependencies.evidence).toHaveBeenCalledWith({ episodeId: 2, profileId: 1, historyStartDate: "2026-08-20", recentFromDate: "2026-08-20", recentToDate: "2026-08-25", latestModeledDate: "2026-08-25" });
   });
 
   it("returns zero recent evidence before any modeled date", async () => {
@@ -73,12 +73,12 @@ describe("getModelDiagnostics", () => {
     expect(dependencies.evidence).not.toHaveBeenCalled();
     expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
       windowStartDate: null,
-      evidence: { modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0, observedNutritionDayCount: 0, imputedNutritionDayCount: 0, unresolvedNutritionDayCount: 0, weightObservationCount: 0 },
+      evidence: { modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0, observedNutritionDayCount: 0, imputedNutritionDayCount: 0, unresolvedNutritionDayCount: 0, weightObservationCount: 0, fullHistoryWeightObservationCount: 0 },
     }));
   });
 
   it("bounds all current diagnostics evidence to the production stale cutoff", async () => {
-    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const episode = { id: 2, profileId: 1, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
     const status = {
       episodeId: 2,
       productionCurrent: false,
@@ -91,7 +91,7 @@ describe("getModelDiagnostics", () => {
 
     await getModelDiagnostics(1);
 
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-12", "2026-10-09", "2026-10-09");
+    expect(dependencies.evidence).toHaveBeenCalledWith({ episodeId: 2, profileId: 1, historyStartDate: "2026-01-01", recentFromDate: "2026-09-12", recentToDate: "2026-10-09", latestModeledDate: "2026-10-09" });
     expect(dependencies.build).toHaveBeenCalledWith(expect.objectContaining({
       episode,
       status,
@@ -101,7 +101,7 @@ describe("getModelDiagnostics", () => {
   });
 
   it("ends the recent evidence window at the latest complete current date", async () => {
-    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const episode = { id: 2, profileId: 1, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
     const status = {
       episodeId: 2,
       productionCurrent: false,
@@ -114,11 +114,11 @@ describe("getModelDiagnostics", () => {
 
     await getModelDiagnostics(1);
 
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-11", "2026-10-08", "2026-10-08");
+    expect(dependencies.evidence).toHaveBeenCalledWith({ episodeId: 2, profileId: 1, historyStartDate: "2026-01-01", recentFromDate: "2026-09-11", recentToDate: "2026-10-08", latestModeledDate: "2026-10-08" });
   });
 
   it("returns empty evidence when invalidation leaves no current prefix", async () => {
-    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const episode = { id: 2, profileId: 1, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
     const status = {
       episodeId: 2,
       productionCurrent: false,
@@ -138,13 +138,13 @@ describe("getModelDiagnostics", () => {
       evidence: {
         modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0,
         observedNutritionDayCount: 0, imputedNutritionDayCount: 0,
-        unresolvedNutritionDayCount: 0, weightObservationCount: 0,
+        unresolvedNutritionDayCount: 0, weightObservationCount: 0, fullHistoryWeightObservationCount: 0,
       },
     }));
   });
 
   it("shows the recalculated date range again once production is current", async () => {
-    const episode = { id: 2, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
+    const episode = { id: 2, profileId: 1, startDate: "2026-01-01", latestModeledDate: "2026-10-15" };
     const status = {
       episodeId: 2,
       productionCurrent: true,
@@ -157,6 +157,6 @@ describe("getModelDiagnostics", () => {
 
     await getModelDiagnostics(1);
 
-    expect(dependencies.evidence).toHaveBeenCalledWith(2, "2026-09-18", "2026-10-15", "2026-10-15");
+    expect(dependencies.evidence).toHaveBeenCalledWith({ episodeId: 2, profileId: 1, historyStartDate: "2026-01-01", recentFromDate: "2026-09-18", recentToDate: "2026-10-15", latestModeledDate: "2026-10-15" });
   });
 });

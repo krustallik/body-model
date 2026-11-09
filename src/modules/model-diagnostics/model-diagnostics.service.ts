@@ -50,16 +50,18 @@ export async function getModelDiagnostics(profileId: number, client: ModelDataba
   const emptyEvidence = {
     modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0,
     observedNutritionDayCount: 0, imputedNutritionDayCount: 0,
-    unresolvedNutritionDayCount: 0, weightObservationCount: 0,
+    unresolvedNutritionDayCount: 0, weightObservationCount: 0, fullHistoryWeightObservationCount: 0,
   };
   const [evidence, recovery] = await Promise.all([
     windowStartDate && latestCurrentModeledDate
-      ? new ModelDiagnosticsRepository(client).loadEvidence(
-        episode.id,
-        windowStartDate,
-        latestCurrentModeledDate,
-        latestCurrentModeledDate,
-      )
+      ? new ModelDiagnosticsRepository(client).loadEvidence({
+        episodeId: episode.id,
+        profileId: episode.profileId,
+        historyStartDate: episode.startDate,
+        recentFromDate: windowStartDate,
+        recentToDate: latestCurrentModeledDate,
+        latestModeledDate: latestCurrentModeledDate,
+      })
       : Promise.resolve(emptyEvidence),
     new ModelRecoveryRepository(client).latestStatus(episode.id),
   ]);

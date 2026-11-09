@@ -60,12 +60,31 @@ export type DiagnosticsDto = {
     unknownIntervalCount: number;
     unresolvedDayCount: number;
     noWorkIntervalSemantics: "zero-occupational-work-not-missing";
+    fullHistory: {
+      startDate: string;
+      endDate: string | null;
+      calendarDayCount: number;
+      modeledDayCount: number;
+      completeDayCount: number;
+      incompleteDayCount: number;
+      unmodeledCalendarDayCount: number;
+      observedNutritionDayCount: number;
+      imputedNutritionDayCount: number;
+      unresolvedNutritionDayCount: number;
+      weightObservationCount: number;
+    };
   };
   personalization: {
     level: DiagnosticLevel;
     status: PersonalizationCalibrationStatus;
     accepted: boolean;
     activeParameters: Array<"personal-offset" | "activity-calibration">;
+    calibrationDecision: {
+      attemptEligibility: "ineligible" | "offset-only" | "full";
+      outcome: "not-attempted" | "invalid" | "rejected" | "accepted-offset" | "accepted-full";
+      validation: "not-run" | "failed" | "passed";
+      reasons: string[];
+    };
     personalOffsetKcalPerDay: number;
     activityCalibration: number;
     initialization: {
@@ -119,6 +138,7 @@ export type DiagnosticsEvidence = {
   imputedNutritionDayCount: number;
   unresolvedNutritionDayCount: number;
   weightObservationCount: number;
+  fullHistoryWeightObservationCount: number;
   experimentalEnergySummary?: DiagnosticsDto["experimentalEnergySummary"];
   energyHistory?: DiagnosticsDto["energyHistory"];
 };

@@ -4,6 +4,7 @@ import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.type
 import type { Locale } from "@/i18n/i18n-provider";
 import { buildPlanningScenario } from "@/modules/planning-scenario/planning-scenario";
 import type { PlanValues } from "@/modules/planning-scenario/planning-scenario";
+import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 
 export { addCalendarDays, DEFAULT_PLAN, type PlanValues } from "@/modules/planning-scenario/planning-scenario";
 
@@ -77,6 +78,22 @@ export function summarizeEndpoint(result: ForecastResult, metric: ForecastMetric
 
 export type QualityPresentation = { tone: "good" | "info" | "warning" | "blocked"; title: string; detail: string };
 
+export function forecastAccuracyEvidence(locale: Locale = "en"): {
+  status: "not-validated";
+  title: string;
+  detail: string;
+} {
+  return locale === "uk" ? {
+    status: "not-validated",
+    title: "Точність прогнозу ще недостатньо перевірена",
+    detail: "BodyCast поки не зберігає незмінні прогнози на момент їх видачі. Історичні replay є counterfactual перевірками, а не виміром точності вже показаних прогнозів.",
+  } : {
+    status: "not-validated",
+    title: "Forecast accuracy is not yet sufficiently validated",
+    detail: "BodyCast does not yet retain immutable forecasts as issued. Historical replays are counterfactual checks, not accuracy measurements of forecasts users actually saw.",
+  };
+}
+
 export function blockedPresentation(result: ForecastBlockedResult, locale: Locale = "en"): QualityPresentation {
   const uk = locale === "uk";
   if (result.reasonCode === "unified-v4-not-current") {
@@ -114,10 +131,16 @@ export function qualityPresentation(result: ForecastResult, calibrationStatus?: 
   if (result.initialStateQuality === "recovered") {
     return { tone: "info", title: uk ? "Пропуск у даних закрито" : "A data gap was filled in", detail: uk ? "Модель оцінила пропущений період; через це діапазон прогнозу ширший." : "The model estimated the missing period, so the forecast range is wider." };
   }
-  if (calibrationStatus === "insufficient-history" || calibrationStatus === "invalid-history") {
-    return { tone: "warning", title: uk ? "Прогноз ще грубий" : "Forecast is still rough", detail: uk ? "Прогноз можна побудувати, але історії ще замало, щоб добре підлаштуватись саме під вас." : "A forecast can run, but there is not enough history yet to tune it closely to you." };
+  if (calibrationStatus === "defaults-retained") {
+    return { tone: "warning", title: uk ? "Залишили типові налаштування" : "Typical settings were kept", detail: uk ? "Кандидат персоналізації не пройшов чинну перевірку, тому активні параметри залишилися типовими. Це не перевірка точності майбутнього прогнозу." : "The personalization candidate did not pass the existing validation, so typical parameters remain active. This does not measure future forecast accuracy." };
   }
-  return { tone: "good", title: uk ? "Прогноз готовий" : "Forecast ready", detail: uk ? "Даних досить, і прогноз уже підлаштований під вашу історію." : "There is enough data, and the forecast is tuned to your history." };
+  if (calibrationStatus === "insufficient-history" || calibrationStatus === "invalid-history") {
+    return { tone: "warning", title: uk ? "Прогноз розрахований без персоналізації" : "Forecast calculated without personalization", detail: uk ? "Чинні критерії персоналізації ще не виконані або історія має проблемні дні. Сам факт розрахунку не доводить точність." : "The existing personalization criteria are not met, or the history contains invalid days. A completed calculation does not prove accuracy." };
+  }
+  if (calibrationStatus === "offset-only" || calibrationStatus === "fully-calibrated") {
+    return { tone: "info", title: uk ? "Прогноз розрахований; калібрування прийняте" : "Forecast calculated; calibration accepted", detail: uk ? "Параметри пройшли внутрішню перевірку калібрування. Це не є незалежною перевіркою точності майбутніх прогнозів." : "The parameters passed the model's internal calibration check. This is not an independent test of future forecast accuracy." };
+  }
+  return { tone: "info", title: uk ? "Прогноз розрахований" : "Forecast calculated", detail: uk ? "Це результат обраного сценарію; його точність ще не перевірена на незмінних прогнозах, збережених під час видачі." : "This is the result for the selected scenario; its accuracy has not yet been tested against immutable forecasts saved when issued." };
 }
 
 export function chartRows(result: ForecastResult, metric: ForecastMetric) {
@@ -166,8 +189,7 @@ export function planAssumptions(mode: Exclude<ScenarioMode, "recent-behavior">, 
 }
 
 export type ForecastReadiness = {
-  score: number | null;
-  level: "high" | "medium" | "low" | "unavailable";
+  level: "available" | "limited" | "blocked";
   canForecast: boolean;
   title: string;
   detail: string;
@@ -284,69 +306,77 @@ export function forecastReadiness(input: {
   const status = input.status;
   if (!status) {
     if (input.successfulForecast) return {
-      score: input.forecastQuality === "bootstrap" ? 25 : 40,
-      level: "low",
+      level: "limited",
       canForecast: true,
-      title: uk ? "Прогноз можна побудувати" : "Forecast can run",
-      detail: uk ? "Поточний результат побудовано від доступної ваги; модель ще не має повної збереженої історії." : "The current result uses the available weight; the full persisted history is not modeled yet.",
-      factors: uk ? ["Історія моделі ще не завершена — діапазон ширший.", "Додаткові дні харчування та зважувань допоможуть звузити невизначеність."] : ["The model history is not complete yet, so the range is wider.", "More food and weigh-in days help narrow uncertainty."],
+      title: uk ? "Прогноз розрахований з обмеженою історією" : "Forecast calculated with limited history",
+      detail: uk ? "Доступний результат побудовано без повної збереженої модельної історії. Це статус доступності даних, не точності." : "A result was produced without a complete persisted model history. This describes data availability, not accuracy.",
+      factors: uk ? ["Повної історії моделі для цього результату немає.", "Точність прогнозу ще недостатньо перевірена."] : ["A complete modeled history is not available for this result.", "Forecast accuracy is not yet sufficiently validated."],
     };
     return {
-    score: null, level: "unavailable", canForecast: false,
-    title: uk ? "Прогноз поки недоступний" : "Forecast is not available yet",
-    detail: uk
-      ? "Спочатку потрібно запустити модель. Якщо вага й калорії вже є в історії — зробіть це тут; оцінка з’явиться після запуску."
-      : "Start the model first. If weight and calories are already in your history, do it here; the score appears afterward.",
-    factors: uk ? [
-      "Потрібно близько 28 днів історії, з яких хоча б 21 день має і калорії, і вагу.",
-      "Потрібно щонайменше 14 зважувань за 21+ календарних днів.",
-      "За останні 14 днів потрібне хоча б одне зважування з відсотком жиру.",
-    ] : [
-      "About 28 days of history are needed, with at least 21 days that have both calories and weight.",
-      "At least 14 weigh-ins spanning 21+ calendar days are required.",
-      "At least one weigh-in with body-fat % from the latest 14 days is required.",
-    ],
-  };
+      level: "blocked", canForecast: false,
+      title: uk ? "Прогноз поки недоступний" : "Forecast is not available yet",
+      detail: uk
+        ? "Спочатку потрібно запустити модель. Якщо вага й калорії вже є в історії — зробіть це тут; оцінка з’явиться після запуску."
+        : "Start the model first. If weight and calories are already in your history, do it here; the estimate appears after the model starts.",
+      factors: uk ? [
+        "Потрібно близько 28 днів історії, з яких хоча б 21 день має і калорії, і вагу.",
+        "Потрібно щонайменше 14 зважувань за 21+ календарних днів.",
+        "За останні 14 днів потрібне хоча б одне зважування з відсотком жиру.",
+      ] : [
+        "About 28 days of history are needed, with at least 21 days that have both calories and weight.",
+        "At least 14 weigh-ins spanning 21+ calendar days are required.",
+        "At least one weigh-in with body-fat % from the latest 14 days is required.",
+      ],
+    };
   }
 
-  const modeledRatio = Math.min(status.daysModeled / 42, 1);
-  const nutritionRatio = status.daysModeled === 0 ? 0 : Math.min(status.observedNutritionDays / status.daysModeled, 1);
   const hasCurrentState = status.currentPredictedWeightKg !== null;
   const continuityResolved = status.continuityStatus === "resolved";
-  const personalized = status.calibrationStatus === "fully-calibrated" || status.calibrationStatus === "offset-only";
-  let score = Math.round(modeledRatio * 25 + nutritionRatio * 25 + (hasCurrentState ? 20 : 0) + (continuityResolved ? 15 : 0) + (personalized ? 15 : 6));
   const insufficientDonors = input.mode === "recent-behavior" && input.donorDayCount !== undefined && input.donorDayCount < 14;
-  if (insufficientDonors) score = Math.min(score, 49);
   const canForecast = Boolean(input.successfulForecast || (hasCurrentState && continuityResolved && !input.blocked && !input.scenarioEvidenceMissing));
-  const level = score >= 80 ? "high" : score >= 55 ? "medium" : "low";
+  const modeledDayCount = status.daysModeled + status.incompleteDays;
+  const calendarDayCount = status.latestModeledDate && status.latestModeledDate >= status.episodeStartDate
+    ? calendarDayIndex(status.latestModeledDate) - calendarDayIndex(status.episodeStartDate) + 1
+    : 0;
+  const limited = !status.productionCurrent
+    || !continuityResolved
+    || modeledDayCount < calendarDayCount
+    || input.forecastQuality === "bootstrap"
+    || input.forecastQuality === "limited-history"
+    || input.forecastQuality === "degraded"
+    || input.forecastQuality === "unavailable"
+    || insufficientDonors;
+  const level = !canForecast ? "blocked" : limited ? "limited" : "available";
   const factors: string[] = [];
   if (status.daysModeled === 0) {
     factors.push(uk
       ? "Записи в таблиці здоров’я ще не пораховані моделлю. Натисніть «Перерахувати модель» або «Побудувати прогноз»."
       : "Rows in the health table are not model days yet. Tap “Recalculate model” or “Run forecast”.");
   }
-  factors.push(
-    uk ? `Модель порахувала ${status.daysModeled} днів історії; для точнішого прогнозу бажано хоча б 42.` : `The model has calculated ${status.daysModeled} history days; at least 42 are preferred for a steadier forecast.`,
-    uk ? `Днів з повним записом їжі (калорії): ${status.observedNutritionDays} (${Math.round(nutritionRatio * 100)}%).` : `Days with a full food log (calories): ${status.observedNutritionDays} (${Math.round(nutritionRatio * 100)}%).`,
-    personalized
-      ? (uk ? "Прогноз уже підлаштований під вашу історію." : "The forecast is tuned to your history.")
-      : (uk ? "Прогноз ще грубий: історії замало, щоб добре підлаштуватись під вас." : "Forecast is still rough: not enough history yet to tune it closely to you."),
-    continuityResolved
-      ? (uk ? "Великих дірок у порахованій історії немає." : "There are no big holes in the calculated history.")
-      : (uk ? `Є ${status.unresolvedDayCount} днів з дірками, які модель ще не закрила.` : `${status.unresolvedDayCount} days still have holes the model has not closed.`),
+  factors.push(uk
+    ? `Змодельована історія: ${status.episodeStartDate} — ${status.latestModeledDate ?? "—"}, ${calendarDayCount} календарних днів; ${modeledDayCount} модельних (${status.daysModeled} повних, ${status.incompleteDays} неповних), ${Math.max(0, calendarDayCount - modeledDayCount)} без модельного дня.`
+    : `Modeled history: ${status.episodeStartDate} — ${status.latestModeledDate ?? "—"}, ${calendarDayCount} calendar days; ${modeledDayCount} modeled (${status.daysModeled} complete, ${status.incompleteDays} incomplete), ${Math.max(0, calendarDayCount - modeledDayCount)} without a model day.`,
+  );
+  factors.push(uk
+    ? `Харчування: ${status.observedNutritionDays} спостережених, ${status.imputedNutritionDays} заповнених і ${status.unbridgeableNutritionDays} невирішених модельних днів.`
+    : `Nutrition: ${status.observedNutritionDays} observed, ${status.imputedNutritionDays} imputed, and ${status.unbridgeableNutritionDays} unresolved modeled days.`,
+  );
+  factors.push(continuityResolved
+    ? (uk ? "Поточність модельного стану підтверджена." : "The modeled state is current.")
+    : (uk ? `Потрібно закрити пропуски: ${status.unresolvedDayCount} невирішених днів.` : `${status.unresolvedDayCount} unresolved days still need recovery.`),
   );
   if (input.mode === "recent-behavior" && input.donorDayCount !== undefined) factors.push(
     input.donorDayCount < 14
-      ? (uk ? `${input.donorDayCount} днів зі звичками; для повнішої персоналізації потрібно щонайменше 14, але запуск не блокується — діапазон розширено.` : `${input.donorDayCount} behavior days; full personalization needs at least 14, but forecasting is not blocked and the range is widened.`)
-      : (uk ? `${input.donorDayCount} днів з вашими звичками.` : `${input.donorDayCount} days of your usual habits.`),
+      ? (uk ? `Для сценарію доступно лише ${input.donorDayCount} днів поведінкових прикладів; опора цього сценарію обмежена.` : `Only ${input.donorDayCount} behavior-example days are available for this scenario; its evidence is limited.`)
+      : (uk ? `Для сценарію доступно ${input.donorDayCount} днів поведінкових прикладів.` : `${input.donorDayCount} behavior-example days are available for this scenario.`),
   );
   return {
-    score, level, canForecast,
+    level, canForecast,
       title: canForecast
-      ? (level === "high" ? (uk ? "Історія підтримує стабільніший прогноз" : "History supports a steadier forecast") : level === "medium" ? (uk ? "Історія дає помірну опору прогнозу" : "History gives the forecast some support") : (uk ? "Прогноз спирається на обмежені дані" : "Forecast is based on limited evidence"))
+      ? (level === "available" ? (uk ? "Дані дозволяють розрахувати сценарій" : "Data allow the scenario to be calculated") : (uk ? "Сценарій розрахований з обмеженнями" : "Scenario calculated with limitations"))
       : (uk ? "Зараз прогноз побудувати не можна" : "Cannot build a forecast right now"),
     detail: canForecast
-      ? (uk ? "Оцінка показує, наскільки повні дані для цього прогнозу. Це не гарантія результату." : "The score shows how complete the data is for this forecast. It is not a promise of the outcome.")
+      ? (uk ? "Це опис доступності та повноти входів, а не оцінка точності прогнозу." : "This describes input availability and coverage, not forecast accuracy.")
       : (uk ? "Нижче — чого саме бракує, щоб прогноз став доступним." : "Below is exactly what is missing before a forecast can run."),
     factors,
   };

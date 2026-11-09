@@ -92,6 +92,12 @@ function diagnosticsDto(): DiagnosticsDto {
       incompleteDayCount: 0,
       nutrition: { observedDayCount: 28, imputedDayCount: 0, unresolvedDayCount: 0 },
       weightObservationCount: 20,
+      fullHistory: {
+        startDate: "2026-07-23", endDate: "2026-09-18", calendarDayCount: 58,
+        modeledDayCount: 56, completeDayCount: 54, incompleteDayCount: 2,
+        unmodeledCalendarDayCount: 2, observedNutritionDayCount: 48,
+        imputedNutritionDayCount: 6, unresolvedNutritionDayCount: 2, weightObservationCount: 39,
+      },
       unknownIntervalCount: 0,
       unresolvedDayCount: 0,
       noWorkIntervalSemantics: "zero-occupational-work-not-missing",
@@ -101,6 +107,7 @@ function diagnosticsDto(): DiagnosticsDto {
       status: "insufficient-history",
       accepted: false,
       activeParameters: [],
+      calibrationDecision: { attemptEligibility: "ineligible", outcome: "not-attempted", validation: "not-run", reasons: [] },
       personalOffsetKcalPerDay: 0,
       activityCalibration: 1,
       initialization: {
@@ -170,6 +177,29 @@ describe("DiagnosticsClient body-composition card", () => {
     expect(screen.getByText("44.7 kg")).toBeTruthy();
     expect(screen.getByText("20.3 kg")).toBeTruthy();
     expect(screen.getByText("3053 kcal")).toBeTruthy();
+  });
+
+  it("separates full modeled history from the rolling 28-day window and forecast accuracy", async () => {
+    render(<DiagnosticsClient />);
+    expect(await screen.findByText("54/56 повних модельних днів")).toBeTruthy();
+    expect(screen.getByText(/58 календарних днів/)).toBeTruthy();
+    expect(screen.getByText(/2 без модельного дня/)).toBeTruthy();
+    expect(screen.getByText("Харчування · до 28 календарних днів")).toBeTruthy();
+    expect(screen.getByText(/Точність прогнозу ще недостатньо перевірена/)).toBeTruthy();
+  });
+
+  it("shows the persisted parameter-bound rejection instead of generic lack of improvement", async () => {
+    const dto = diagnosticsDto();
+    dto.personalization.status = "defaults-retained";
+    dto.personalization.calibrationDecision = {
+      attemptEligibility: "full", outcome: "rejected", validation: "not-run", reasons: ["parameter-at-bound"],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(dto)));
+    render(<DiagnosticsClient />);
+    expect(await screen.findByText("Кандидат уперся в межу параметра; типові налаштування залишено.")).toBeTruthy();
+    expect(screen.getByText(/Виконані технічні критерії для спроби повного калібрування/)).toBeTruthy();
+    expect(screen.getByText(/Результат: кандидат відхилено/)).toBeTruthy();
+    expect(screen.queryByText(/не покращило перевірку/)).toBeNull();
   });
 
   it("recovers pending diagnostics automatically without posting a recalculation", async () => {

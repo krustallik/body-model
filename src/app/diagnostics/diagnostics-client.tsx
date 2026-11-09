@@ -16,6 +16,7 @@ import {
   noActiveModelPresentation,
   recalculateCompletionMessage,
   recalculateModelPresentation,
+  forecastAccuracyEvidence,
   type RecalculationPublicationStatus,
 } from "@/modules/model-forecast/forecast-ui";
 import styles from "./diagnostics.module.css";
@@ -53,6 +54,12 @@ const EMPTY_DIAGNOSTICS: DiagnosticsDto = {
     incompleteDayCount: 0,
     nutrition: { observedDayCount: 0, imputedDayCount: 0, unresolvedDayCount: 0 },
     weightObservationCount: 0,
+    fullHistory: {
+      startDate: "1970-01-01", endDate: null, calendarDayCount: 0,
+      modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0,
+      unmodeledCalendarDayCount: 0, observedNutritionDayCount: 0,
+      imputedNutritionDayCount: 0, unresolvedNutritionDayCount: 0, weightObservationCount: 0,
+    },
     unknownIntervalCount: 0,
     unresolvedDayCount: 0,
     noWorkIntervalSemantics: "zero-occupational-work-not-missing",
@@ -62,6 +69,7 @@ const EMPTY_DIAGNOSTICS: DiagnosticsDto = {
     status: "insufficient-history",
     accepted: false,
     activeParameters: [],
+    calibrationDecision: { attemptEligibility: "ineligible", outcome: "not-attempted", validation: "not-run", reasons: [] },
     personalOffsetKcalPerDay: 0,
     activityCalibration: 1,
     initialization: {
@@ -173,21 +181,65 @@ function recoveryStatusLabel(status: DiagnosticsDto["recovery"]["status"], uk: b
   return labels[status];
 }
 
-function personalizationCopy(status: DiagnosticsDto["personalization"]["status"], uk: boolean) {
-  const copy = uk ? {
-    "insufficient-history": ["Ще замало історії", "Модель поки працює з типовими налаштуваннями, не сильно під вас."],
-    "invalid-history": ["Історію важко порахувати", "Один або кілька днів не вдалося безпечно порахувати."],
-    "offset-only": ["Просте підлаштування увімкнено", "Загальний зсув калорій прийнято; рух лишився типовим."],
-    "fully-calibrated": ["Повне підлаштування увімкнено", "І загальний зсув, і масштаб руху пройшли перевірку."],
-    "defaults-retained": ["Залишили типові налаштування", "Даних вистачило спробувати, але підлаштування не покращило перевірку."],
+function calibrationReasonLabel(reason: string, uk: boolean) {
+  const labels: Record<string, string> = uk ? {
+    "incomplete-simulation-day": "Неповні модельні дні не дозволили перевірити кандидата.",
+    "insufficient-activity-variation": "Рух змінювався недостатньо, щоб окремо оцінити його масштаб.",
+    "weak-two-parameter-identifiability": "За цією історією не вдалося надійно розділити зсув калорій і масштаб руху.",
+    "parameter-at-bound": "Кандидат уперся в межу параметра; типові налаштування залишено.",
+    "validation-improvement-too-small": "Кандидат недостатньо покращив відкладену перевірку.",
   } : {
-    "insufficient-history": ["More history needed", "The model is still using typical settings, not finely tuned to you."],
-    "invalid-history": ["History is hard to calculate", "One or more days could not be calculated safely."],
-    "offset-only": ["Simple tuning is on", "An overall calorie offset was accepted; movement scaling stays typical."],
-    "fully-calibrated": ["Full tuning is on", "Both the overall offset and movement scaling passed checks."],
-    "defaults-retained": ["Typical settings kept", "There was enough data to try, but tuning did not improve the check."],
+    "incomplete-simulation-day": "Incomplete modeled days prevented candidate validation.",
+    "insufficient-activity-variation": "Movement varied too little to estimate its scale separately.",
+    "weak-two-parameter-identifiability": "The history could not reliably distinguish a calorie offset from movement scaling.",
+    "parameter-at-bound": "The candidate reached a parameter bound; typical settings were kept.",
+    "validation-improvement-too-small": "The candidate did not improve held-out validation enough.",
   };
-  return copy[status];
+  return labels[reason] ?? (uk ? "Причину цього рішення не збережено." : "The reason for this decision was not recorded.");
+}
+
+function personalizationCopy(personalization: DiagnosticsDto["personalization"], uk: boolean) {
+  const status = personalization.status;
+  const copy = uk ? {
+    "insufficient-history": ["Ще замало історії", "Модель працює з типовими налаштуваннями; технічні критерії спроби ще не виконані."],
+    "invalid-history": ["Історію важко порахувати", "Один або кілька днів не вдалося безпечно порахувати."],
+    "offset-only": ["Просте підлаштування прийняте", "Загальний зсув калорій пройшов внутрішню перевірку; рух лишився типовим."],
+    "fully-calibrated": ["Повне підлаштування прийняте", "Зсув калорій і масштаб руху пройшли внутрішню перевірку."],
+    "defaults-retained": ["Залишили типові налаштування", "Кандидат відхилено; активні параметри не змінилися."],
+  } : {
+    "insufficient-history": ["More history needed", "The model uses typical settings because the technical attempt criteria are not met yet."],
+    "invalid-history": ["History is hard to calculate", "One or more days could not be calculated safely."],
+    "offset-only": ["Simple calibration accepted", "The overall calorie offset passed internal validation; movement scaling remains typical."],
+    "fully-calibrated": ["Full calibration accepted", "The calorie offset and movement scale passed internal validation."],
+    "defaults-retained": ["Typical settings kept", "The candidate was rejected; active parameters did not change."],
+  };
+  const eligibility = personalization.calibrationDecision.attemptEligibility;
+  const outcome = personalization.calibrationDecision.outcome;
+  const eligibilityCopy = uk ? {
+    ineligible: "Технічні критерії спроби ще не виконані.",
+    "offset-only": "Виконані критерії для спроби простого калібрування; повне калібрування ще не має всіх потрібних даних.",
+    full: "Виконані технічні критерії для спроби повного калібрування; це не доводить його точність.",
+  } : {
+    ineligible: "Technical criteria for a calibration attempt are not met yet.",
+    "offset-only": "The simple-calibration attempt criteria are met; full calibration still lacks one or more required inputs.",
+    full: "Technical criteria for a full-calibration attempt are met; this does not prove accuracy.",
+  };
+  const outcomeCopy = uk ? {
+    "not-attempted": "Результат: калібрування не запускалося.", invalid: "Результат: кандидат не перевірено через некоректні дані.",
+    rejected: "Результат: кандидат відхилено; активні налаштування збережено.",
+    "accepted-offset": "Результат: прийнято лише загальний зсув.", "accepted-full": "Результат: прийнято зсув і масштаб руху.",
+  } : {
+    "not-attempted": "Outcome: calibration was not attempted.", invalid: "Outcome: candidate was not validated because the data were invalid.",
+    rejected: "Outcome: candidate rejected; active settings were retained.",
+    "accepted-offset": "Outcome: only the overall offset was accepted.", "accepted-full": "Outcome: the offset and movement scale were accepted.",
+  };
+  return {
+    title: copy[status][0],
+    detail: copy[status][1],
+    eligibility: eligibilityCopy[eligibility],
+    outcome: outcomeCopy[outcome],
+    reasons: personalization.calibrationDecision.reasons.map((reason) => calibrationReasonLabel(reason, uk)),
+  };
 }
 
 function currentStateTitle(status: DiagnosticsDto["currentState"]["status"], uk: boolean) {
@@ -336,7 +388,8 @@ export function DiagnosticsClient() {
     return runModelAction(noActiveModel ? "initialize" : "recalculate");
   }
 
-  const personalization = data ? personalizationCopy(data.personalization.status, uk) : null;
+  const personalization = data ? personalizationCopy(data.personalization, uk) : null;
+  const accuracyEvidence = forecastAccuracyEvidence(locale);
   const needsRecalculation = data
     ? modelNeedsRecalculation({
       daysModeled: data.dataContinuity.modeledDayCount,
@@ -352,6 +405,7 @@ export function DiagnosticsClient() {
     <header className={styles.hero}>
       <div><p className={styles.eyebrow}>{uk ? "Діагностика · не оцінка здоров’я" : "Diagnostics · not a health score"}</p><h1>{uk ? "Що модель знає — і чого не знає." : "What the model knows—and what it does not."}</h1><p>{uk ? "Тут кілька окремих перевірок: дані, підлаштування під вас, пропуски й прогноз. Одного спільного бала немає." : "There are several separate checks: data, tuning to you, gaps, and forecast. There is no single overall score."}</p></div>
     </header>
+    {data && <aside className={styles.accuracyNotice} role="note"><strong>{accuracyEvidence.title}</strong><span>{accuracyEvidence.detail}</span></aside>}
     {!data && !error && <section className={styles.loading} aria-live="polite">{refreshPending ? (uk ? "Модель оновлюється. Перевіряємо готовність…" : "Model updating. Checking readiness…") : (uk ? "Завантажуємо стан моделі…" : "Loading model status…")}</section>}
     {error && <section className={styles.error} role="status"><strong>{refreshPending ? (uk ? "Модель оновлюється" : "Model updating") : noActiveModel ? (uk ? "Модель ще не створена" : "Model not created yet") : (uk ? "Діагностика недоступна" : "Diagnostics unavailable")}</strong><span>{error}</span><div className={styles.actions}>
       {!noActiveModel && <button type="button" disabled={recalculating} onClick={() => { setError(null); setReadAttempt((value) => value + 1); }}>{uk ? "Повторити перевірку" : "Check again"}</button>}
@@ -379,17 +433,19 @@ export function DiagnosticsClient() {
           <a className={styles.modelViewAction} href="#model-estimate-details">{uk ? "Переглянути модель" : "View model"}</a>
         </article>
         <article data-kind="coverage" data-level={data.dataContinuity.level}>
-          <div className={styles.cardTop}><span>{uk ? "Покриття даних · 28 днів" : "Data coverage · 28 days"}<HelpTip>{uk ? "Повні дні — це дні, які модель змогла повністю порахувати. Кількість не дорівнює кількості записів у таблиці здоров’я." : "Complete days are days the model could fully calculate. This count is not the number of entries in Health History."}</HelpTip></span><b>{levelLabel(data.dataContinuity.level, uk)}</b></div>
-          <strong>{data.episode.id === 0 ? (uk ? "Історію ще не пораховано" : "History not calculated yet") : `${data.dataContinuity.completeDayCount}/${data.dataContinuity.modeledDayCount} ${uk ? "повних днів" : "complete days"}`}</strong>
-          <p>{data.episode.id === 0 ? (uk ? "Записи здоров’я ще не стали модельними днями." : "Health records have not become modeled days yet.") : `${uk ? "Зважувань" : "Weigh-ins"}: ${data.dataContinuity.weightObservationCount} · ${uk ? "Неповних днів" : "Incomplete days"}: ${data.dataContinuity.incompleteDayCount}`}</p>
+          <div className={styles.cardTop}><span>{uk ? "Покриття · вся модельна історія" : "Coverage · full model history"}<HelpTip>{uk ? "Діапазон і лічильники охоплюють поточний, придатний для читання префікс від початку епізоду моделі до останнього змодельованого дня. Календарні дні, модельні дні та зважування мають різні знаменники." : "The range and counts cover the current readable model prefix from the episode start through the latest modeled day. Calendar days, modeled days, and weigh-ins use different denominators."}</HelpTip></span><b>{levelLabel(data.dataContinuity.level, uk)}</b></div>
+          <strong>{data.episode.id === 0 ? (uk ? "Історію ще не пораховано" : "History not calculated yet") : `${data.dataContinuity.fullHistory.completeDayCount}/${data.dataContinuity.fullHistory.modeledDayCount} ${uk ? "повних модельних днів" : "complete modeled days"}`}</strong>
+          <p>{data.episode.id === 0 ? (uk ? "Записи здоров’я ще не стали модельними днями." : "Health records have not become modeled days yet.") : `${data.dataContinuity.fullHistory.startDate} — ${data.dataContinuity.fullHistory.endDate ?? "—"} · ${data.dataContinuity.fullHistory.calendarDayCount} ${uk ? "календарних днів" : "calendar days"}`}</p>
+          <p>{data.episode.id === 0 ? "" : `${data.dataContinuity.fullHistory.incompleteDayCount} ${uk ? "неповних" : "incomplete"} · ${data.dataContinuity.fullHistory.unmodeledCalendarDayCount} ${uk ? "без модельного дня" : "without a model day"} · ${data.dataContinuity.fullHistory.weightObservationCount} ${uk ? "днів зі зважуванням" : "weigh-in days"}`}</p>
+          <p>{data.episode.id === 0 ? "" : `${uk ? "Харчування" : "Nutrition"}: ${data.dataContinuity.fullHistory.observedNutritionDayCount} ${uk ? "спостережених" : "observed"} · ${data.dataContinuity.fullHistory.imputedNutritionDayCount} ${uk ? "заповнених" : "imputed"} · ${data.dataContinuity.fullHistory.unresolvedNutritionDayCount} ${uk ? "невирішених" : "unresolved"}`}</p>
         </article>
         <article data-kind="personalization" data-level={data.personalization.level}>
           <div className={styles.cardTop}><span>{uk ? "Персоналізація" : "Personalization"}<HelpTip>{uk ? "Модель порівнює прогнозовану й записану вагу. За достатньої тривалості та різноманітності історії вона може обережно скоригувати енергобаланс і реакцію на активність." : "The model compares predicted and logged weight. With enough long and varied history, it can cautiously tune energy balance and activity response."}</HelpTip></span><b>{levelLabel(data.personalization.level, uk)}</b></div>
-          <strong>{personalization?.[0]}</strong><p>{personalization?.[1]}</p>
+          <strong>{personalization?.title}</strong><p>{personalization?.detail}</p>
         </article>
-        <article data-kind="readiness" data-level={data.forecastReadiness.level}>
-          <div className={styles.cardTop}><span>{uk ? "Готовність прогнозу" : "Forecast readiness"}</span><b>{levelLabel(data.forecastReadiness.level, uk)}</b></div>
-          <strong>{data.forecastReadiness.allowed ? (uk ? "Можна будувати" : "Ready to run") : (uk ? "Поки заблоковано" : "Currently blocked")}</strong>
+        <article data-kind="availability" data-level={data.forecastReadiness.level}>
+          <div className={styles.cardTop}><span>{uk ? "Доступність сценарію" : "Scenario availability"}</span><b>{data.forecastReadiness.allowed ? (uk ? "Доступний" : "Available") : levelLabel(data.forecastReadiness.level, uk)}</b></div>
+          <strong>{data.forecastReadiness.allowed ? (uk ? "Сценарій можна розрахувати" : "Scenario can be calculated") : (uk ? "Зараз заблоковано" : "Currently blocked")}</strong>
           <p>{data.forecastReadiness.initialStateSource ? <>{uk ? "Тип стартової оцінки" : "Starting estimate type"}: <ModelStateSource value={data.forecastReadiness.initialStateSource} uk={uk} /></> : data.forecastReadiness.reasons.map((reason) => forecastReasonLabel(reason, uk)).join(", ")}</p>
         </article>
       </section>
@@ -408,9 +464,9 @@ export function DiagnosticsClient() {
           {(data.experimentalEnergySummary || data.energyHistory.latestModeledDay || data.energyHistory.previousCompletedDays.length > 0) && <div className={styles.energySummary} aria-label={uk ? "Додаткові оцінки енерговитрат" : "Additional energy estimates"}>
             <p className={styles.subheading}>{uk ? "Енерговитрати" : "Energy use"}</p>
             <dl className={styles.energyMetrics}>
-              <div><dt>{uk ? "Енерговитрати останнього змодельованого дня" : "Expenditure on latest modeled day"}<HelpTip>{uk ? "Оцінка моделі для конкретного останнього дня в історії. Це не вимір сьогоднішніх витрат." : "The model estimate for the exact latest day in history. It is not a measurement of today's expenditure."}</HelpTip></dt><dd>{data.energyHistory.latestModeledDay?.expenditureKcalPerDay === null || !data.energyHistory.latestModeledDay ? (uk ? "немає оцінки" : "estimate unavailable") : `${number(data.energyHistory.latestModeledDay.expenditureKcalPerDay)} kcal`}</dd><small>{data.energyHistory.latestModeledDay?.date ? formatDiagnosticDate(data.energyHistory.latestModeledDay.date, intlLocale) : "—"}</small></div>
+               <div><dt>{uk ? "Енерговитрати останнього змодельованого дня" : "Expenditure on latest modeled day"}<HelpTip>{uk ? "Оцінка моделі для конкретного останнього дня в історії. Це не вимір сьогоднішніх витрат." : "The model estimate for the exact latest day in history. It is not a measurement of today's expenditure."}</HelpTip></dt><dd>{data.energyHistory.latestModeledDay?.expenditureKcalPerDay === null || !data.energyHistory.latestModeledDay ? (uk ? "немає оцінки" : "estimate unavailable") : `${number(data.energyHistory.latestModeledDay.expenditureKcalPerDay)} kcal`}<small>{data.energyHistory.latestModeledDay?.date ? formatDiagnosticDate(data.energyHistory.latestModeledDay.date, intlLocale) : "—"}</small></dd></div>
               {data.experimentalEnergySummary && <>
-                <div><dt>{uk ? "Типова підтримка · середнє за 28 днів" : "Typical maintenance · 28-day average"}<HelpTip>{uk ? "Середнє арифметичне доступних модельних оцінок добових енерговитрат у ковзному календарному вікні на 28 днів, що закінчується останнім днем з оцінкою. Потрібно щонайменше 14 придатних модельних днів; відсутні дні не вважаються нулем. Це довгостроковий орієнтир моделі, а не точний припис калорій. Значення останнього дня може відрізнятися: це оцінка одного дня, тоді як середнє враховує придатні дні у вікні." : "The arithmetic mean of available modeled daily expenditure estimates in a rolling 28-calendar-day window ending on the latest day with an estimate. At least 14 eligible modeled days are required; missing days are not treated as zero. This is a long-term model reference, not an exact calorie prescription. The latest-day estimate can differ: it describes one day, while the average includes eligible days in the window."}</HelpTip></dt><dd>{number(data.experimentalEnergySummary.recentTypicalMaintenanceKcalPerDay)} kcal</dd><small>{data.experimentalEnergySummary.typicalMaintenanceEligibleDays}/28 {uk ? "придатних модельних днів" : "eligible modeled days"}</small></div>
+                 <div><dt>{uk ? "Типова підтримка · середнє за 28 днів" : "Typical maintenance · 28-day average"}<HelpTip>{uk ? "Середнє арифметичне доступних модельних оцінок добових енерговитрат у ковзному календарному вікні на 28 днів, що закінчується останнім днем з оцінкою. Потрібно щонайменше 14 придатних модельних днів; відсутні дні не вважаються нулем. Це довгостроковий орієнтир моделі, а не точний припис калорій. Значення останнього дня може відрізнятися: це оцінка одного дня, тоді як середнє враховує придатні дні у вікні." : "The arithmetic mean of available modeled daily expenditure estimates in a rolling 28-calendar-day window ending on the latest day with an estimate. At least 14 eligible modeled days are required; missing days are not treated as zero. This is a long-term model reference, not an exact calorie prescription. The latest-day estimate can differ: it describes one day, while the average includes eligible days in the window."}</HelpTip></dt><dd>{number(data.experimentalEnergySummary.recentTypicalMaintenanceKcalPerDay)} kcal<small>{data.experimentalEnergySummary.typicalMaintenanceEligibleDays}/28 {uk ? "придатних модельних днів" : "eligible modeled days"}</small></dd></div>
                 <div><dt>{uk ? "Енерговитрати у спокої · RMR" : "Resting expenditure · RMR"}<HelpTip>{uk ? "Окремий компонент витрат у спокої; не включає повні добові витрати на рух і перетравлення їжі." : "The resting component only; it does not include total daily movement and digestion expenditure."}</HelpTip></dt><dd>{number(data.experimentalEnergySummary.restingRmrKcalPerDay)} kcal</dd></div>
               </>}
             </dl>
@@ -422,17 +478,18 @@ export function DiagnosticsClient() {
           </div>}
         </article>
         <article className={`${styles.panel} ${styles.coveragePanel}`} data-kind="coverage" data-level={data.dataContinuity.level}>
-          <div className={styles.sectionHead}><div><p className={styles.eyebrow}>{uk ? "Походження даних" : "Data provenance"}</p><h2>{uk ? "Харчування за 28 днів" : "Nutrition over 28 days"}</h2></div><span className={styles.statusPill} data-level={data.dataContinuity.level}>{levelLabel(data.dataContinuity.level, uk)}</span></div>
+          <div className={styles.sectionHead}><div><p className={styles.eyebrow}>{uk ? "Окреме ковзне вікно" : "Separate rolling window"}</p><h2>{uk ? "Харчування · до 28 календарних днів" : "Nutrition · up to 28 calendar days"}</h2></div><span className={styles.statusPill} data-level={data.dataContinuity.level}>{levelLabel(data.dataContinuity.level, uk)}</span></div>
+          <p className={styles.note}>{data.dataContinuity.windowStartDate && data.dataContinuity.windowEndDate ? `${data.dataContinuity.windowStartDate} — ${data.dataContinuity.windowEndDate}` : (uk ? "Немає актуального ковзного вікна" : "No current rolling window")}</p>
           <p className={styles.coverageSummary}>{data.episode.id === 0 ? (uk ? "Історію ще не пораховано" : "History not calculated yet") : `${data.dataContinuity.completeDayCount}/${data.dataContinuity.modeledDayCount} ${uk ? "повних порахованих днів" : "complete calculated days"}`}</p>
-          <p className={styles.note}>{uk ? "Рахуються модельні дні, а не рядки в таблиці здоров’я." : "These are modeled days, not entries in Health History."}</p>
+          <p className={styles.note}>{uk ? "Цей окремий 28-денний показник використовується для недавнього покриття й розрахунку підтримки. Повна історія показана окремо вище." : "This separate 28-day measure is used for recent coverage and maintenance estimates. Full model history is shown separately above."}</p>
           <div className={styles.provenance} aria-label={uk ? "Походження даних про калорії" : "Nutrition data provenance"}>
             <span><i data-kind="observed" />{uk ? "Записано вами" : "Logged by you"}<b>{data.episode.id === 0 ? "—" : data.dataContinuity.nutrition.observedDayCount}</b></span>
             <span><i data-kind="imputed" />{uk ? "Заповнено із сусідніх днів" : "Filled from nearby days"}<b>{data.episode.id === 0 ? "—" : data.dataContinuity.nutrition.imputedDayCount}</b></span>
             <span><i data-kind="missing" />{uk ? "Без даних про калорії" : "Missing calories"}<b>{data.episode.id === 0 ? "—" : data.dataContinuity.nutrition.unresolvedDayCount}</b></span>
           </div>
           <dl className={styles.coverageFacts}>
-            <div><dt>{uk ? "Неповні модельні дні" : "Incomplete modeled days"}</dt><dd>{data.episode.id === 0 ? "—" : data.dataContinuity.incompleteDayCount}</dd></div>
-            <div><dt>{uk ? "Зважування у вікні" : "Weigh-ins in window"}</dt><dd>{data.episode.id === 0 ? "—" : data.dataContinuity.weightObservationCount}</dd></div>
+            <div><dt>{uk ? "Неповні модельні дні у вікні" : "Incomplete modeled days in window"}</dt><dd>{data.episode.id === 0 ? "—" : data.dataContinuity.incompleteDayCount}</dd></div>
+            <div><dt>{uk ? "Днів зі зважуванням у вікні" : "Weigh-in days in window"}</dt><dd>{data.episode.id === 0 ? "—" : data.dataContinuity.weightObservationCount}</dd></div>
             <div><dt>{uk ? "Невідомі інтервали" : "Unknown intervals"}</dt><dd>{data.episode.id === 0 ? "—" : data.dataContinuity.unknownIntervalCount}</dd></div>
             <div><dt>{uk ? "Дні, що потребують уточнення" : "Days needing clarification"}</dt><dd>{data.episode.id === 0 ? "—" : data.dataContinuity.unresolvedDayCount}</dd></div>
           </dl>
@@ -441,10 +498,14 @@ export function DiagnosticsClient() {
       </section>
 
       <section className={`${styles.panel} ${styles.personalizationPanel}`} data-kind="personalization" data-level={data.personalization.level} aria-labelledby="diagnostics-personalization-heading">
-        <div className={styles.sectionHead}><div><p className={styles.eyebrow}>{uk ? "Перевірка налаштувань" : "Calibration checks"}</p><h2 id="diagnostics-personalization-heading">{uk ? "Коли модель підлаштовується під вас" : "When the model tunes to you"}</h2></div><span className={styles.statusPill} data-level={data.personalization.level}>{personalization?.[0]}</span></div>
-        <p>{personalization?.[1]}</p>
-        <div className={styles.gates}>{data.personalization.gates.map((gate) => { const help = gateHelp(gate, uk); return <div key={gate.id} data-met={gate.met}><span>{gateLabel(gate, uk)}{help && <HelpTip>{help}</HelpTip>}</span><strong>{number(gate.current, gate.unit === "coefficient-of-variation" ? 2 : 0)} / {gate.required}{gate.unit === "kcal/day-sd" ? (uk ? " ккал/день" : " kcal/day SD") : gate.unit === "days" ? ` ${uk ? "днів" : "days"}` : ""}</strong><small>{gate.met ? (uk ? "достатньо" : "enough") : (uk ? "ще мало" : "not enough yet")}</small></div>; })}</div>
-        <p className={styles.note}>{uk ? "Повні модельні дні рахують завершені денні стани у вікні покриття. Проміжок для підлаштування рахують за календарним часом між придатними зважуваннями. Це різні показники й різні знаменники; показані пороги — технічні, не медичні норми." : "Complete modeled days count finished daily states in the coverage window. The tuning span counts calendar time between usable weigh-ins. These are different measures with different denominators; the displayed thresholds are technical, not medical norms."}</p>
+        <p>{personalization?.detail}</p>
+        <dl className={styles.calibrationDecision}>
+          <div><dt>{uk ? "Критерії спроби" : "Attempt eligibility"}</dt><dd>{personalization?.eligibility}</dd></div>
+          <div><dt>{uk ? "Результат кандидата" : "Candidate outcome"}</dt><dd>{personalization?.outcome}</dd></div>
+        </dl>
+        {personalization?.reasons.length ? <ul className={styles.calibrationReasons}>{personalization.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
+        <div className={styles.gates}>{data.personalization.gates.map((gate) => { const help = gateHelp(gate, uk); return <div key={gate.id} data-met={gate.met}><span>{gateLabel(gate, uk)}{help && <HelpTip>{help}</HelpTip>}</span><strong>{number(gate.current, gate.unit === "coefficient-of-variation" ? 2 : 0)} / {gate.required}{gate.unit === "kcal/day-sd" ? (uk ? " ккал/день" : " kcal/day SD") : gate.unit === "days" ? ` ${uk ? "днів" : "days"}` : ""}</strong><small>{gate.met ? (uk ? "критерій виконано" : "criterion met") : (uk ? "критерій не виконано" : "criterion not met")}</small></div>; })}</div>
+        <p className={styles.note}>{uk ? "20 зважувань / 28 календарних днів дають лише право спробувати просте калібрування. 35 / 56 і достатня мінливість руху дають лише право спробувати повне. Прийняття кандидата означає проходження внутрішньої перевірки, а не доказ точності майбутнього Forecast. Повні модельні дні й календарний проміжок між зважуваннями мають різні знаменники." : "20 weigh-ins / 28 calendar days only make a simple calibration attempt eligible. 35 / 56 plus sufficient movement variation only make a full attempt eligible. An accepted candidate passed internal validation; it does not prove future Forecast accuracy. Complete modeled days and calendar span between weigh-ins use different denominators."}</p>
       </section>
 
       <section className={styles.readinessGrid} aria-label={uk ? "Пропуски та наступна дія" : "History gaps and next step"}>
@@ -456,9 +517,9 @@ export function DiagnosticsClient() {
           <p>{data.currentState.source ? <>{uk ? "Тип поточної оцінки" : "Current estimate type"}: <ModelStateSource value={data.currentState.source} uk={uk} />.</> : (uk ? "Надійної поточної оцінки поки немає, тому прогноз заблоковано." : "There is no reliable current estimate yet, so forecasting is blocked.")}</p>
         </article>
         <article className={`${styles.panel} ${styles.readinessPanel}`} data-level={data.forecastReadiness.level}>
-          <p className={styles.eyebrow}>{uk ? "Готовність прогнозу" : "Forecast readiness"}</p>
-          <div className={styles.readinessTitle}><h2>{data.forecastReadiness.allowed ? (uk ? "Можна перевірити сценарій" : "You can explore a scenario") : (uk ? "Спершу потрібен надійний старт" : "A reliable starting point is needed first")}</h2><span className={styles.statusPill} data-level={data.forecastReadiness.level}>{levelLabel(data.forecastReadiness.level, uk)}</span></div>
-          <p>{data.forecastReadiness.allowed ? (uk ? "Прогноз доступний, але його діапазон описує сценарій, а не гарантію." : "Forecasting is available, but its range describes a scenario, not a guarantee.") : noActiveModel ? noActiveCopy.detail : (uk ? "Перевірте пропуски або дочекайтеся нових зважувань. Якщо історія вже має нові дні — перерахуйте модель." : "Review the gaps or wait for new weigh-ins. If newer days are already in history, recalculate the model.")}</p>
+          <p className={styles.eyebrow}>{uk ? "Доступність сценарію" : "Scenario availability"}</p>
+          <div className={styles.readinessTitle}><h2>{data.forecastReadiness.allowed ? (uk ? "Сценарій можна розрахувати" : "Scenario can be calculated") : (uk ? "Для сценарію потрібна актуальна оцінка" : "A current estimate is needed for this scenario")}</h2><span className={styles.statusPill} data-level={data.forecastReadiness.allowed ? "informational" : data.forecastReadiness.level}>{data.forecastReadiness.allowed ? (uk ? "Доступний" : "Available") : levelLabel(data.forecastReadiness.level, uk)}</span></div>
+          <p>{data.forecastReadiness.allowed ? (uk ? "Це перевіряє доступність поточного стану й входів. Точність прогнозу наведена окремо." : "This checks whether the current state and inputs are available. Forecast accuracy is reported separately.") : noActiveModel ? noActiveCopy.detail : (uk ? "Перевірте пропуски або дочекайтеся нових зважувань. Якщо історія вже має нові дні — перерахуйте модель." : "Review the gaps or wait for new weigh-ins. If newer days are already in history, recalculate the model.")}</p>
           {!data.forecastReadiness.allowed && data.forecastReadiness.reasons.length > 0 && <ul className={styles.reasonList}>{data.forecastReadiness.reasons.map((reason) => <li key={reason}>{forecastReasonLabel(reason, uk)}</li>)}</ul>}
           <div className={styles.actions}><button type="button" disabled={recalculating || refreshPending} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div>
         </article>

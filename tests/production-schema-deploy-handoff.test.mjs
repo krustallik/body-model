@@ -257,11 +257,28 @@ describe("schema deploy compatibility handoff", () => {
       migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
       deployBlob: "d9820a4387dacd1dd3d517b6a1365ac0a87a343f",
     });
+    expect(currentCompatibility.changedPathObjects["README.md"]).toMatchObject({
+      migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
+      deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
+    });
+    const currentHandoff = evaluateSchemaDeployHandoff({
+      markerText: previousAppReadyMarker,
+      deploySha: currentDeploySha,
+      ...currentCompatibility,
+    });
+    expect(currentHandoff).toMatchObject({ action: "write", marker: { deploySha: currentDeploySha, state: "schema-applied" } });
     expect(() => evaluateSchemaDeployHandoff({
       markerText: previousAppReadyMarker,
       deploySha: currentDeploySha,
       ...currentCompatibility,
-    })).toThrow("Schema deploy handoff blocked: path README.md is not allowlisted for this schema handoff");
+      changedPathObjects: {
+        ...currentCompatibility.changedPathObjects,
+        "README.md": {
+          ...currentCompatibility.changedPathObjects["README.md"],
+          deployBlob: "e".repeat(40),
+        },
+      },
+    })).toThrow(/exact reviewed content binding/);
   }, 30_000);
 
   it("hands off the Auth V2 app-ready marker only from the exact reviewed migration tree", async () => {

@@ -214,6 +214,54 @@ const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock
 const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma"]);
 const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
 const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+  "README.md": Object.freeze({
+    migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
+    deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
+  }),
+  "docs/architecture/project-overview.md": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "d3c3cef21a356238fa2e8f05a2ebde2e52612c04",
+  }),
+  "docs/images/bodycast-body-map.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "53049e9ebe7a3c075bc1e7c81ba0e28847bfee2b",
+  }),
+  "docs/images/bodycast-dashboard.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "7aba3226b1ea631ce7d40492c9de972ec64dc15f",
+  }),
+  "docs/images/bodycast-diagnostics.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "1f6d931f67c5d4974eb1f55b1960ced06ac8cf3e",
+  }),
+  "docs/images/bodycast-forecast.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "4a07a50641beee0ed2613c373e11fd7a56284a5d",
+  }),
+  "docs/images/bodycast-history.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "7fac361843fbf336c132edefc6d0960a486c0fd8",
+  }),
+  "docs/images/bodycast-stepper-diagnostic.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "2397053778ef7c248cc95ba2c1dcae5eac69192a",
+  }),
+  "docs/images/bodycast-strength-session.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "cde65aa1432bd185e4b2ecc190e7bccf2c3ab742",
+  }),
+  "docs/images/bodycast-training.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "8bcb99f01f8d4c7808477621c59ff90fec36c20e",
+  }),
+  "docs/qa/fullsite-preview.md": Object.freeze({
+    migrationOriginBlob: "9574934e4f461d575a7e1d37c7ee943b96a0cbeb",
+    deployBlob: "85cf987064bc9c0490f8aeb0ff0adec5b77ac096",
+  }),
+  "scripts/qa/fullsite-preview-seed.ts": Object.freeze({
+    migrationOriginBlob: "b24b4cff0bf5dc896fe16caa20796281374c1a37",
+    deployBlob: "ff200aa8bf58f9ea970b71699c0e853642a9d3bb",
+  }),
   "src/model/personalization-calibration.ts": Object.freeze({
     migrationOriginBlob: "c643b2ec22540249882a2887f4936f8297de6d77",
     deployBlob: "0110919368243a924f7d51a2a15b4d1679ccdfbe",

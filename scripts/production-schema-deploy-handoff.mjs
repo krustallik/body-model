@@ -268,7 +268,10 @@ const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/model/physiology-v7/daily-runtime-v7.ts": Object.freeze({
     migrationOriginBlob: "0dfd1eadd5b80195e3bcd37b7abff13412126d5c",
-    deployBlob: "44b16cc169a18860bf1f169b7a5da78e996d038b",
+    deployBlob: Object.freeze([
+      "44b16cc169a18860bf1f169b7a5da78e996d038b",
+      "1fd0c72549ec127c4c9676bb9410d3fdc056e225",
+    ]),
   }),
   "src/model/weight-observation-filter.ts": Object.freeze({
     migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
@@ -280,7 +283,10 @@ const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/model-episodes/physiology-v7-runtime.repository.ts": Object.freeze({
     migrationOriginBlob: "2a1330cc97a212cdef130829b1050a4081b87954",
-    deployBlob: "03fb4ef0c390edf070b7b27b26f569cc0508e2f4",
+    deployBlob: Object.freeze([
+      "03fb4ef0c390edf070b7b27b26f569cc0508e2f4",
+      "70b84e088d250335cab440d3364ab4dca6acbc94",
+    ]),
   }),
   "src/modules/model-episodes/physiology-v7-runtime.service.ts": Object.freeze({
     migrationOriginBlob: "a6a7944132917abd62f812722726f022bce5ead0",

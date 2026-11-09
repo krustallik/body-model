@@ -2,8 +2,13 @@ import type { WeightFilterState } from "@/model/weight-observation-filter";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { HealthDaySchema } from "@/modules/health/health.schema";
 import {
+  DEFAULT_WEIGHT_MEASUREMENT_NOISE_VARIANCE_KG2,
+  DEFAULT_WEIGHT_PROCESS_NOISE_VARIANCE_KG2_PER_DAY,
+  initializeWeightFilterState,
   latestWeightSnapshotsAsOf,
+  predictWeightFilterState,
   replayWeightFilterAsOf,
+  updateWeightFilterWithMeasurement,
 } from "@/model/weight-observation-filter";
 import type { WeightSnapshotObservation } from "@/model/weight-observation-filter";
 
@@ -403,6 +408,7 @@ export function weightOutcomeLabelsAsOf(
 
 export type CausalWeightFilterReplay = {
   state: WeightFilterState | null;
+  stateAtOriginDate: WeightFilterState | null;
   observationCount: number;
   updates: Array<{
     date: string;
@@ -426,8 +432,193 @@ export function causalWeightFilterAsOf(
   const replay = replayWeightFilterAsOf({ rows, ...input });
   return {
     state: replay.state,
+    stateAtOriginDate: replay.stateAtOriginDate,
     observationCount: replay.observationCount,
     updates: replay.updates,
+  };
+}
+
+export type AdaptiveLocalLevelWeightFilterReplay = {
+  state: WeightFilterState | null;
+  stateAtOriginDate: WeightFilterState | null;
+  observationCount: number;
+  latestObservationDate: string | null;
+  processNoiseVarianceKg2PerDay: number | null;
+  updates: Array<{
+    date: string;
+    innovationKg: number;
+    posteriorEstimateKg: number;
+    posteriorVarianceKg2: number;
+    processNoiseVarianceKg2PerDay: number;
+  }>;
+};
+
+/**
+ * Research-only adaptive local-level Kalman filter for the scale-observation
+ * layer. It adapts process noise from clipped, one-step innovations; it never
+ * changes tissue, fluid-compartment, or energy-accounting state.
+ */
+export function adaptiveLocalLevelWeightFilterAsOf(
+  rows: readonly WeightSnapshotObservation[],
+  input: {
+    originDate: string;
+    inputAsOf: string | Date;
+    measurementNoiseVarianceKg2?: number;
+    initialProcessNoiseVarianceKg2PerDay?: number;
+    minProcessNoiseVarianceKg2PerDay?: number;
+    maxProcessNoiseVarianceKg2PerDay?: number;
+    adaptationTimeConstantDays?: number;
+    maxAbsInnovationKg?: number;
+  },
+): AdaptiveLocalLevelWeightFilterReplay {
+  if (!validDate(input.originDate)) throw new TypeError("originDate must be a valid local calendar date");
+  const measurementNoise = input.measurementNoiseVarianceKg2
+    ?? DEFAULT_WEIGHT_MEASUREMENT_NOISE_VARIANCE_KG2;
+  const minimumProcessNoise = input.minProcessNoiseVarianceKg2PerDay ?? 0.001;
+  const maximumProcessNoise = input.maxProcessNoiseVarianceKg2PerDay ?? 0.25;
+  const initialProcessNoise = input.initialProcessNoiseVarianceKg2PerDay
+    ?? DEFAULT_WEIGHT_PROCESS_NOISE_VARIANCE_KG2_PER_DAY;
+  const adaptationTimeConstant = input.adaptationTimeConstantDays ?? 14;
+  const maxAbsInnovation = input.maxAbsInnovationKg ?? 1.5;
+  if (![measurementNoise, minimumProcessNoise, maximumProcessNoise, initialProcessNoise,
+    adaptationTimeConstant, maxAbsInnovation].every(Number.isFinite)
+      || !(measurementNoise > 0) || !(minimumProcessNoise > 0)
+      || maximumProcessNoise < minimumProcessNoise
+      || initialProcessNoise < minimumProcessNoise || initialProcessNoise > maximumProcessNoise
+      || !(adaptationTimeConstant > 0) || !(maxAbsInnovation > 0)) {
+    throw new RangeError("invalid adaptive local-level filter parameters");
+  }
+
+  const observations = latestWeightSnapshotsAsOf(rows, input.inputAsOf)
+    .filter((row) => row.date <= input.originDate);
+  let state: WeightFilterState | null = null;
+  let processNoise = initialProcessNoise;
+  let previousDate: string | null = null;
+  const updates: AdaptiveLocalLevelWeightFilterReplay["updates"] = [];
+  for (const observation of observations) {
+    const elapsedDays = previousDate === null ? 0
+      : (Date.parse(`${observation.date}T00:00:00.000Z`)
+        - Date.parse(`${previousDate}T00:00:00.000Z`)) / 86_400_000;
+    if (state === null) {
+      state = initializeWeightFilterState({ measuredWeightKg: observation.weightKg,
+        measurementNoiseVarianceKg2: measurementNoise });
+    } else {
+      const predicted = predictWeightFilterState({ state, elapsedDays,
+        processNoiseVarianceKg2PerDay: processNoise });
+      const innovationKg = observation.weightKg - predicted.estimatedWeightKg;
+      const clippedInnovation = clamp(innovationKg, -maxAbsInnovation, maxAbsInnovation);
+      const innovationVariance = predicted.varianceKg2 + measurementNoise;
+      state = updateWeightFilterWithMeasurement({ predictedState: predicted,
+        measuredWeightKg: predicted.estimatedWeightKg + clippedInnovation,
+        measurementNoiseVarianceKg2: measurementNoise }).state;
+      const elapsedForLearning = Math.max(1, elapsedDays);
+      const excessInnovationVariance = Math.max(0, clippedInnovation ** 2 - innovationVariance);
+      const targetProcessNoise = clamp(excessInnovationVariance / elapsedForLearning,
+        minimumProcessNoise, maximumProcessNoise);
+      const alpha = 1 - Math.exp(-elapsedForLearning / adaptationTimeConstant);
+      processNoise = clamp(processNoise + alpha * (targetProcessNoise - processNoise),
+        minimumProcessNoise, maximumProcessNoise);
+      updates.push({ date: observation.date, innovationKg,
+        posteriorEstimateKg: state.estimatedWeightKg, posteriorVarianceKg2: state.varianceKg2,
+        processNoiseVarianceKg2PerDay: processNoise });
+    }
+    previousDate = observation.date;
+  }
+  const stateAtOriginDate = state === null || previousDate === null || previousDate === input.originDate
+    ? state
+    : predictWeightFilterState({ state,
+      elapsedDays: (Date.parse(`${input.originDate}T00:00:00.000Z`)
+        - Date.parse(`${previousDate}T00:00:00.000Z`)) / 86_400_000,
+      processNoiseVarianceKg2PerDay: processNoise });
+  return {
+    state,
+    stateAtOriginDate,
+    observationCount: observations.length,
+    latestObservationDate: observations.at(-1)?.date ?? null,
+    processNoiseVarianceKg2PerDay: state === null ? null : processNoise,
+    updates,
+  };
+}
+
+export type ForecastIntervalOutcome = {
+  originDate: string;
+  targetDate: string;
+  horizonDays: number;
+  issueCutoff: string | Date;
+  firstReceivedAt: string | Date;
+  receivedAt: string | Date;
+  observedKg: number;
+  p05Kg: number;
+  p95Kg: number;
+};
+
+export type UncertaintyFallbackAssessment = {
+  fallbackToLastKnown: boolean;
+  sampleCount: number;
+  intervalCoverage: number | null;
+};
+
+/**
+ * Conservative research gate: if a horizon's recent, matured 90% intervals
+ * are badly under-covering, use the causal last-known scale weight for the
+ * point estimate. Too little calibration evidence keeps the base forecast.
+ */
+export function assessUncertaintyAwareFallback(
+  history: readonly ForecastIntervalOutcome[],
+  input: {
+    originDate: string;
+    inputAsOf: string | Date;
+    horizonDays: number;
+    lookbackDays?: number;
+    maxObservations?: number;
+    minimumObservations?: number;
+    minimumIntervalCoverage?: number;
+  },
+): UncertaintyFallbackAssessment {
+  if (!validDate(input.originDate) || !Number.isInteger(input.horizonDays) || input.horizonDays <= 0) {
+    throw new TypeError("fallback assessment requires a valid origin and positive horizon");
+  }
+  const lookbackDays = input.lookbackDays ?? 28;
+  const maxObservations = input.maxObservations ?? 14;
+  const minimumObservations = input.minimumObservations ?? 8;
+  const minimumCoverage = input.minimumIntervalCoverage ?? 0.6;
+  if (![minimumCoverage].every(Number.isFinite)
+      || !Number.isInteger(lookbackDays) || lookbackDays < 1 || !Number.isInteger(maxObservations)
+      || maxObservations < 1 || !Number.isInteger(minimumObservations) || minimumObservations < 1
+      || minimumObservations > maxObservations || minimumCoverage < 0 || minimumCoverage > 1) {
+    throw new RangeError("invalid uncertainty fallback thresholds");
+  }
+  const cutoff = iso(input.inputAsOf);
+  const originEpoch = Date.parse(`${input.originDate}T00:00:00.000Z`);
+  const earliestOriginEpoch = originEpoch - lookbackDays * 86_400_000;
+  for (const row of history) {
+    if (!validDate(row.originDate) || !validDate(row.targetDate)
+        || !Number.isInteger(row.horizonDays) || row.horizonDays <= 0
+        || ![row.observedKg, row.p05Kg, row.p95Kg].every(Number.isFinite)
+        || row.p05Kg > row.p95Kg) throw new TypeError("invalid forecast interval outcome");
+    iso(row.issueCutoff);
+    const firstReceivedAt = iso(row.firstReceivedAt);
+    if (iso(row.receivedAt) < firstReceivedAt
+        || Date.parse(`${row.targetDate}T00:00:00.000Z`) - Date.parse(`${row.originDate}T00:00:00.000Z`)
+          !== row.horizonDays * 86_400_000) throw new TypeError("invalid forecast interval outcome");
+  }
+  const eligible = history.filter((row) => {
+    if (row.horizonDays !== input.horizonDays) return false;
+    const rowOrigin = Date.parse(`${row.originDate}T00:00:00.000Z`);
+    const target = Date.parse(`${row.targetDate}T00:00:00.000Z`);
+    return rowOrigin < originEpoch && rowOrigin >= earliestOriginEpoch
+      && target <= originEpoch
+      && iso(row.firstReceivedAt) >= iso(row.issueCutoff)
+      && iso(row.receivedAt) < cutoff;
+  }).toSorted((a, b) => b.targetDate.localeCompare(a.targetDate)
+    || b.originDate.localeCompare(a.originDate)).slice(0, maxObservations);
+  const intervalCoverage = eligible.length === 0 ? null
+    : eligible.filter((row) => row.observedKg >= row.p05Kg && row.observedKg <= row.p95Kg).length / eligible.length;
+  return {
+    fallbackToLastKnown: eligible.length >= minimumObservations
+      && intervalCoverage !== null && intervalCoverage < minimumCoverage,
+    sampleCount: eligible.length,
+    intervalCoverage,
   };
 }
 

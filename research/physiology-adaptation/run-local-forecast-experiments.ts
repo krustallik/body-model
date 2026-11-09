@@ -16,7 +16,7 @@ import { projectReliableForecastBehaviorDay } from "@/modules/model-forecast/mod
 import { runForecastWithInternalArtifacts } from "@/modules/model-forecast/forecast-engine";
 import { DEFAULT_FORECAST_CONFIG, type ForecastBehaviorDay, type ForecastDateSummary, type ForecastScenario } from "@/modules/model-forecast/forecast.types";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
-import { boundedOnlineCorrection, causalWeightFilterAsOf, estimatePersistentBias, estimateTwoTimescaleResidual, filterOnlyStateCorrection, latestWeightSnapshotsAsOf, newOutcomeResidualIfEligible, outcomeArrivedAfterCutoff, prepareActivityIntervalSnapshots, projectPreparedActivityIntervalsAsOf, residualsAvailableAt, robustTrendWeightForecast, selectAsOfSources, waterOnlyInitializationCorrection, weightOutcomeLabelsAsOf } from "./methods";
+import { adaptiveLocalLevelWeightFilterAsOf, assessUncertaintyAwareFallback, boundedOnlineCorrection, causalWeightFilterAsOf, estimatePersistentBias, estimateTwoTimescaleResidual, filterOnlyStateCorrection, latestWeightSnapshotsAsOf, newOutcomeResidualIfEligible, outcomeArrivedAfterCutoff, prepareActivityIntervalSnapshots, projectPreparedActivityIntervalsAsOf, residualsAvailableAt, robustTrendWeightForecast, selectAsOfSources, waterOnlyInitializationCorrection, weightOutcomeLabelsAsOf, type ForecastIntervalOutcome } from "./methods";
 
 const LOCAL_DB = { host: "127.0.0.1", port: 55449, database: "bodycast_forensic_test", user: "bodycast_forensic" };
 const PROFILE_ID = Number(process.env.BODYCAST_RESEARCH_PROFILE_ID);
@@ -73,6 +73,43 @@ function errorMetrics(rows: Array<{ prediction: number; observed: number }>) {
     maeKg: errors.reduce((sum, error) => sum + Math.abs(error), 0) / errors.length,
     rmseKg: Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / errors.length),
   };
+}
+
+function pairedBlockBootstrapDeltaMae(
+  activeRows: readonly { prediction: number; observed: number }[],
+  candidateRows: readonly { prediction: number; observed: number }[],
+  blockLength: number,
+  seedText: string,
+) {
+  if (activeRows.length !== candidateRows.length || activeRows.length === 0) return null;
+  const lossDeltas = activeRows.map((active, index) =>
+    Math.abs(active.prediction - active.observed)
+      - Math.abs(candidateRows[index]!.prediction - candidateRows[index]!.observed));
+  const point = lossDeltas.reduce((sum, value) => sum + value, 0) / lossDeltas.length;
+  const seed = Number.parseInt(createHash("sha256").update(seedText).digest("hex").slice(0, 8), 16) || 1;
+  let randomState = seed >>> 0;
+  const random = () => {
+    randomState ^= randomState << 13;
+    randomState ^= randomState >>> 17;
+    randomState ^= randomState << 5;
+    return (randomState >>> 0) / 0x1_0000_0000;
+  };
+  const samples: number[] = [];
+  for (let replicate = 0; replicate < 4000; replicate += 1) {
+    const sample: number[] = [];
+    while (sample.length < lossDeltas.length) {
+      const start = Math.floor(random() * (lossDeltas.length - blockLength + 1));
+      for (let offset = 0; offset < blockLength && sample.length < lossDeltas.length; offset += 1) {
+        sample.push(lossDeltas[start + offset]!);
+      }
+    }
+    samples.push(sample.reduce((sum, value) => sum + value, 0) / sample.length);
+  }
+  samples.sort((left, right) => left - right);
+  return { meanDeltaMaeKg: point,
+    percentile95IntervalKg: [samples[Math.floor((samples.length - 1) * 0.025)]!,
+      samples[Math.ceil((samples.length - 1) * 0.975)]!],
+    blockLengthOrigins: blockLength, resamples: samples.length };
 }
 
 async function main() {
@@ -299,7 +336,7 @@ async function main() {
   const config = { ...DEFAULT_FORECAST_CONFIG, pathCount: 256 };
   const horizons = [1, 3, 7, 14] as const;
   const forecastByOrigin = new Map<string, { baseline: ForecastDateSummary[]; init: ForecastDateSummary[]; filter: ForecastDateSummary[]; energy: ForecastDateSummary[]; source: string; donorCount: number; originLatestWeightKg: number; effectiveOriginDate: string; calibration: unknown; initRequestedDeltaKg: number | null; initAppliedDeltaKg: number | null; onlineCorrectionKg: number | null }>();
-  const weightBaselinesByOrigin = new Map<string, { lastKnownWeightKg: number | null; causalFilterWeightKg: number | null; robustTrend: Record<string, { estimateKg: number; slopeKgPerDay: number; observationCount: number } | null>; knownWeightCount: number }>();
+  const weightBaselinesByOrigin = new Map<string, { lastKnownWeightKg: number | null; causalFilterWeightKg: number | null; adaptiveFilterWeightKg: number | null; adaptiveFilterVarianceKg2: number | null; adaptiveProcessNoiseVarianceKg2PerDay: number | null; robustTrend: Record<string, { estimateKg: number; slopeKgPerDay: number; observationCount: number } | null>; knownWeightCount: number }>();
   const errorsAvailableLater: Array<{ date: string; observedKg: number; predictedKg: number; availableAt: string }> = [];
   const coverageByOrigin: Array<{ origin: string; status: string; knownDays: number; donorCount: number; calibrationStatus: string; inputHash: string }> = [];
   let deterministicReplayVerified: boolean | null = null;
@@ -334,6 +371,9 @@ async function main() {
     const causalFilter = causalWeightFilterAsOf(asOfWeightObservations.map(({ date, weightKg, availableAt }) => ({
       date, weightKg, receivedAt: availableAt,
     })), { originDate, inputAsOf: cutoff });
+    const adaptiveFilter = adaptiveLocalLevelWeightFilterAsOf(asOfWeightObservations.map(({ date, weightKg, availableAt }) => ({
+      date, weightKg, receivedAt: availableAt,
+    })), { originDate, inputAsOf: cutoff });
     const firstUpdate = causalFilter.updates[0] ?? null;
     const latestUpdate = causalFilter.updates.at(-1) ?? null;
     if (originDate === originFirst) firstOriginCausalAssimilation = {
@@ -349,7 +389,10 @@ async function main() {
     };
     weightBaselinesByOrigin.set(originDate, {
       lastKnownWeightKg: latestAsOfWeight,
-      causalFilterWeightKg: causalFilter.state?.estimatedWeightKg ?? null,
+      causalFilterWeightKg: causalFilter.stateAtOriginDate?.estimatedWeightKg ?? null,
+      adaptiveFilterWeightKg: adaptiveFilter.stateAtOriginDate?.estimatedWeightKg ?? null,
+      adaptiveFilterVarianceKg2: adaptiveFilter.stateAtOriginDate?.varianceKg2 ?? null,
+      adaptiveProcessNoiseVarianceKg2PerDay: adaptiveFilter.processNoiseVarianceKg2PerDay,
       knownWeightCount: asOfWeightObservations.length,
       robustTrend: Object.fromEntries(horizons.map((horizon) => [String(horizon), robustTrendWeightForecast(
         asOfWeightObservations,
@@ -662,43 +705,140 @@ async function main() {
     }
     scores["causal-local-level-weight-filter"][String(h)] = errorMetrics(rows);
   }
-  // Compare the full physiological forecast and the observation-only filter
-  // on exactly the same issue dates and labels. Their independent coverage
-  // differs because the physiology replay fails closed at source gaps.
+  // Score each challenger on its exact intersection with the unchanged
+  // physiology forecast: same issue cutoff, target date, and newly received label.
   const pairedForecastMetrics = Object.fromEntries(horizons.map((horizon) => {
-    const physiologicalRows: Array<{ prediction: number; observed: number }> = [];
-    const filterRows: Array<{ prediction: number; observed: number }> = [];
-    const lastKnownRows: Array<{ prediction: number; observed: number }> = [];
-    const trendRows: Array<{ prediction: number; observed: number }> = [];
-    const commonOrigins: string[] = [];
-    const commonLastKnownOrigins: string[] = [];
-    const commonTrendOrigins: string[] = [];
+    type PairedRow = { originDate: string; prediction: number; observed: number; p05?: number; p95?: number; fallback: boolean };
+    const rowsByCandidate: Record<string, PairedRow[]> = Object.fromEntries([
+      "activeForecast", "lastKnownWeight", "fixedLocalLevelKalman", "adaptiveLocalLevelKalman",
+      "fixedKalmanAnchor", "adaptiveKalmanAnchor",
+      "robustTrendTheilSen", "initialLevelWaterSensitivity", "filterOnlyNegativeControl",
+      "twoTimescaleResidual", "robustOnlineBias", "acceptedEnergyCalibration", "uncertaintyFallback",
+    ].map((key) => [key, []]));
+    const fallbackAssessments: Array<{ originDate: string; sampleCount: number; intervalCoverage: number | null; fallbackToLastKnown: boolean }> = [];
+    const intervalOutcomesFor = (originDate: string, cutoff: Date): ForecastIntervalOutcome[] => {
+      const labelsAsOf = new Map(weightOutcomeLabelsAsOf(allSnapshots.map((row) => ({
+        id: row.id, date: row.date, weightKg: row.weightKg == null ? null : Number(row.weightKg), receivedAt: row.receivedAt,
+      })), cutoff).map((row) => [row.date, row] as const));
+      const history: ForecastIntervalOutcome[] = [];
+      for (const [pastOrigin, pastForecast] of forecastByOrigin) {
+        if (pastOrigin >= originDate) continue;
+        const issueCutoff = nextLocalMidnight(pastOrigin, episode.timezone);
+        const targetDate = addCalendarDays(pastOrigin, horizon);
+        const label = labelsAsOf.get(targetDate);
+        if (!label || !outcomeArrivedAfterCutoff(label.firstReceivedAt, issueCutoff)) continue;
+        const interval = pastForecast.baseline[horizon - 1]!;
+        history.push({ originDate: pastOrigin, targetDate, horizonDays: horizon,
+          issueCutoff, firstReceivedAt: label.firstReceivedAt, receivedAt: label.receivedAt,
+          observedKg: label.weightKg, p05Kg: interval.physiologicalBodyWeightKg.p05,
+          p95Kg: interval.physiologicalBodyWeightKg.p95 });
+      }
+      return history;
+    };
     for (const [originDate, forecast] of forecastByOrigin) {
       const weightBaseline = weightBaselinesByOrigin.get(originDate);
       const label = outcomeLabelsByDate.get(addCalendarDays(originDate, horizon));
       if (!weightBaseline || !label
           || !outcomeArrivedAfterCutoff(label.firstReceivedAt, nextLocalMidnight(originDate, episode.timezone))) continue;
-      physiologicalRows.push({ prediction: forecast.baseline[horizon - 1].physiologicalBodyWeightKg.median,
-        observed: label.weightKg });
-      commonOrigins.push(originDate);
+      const observed = label.weightKg;
+      const active = forecast.baseline[horizon - 1]!.physiologicalBodyWeightKg;
+      rowsByCandidate.activeForecast.push({ originDate, prediction: active.median, observed,
+        p05: active.p05, p95: active.p95, fallback: false });
+      const availableErrors = residualsAvailableAt(errorsAvailableLater.filter((row) => row.date <= originDate), originDate,
+        new Date(nextLocalMidnight(originDate, episode.timezone).getTime() - 1));
+      const twoTimescaleDelta = availableErrors.length >= 7 ? estimateTwoTimescaleResidual(availableErrors).predictResidualKg(horizon) : 0;
+      const robustBiasDelta = availableErrors.length >= 7 ? estimatePersistentBias(availableErrors) : 0;
+      const base = forecast.baseline[horizon - 1]!.physiologicalBodyWeightKg;
+      const addShifted = (key: string, series: ForecastDateSummary[], delta: number) => {
+        const point = series[horizon - 1]!.physiologicalBodyWeightKg;
+        rowsByCandidate[key]!.push({ originDate, prediction: point.median + delta, observed,
+          p05: point.p05 + delta, p95: point.p95 + delta, fallback: false });
+      };
+      addShifted("initialLevelWaterSensitivity", forecast.init, 0);
+      addShifted("filterOnlyNegativeControl", forecast.filter, 0);
+      addShifted("twoTimescaleResidual", forecast.baseline, twoTimescaleDelta);
+      addShifted("robustOnlineBias", forecast.baseline, robustBiasDelta);
+      addShifted("acceptedEnergyCalibration", forecast.energy, 0);
+      if (weightBaseline.lastKnownWeightKg !== null && weightBaseline.causalFilterWeightKg !== null) {
+        addShifted("fixedKalmanAnchor", forecast.baseline,
+          weightBaseline.causalFilterWeightKg - weightBaseline.lastKnownWeightKg);
+      }
+      if (weightBaseline.lastKnownWeightKg !== null && weightBaseline.adaptiveFilterWeightKg !== null) {
+        addShifted("adaptiveKalmanAnchor", forecast.baseline,
+          weightBaseline.adaptiveFilterWeightKg - weightBaseline.lastKnownWeightKg);
+      }
       if (weightBaseline.causalFilterWeightKg !== null) {
-        filterRows.push({ prediction: weightBaseline.causalFilterWeightKg, observed: label.weightKg });
+        rowsByCandidate.fixedLocalLevelKalman!.push({ originDate, prediction: weightBaseline.causalFilterWeightKg, observed, fallback: false });
+      }
+      if (weightBaseline.adaptiveFilterWeightKg !== null) {
+        rowsByCandidate.adaptiveLocalLevelKalman!.push({ originDate, prediction: weightBaseline.adaptiveFilterWeightKg, observed, fallback: false });
       }
       if (weightBaseline.lastKnownWeightKg !== null) {
-        lastKnownRows.push({ prediction: weightBaseline.lastKnownWeightKg, observed: label.weightKg });
-        commonLastKnownOrigins.push(originDate);
+        rowsByCandidate.lastKnownWeight!.push({ originDate, prediction: weightBaseline.lastKnownWeightKg, observed, fallback: false });
       }
       const trend = weightBaseline.robustTrend[String(horizon)];
       if (trend !== null) {
-        trendRows.push({ prediction: trend.estimateKg, observed: label.weightKg });
-        commonTrendOrigins.push(originDate);
+        rowsByCandidate.robustTrendTheilSen!.push({ originDate, prediction: trend.estimateKg, observed, fallback: false });
+      }
+      const cutoff = nextLocalMidnight(originDate, episode.timezone);
+      const fallbackAssessment = assessUncertaintyAwareFallback(intervalOutcomesFor(originDate, cutoff),
+        { originDate, inputAsOf: cutoff, horizonDays: horizon });
+      fallbackAssessments.push({ originDate, ...fallbackAssessment });
+      if (weightBaseline.lastKnownWeightKg !== null) {
+        const fallbackDelta = fallbackAssessment.fallbackToLastKnown
+          ? weightBaseline.lastKnownWeightKg - base.median : 0;
+        rowsByCandidate.uncertaintyFallback!.push({ originDate, prediction: base.median + fallbackDelta, observed,
+          p05: base.p05 + fallbackDelta, p95: base.p95 + fallbackDelta,
+          fallback: fallbackAssessment.fallbackToLastKnown });
       }
     }
-    return [String(horizon), { commonOriginCount: commonOrigins.length, commonOrigins,
-      episodeForecast: errorMetrics(physiologicalRows), causalLocalLevelFilter: errorMetrics(filterRows),
-      commonLastKnownOriginCount: commonLastKnownOrigins.length, commonLastKnownOrigins,
-      lastKnownWeight: errorMetrics(lastKnownRows), commonRobustTrendOriginCount: commonTrendOrigins.length,
-      commonRobustTrendOrigins: commonTrendOrigins, robustTrendTheilSen14d: errorMetrics(trendRows) }];
+    const activeByOrigin = new Map(rowsByCandidate.activeForecast!.map((row) => [row.originDate, row] as const));
+    const candidates = Object.fromEntries(Object.entries(rowsByCandidate).map(([candidate, rows]) => {
+      const activeRows = rows.flatMap((row) => {
+        const active = activeByOrigin.get(row.originDate);
+        return active ? [{ prediction: active.prediction, observed: active.observed }] : [];
+      });
+      const pointRows = rows.map(({ prediction, observed }) => ({ prediction, observed }));
+      const point = errorMetrics(pointRows);
+      const activePoint = errorMetrics(activeRows);
+      const deltaMaeUncertainty = candidate === "activeForecast" ? null
+        : pairedBlockBootstrapDeltaMae(activeRows, pointRows, Math.min(horizon, rows.length), `${candidate}|${horizon}`);
+      const intervalRows = rows.filter((row): row is PairedRow & { p05: number; p95: number } => row.p05 !== undefined && row.p95 !== undefined);
+      const interval = intervalRows.length === 0 ? null : metrics(intervalRows.map((row) => ({
+        prediction: row.prediction, observed: row.observed, p05: row.p05, p95: row.p95,
+      })));
+      const segmentSummary = (segmentRows: PairedRow[]) => {
+        const candidatePoint = errorMetrics(segmentRows.map(({ prediction, observed }) => ({ prediction, observed })));
+        const matchedActive = errorMetrics(segmentRows.flatMap((row) => {
+          const active = activeByOrigin.get(row.originDate);
+          return active ? [{ prediction: active.prediction, observed: active.observed }] : [];
+        }));
+        return { point: candidatePoint, activeForecastOnSamePairs: matchedActive,
+          deltaMaeKg: matchedActive && candidatePoint ? matchedActive.maeKg - candidatePoint.maeKg : null };
+      };
+      const earlyRows = rows.filter((row) => row.originDate < "2026-10-10");
+      const lateRows = rows.filter((row) => row.originDate >= "2026-10-10");
+      const adaptiveRows = rowsByCandidate.adaptiveKalmanAnchor!;
+      return [candidate, { point, activeForecastOnSamePairs: activePoint,
+        deltaMaeKg: activePoint && point ? activePoint.maeKg - point.maeKg : null,
+        deltaMaePercent: activePoint && point && activePoint.maeKg > 0
+          ? 100 * (activePoint.maeKg - point.maeKg) / activePoint.maeKg : null,
+        deltaMaeBlockBootstrap95: deltaMaeUncertainty,
+        pairedOrigins: rows.map((row) => row.originDate),
+        intervalCalibration: interval ? { n: interval.n, p05p95Coverage: interval.p05p95Coverage,
+          meanP05P95WidthKg: interval.meanP05P95WidthKg } : null,
+        fallbackCount: rows.filter((row) => row.fallback).length,
+        earlyBefore2026_10_10: segmentSummary(earlyRows),
+        lateFrom2026_10_10: segmentSummary(lateRows),
+        adaptiveFilterDiagnostics: candidate === "adaptiveKalmanAnchor" ? {
+          meanProcessNoiseVarianceKg2PerDay: adaptiveRows.length === 0 ? null
+            : adaptiveRows.reduce((sum, row) => sum + (weightBaselinesByOrigin.get(row.originDate)?.adaptiveProcessNoiseVarianceKg2PerDay ?? 0), 0) / adaptiveRows.length,
+          meanPosteriorVarianceKg2: adaptiveRows.length === 0 ? null
+            : adaptiveRows.reduce((sum, row) => sum + (weightBaselinesByOrigin.get(row.originDate)?.adaptiveFilterVarianceKg2 ?? 0), 0) / adaptiveRows.length,
+        } : null }];
+    }));
+    return [String(horizon), { commonOriginCount: rowsByCandidate.activeForecast!.length,
+      candidates, uncertaintyFallbackDiagnostics: fallbackAssessments }];
   }));
   const calibrationCandidateSeries = [...forecastByOrigin.entries()].map(([origin, f]) => ({ origin, donors: f.donorCount,
     initRequestedDeltaKg: f.initRequestedDeltaKg, initAppliedDeltaKg: f.initAppliedDeltaKg,

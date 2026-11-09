@@ -3,6 +3,8 @@ import { test } from "vitest";
 import { localDateTimeToInstant } from "@/model/time-zone";
 import {
   boundedOnlineCorrection,
+  adaptiveLocalLevelWeightFilterAsOf,
+  assessUncertaintyAwareFallback,
   causalWeightFilterAsOf,
   encodeForecastSnapshotV1,
   estimatePersistentBias,
@@ -153,6 +155,8 @@ test("causal scale assimilation respects receipt cutoffs without changing tissue
   assert.equal(firstWeek.observationCount, 7);
   assert.ok(firstWeek.state!.estimatedWeightKg < 70.0);
   assert.ok(firstWeek.state!.estimatedWeightKg > 69.0);
+  assert.equal(firstWeek.stateAtOriginDate!.estimatedWeightKg, firstWeek.state!.estimatedWeightKg,
+    "when an observation is available on the origin, its posterior is the origin state");
   assert.notEqual(firstWeek.updates[1]!.posteriorEstimateKg, firstWeek.updates[0]!.posteriorEstimateKg,
     "a later available weighing must causally update the observation state");
   assert.notEqual(firstWeek.state!.estimatedWeightKg, firstWeek.updates[0]!.posteriorEstimateKg,
@@ -312,6 +316,62 @@ test("persistent bias is robust to one extreme residual and bounded independentl
   assert.equal(estimatePersistentBias([
     { date: "2033-01-01", residualKg: 9 }, { date: "2033-02-01", residualKg: 0.4 },
   ], { windowDays: 7 }), 0.4, "observations older than the calendar-day window must be excluded");
+});
+
+test("adaptive local-level filter is causal, deterministic, bounded, and changes only observation state", () => {
+  const rows = [
+    ["2033-03-01", 70.0, "2033-03-01T06:00:00Z"],
+    ["2033-03-02", 70.1, "2033-03-02T06:00:00Z"],
+    ["2033-03-03", 70.8, "2033-03-03T06:00:00Z"],
+    ["2033-03-04", 71.4, "2033-03-04T06:00:00Z"],
+    ["2033-03-05", 80.0, "2033-03-05T06:00:00Z"],
+  ].map(([date, weightKg, receivedAt], id) => ({
+    id, date: String(date), weightKg: Number(weightKg), receivedAt: String(receivedAt),
+  }));
+  const input = { originDate: "2033-03-05", inputAsOf: "2033-03-06T00:00:00Z" };
+  const first = adaptiveLocalLevelWeightFilterAsOf(rows, input);
+  const repeated = adaptiveLocalLevelWeightFilterAsOf(rows, input);
+  const withFutureEvidence = adaptiveLocalLevelWeightFilterAsOf([...rows,
+    { date: "2033-03-06", weightKg: 60, receivedAt: "2033-03-06T00:00:00Z" },
+    { date: "2033-03-04", weightKg: 55, receivedAt: "2033-03-06T00:00:00Z" },
+  ], input);
+
+  assert.deepEqual(repeated, first);
+  assert.deepEqual(withFutureEvidence, first, "future or not-yet-received weights cannot alter an earlier origin");
+  assert.equal(first.observationCount, 5);
+  assert.equal(first.updates.length, 4);
+  assert.ok(first.updates.every((update) => Number.isFinite(update.posteriorEstimateKg)
+    && update.posteriorVarianceKg2 >= 0), "posterior remains finite under a single outlier");
+  assert.ok(first.updates.at(-1)!.posteriorEstimateKg < 73,
+    "clipped innovation prevents a single extreme measurement from taking over the state");
+  assert.ok(first.processNoiseVarianceKg2PerDay! > 0.01,
+    "sustained innovations should raise process noise so later observations adapt faster");
+  assert.deepEqual(Object.keys(first.state!), ["estimatedWeightKg", "varianceKg2"],
+    "the estimator returns a scale observation state, not tissue or fluid compartments");
+});
+
+test("uncertainty fallback uses only prior matured same-horizon intervals and waits for enough evidence", () => {
+  const history = Array.from({ length: 8 }, (_, index) => {
+    const day = index + 1;
+    const originDate = `2033-03-${String(day).padStart(2, "0")}`;
+    const targetDate = `2033-03-${String(day + 1).padStart(2, "0")}`;
+    return { originDate, targetDate, horizonDays: 1,
+      issueCutoff: `${targetDate}T00:00:00Z`, firstReceivedAt: `${targetDate}T01:00:00Z`,
+      receivedAt: `${targetDate}T02:00:00Z`, observedKg: 75, p05Kg: 69, p95Kg: 71 };
+  });
+  const input = { originDate: "2033-03-12", inputAsOf: "2033-03-13T00:00:00Z", horizonDays: 1 };
+  const assessment = assessUncertaintyAwareFallback([...history,
+    { ...history[0]!, targetDate: "2033-03-08", horizonDays: 7 },
+    { ...history[0]!, originDate: "2033-03-12", targetDate: "2033-03-13" },
+    { ...history[0]!, originDate: "2033-03-10", targetDate: "2033-03-11", receivedAt: "2033-03-13T00:00:00Z" },
+  ], input);
+  assert.equal(assessment.sampleCount, 8);
+  assert.equal(assessment.intervalCoverage, 0);
+  assert.equal(assessment.fallbackToLastKnown, true);
+  assert.equal(assessUncertaintyAwareFallback(history.slice(0, 7), input).fallbackToLastKnown, false,
+    "small samples keep the baseline forecast instead of triggering a volatile fallback");
+  assert.throws(() => assessUncertaintyAwareFallback([{ ...history[0]!, targetDate: "2033-03-03" }], input), /invalid forecast interval outcome/);
+  assert.throws(() => assessUncertaintyAwareFallback(history, { ...input, horizonDays: 0 }), /positive horizon/);
 });
 
 test("forecast snapshot contract round-trips and rejects a future input cutoff", () => {

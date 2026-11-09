@@ -267,7 +267,11 @@ describe("serving-route commit boundary", () => {
 
     expect(result.status).toBe(0);
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-    expect(existsSync(markerPath)).toBe(false);
+    expect(existsSync(markerPath)).toBe(true);
+    const retainedMarker = readFileSync(markerPath, "utf8");
+    expect(retainedMarker).toContain(`deploySha=${trainingReleaseSha}`);
+    expect(retainedMarker).toContain("state=app-ready");
+    expect(result.stdout).toContain("Auth schema handoff retained at app-ready");
     expect(result.stdout).toContain("Exact Auth 77-migration SHA is serving");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
     expect(events).toContain("unified-v4-raw-fingerprint-assertion");

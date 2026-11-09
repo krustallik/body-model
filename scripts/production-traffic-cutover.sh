@@ -1038,28 +1038,34 @@ serve_training_release() {
     echo "Exact recovered V4 release is serving under the atomic currentness fence; the terminal recovery marker is retained."
     return 0
   fi
-  local marker_backup marker_directory marker_tmp
-  marker_directory="$(dirname "$BODYCAST_MARKER_FILE_PATH")"
-  marker_backup="$(mktemp "$marker_directory/.bodycast-training-marker-backup.XXXXXX")"
-  chmod 0600 "$marker_backup"
-  if ! cp -- "$BODYCAST_MARKER_FILE_PATH" "$marker_backup" || ! sync -f "$marker_backup"; then
-    rm -f -- "$marker_backup"
-    echo "Training serving was committed by the PostgreSQL fence, but marker cleanup could not be prepared; the serving route and release marker are retained for operator inspection." >&2
-    return 1
-  fi
-  if ! clear_bodycast_release_marker "$expected_release_sha" "app-ready" "$marker_digest"; then
-    if [[ ! -f "$BODYCAST_MARKER_FILE_PATH" || -L "$BODYCAST_MARKER_FILE_PATH" ]]; then
-      marker_tmp="$(mktemp "$marker_directory/.bodycast-training-marker-restore.XXXXXX")"
-      cp -- "$marker_backup" "$marker_tmp"
-      chmod 0600 "$marker_tmp"
-      mv -f -- "$marker_tmp" "$BODYCAST_MARKER_FILE_PATH"
-      sync -f "$marker_directory"
+  if [[ "$auth_multiuser_serving" == "true" ]]; then
+    # Keep the Auth schema handoff as durable lineage. The next migration-free
+    # app release must validate and advance this marker before replacing the app.
+    echo "Auth schema handoff retained at app-ready for the next compatible app-only release."
+  else
+    local marker_backup marker_directory marker_tmp
+    marker_directory="$(dirname "$BODYCAST_MARKER_FILE_PATH")"
+    marker_backup="$(mktemp "$marker_directory/.bodycast-training-marker-backup.XXXXXX")"
+    chmod 0600 "$marker_backup"
+    if ! cp -- "$BODYCAST_MARKER_FILE_PATH" "$marker_backup" || ! sync -f "$marker_backup"; then
+      rm -f -- "$marker_backup"
+      echo "Training serving was committed by the PostgreSQL fence, but marker cleanup could not be prepared; the serving route and release marker are retained for operator inspection." >&2
+      return 1
+    fi
+    if ! clear_bodycast_release_marker "$expected_release_sha" "app-ready" "$marker_digest"; then
+      if [[ ! -f "$BODYCAST_MARKER_FILE_PATH" || -L "$BODYCAST_MARKER_FILE_PATH" ]]; then
+        marker_tmp="$(mktemp "$marker_directory/.bodycast-training-marker-restore.XXXXXX")"
+        cp -- "$marker_backup" "$marker_tmp"
+        chmod 0600 "$marker_tmp"
+        mv -f -- "$marker_tmp" "$BODYCAST_MARKER_FILE_PATH"
+        sync -f "$marker_directory"
+      fi
+      rm -f -- "$marker_backup"
+      echo "Training serving was committed by the PostgreSQL fence, but release marker cleanup failed; the serving route and recovery evidence are retained for operator inspection." >&2
+      return 1
     fi
     rm -f -- "$marker_backup"
-    echo "Training serving was committed by the PostgreSQL fence, but release marker cleanup failed; the serving route and recovery evidence are retained for operator inspection." >&2
-    return 1
   fi
-  rm -f -- "$marker_backup"
   if [[ -n "${BODYCAST_TRAINING_MAINTENANCE_BACKUP:-}" ]]; then
     if ! rm -f -- "$BODYCAST_TRAINING_MAINTENANCE_BACKUP"; then
       echo "Training is serving, but the prior maintenance route backup remains at $BODYCAST_TRAINING_MAINTENANCE_BACKUP." >&2

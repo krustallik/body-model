@@ -360,6 +360,7 @@ const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     deployBlob: Object.freeze([
       "3fd321d857e2aa024e4875a2689a588dc07078ee",
       "4b7ed6e33ad583bc058b6a17bdd95a1269ae3f5c",
+      "046a694a3044d9e51273bb16a0ba3848c1ac3a8b",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({

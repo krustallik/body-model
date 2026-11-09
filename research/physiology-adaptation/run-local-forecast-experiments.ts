@@ -16,9 +16,17 @@ import { projectReliableForecastBehaviorDay } from "@/modules/model-forecast/mod
 import { runForecastWithInternalArtifacts } from "@/modules/model-forecast/forecast-engine";
 import { DEFAULT_FORECAST_CONFIG, type ForecastBehaviorDay, type ForecastDateSummary, type ForecastScenario } from "@/modules/model-forecast/forecast.types";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
-import { adaptiveLocalLevelWeightFilterAsOf, assessUncertaintyAwareFallback, boundedOnlineCorrection, causalWeightFilterAsOf, estimatePersistentBias, estimateTwoTimescaleResidual, filterOnlyStateCorrection, latestWeightSnapshotsAsOf, newOutcomeResidualIfEligible, outcomeArrivedAfterCutoff, prepareActivityIntervalSnapshots, projectPreparedActivityIntervalsAsOf, residualsAvailableAt, robustTrendWeightForecast, selectAsOfSources, waterOnlyInitializationCorrection, weightOutcomeLabelsAsOf, type ForecastIntervalOutcome } from "./methods";
+import { adaptiveLocalLevelWeightFilterAsOf, assessUncertaintyAwareFallback, boundedOnlineCorrection, causalWeightFilterAsOf, estimateEnergyDriftCorrection, estimatePersistentBias, estimateResidualPersistence, estimateTwoTimescaleResidual, filterOnlyStateCorrection, latestWeightSnapshotsAsOf, newOutcomeResidualIfEligible, outcomeArrivedAfterCutoff, prequentialIntervalWidening, prepareActivityIntervalSnapshots, projectPreparedActivityIntervalsAsOf, residualsAvailableAt, robustTrendWeightForecast, selectAsOfSources, waterOnlyInitializationCorrection, weightOutcomeLabelsAsOf, type ForecastIntervalOutcome } from "./methods";
 
-const LOCAL_DB = { host: "127.0.0.1", port: 55449, database: "bodycast_forensic_test", user: "bodycast_forensic" };
+const DEFAULT_LOCAL_DB = { host: "127.0.0.1", port: 55449, serverPort: 55449,
+  database: "bodycast_forensic_test", user: "bodycast_forensic" };
+const LOCAL_DB = {
+  host: process.env.BODYCAST_RESEARCH_DB_HOST ?? DEFAULT_LOCAL_DB.host,
+  port: Number(process.env.BODYCAST_RESEARCH_DB_PORT ?? DEFAULT_LOCAL_DB.port),
+  serverPort: Number(process.env.BODYCAST_RESEARCH_DB_SERVER_PORT ?? DEFAULT_LOCAL_DB.serverPort),
+  database: process.env.BODYCAST_RESEARCH_DB_NAME ?? DEFAULT_LOCAL_DB.database,
+  user: process.env.BODYCAST_RESEARCH_DB_USER ?? DEFAULT_LOCAL_DB.user,
+};
 const PROFILE_ID = Number(process.env.BODYCAST_RESEARCH_PROFILE_ID);
 const CUTOFF_DATE = process.env.BODYCAST_RESEARCH_CUTOFF_DATE ?? "";
 const ORIGIN_START = process.env.BODYCAST_RESEARCH_ORIGIN_START ?? "";
@@ -63,6 +71,7 @@ function metrics(rows: Array<{ prediction: number; observed: number; p05: number
 }
 
 function sourceNumber(value: unknown): number | null { return value == null ? null : Number(value); }
+const clampResearchOffset = (value: number) => Math.min(500, Math.max(-500, value));
 
 function errorMetrics(rows: Array<{ prediction: number; observed: number }>) {
   if (rows.length === 0) return null;
@@ -98,9 +107,9 @@ function pairedBlockBootstrapDeltaMae(
   for (let replicate = 0; replicate < 4000; replicate += 1) {
     const sample: number[] = [];
     while (sample.length < lossDeltas.length) {
-      const start = Math.floor(random() * (lossDeltas.length - blockLength + 1));
+      const start = Math.floor(random() * lossDeltas.length);
       for (let offset = 0; offset < blockLength && sample.length < lossDeltas.length; offset += 1) {
-        sample.push(lossDeltas[start + offset]!);
+        sample.push(lossDeltas[(start + offset) % lossDeltas.length]!);
       }
     }
     samples.push(sample.reduce((sum, value) => sum + value, 0) / sample.length);
@@ -120,12 +129,19 @@ async function main() {
       || ORIGIN_START > ORIGIN_END) {
     throw new Error("Set BODYCAST_RESEARCH_PROFILE_ID=1 and valid cutoff/origin dates for the isolated Profile 1 dataset");
   }
+  if (LOCAL_DB.host !== "127.0.0.1"
+      || !/^bodycast_[a-z0-9_]*_test(?:_[0-9]{8})?$/.test(LOCAL_DB.database)
+      || !/^bodycast_[a-z0-9_]+_test$/.test(LOCAL_DB.user)
+      || !Number.isInteger(LOCAL_DB.port) || LOCAL_DB.port < 1 || LOCAL_DB.port > 65535
+      || !Number.isInteger(LOCAL_DB.serverPort) || LOCAL_DB.serverPort < 1 || LOCAL_DB.serverPort > 65535) {
+    throw new Error("Research replay accepts only an explicit local bodycast *_test database identity");
+  }
   const dbUrl = new URL(process.env.DATABASE_URL ?? "");
   if (dbUrl.hostname !== LOCAL_DB.host || dbUrl.port !== String(LOCAL_DB.port)
       || dbUrl.pathname !== `/${LOCAL_DB.database}`) throw new Error("DB_GUARD");
   const identity = await prisma.$queryRaw<Array<{ database: string; port: number; user: string }>>`
     SELECT current_database() AS database, inet_server_port() AS port, current_user AS user`;
-  if (identity[0]?.database !== LOCAL_DB.database || Number(identity[0]?.port) !== LOCAL_DB.port
+  if (identity[0]?.database !== LOCAL_DB.database || Number(identity[0]?.port) !== LOCAL_DB.serverPort
       || identity[0]?.user !== LOCAL_DB.user) throw new Error("DB_IDENTITY_GUARD");
 
   const episodeRepo = new ModelEpisodeRepository(PROFILE_ID, prisma);
@@ -238,6 +254,18 @@ async function main() {
     Math.abs((state.energyIntakeKcal! - state.energyExpenditureKcal!) - state.energyBalanceKcal!)), 0);
   const firstWeekReplayStates = fullReplay.dailyStates.filter((state) => state.date >= episode.startDate
     && state.date <= initialWindowEnd && state.endWeightKg !== null);
+  const episodeStartEpoch = Date.parse(`${episode.startDate}T00:00:00.000Z`);
+  const stateFitWindows = [...new Set(observedReplayRows.map((row) => Math.floor(
+    (Date.parse(`${row.date}T00:00:00.000Z`) - episodeStartEpoch) / (14 * 86_400_000),
+  )))].sort((a, b) => a - b).map((windowIndex) => {
+    const rows = observedReplayRows.filter((row) => Math.floor(
+      (Date.parse(`${row.date}T00:00:00.000Z`) - episodeStartEpoch) / (14 * 86_400_000),
+    ) === windowIndex);
+    return { fromDate: addCalendarDays(episode.startDate, windowIndex * 14),
+      throughDate: addCalendarDays(episode.startDate, windowIndex * 14 + 13),
+      physiologicalWeight: errorMetrics(rows.map((row) => ({ prediction: row.predicted, observed: row.observed }))),
+      filteredWeight: errorMetrics(rows.flatMap((row) => row.filtered === null ? [] : [{ prediction: row.filtered, observed: row.observed }])) };
+  });
   const firstWeekStateByDate = new Map(firstWeekReplayStates.map((state) => [state.date, state]));
   const firstWeekWeightErrors = initialWeightObservationsAtCreation.flatMap((reading) => {
     const state = firstWeekStateByDate.get(reading.date);
@@ -259,6 +287,7 @@ async function main() {
       physiologicalWeight: errorMetrics(observedReplayRows.map((row) => ({ prediction: row.predicted, observed: row.observed }))),
       filteredWeight: errorMetrics(observedReplayRows.flatMap((row) => row.filtered === null ? [] : [{ prediction: row.filtered, observed: row.observed }])) ,
     },
+    stateFitWindows,
     meanFilterAdjustmentKg: observedReplayRows.length === 0 ? null
       : observedReplayRows.reduce((sum, row) => sum + (row.filtered ?? row.predicted) - row.predicted, 0) / observedReplayRows.length,
     firstObservedState: observedReplayRows[0] ?? null,
@@ -335,7 +364,7 @@ async function main() {
   const scenario: ForecastScenario = { mode: "recent-behavior", donorLookbackDays: 56, blockLengthDays: 7 };
   const config = { ...DEFAULT_FORECAST_CONFIG, pathCount: 256 };
   const horizons = [1, 3, 7, 14] as const;
-  const forecastByOrigin = new Map<string, { baseline: ForecastDateSummary[]; init: ForecastDateSummary[]; filter: ForecastDateSummary[]; energy: ForecastDateSummary[]; source: string; donorCount: number; originLatestWeightKg: number; effectiveOriginDate: string; calibration: unknown; initRequestedDeltaKg: number | null; initAppliedDeltaKg: number | null; onlineCorrectionKg: number | null }>();
+  const forecastByOrigin = new Map<string, { baseline: ForecastDateSummary[]; init: ForecastDateSummary[]; filter: ForecastDateSummary[]; energy: ForecastDateSummary[]; energyDrift: ForecastDateSummary[]; energyDriftDiagnostics: unknown; residualPersistenceDiagnostics: unknown; source: string; donorCount: number; originLatestWeightKg: number; effectiveOriginDate: string; calibration: unknown; initRequestedDeltaKg: number | null; initAppliedDeltaKg: number | null; onlineCorrectionKg: number | null }>();
   const weightBaselinesByOrigin = new Map<string, { lastKnownWeightKg: number | null; causalFilterWeightKg: number | null; adaptiveFilterWeightKg: number | null; adaptiveFilterVarianceKg2: number | null; adaptiveProcessNoiseVarianceKg2PerDay: number | null; robustTrend: Record<string, { estimateKg: number; slopeKgPerDay: number; observationCount: number } | null>; knownWeightCount: number }>();
   const errorsAvailableLater: Array<{ date: string; observedKg: number; predictedKg: number; availableAt: string }> = [];
   const coverageByOrigin: Array<{ origin: string; status: string; knownDays: number; donorCount: number; calibrationStatus: string; inputHash: string }> = [];
@@ -599,12 +628,54 @@ async function main() {
     const energy = energyState?.status === "complete"
       ? runForecastWithInternalArtifacts({ ...common, initialParticles: [{ state: energyState.endState, weight: 1 }], personalization: energyParams }).result.dates
       : baseline;
+    const recentWindowStartDate = addCalendarDays(effectiveOriginDate, -27);
+    const recentWindowStartIndex = Math.max(0, resolvedPrefix.findIndex((day) => day.input.date >= recentWindowStartDate));
+    const recentWindowDays = resolvedPrefix.slice(recentWindowStartIndex).map((day) => day.input);
+    const priorWindowState = recentWindowStartIndex === 0 ? null : simulation[recentWindowStartIndex - 1];
+    const recentWindowCanReplay = recentWindowStartIndex === 0 || priorWindowState?.status === "complete";
+    const recentInitialState = recentWindowStartIndex === 0 ? episodeAtOrigin.initialState
+      : priorWindowState?.status === "complete" ? priorWindowState.endState : episodeAtOrigin.initialState;
+    const basePersonalOffset = calibration.parameters.personalOffsetKcalPerDay;
+    const finiteDifferenceKcalPerDay = 100;
+    const plusWindow = recentWindowCanReplay ? simulateDays({ initialState: recentInitialState, parameters: episode.simulatorParameters,
+      days: recentWindowDays, options: { ecfPolicy: episode.ecfPolicy },
+      personalization: { ...calibration.parameters, personalOffsetKcalPerDay: basePersonalOffset + finiteDifferenceKcalPerDay } }) : [];
+    const minusWindow = recentWindowCanReplay ? simulateDays({ initialState: recentInitialState, parameters: episode.simulatorParameters,
+      days: recentWindowDays, options: { ecfPolicy: episode.ecfPolicy },
+      personalization: { ...calibration.parameters, personalOffsetKcalPerDay: basePersonalOffset - finiteDifferenceKcalPerDay } }) : [];
+    const energyDriftObservations = recentWindowDays.flatMap((day, index) => {
+      const dayIndex = recentWindowStartIndex + index;
+      const measuredWeightKg = day.measuredWeightKg;
+      const baselineDay = simulation[dayIndex];
+      const plusDay = plusWindow[index];
+      const minusDay = minusWindow[index];
+      if (measuredWeightKg == null || baselineDay?.status !== "complete"
+          || plusDay?.status !== "complete" || minusDay?.status !== "complete") return [];
+      return [{ date: day.date, residualKg: measuredWeightKg - reconstructBodyWeightKg(baselineDay.endState),
+        massSensitivityKgPerKcalPerDay: (reconstructBodyWeightKg(plusDay.endState)
+          - reconstructBodyWeightKg(minusDay.endState)) / (2 * finiteDifferenceKcalPerDay) }];
+    });
+    const energyDriftDiagnostics = estimateEnergyDriftCorrection(energyDriftObservations);
+    const energyDriftParameters = { ...calibration.parameters,
+      personalOffsetKcalPerDay: clampResearchOffset(basePersonalOffset + energyDriftDiagnostics.offsetCorrectionKcalPerDay) };
+    const energyDrift = energyDriftDiagnostics.status === "estimated" && energyDriftDiagnostics.offsetCorrectionKcalPerDay !== 0
+      ? runForecastWithInternalArtifacts({ ...common, initialParticles: [{ state: current.endState, weight: 1 }],
+        personalization: energyDriftParameters }).result.dates
+      : baseline;
     const weightsFirst7 = asOfWeightObservations.filter((row) => row.date >= episode.startDate
       && row.date <= addCalendarDays(episode.startDate, 6)).map((row) => row.weightKg);
     const initRequestedDeltaKg = weightsFirst7.length >= 5 ? medianOf(weightsFirst7) - reconstructBodyWeightKg(episode.initialState) : null;
     let initAppliedDeltaKg: number | null = null;
     const residualRows = residualsAvailableAt(errorsAvailableLater, originDate, new Date(cutoff.getTime() - 1));
     const onlineCorrectionKg = residualRows.length ? boundedOnlineCorrection(residualRows) : null;
+    const residualPersistence = estimateResidualPersistence(residualRows);
+    const residualPersistenceDiagnostics = residualPersistence ? {
+      observationCount: residualPersistence.observationCount,
+      persistencePerDay: residualPersistence.persistencePerDay,
+      stationaryResidualKg: residualPersistence.stationaryResidualKg,
+      innovationMadKg: residualPersistence.innovationMadKg,
+    } : { observationCount: residualRows.length, persistencePerDay: null,
+      stationaryResidualKg: null, innovationMadKg: null };
     let init = baseline;
     if (initRequestedDeltaKg !== null) {
       const adjusted = waterOnlyInitializationCorrection(episode.initialState, initRequestedDeltaKg);
@@ -626,7 +697,8 @@ async function main() {
     }
     if (baseline.length !== 14 || init.length !== 14 || filter.length !== 14 || energy.length !== 14) throw new Error("forecast horizon mismatch");
     if (sha(source) !== sourceHashBefore) throw new Error("AS_OF_SOURCE_MUTATED");
-    forecastByOrigin.set(originDate, { baseline, init, filter, energy, source: inputHash, donorCount: donors.length, effectiveOriginDate,
+    forecastByOrigin.set(originDate, { baseline, init, filter, energy, energyDrift, energyDriftDiagnostics, residualPersistenceDiagnostics,
+      source: inputHash, donorCount: donors.length, effectiveOriginDate,
       originLatestWeightKg: originLatestWeight,
       calibration: { status: calibration.status, accepted: calibration.diagnostics.personalizationAccepted,
         parameters: calibration.parameters,
@@ -713,9 +785,11 @@ async function main() {
       "activeForecast", "lastKnownWeight", "fixedLocalLevelKalman", "adaptiveLocalLevelKalman",
       "fixedKalmanAnchor", "adaptiveKalmanAnchor",
       "robustTrendTheilSen", "initialLevelWaterSensitivity", "filterOnlyNegativeControl",
-      "twoTimescaleResidual", "robustOnlineBias", "acceptedEnergyCalibration", "uncertaintyFallback",
+      "twoTimescaleResidual", "robustOnlineBias", "residualPersistenceAR1", "energyDriftCalibration",
+      "prequentialConformalInterval", "acceptedEnergyCalibration", "uncertaintyFallback",
     ].map((key) => [key, []]));
     const fallbackAssessments: Array<{ originDate: string; sampleCount: number; intervalCoverage: number | null; fallbackToLastKnown: boolean }> = [];
+    const conformalDiagnostics: Array<{ originDate: string; sampleCount: number; empiricalPriorCoverage: number | null; widenByKg: number | null }> = [];
     const intervalOutcomesFor = (originDate: string, cutoff: Date): ForecastIntervalOutcome[] => {
       const labelsAsOf = new Map(weightOutcomeLabelsAsOf(allSnapshots.map((row) => ({
         id: row.id, date: row.date, weightKg: row.weightKg == null ? null : Number(row.weightKg), receivedAt: row.receivedAt,
@@ -748,6 +822,8 @@ async function main() {
         new Date(nextLocalMidnight(originDate, episode.timezone).getTime() - 1));
       const twoTimescaleDelta = availableErrors.length >= 7 ? estimateTwoTimescaleResidual(availableErrors).predictResidualKg(horizon) : 0;
       const robustBiasDelta = availableErrors.length >= 7 ? estimatePersistentBias(availableErrors) : 0;
+      const persistence = estimateResidualPersistence(availableErrors);
+      const persistenceDelta = persistence?.predictResidualKg(horizon) ?? 0;
       const base = forecast.baseline[horizon - 1]!.physiologicalBodyWeightKg;
       const addShifted = (key: string, series: ForecastDateSummary[], delta: number) => {
         const point = series[horizon - 1]!.physiologicalBodyWeightKg;
@@ -758,7 +834,9 @@ async function main() {
       addShifted("filterOnlyNegativeControl", forecast.filter, 0);
       addShifted("twoTimescaleResidual", forecast.baseline, twoTimescaleDelta);
       addShifted("robustOnlineBias", forecast.baseline, robustBiasDelta);
+      addShifted("residualPersistenceAR1", forecast.baseline, persistenceDelta);
       addShifted("acceptedEnergyCalibration", forecast.energy, 0);
+      addShifted("energyDriftCalibration", forecast.energyDrift, 0);
       if (weightBaseline.lastKnownWeightKg !== null && weightBaseline.causalFilterWeightKg !== null) {
         addShifted("fixedKalmanAnchor", forecast.baseline,
           weightBaseline.causalFilterWeightKg - weightBaseline.lastKnownWeightKg);
@@ -781,7 +859,13 @@ async function main() {
         rowsByCandidate.robustTrendTheilSen!.push({ originDate, prediction: trend.estimateKg, observed, fallback: false });
       }
       const cutoff = nextLocalMidnight(originDate, episode.timezone);
-      const fallbackAssessment = assessUncertaintyAwareFallback(intervalOutcomesFor(originDate, cutoff),
+      const priorIntervals = intervalOutcomesFor(originDate, cutoff);
+      const widening = prequentialIntervalWidening(priorIntervals,
+        { originDate, inputAsOf: cutoff, horizonDays: horizon });
+      conformalDiagnostics.push({ originDate, ...widening });
+      rowsByCandidate.prequentialConformalInterval!.push({ originDate, prediction: active.median, observed,
+        p05: active.p05 - (widening.widenByKg ?? 0), p95: active.p95 + (widening.widenByKg ?? 0), fallback: false });
+      const fallbackAssessment = assessUncertaintyAwareFallback(priorIntervals,
         { originDate, inputAsOf: cutoff, horizonDays: horizon });
       fallbackAssessments.push({ originDate, ...fallbackAssessment });
       if (weightBaseline.lastKnownWeightKg !== null) {
@@ -838,11 +922,13 @@ async function main() {
         } : null }];
     }));
     return [String(horizon), { commonOriginCount: rowsByCandidate.activeForecast!.length,
-      candidates, uncertaintyFallbackDiagnostics: fallbackAssessments }];
+      candidates, uncertaintyFallbackDiagnostics: fallbackAssessments,
+      prequentialConformalDiagnostics: conformalDiagnostics }];
   }));
   const calibrationCandidateSeries = [...forecastByOrigin.entries()].map(([origin, f]) => ({ origin, donors: f.donorCount,
     initRequestedDeltaKg: f.initRequestedDeltaKg, initAppliedDeltaKg: f.initAppliedDeltaKg,
-    onlineCorrectionKg: f.onlineCorrectionKg, calibration: f.calibration }));
+    onlineCorrectionKg: f.onlineCorrectionKg, energyDrift: f.energyDriftDiagnostics,
+    residualPersistence: f.residualPersistenceDiagnostics, calibration: f.calibration }));
   const snapshotBatchesAfter = [];
   for (let offset = 0; offset < snapshotIds.length; offset += 128) {
     snapshotBatchesAfter.push(await prisma.healthSyncSnapshot.findMany({

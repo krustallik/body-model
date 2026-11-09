@@ -206,6 +206,150 @@ export function estimatePersistentBias(
   return clamp(median(values), -maxAbs, maxAbs);
 }
 
+export type ResidualPersistenceEstimate = {
+  observationCount: number;
+  transitionCount: number;
+  persistencePerDay: number;
+  stationaryResidualKg: number;
+  innovationMadKg: number;
+  predictResidualKg: (horizonDays: number) => number;
+};
+
+/**
+ * Causal AR(1) persistence for observed-scale-minus-model residuals. Unlike a fixed
+ * anchor, this estimates how much of today's discrepancy survives to a future
+ * day; it is a scale residual only and never changes physiological state.
+ */
+export function estimateResidualPersistence(
+  residuals: readonly DatedResidual[],
+  input: { minimumObservations?: number; maxAbsPredictionKg?: number } = {},
+): ResidualPersistenceEstimate | null {
+  const minimumObservations = input.minimumObservations ?? 8;
+  const maxAbsPrediction = input.maxAbsPredictionKg ?? 2;
+  if (!Number.isInteger(minimumObservations) || minimumObservations < 4 || maxAbsPrediction <= 0) {
+    throw new RangeError("invalid residual persistence bounds");
+  }
+  const rows = sortDatedResiduals(residuals);
+  if (rows.length < minimumObservations) return null;
+  const center = median(rows.map((row) => row.residualKg));
+  const mad = median(rows.map((row) => Math.abs(row.residualKg - center)));
+  const cap = Math.max(0.5, mad * 1.4826 * 3);
+  const bounded = rows.map((row) => ({ ...row, residualKg: center + clamp(row.residualKg - center, -cap, cap) }));
+  const transitions = bounded.slice(1).map((row, index) => {
+    const previous = bounded[index]!;
+    const gapDays = (Date.parse(`${row.date}T00:00:00.000Z`) - Date.parse(`${previous.date}T00:00:00.000Z`)) / 86_400_000;
+    return { previous: previous.residualKg - center, current: row.residualKg - center, gapDays };
+  });
+  let bestPhi = 0;
+  let bestLoss = Number.POSITIVE_INFINITY;
+  for (let step = 0; step <= 49; step += 1) {
+    const phi = step * 0.02;
+    const loss = transitions.reduce((sum, row) => {
+      const error = row.current - row.previous * Math.pow(phi, row.gapDays);
+      const absolute = Math.abs(error);
+      return sum + (absolute <= 0.5 ? 0.5 * absolute * absolute : 0.5 * (absolute - 0.25));
+    }, 0);
+    if (loss < bestLoss) { bestLoss = loss; bestPhi = phi; }
+  }
+  // Small histories otherwise push a noisy estimate to either boundary.
+  const persistencePerDay = bestPhi * transitions.length / (transitions.length + 8);
+  const latestResidual = bounded.at(-1)!.residualKg;
+  return {
+    observationCount: rows.length,
+    transitionCount: transitions.length,
+    persistencePerDay,
+    stationaryResidualKg: center,
+    innovationMadKg: mad,
+    predictResidualKg: (horizonDays) => {
+      if (!Number.isFinite(horizonDays) || horizonDays < 0) throw new RangeError("horizon must be nonnegative");
+      return clamp(center + (latestResidual - center) * Math.pow(persistencePerDay, horizonDays), -maxAbsPrediction, maxAbsPrediction);
+    },
+  };
+}
+
+export type EnergyDriftObservation = {
+  date: string;
+  residualKg: number;
+  massSensitivityKgPerKcalPerDay: number;
+};
+
+export type EnergyDriftEstimate = {
+  status: "insufficient-history" | "unstable-split" | "unidentifiable" | "estimated";
+  observationCount: number;
+  spanDays: number;
+  residualSlopeKgPerDay: number | null;
+  sensitivitySlopeKgPerDayPerKcalPerDay: number | null;
+  rawOffsetCorrectionKcalPerDay: number | null;
+  offsetCorrectionKcalPerDay: number;
+  posteriorSdKcalPerDay: number | null;
+};
+
+/**
+ * Research-only robust estimate of a trailing energy offset from the slope of
+ * causal scale-minus-physiology residuals and the simulator's finite-difference
+ * mass sensitivity. A zero-centered prior shrinks weakly identified estimates.
+ */
+export function estimateEnergyDriftCorrection(
+  observations: readonly EnergyDriftObservation[],
+  input: { minimumObservations?: number; minimumSpanDays?: number; priorSdKcalPerDay?: number; maxAbsCorrectionKcalPerDay?: number } = {},
+): EnergyDriftEstimate {
+  const minimumObservations = input.minimumObservations ?? 6;
+  const minimumSpanDays = input.minimumSpanDays ?? 14;
+  const priorSd = input.priorSdKcalPerDay ?? 200;
+  const maxAbs = input.maxAbsCorrectionKcalPerDay ?? 500;
+  if (!Number.isInteger(minimumObservations) || minimumObservations < 4 || !Number.isInteger(minimumSpanDays)
+      || minimumSpanDays < 1 || !(priorSd > 0) || !(maxAbs > 0)) throw new RangeError("invalid energy drift bounds");
+  const rows = observations.map((row) => {
+    if (!validDate(row.date) || !Number.isFinite(row.residualKg)
+        || !Number.isFinite(row.massSensitivityKgPerKcalPerDay)) throw new TypeError("invalid energy drift observation");
+    return row;
+  }).toSorted((a, b) => a.date.localeCompare(b.date));
+  for (let i = 1; i < rows.length; i += 1) if (rows[i]!.date === rows[i - 1]!.date) {
+    throw new TypeError("energy drift dates must be unique");
+  }
+  const spanDays = rows.length < 2 ? 0 : (Date.parse(`${rows.at(-1)!.date}T00:00:00.000Z`)
+    - Date.parse(`${rows[0]!.date}T00:00:00.000Z`)) / 86_400_000;
+  const base = { observationCount: rows.length, spanDays, residualSlopeKgPerDay: null as number | null,
+    sensitivitySlopeKgPerDayPerKcalPerDay: null as number | null, rawOffsetCorrectionKcalPerDay: null as number | null,
+    offsetCorrectionKcalPerDay: 0, posteriorSdKcalPerDay: null as number | null };
+  if (rows.length < minimumObservations || spanDays < minimumSpanDays) return { ...base, status: "insufficient-history" };
+  const x0 = Date.parse(`${rows[0]!.date}T00:00:00.000Z`);
+  const dated = rows.map((row) => ({ x: (Date.parse(`${row.date}T00:00:00.000Z`) - x0) / 86_400_000, row }));
+  const slope = (values: readonly number[], points = dated) => {
+    const pairs: number[] = [];
+    for (let i = 0; i < values.length; i += 1) for (let j = i + 1; j < values.length; j += 1) {
+      const dx = points[j]!.x - points[i]!.x;
+      if (dx > 0) pairs.push((values[j]! - values[i]!) / dx);
+    }
+    return median(pairs);
+  };
+  const residualValues = rows.map((row) => row.residualKg);
+  const sensitivityValues = rows.map((row) => row.massSensitivityKgPerKcalPerDay);
+  const residualSlope = slope(residualValues);
+  const sensitivitySlope = slope(sensitivityValues);
+  const half = Math.floor(rows.length / 2);
+  const firstHalfSlope = slope(residualValues.slice(0, half), dated.slice(0, half));
+  const secondHalfSlope = slope(residualValues.slice(half), dated.slice(half));
+  const withSlopes = { ...base, residualSlopeKgPerDay: residualSlope,
+    sensitivitySlopeKgPerDayPerKcalPerDay: sensitivitySlope };
+  if (firstHalfSlope !== 0 && secondHalfSlope !== 0 && Math.sign(firstHalfSlope) !== Math.sign(secondHalfSlope)) {
+    return { ...withSlopes, status: "unstable-split" };
+  }
+  if (Math.abs(sensitivitySlope) < 1e-9) return { ...withSlopes, status: "unidentifiable" };
+  const raw = residualSlope / sensitivitySlope;
+  const centerX = median(dated.map(({ x }) => x));
+  const fittedAtMedian = median(rows.map((row, index) => row.residualKg - residualSlope * (dated[index]!.x - centerX)));
+  const detrended = rows.map((row, index) => row.residualKg - (fittedAtMedian + residualSlope * (dated[index]!.x - centerX)));
+  const noiseSd = Math.max(0.25, median(detrended.map(Math.abs)) * 1.4826);
+  const sxx = dated.reduce((sum, point) => sum + (point.x - centerX) ** 2, 0);
+  const slopeSd = noiseSd / Math.sqrt(Math.max(sxx, 1));
+  const offsetSd = slopeSd / Math.abs(sensitivitySlope);
+  const posteriorVariance = 1 / (1 / (priorSd * priorSd) + 1 / (offsetSd * offsetSd));
+  const posteriorMean = raw * posteriorVariance / (offsetSd * offsetSd);
+  return { ...withSlopes, status: "estimated", rawOffsetCorrectionKcalPerDay: raw,
+    offsetCorrectionKcalPerDay: clamp(posteriorMean, -maxAbs, maxAbs), posteriorSdKcalPerDay: Math.sqrt(posteriorVariance) };
+}
+
 function sortDatedResiduals(rows: readonly DatedResidual[]): DatedResidual[] {
   const ordered = rows.map((row) => {
     if (!validDate(row.date) || !Number.isFinite(row.residualKg)) {
@@ -551,6 +695,50 @@ export type ForecastIntervalOutcome = {
   p05Kg: number;
   p95Kg: number;
 };
+
+export type PrequentialIntervalWidening = {
+  sampleCount: number;
+  widenByKg: number | null;
+  empiricalPriorCoverage: number | null;
+};
+
+/**
+ * Counterfactual prequential conformal-style interval widening. Its output is
+ * an empirical diagnostic, not a formal coverage guarantee under serial
+ * dependence or regime change.
+ */
+export function prequentialIntervalWidening(
+  history: readonly ForecastIntervalOutcome[],
+  input: { originDate: string; inputAsOf: string | Date; horizonDays: number; coverage?: number; minimumObservations?: number; maximumObservations?: number },
+): PrequentialIntervalWidening {
+  if (!validDate(input.originDate) || !Number.isInteger(input.horizonDays) || input.horizonDays <= 0) {
+    throw new TypeError("interval calibration requires a valid origin and positive horizon");
+  }
+  const coverage = input.coverage ?? 0.9;
+  const minimumObservations = input.minimumObservations ?? 8;
+  const maximumObservations = input.maximumObservations ?? 28;
+  if (!(coverage > 0 && coverage < 1) || !Number.isInteger(minimumObservations) || minimumObservations < 1
+      || !Number.isInteger(maximumObservations) || maximumObservations < minimumObservations) {
+    throw new RangeError("invalid interval calibration bounds");
+  }
+  const cutoff = iso(input.inputAsOf);
+  const originEpoch = Date.parse(`${input.originDate}T00:00:00.000Z`);
+  const eligible = history.filter((row) => {
+    if (row.horizonDays !== input.horizonDays || !validDate(row.originDate) || !validDate(row.targetDate)
+        || ![row.observedKg, row.p05Kg, row.p95Kg].every(Number.isFinite) || row.p05Kg > row.p95Kg) return false;
+    const rowOrigin = Date.parse(`${row.originDate}T00:00:00.000Z`);
+    const target = Date.parse(`${row.targetDate}T00:00:00.000Z`);
+    return rowOrigin < originEpoch && target <= originEpoch && iso(row.receivedAt) < cutoff
+      && iso(row.firstReceivedAt) >= iso(row.issueCutoff)
+      && target - rowOrigin === row.horizonDays * 86_400_000;
+  }).toSorted((a, b) => b.originDate.localeCompare(a.originDate)).slice(0, maximumObservations);
+  const scores = eligible.map((row) => Math.max(row.p05Kg - row.observedKg, row.observedKg - row.p95Kg, 0));
+  const empiricalPriorCoverage = scores.length === 0 ? null : scores.filter((score) => score === 0).length / scores.length;
+  if (scores.length < minimumObservations) return { sampleCount: scores.length, widenByKg: null, empiricalPriorCoverage };
+  const sorted = [...scores].sort((a, b) => a - b);
+  const rank = Math.min(sorted.length, Math.ceil((sorted.length + 1) * coverage));
+  return { sampleCount: scores.length, widenByKg: sorted[rank - 1]!, empiricalPriorCoverage };
+}
 
 export type UncertaintyFallbackAssessment = {
   fallbackToLastKnown: boolean;

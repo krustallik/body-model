@@ -8,6 +8,8 @@ import {
   causalWeightFilterAsOf,
   encodeForecastSnapshotV1,
   estimatePersistentBias,
+  estimateEnergyDriftCorrection,
+  estimateResidualPersistence,
   estimateTwoTimescaleResidual,
   filterOnlyStateCorrection,
   projectActivityIntervalsAsOf,
@@ -15,6 +17,7 @@ import {
   median,
   newOutcomeResidualIfEligible,
   outcomeArrivedAfterCutoff,
+  prequentialIntervalWidening,
   robustTrendWeightForecast,
   residualsAvailableAt,
   selectAsOfSources,
@@ -316,6 +319,80 @@ test("persistent bias is robust to one extreme residual and bounded independentl
   assert.equal(estimatePersistentBias([
     { date: "2033-01-01", residualKg: 9 }, { date: "2033-02-01", residualKg: 0.4 },
   ], { windowDays: 7 }), 0.4, "observations older than the calendar-day window must be excluded");
+});
+
+test("causal AR residual persistence learns decay while bounding an outlier", () => {
+  const rows = dailyResiduals([0.1, 0.3, 0.45, 0.62, 0.74, 0.83, 0.9, 0.95, 1.0, 1.04]);
+  const estimate = estimateResidualPersistence(rows);
+  assert.ok(estimate);
+  assert.ok(estimate.persistencePerDay > 0.2 && estimate.persistencePerDay < 0.9);
+  assert.ok(estimate.predictResidualKg(14) < estimate.predictResidualKg(1));
+  const earlierEstimate = estimateResidualPersistence(rows.slice(0, 8));
+  assert.ok(earlierEstimate);
+  assert.notEqual(earlierEstimate.persistencePerDay, estimate.persistencePerDay,
+    "newly matured history can update the residual-persistence estimate");
+  const receivedRows = rows.map((row) => ({ ...row, observedKg: row.residualKg, predictedKg: 0,
+    availableAt: `${row.date}T20:00:00Z` }));
+  const earlierAsOf = residualsAvailableAt(receivedRows, rows[7]!.date, `${rows[7]!.date}T23:00:00Z`);
+  const laterDataAtEarlierOrigin = residualsAvailableAt([...receivedRows,
+    { date: "2033-02-01", observedKg: 0, predictedKg: 0, availableAt: "2033-02-01T20:00:00Z" }],
+  rows[7]!.date, `${rows[7]!.date}T23:00:00Z`);
+  const earlierFromBase = estimateResidualPersistence(earlierAsOf.map(({ date, residualKg }) => ({ date, residualKg })));
+  const earlierFromExtended = estimateResidualPersistence(laterDataAtEarlierOrigin.map(({ date, residualKg }) => ({ date, residualKg })));
+  assert.equal(earlierFromExtended?.persistencePerDay, earlierFromBase?.persistencePerDay,
+    "later receipts cannot change an earlier origin");
+  const positiveScaleResidual = estimateResidualPersistence(dailyResiduals(Array(10).fill(0.6)));
+  const negativeScaleResidual = estimateResidualPersistence(dailyResiduals(Array(10).fill(-0.6)));
+  assert.ok(positiveScaleResidual!.predictResidualKg(7) > 0,
+    "observed scale above model must shift the candidate forecast upward");
+  assert.ok(negativeScaleResidual!.predictResidualKg(7) < 0,
+    "observed scale below model must shift the candidate forecast downward");
+  const withOutlier = estimateResidualPersistence([...rows.slice(0, -1), { ...rows.at(-1)!, residualKg: 12 }]);
+  assert.ok(withOutlier);
+  assert.ok(withOutlier.predictResidualKg(1) < 2);
+  assert.equal(estimateResidualPersistence(rows.slice(0, 7)), null);
+});
+
+test("energy drift challenger needs stable residual slope and finite-difference sensitivity", () => {
+  const observations = Array.from({ length: 20 }, (_, index) => ({
+    date: new Date(Date.UTC(2033, 0, 1 + index)).toISOString().slice(0, 10),
+    residualKg: index * 0.02,
+    massSensitivityKgPerKcalPerDay: -index * 0.00004,
+  }));
+  const estimate = estimateEnergyDriftCorrection(observations);
+  assert.equal(estimate.status, "estimated");
+  assert.ok(estimate.residualSlopeKgPerDay! > 0);
+  assert.ok(estimate.sensitivitySlopeKgPerDayPerKcalPerDay! < 0);
+  assert.ok(estimate.offsetCorrectionKcalPerDay < 0, "positive observed-minus-model drift calls for lower modeled expenditure");
+  assert.ok(Math.abs(estimate.offsetCorrectionKcalPerDay) < 500, "zero-centered prior shrinks the raw bound estimate");
+  assert.equal(estimateEnergyDriftCorrection(observations.slice(0, 4)).status, "insufficient-history");
+  const unstable = observations.map((row, index) => ({ ...row, residualKg: index < 10 ? index * 0.02 : (20 - index) * 0.02 }));
+  assert.equal(estimateEnergyDriftCorrection(unstable).status, "unstable-split");
+  assert.equal(estimateEnergyDriftCorrection(observations.map((row) => ({ ...row,
+    massSensitivityKgPerKcalPerDay: 0 }))).status, "unidentifiable");
+});
+
+test("prequential interval widening uses only matured same-horizon outcomes", () => {
+  const history = Array.from({ length: 10 }, (_, index) => {
+    const origin = new Date(Date.UTC(2033, 0, 1 + index)).toISOString().slice(0, 10);
+    const target = new Date(Date.UTC(2033, 0, 8 + index)).toISOString().slice(0, 10);
+    const issue = `${origin}T23:59:59Z`;
+    return { originDate: origin, targetDate: target, horizonDays: 7, issueCutoff: issue,
+      firstReceivedAt: `${target}T08:00:00Z`, receivedAt: `${target}T08:00:00Z`, observedKg: 70.5,
+      p05Kg: 69.8, p95Kg: 70.2 };
+  });
+  const input = { originDate: "2033-01-25", inputAsOf: "2033-01-25T00:00:00Z", horizonDays: 7 };
+  const estimate = prequentialIntervalWidening(history, input);
+  assert.equal(estimate.sampleCount, 10);
+  assert.equal(estimate.empiricalPriorCoverage, 0);
+  assert.ok(estimate.widenByKg! >= 0.29);
+  const unavailable = prequentialIntervalWidening([...history,
+    { ...history[9]!, originDate: "2033-01-24", targetDate: "2033-01-31", issueCutoff: "2033-01-24T23:59:59Z",
+      firstReceivedAt: "2033-01-25T01:00:00Z", receivedAt: "2033-01-25T01:00:00Z" },
+  ], input);
+  assert.equal(unavailable.sampleCount, 10, "future, not-yet-matured outcomes cannot widen an earlier interval");
+  assert.equal(prequentialIntervalWidening(history.slice(0, 4), input).widenByKg, null,
+    "too few matured cases must leave the interval unchanged");
 });
 
 test("adaptive local-level filter is causal, deterministic, bounded, and changes only observation state", () => {

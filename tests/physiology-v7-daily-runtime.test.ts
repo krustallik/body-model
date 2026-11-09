@@ -102,7 +102,7 @@ describe("Physiology v7 daily runtime contract", () => {
     expect(result.observations.observedWeightKg).toEqual({
       availability: "available",
       valueKg: 80,
-      provenance: "immutable-health-sync-snapshot",
+      provenance: "daily-health-data-observation",
     });
     expect(result.resultingState.weightFilterState?.estimatedWeightKg).toBe(80);
     expect(result.observations.weightFilterObservation).toEqual({

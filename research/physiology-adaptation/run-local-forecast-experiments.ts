@@ -668,19 +668,37 @@ async function main() {
   const pairedForecastMetrics = Object.fromEntries(horizons.map((horizon) => {
     const physiologicalRows: Array<{ prediction: number; observed: number }> = [];
     const filterRows: Array<{ prediction: number; observed: number }> = [];
+    const lastKnownRows: Array<{ prediction: number; observed: number }> = [];
+    const trendRows: Array<{ prediction: number; observed: number }> = [];
     const commonOrigins: string[] = [];
+    const commonLastKnownOrigins: string[] = [];
+    const commonTrendOrigins: string[] = [];
     for (const [originDate, forecast] of forecastByOrigin) {
       const weightBaseline = weightBaselinesByOrigin.get(originDate);
       const label = outcomeLabelsByDate.get(addCalendarDays(originDate, horizon));
-      if (!weightBaseline || weightBaseline.causalFilterWeightKg === null || !label
+      if (!weightBaseline || !label
           || !outcomeArrivedAfterCutoff(label.firstReceivedAt, nextLocalMidnight(originDate, episode.timezone))) continue;
       physiologicalRows.push({ prediction: forecast.baseline[horizon - 1].physiologicalBodyWeightKg.median,
         observed: label.weightKg });
-      filterRows.push({ prediction: weightBaseline.causalFilterWeightKg, observed: label.weightKg });
       commonOrigins.push(originDate);
+      if (weightBaseline.causalFilterWeightKg !== null) {
+        filterRows.push({ prediction: weightBaseline.causalFilterWeightKg, observed: label.weightKg });
+      }
+      if (weightBaseline.lastKnownWeightKg !== null) {
+        lastKnownRows.push({ prediction: weightBaseline.lastKnownWeightKg, observed: label.weightKg });
+        commonLastKnownOrigins.push(originDate);
+      }
+      const trend = weightBaseline.robustTrend[String(horizon)];
+      if (trend !== null) {
+        trendRows.push({ prediction: trend.estimateKg, observed: label.weightKg });
+        commonTrendOrigins.push(originDate);
+      }
     }
     return [String(horizon), { commonOriginCount: commonOrigins.length, commonOrigins,
-      episodeForecast: errorMetrics(physiologicalRows), causalLocalLevelFilter: errorMetrics(filterRows) }];
+      episodeForecast: errorMetrics(physiologicalRows), causalLocalLevelFilter: errorMetrics(filterRows),
+      commonLastKnownOriginCount: commonLastKnownOrigins.length, commonLastKnownOrigins,
+      lastKnownWeight: errorMetrics(lastKnownRows), commonRobustTrendOriginCount: commonTrendOrigins.length,
+      commonRobustTrendOrigins: commonTrendOrigins, robustTrendTheilSen14d: errorMetrics(trendRows) }];
   }));
   const calibrationCandidateSeries = [...forecastByOrigin.entries()].map(([origin, f]) => ({ origin, donors: f.donorCount,
     initRequestedDeltaKg: f.initRequestedDeltaKg, initAppliedDeltaKg: f.initAppliedDeltaKg,

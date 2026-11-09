@@ -261,7 +261,7 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
       const bridged = nutritionByDate.get(date)!;
       return {
         date,
-        observedWeightKg: weightSnapshot?.weightKg ?? null,
+        observedWeightKg: daily?.weightKg ?? null,
         weightFilterObservation: weightSnapshot === undefined ? null : {
           snapshotId: weightSnapshot.id!,
           weightKg: weightSnapshot.weightKg,

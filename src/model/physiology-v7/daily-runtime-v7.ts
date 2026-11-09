@@ -568,7 +568,7 @@ export function buildPhysiologyDayV7(input: {
         : {
           availability: "available" as const,
           valueKg: input.sources.observedWeightKg,
-          provenance: "immutable-health-sync-snapshot" as const,
+          provenance: "daily-health-data-observation" as const,
         },
       weightFilterObservation: input.sources.weightFilterObservation == null
         ? null

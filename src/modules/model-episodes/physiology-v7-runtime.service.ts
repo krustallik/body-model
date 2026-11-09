@@ -6,9 +6,9 @@ import {
   physiologyV7RuntimeRepository,
   type PhysiologyV7RangeSourceLoader,
 } from "./physiology-v7-runtime.repository";
+import { PHYSIOLOGY_V7_REBUILD_SERVICE_VERSION } from "./physiology-v7-runtime.contract";
 
-export const PHYSIOLOGY_V7_REBUILD_SERVICE_VERSION =
-  "bodycast-physiology-v7-rebuild-service-1" as const;
+export { PHYSIOLOGY_V7_REBUILD_SERVICE_VERSION } from "./physiology-v7-runtime.contract";
 
 /**
  * Production application/use-case boundary for deterministic v7 rebuilds.

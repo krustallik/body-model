@@ -6,10 +6,10 @@ import {
 } from "@/model/physiology-v7/daily-runtime-v7";
 import { PHYSIOLOGY_RANGE_REBUILD_V7_VERSION } from "@/model/physiology-v7/rebuild-v7";
 import { PHYSIOLOGY_V7_CONTRACT_VERSION } from "@/model/physiology-v7/state";
-import { PHYSIOLOGY_V7_REBUILD_SERVICE_VERSION } from "./physiology-v7-runtime.service";
+import { PHYSIOLOGY_V7_REBUILD_SERVICE_VERSION } from "./physiology-v7-runtime.contract";
 
 export const PHYSIOLOGY_V7_SOURCE_NORMALIZATION_VERSION =
-  "bodycast-v7-source-normalization-1" as const;
+  "bodycast-v7-source-normalization-2" as const;
 export const PHYSIOLOGY_V7_PERSISTENCE_VERSION =
   "bodycast-physiology-v7-persistence-1" as const;
 

@@ -19,6 +19,28 @@ export type WeightFilterUpdate = {
   kalmanGain: number | null;
 };
 
+export type WeightSnapshotObservation = {
+  id?: number;
+  date: string;
+  weightKg: number | null;
+  receivedAt: string | Date;
+};
+
+export type CausalWeightFilterReplay = {
+  state: WeightFilterState | null;
+  stateAtOriginDate: WeightFilterState | null;
+  observationCount: number;
+  latestObservationDate: string | null;
+  observations: Array<WeightSnapshotObservation & { weightKg: number }>;
+  updates: Array<{
+    date: string;
+    observedWeightKg: number;
+    priorEstimateKg: number;
+    posteriorEstimateKg: number;
+    posteriorVarianceKg2: number;
+  }>;
+};
+
 function requireFinite(name: string, value: number): void {
   if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
 }
@@ -47,6 +69,12 @@ function checkedState(estimatedWeightKg: number, varianceKg2: number): WeightFil
   requirePositiveWeight("estimatedWeightKg", estimatedWeightKg);
   requireNonnegativeVariance("varianceKg2", varianceKg2);
   return { estimatedWeightKg, varianceKg2 };
+}
+
+function validLocalDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 /**
@@ -149,4 +177,89 @@ export function updateWeightFilterWithMeasurement(input: {
     innovationVarianceKg2,
     kalmanGain,
   };
+}
+
+/**
+ * Rebuild the observation-only scale filter from immutable snapshots available
+ * at an exclusive as-of cutoff. A later snapshot may revise an earlier
+ * measurement date, but cannot alter a state whose cutoff precedes its receipt.
+ */
+export function replayWeightFilterAsOf(input: {
+  rows: readonly WeightSnapshotObservation[];
+  originDate: string;
+  inputAsOf: string | Date;
+}): CausalWeightFilterReplay {
+  if (!validLocalDate(input.originDate)) throw new TypeError("originDate must be a valid local calendar date");
+  const cutoff = input.inputAsOf instanceof Date ? input.inputAsOf.getTime() : Date.parse(input.inputAsOf);
+  if (!Number.isFinite(cutoff)) throw new TypeError("inputAsOf must be a valid timestamp");
+
+  const observations = latestWeightSnapshotsAsOf(input.rows, input.inputAsOf)
+    .filter((row) => row.date <= input.originDate);
+  let state: WeightFilterState | null = null;
+  let priorDate: string | null = null;
+  const updates: CausalWeightFilterReplay["updates"] = [];
+  for (const observation of observations) {
+    const elapsedDays = priorDate === null ? 0
+      : (Date.parse(`${observation.date}T00:00:00.000Z`) - Date.parse(`${priorDate}T00:00:00.000Z`)) / 86_400_000;
+    if (state === null) {
+      state = initializeWeightFilterState({ measuredWeightKg: observation.weightKg });
+      updates.push({ date: observation.date, observedWeightKg: observation.weightKg,
+        priorEstimateKg: observation.weightKg, posteriorEstimateKg: state.estimatedWeightKg,
+        posteriorVarianceKg2: state.varianceKg2 });
+    } else {
+      const prior = predictWeightFilterState({ state, elapsedDays });
+      state = updateWeightFilterWithMeasurement({
+        predictedState: prior,
+        measuredWeightKg: observation.weightKg,
+      }).state;
+      updates.push({ date: observation.date, observedWeightKg: observation.weightKg,
+        priorEstimateKg: prior.estimatedWeightKg, posteriorEstimateKg: state.estimatedWeightKg,
+        posteriorVarianceKg2: state.varianceKg2 });
+    }
+    priorDate = observation.date;
+  }
+  const stateAtOriginDate = state === null || priorDate === null || priorDate === input.originDate
+    ? state
+    : predictWeightFilterState({
+      state,
+      elapsedDays: (Date.parse(`${input.originDate}T00:00:00.000Z`) - Date.parse(`${priorDate}T00:00:00.000Z`)) / 86_400_000,
+    });
+
+  return {
+    state,
+    stateAtOriginDate,
+    observationCount: observations.length,
+    latestObservationDate: observations.at(-1)?.date ?? null,
+    observations,
+    updates,
+  };
+}
+
+/** Latest non-null weight known by an exclusive receipt-time cutoff per local date. */
+export function latestWeightSnapshotsAsOf(
+  rows: readonly WeightSnapshotObservation[],
+  inputAsOf: string | Date,
+): Array<WeightSnapshotObservation & { weightKg: number }> {
+  const cutoff = inputAsOf instanceof Date ? inputAsOf.getTime() : Date.parse(inputAsOf);
+  if (!Number.isFinite(cutoff)) throw new TypeError("inputAsOf must be a valid timestamp");
+  const ordered = rows.map((row) => {
+    if (!validLocalDate(row.date)) throw new TypeError("weight snapshot date must be a valid local calendar date");
+    const receivedAt = row.receivedAt instanceof Date ? row.receivedAt.getTime() : Date.parse(row.receivedAt);
+    if (!Number.isFinite(receivedAt)) throw new TypeError("weight snapshot receivedAt must be valid");
+    return { row, receivedAt };
+  }).sort((left, right) => left.row.date.localeCompare(right.row.date)
+    || left.receivedAt - right.receivedAt
+    || (left.row.id ?? 0) - (right.row.id ?? 0));
+
+  const latestByDate = new Map<string, WeightSnapshotObservation & { weightKg: number }>();
+  for (const { row, receivedAt } of ordered) {
+    if (receivedAt >= cutoff || row.weightKg === null) continue;
+    if (!Number.isFinite(row.weightKg)) throw new TypeError("weight snapshot must be finite");
+    latestByDate.set(row.date, {
+      ...row,
+      weightKg: row.weightKg,
+    });
+  }
+
+  return [...latestByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }

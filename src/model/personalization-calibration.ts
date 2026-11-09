@@ -134,6 +134,11 @@ export type CalibrationDiagnostics = {
   validationLoss: number | null;
   defaultValidationNis: number | null;
   validationNis: number | null;
+  attemptedOffsetPersonalOffsetKcalPerDay: number | null;
+  attemptedOffsetValidationNis: number | null;
+  attemptedFullPersonalOffsetKcalPerDay: number | null;
+  attemptedFullActivityCalibration: number | null;
+  attemptedFullValidationNis: number | null;
   observationLossType: ObservationLossConfig["type"];
   studentTDegreesOfFreedom: number | null;
   largestStandardizedInnovation: number | null;
@@ -706,6 +711,21 @@ function isWeakRidge(input: {
   return false;
 }
 
+function validationNisImproved(input: {
+  defaultEvaluation: CalibrationEvaluation;
+  candidateEvaluation: CalibrationEvaluation;
+  config: PersonalizationCalibrationConfig;
+}): boolean {
+  const defaultNis = input.defaultEvaluation.meanNormalizedInnovationSquared;
+  const candidateNis = input.candidateEvaluation.meanNormalizedInnovationSquared;
+  if (defaultNis === null || candidateNis === null) return false;
+  const requiredImprovement = Math.max(
+    input.config.minimumValidationNisImprovementAbsolute,
+    defaultNis * input.config.minimumValidationNisImprovementFraction,
+  );
+  return defaultNis - candidateNis >= requiredImprovement;
+}
+
 function validationAccepted(input: {
   defaultEvaluation: CalibrationEvaluation;
   candidateEvaluation: CalibrationEvaluation;
@@ -713,16 +733,8 @@ function validationAccepted(input: {
   config: PersonalizationCalibrationConfig;
   parameterAtBound: (keyof ExpenditurePersonalization)[];
 }): boolean {
-  const defaultNis = input.defaultEvaluation.meanNormalizedInnovationSquared;
-  const candidateNis = input.candidateEvaluation.meanNormalizedInnovationSquared;
-  if (defaultNis === null || candidateNis === null || input.parameterAtBound.length > 0) {
-    return false;
-  }
-  const requiredImprovement = Math.max(
-    input.config.minimumValidationNisImprovementAbsolute,
-    defaultNis * input.config.minimumValidationNisImprovementFraction,
-  );
-  return defaultNis - candidateNis >= requiredImprovement
+  return input.parameterAtBound.length === 0
+    && validationNisImproved(input)
     && input.candidate.regularizedLoss < Number.POSITIVE_INFINITY;
 }
 
@@ -739,6 +751,10 @@ function makeDiagnostics(input: {
   regularizedTrainingLoss: number | null;
   defaultValidation: CalibrationEvaluation | null;
   candidateValidation: CalibrationEvaluation | null;
+  attemptedOffsetCandidate?: Candidate | null;
+  attemptedOffsetValidation?: CalibrationEvaluation | null;
+  attemptedFullCandidate?: Candidate | null;
+  attemptedFullValidation?: CalibrationEvaluation | null;
   observationLoss: ObservationLossConfig;
   parameterAtBound: (keyof ExpenditurePersonalization)[];
   identifiability: CalibrationDiagnostics["twoParameterIdentifiability"];
@@ -772,6 +788,16 @@ function makeDiagnostics(input: {
     validationLoss: input.candidateValidation?.meanNegativeLogLikelihood ?? null,
     defaultValidationNis: input.defaultValidation?.meanNormalizedInnovationSquared ?? null,
     validationNis: input.candidateValidation?.meanNormalizedInnovationSquared ?? null,
+    attemptedOffsetPersonalOffsetKcalPerDay:
+      input.attemptedOffsetCandidate?.parameters.personalOffsetKcalPerDay ?? null,
+    attemptedOffsetValidationNis:
+      input.attemptedOffsetValidation?.meanNormalizedInnovationSquared ?? null,
+    attemptedFullPersonalOffsetKcalPerDay:
+      input.attemptedFullCandidate?.parameters.personalOffsetKcalPerDay ?? null,
+    attemptedFullActivityCalibration:
+      input.attemptedFullCandidate?.parameters.activityCalibration ?? null,
+    attemptedFullValidationNis:
+      input.attemptedFullValidation?.meanNormalizedInnovationSquared ?? null,
     observationLossType: input.observationLoss.type,
     studentTDegreesOfFreedom: input.observationLoss.type === "student-t"
       ? input.observationLoss.degreesOfFreedom
@@ -889,6 +915,8 @@ export function calibratePersonalization(input: CalibrationContext & {
     && activity.coefficientOfVariation >= config.minActivityCoefficientOfVariation;
   const warnings: CalibrationWarning[] = [];
   let attemptedFullAtBound: (keyof ExpenditurePersonalization)[] = [];
+  let attemptedFullCandidate: Candidate | null = null;
+  let attemptedFullValidation: CalibrationEvaluation | null = null;
   let identifiability: CalibrationDiagnostics["twoParameterIdentifiability"] = "not-evaluated";
 
   if (hasFullHistory && hasActivityVariation) {
@@ -899,6 +927,8 @@ export function calibratePersonalization(input: CalibrationContext & {
       config.observationLoss,
       validationWindow,
     );
+    attemptedFullCandidate = fullCandidate;
+    attemptedFullValidation = fullValidation;
     const fullAtBound = boundaryParameters(fullCandidate.parameters, config);
     attemptedFullAtBound = fullAtBound;
     const weakRidge = isWeakRidge({
@@ -936,6 +966,8 @@ export function calibratePersonalization(input: CalibrationContext & {
           regularizedTrainingLoss: fullCandidate.regularizedLoss,
           defaultValidation,
           candidateValidation: fullValidation,
+          attemptedFullCandidate,
+          attemptedFullValidation,
           observationLoss: config.observationLoss,
           parameterAtBound: fullAtBound,
           identifiability,
@@ -967,7 +999,11 @@ export function calibratePersonalization(input: CalibrationContext & {
     config,
     parameterAtBound: offsetAtBound,
   });
-  if (!offsetAccepted) warnings.push("validation-improvement-too-small");
+  if (!offsetAccepted && !validationNisImproved({
+    defaultEvaluation: defaultValidation,
+    candidateEvaluation: offsetValidation,
+    config,
+  })) warnings.push("validation-improvement-too-small");
   return {
     status: offsetAccepted ? "offset-only" : "defaults-retained",
     parameters: offsetAccepted ? { ...offsetCandidate.parameters } : defaults,
@@ -989,6 +1025,10 @@ export function calibratePersonalization(input: CalibrationContext & {
         : defaultTraining.negativeLogLikelihood,
       defaultValidation,
       candidateValidation: offsetAccepted ? offsetValidation : defaultValidation,
+      attemptedOffsetCandidate: offsetCandidate,
+      attemptedOffsetValidation: offsetValidation,
+      attemptedFullCandidate,
+      attemptedFullValidation,
       observationLoss: config.observationLoss,
       parameterAtBound: reportedAtBound,
       identifiability,

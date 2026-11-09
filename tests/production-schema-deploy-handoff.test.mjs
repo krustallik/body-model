@@ -253,6 +253,10 @@ describe("schema deploy compatibility handoff", () => {
     const currentCompatibility = readGitCompatibility(process.cwd(), currentDeploySha,
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
     expect(currentCompatibility.changedPaths).toContain("README.md");
+    expect(currentCompatibility.changedPathObjects["src/model/weight-observation-filter.ts"]).toMatchObject({
+      migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
+      deployBlob: "d9820a4387dacd1dd3d517b6a1365ac0a87a343f",
+    });
     expect(() => evaluateSchemaDeployHandoff({
       markerText: previousAppReadyMarker,
       deploySha: currentDeploySha,
@@ -266,7 +270,7 @@ describe("schema deploy compatibility handoff", () => {
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
     expect(compatibility.isAncestor).toBe(true);
     expect(compatibility.criticalObjects).toHaveProperty("prisma");
-    expect(compatibility.criticalObjects).toHaveProperty("src");
+    expect(compatibility.criticalObjects).not.toHaveProperty("src");
     expect(compatibility.criticalObjects).toHaveProperty("Dockerfile");
     expect(compatibility.changedPaths.every((changed) => changed.startsWith("tests/")
       || changed === ".github/workflows/production-full-history-recalculate.yml"
@@ -323,7 +327,7 @@ describe("schema deploy compatibility handoff", () => {
     expect((await applySchemaDeployHandoff({ markerPath, deploySha, repo: process.cwd() })).action).toBe("replay");
   }, 30_000);
 
-  it("rejects Auth marker handoff when runtime source changed after the migration app-ready release", async () => {
+  it("rejects an Auth source change without an exact content binding", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-runtime-drift-"));
     directories.push(directory);
     const repository = path.join(directory, "repo");
@@ -334,8 +338,11 @@ describe("schema deploy compatibility handoff", () => {
     execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
       "commit", "--quiet", "-m", "Auth runtime compatibility fixture"]);
     const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    expect(() => readGitCompatibility(repository, candidateSha,
-      AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id)).toThrow(/src differs from the migration origin/);
+    const compatibility = readGitCompatibility(repository, candidateSha,
+      AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText(), deploySha: candidateSha, ...compatibility,
+    })).toThrow(/not allowlisted for this schema handoff/);
   }, 30_000);
 
   it("hands off the dynamic-workout marker only across an exact migration tree and unchanged nullable-session reader", async () => {

@@ -4,6 +4,7 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
 import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 import { instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
+import { replayWeightFilterAsOf } from "@/model/weight-observation-filter";
 import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
 import type {
   ResistanceTrainingExposureHistorySourceSessionV7,
@@ -15,6 +16,7 @@ import { bridgeNutritionGaps, type NutritionGapPolicy } from "./nutrition-gap-br
 import { addCalendarDays, enumerateCalendarDates } from "./model-calendar";
 import { buildCanonicalStrengthTrainingInputV7 } from "./strength-training-input-v7";
 import { TrainingRepository } from "@/modules/training/training.repository";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 export type LoadPhysiologyV7SourcesInput = {
   profileId: number;
@@ -66,7 +68,7 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
       this.client.healthSyncSnapshot.findMany({
         where: { profileId: input.profileId, date: { gte: input.historyFromDate, lte: input.toDate } },
         orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
-        select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true },
+        select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true, weightKg: true },
       }),
       this.client.healthActivityInterval.findMany({
         where: {
@@ -126,6 +128,12 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
     ]);
 
     const dailyByDate = new Map(dailyRows.map((row) => [row.date, row] as const));
+    const weightSnapshotInputs = snapshotRows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      weightKg: row.weightKg,
+      receivedAt: row.receivedAt,
+    }));
     const snapshotsByDate = new Map<string, typeof snapshotRows>();
     for (const row of snapshotRows) {
       const values = snapshotsByDate.get(row.date) ?? [];
@@ -172,6 +180,27 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
 
     const daySources: PhysiologyDaySourceV7[] = dates.map((date) => {
       const daily = dailyByDate.get(date);
+      const inputAsOf = localDateTimeToInstant(addCalendarDays(date, 1), "00:00", input.timeZone);
+      const weightReplay = replayWeightFilterAsOf({
+        rows: weightSnapshotInputs,
+        originDate: date,
+        inputAsOf,
+      });
+      const weightSnapshot = weightReplay.observations.find((row) => row.date === date);
+      const weightFilterAsOf = weightReplay.stateAtOriginDate === null
+        ? null
+        : {
+          state: weightReplay.stateAtOriginDate,
+          inputAsOf: inputAsOf.toISOString(),
+          observationCount: weightReplay.observationCount,
+          latestObservationDate: weightReplay.latestObservationDate!,
+          sourceFingerprint: stableSha256(weightReplay.observations.map(({ id, date: observedDate, weightKg, receivedAt }) => ({
+            id: id ?? null,
+            date: observedDate,
+            weightKg,
+            receivedAt,
+          }))),
+        };
       const dayWorkouts = workoutsByDate.get(date) ?? [];
       const dayHr = hrByDate.get(date) ?? [];
       const stepSnapshots = (snapshotsByDate.get(date) ?? []).map((snapshot) => ({
@@ -232,7 +261,13 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
       const bridged = nutritionByDate.get(date)!;
       return {
         date,
-        observedWeightKg: daily?.weightKg ?? null,
+        observedWeightKg: weightSnapshot?.weightKg ?? null,
+        weightFilterObservation: weightSnapshot === undefined ? null : {
+          snapshotId: weightSnapshot.id!,
+          weightKg: weightSnapshot.weightKg,
+          receivedAt: new Date(weightSnapshot.receivedAt).toISOString(),
+        },
+        weightFilterAsOf,
         observedBodyFatPercent: decimal(daily?.bodyFatPercent ?? null),
         nutrition: {
           caloriesKcal: bridged.caloriesKcal,

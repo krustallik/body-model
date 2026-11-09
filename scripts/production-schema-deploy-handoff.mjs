@@ -32,7 +32,7 @@ const AUTH_MULTIUSER_MANIFEST_ID = AUTH_MULTIUSER_MANIFEST.id;
 const DYNAMIC_WORKOUT_MANIFEST_ID = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id;
 const TRAINING_MUTATION_LEDGER_MANIFEST_ID = TRAINING_MUTATION_LEDGER_MANIFEST.id;
 const DYNAMIC_WORKOUT_NON_RUNTIME_PATH = /^(?:tests\/|docs\/development\/)/;
-const AUTH_MULTIUSER_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
+const AUTH_MULTIUSER_NON_RUNTIME_PATH = /^(?:tests\/|research\/|docs\/research\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/app\/api\/forecast\/(?:action\/)?route\.ts$|src\/app\/api\/v1\/model\/recalculate\/route\.ts$|src\/lib\/logger\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
@@ -211,9 +211,37 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
 /** Schema/runtime identity that must remain identical to the migration origin. */
 const CRITICAL_TREES = ["prisma"];
 const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];
-const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma", "src"]);
+const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma"]);
 const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
 const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+  "src/model/personalization-calibration.ts": Object.freeze({
+    migrationOriginBlob: "c643b2ec22540249882a2887f4936f8297de6d77",
+    deployBlob: "0110919368243a924f7d51a2a15b4d1679ccdfbe",
+  }),
+  "src/model/physiology-v7/daily-runtime-v7.ts": Object.freeze({
+    migrationOriginBlob: "0dfd1eadd5b80195e3bcd37b7abff13412126d5c",
+    deployBlob: "44b16cc169a18860bf1f169b7a5da78e996d038b",
+  }),
+  "src/model/weight-observation-filter.ts": Object.freeze({
+    migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
+    deployBlob: "d9820a4387dacd1dd3d517b6a1365ac0a87a343f",
+  }),
+  "src/modules/model-episodes/physiology-v7-persistence.ts": Object.freeze({
+    migrationOriginBlob: "5550ee06c6de2d62865f558a6efa3cf266d05be6",
+    deployBlob: "3cb74e37de5c27055e3197f089e34df44841c4df",
+  }),
+  "src/modules/model-episodes/physiology-v7-runtime.repository.ts": Object.freeze({
+    migrationOriginBlob: "2a1330cc97a212cdef130829b1050a4081b87954",
+    deployBlob: "03fb4ef0c390edf070b7b27b26f569cc0508e2f4",
+  }),
+  "src/modules/model-episodes/physiology-v7-runtime.service.ts": Object.freeze({
+    migrationOriginBlob: "a6a7944132917abd62f812722726f022bce5ead0",
+    deployBlob: "93a1bb44605ebf781511d4c82dabe6dff1129e87",
+  }),
+  "src/modules/model-episodes/physiology-v7-runtime.contract.ts": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "3d7edcaa57ee5eeffb7c92972a5bf5a778a338d5",
+  }),
   ".github/workflows/production-full-history-recalculate.yml": Object.freeze({
     migrationOriginBlob: "4853dd4994278c6d7bfaa067fd3577b354c4c6dc",
     deployBlob: "f307319a0016e422156a2db4caebdd614c167d5d",

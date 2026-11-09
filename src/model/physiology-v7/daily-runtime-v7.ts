@@ -3,6 +3,12 @@ import { CANONICAL_STRENGTH_TRAINING_INPUT_V7_VERSION } from "@/modules/model-ep
 import type { NutritionProvenance } from "@/modules/model-episodes/model-episode.types";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import {
+  initializeWeightFilterState,
+  predictWeightFilterState,
+  updateWeightFilterWithMeasurement,
+  type WeightFilterState,
+} from "@/model/weight-observation-filter";
+import {
   PHYSIOLOGY_V7_DAILY_TRANSITION_ORDER,
 } from "./contracts";
 import {
@@ -53,7 +59,7 @@ import {
 import { TRANSIENT_EXERCISE_WATER_ECF_TRANSITION_V7_VERSION } from "./transient-exercise-water-ecf-transition-v7";
 
 export const PHYSIOLOGY_DAILY_RUNTIME_V7_VERSION =
-  "bodycast-physiology-daily-runtime-v7-7" as const;
+  "bodycast-physiology-daily-runtime-v7-8" as const;
 
 export type PhysiologyV7CompartmentKey =
   | "fatMassKg"
@@ -94,6 +100,20 @@ export type PhysiologyRuntimeStateV7 = {
 export type PhysiologyDaySourceV7 = {
   date: string;
   observedWeightKg: number | null;
+  /** Immutable scale input received before this local day's cutoff. */
+  weightFilterObservation?: {
+    snapshotId: number;
+    weightKg: number;
+    receivedAt: string;
+  } | null;
+  /** Causal filter replay from immutable observations available at this day's cutoff. */
+  weightFilterAsOf?: {
+    state: WeightFilterState;
+    inputAsOf: string;
+    observationCount: number;
+    latestObservationDate: string;
+    sourceFingerprint: string;
+  } | null;
   observedBodyFatPercent: number | null;
   nutrition: {
     caloriesKcal: number | null;
@@ -270,6 +290,24 @@ function carryForward(
   };
 }
 
+function assimilateScaleObservation(
+  priorState: PhysiologyRuntimeStateV7["weightFilterState"],
+  observation: PhysiologyDaySourceV7["weightFilterObservation"],
+): PhysiologyRuntimeStateV7["weightFilterState"] {
+  const observedWeightKg = observation?.weightKg ?? null;
+  if (priorState === null) {
+    return observedWeightKg === null
+      ? null
+      : initializeWeightFilterState({ measuredWeightKg: observedWeightKg });
+  }
+
+  const predictedState = predictWeightFilterState({ state: priorState, elapsedDays: 1 });
+  return updateWeightFilterWithMeasurement({
+    predictedState,
+    measuredWeightKg: observedWeightKg,
+  }).state;
+}
+
 function runtimeSourceFingerprint(
   sources: PhysiologyDaySourceV7,
   exposureHistory: ResistanceTrainingExposureHistoryV7,
@@ -278,6 +316,8 @@ function runtimeSourceFingerprint(
     date: sources.date,
     observations: {
       weightKg: sources.observedWeightKg,
+      weightFilterObservation: sources.weightFilterObservation ?? null,
+      weightFilterAsOf: sources.weightFilterAsOf ?? null,
       bodyFatPercent: sources.observedBodyFatPercent,
       leanMassObservation: sources.leanMassObservation ?? null,
       localMuscleObservation: sources.localMuscleObservation ?? null,
@@ -420,6 +460,8 @@ export function buildPhysiologyDayV7(input: {
     workoutFeedObserved: input.sources.workoutFeedObserved,
     stepperWorkouts: input.sources.stepperWorkouts,
   });
+  const resultingWeightFilterState = input.sources.weightFilterAsOf?.state
+    ?? assimilateScaleObservation(input.priorState.weightFilterState, input.sources.weightFilterObservation);
 
   const resultingCompartments: PhysiologyRuntimeStateV7["compartments"] = {
     fatMassKg: carryForward(input.priorState.compartments.fatMassKg, "no-approved-v7-fat-transition"),
@@ -461,14 +503,13 @@ export function buildPhysiologyDayV7(input: {
     trainingAdaptation: afterTraining.transition,
     fluidWaterFingerprint: fluidWater.fingerprint,
     resultingCompartments,
+    resultingWeightFilterState,
   });
   const resultingState: PhysiologyRuntimeStateV7 = {
     contractVersion: PHYSIOLOGY_V7_CONTRACT_VERSION,
     compartments: resultingCompartments,
     adaptiveThermogenesisKcalPerDay: input.priorState.adaptiveThermogenesisKcalPerDay,
-    weightFilterState: input.priorState.weightFilterState === null
-      ? null
-      : { ...input.priorState.weightFilterState },
+    weightFilterState: resultingWeightFilterState,
     lineageFingerprint: scientificFingerprint,
   };
   const resultingStructuralState = structuralStateFromRuntimeStateV7(resultingState);
@@ -527,7 +568,24 @@ export function buildPhysiologyDayV7(input: {
         : {
           availability: "available" as const,
           valueKg: input.sources.observedWeightKg,
-          provenance: "daily-health-data-observation" as const,
+          provenance: "immutable-health-sync-snapshot" as const,
+        },
+      weightFilterObservation: input.sources.weightFilterObservation == null
+        ? null
+        : {
+          snapshotId: input.sources.weightFilterObservation.snapshotId,
+          valueKg: input.sources.weightFilterObservation.weightKg,
+          receivedAt: input.sources.weightFilterObservation.receivedAt,
+          provenance: "immutable-health-sync-snapshot" as const,
+        },
+      weightFilterAsOf: input.sources.weightFilterAsOf == null
+        ? null
+        : {
+          inputAsOf: input.sources.weightFilterAsOf.inputAsOf,
+          observationCount: input.sources.weightFilterAsOf.observationCount,
+          latestObservationDate: input.sources.weightFilterAsOf.latestObservationDate,
+          sourceFingerprint: input.sources.weightFilterAsOf.sourceFingerprint,
+          provenance: "immutable-health-sync-snapshot" as const,
         },
       observedBodyFatPercent: input.sources.observedBodyFatPercent === null
         ? { availability: "unavailable" as const, valuePercent: null, provenance: null }

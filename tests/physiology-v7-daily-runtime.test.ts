@@ -30,23 +30,31 @@ const unavailableStructuralState: PhysiologyV7State = {
   weightFilterState: null,
 };
 
-const sources = (date: string, overrides: Record<string, unknown> = {}) => ({
-  date,
-  observedWeightKg: 80,
-  observedBodyFatPercent: 20,
-  nutrition: structuredClone(completeNutrition),
-  workoutFeedObserved: true,
-  steps: 8_000,
-  walkingRunningDistanceKm: 6,
-  workouts: [],
-  stepperWorkouts: [],
-  context: {
-    heartRateSampleCount: 0,
-    restingHeartRateSampleCount: 0,
-    sleepSegmentCount: 0,
-  },
-  ...overrides,
-});
+const sources = (date: string, overrides: Record<string, unknown> = {}) => {
+  const observedWeightKg = Object.hasOwn(overrides, "observedWeightKg")
+    ? overrides.observedWeightKg as number | null
+    : 80;
+  return {
+    date,
+    observedWeightKg,
+    weightFilterObservation: typeof observedWeightKg === "number"
+      ? { snapshotId: 1, weightKg: observedWeightKg, receivedAt: `${date}T12:00:00.000Z` }
+      : null,
+    observedBodyFatPercent: 20,
+    nutrition: structuredClone(completeNutrition),
+    workoutFeedObserved: true,
+    steps: 8_000,
+    walkingRunningDistanceKm: 6,
+    workouts: [],
+    stepperWorkouts: [],
+    context: {
+      heartRateSampleCount: 0,
+      restingHeartRateSampleCount: 0,
+      sleepSegmentCount: 0,
+    },
+    ...overrides,
+  };
+};
 
 const exposure = (date: string, workoutFeedObserved = true) =>
   buildResistanceTrainingExposureHistoryFromSourcesV7({
@@ -94,8 +102,100 @@ describe("Physiology v7 daily runtime contract", () => {
     expect(result.observations.observedWeightKg).toEqual({
       availability: "available",
       valueKg: 80,
-      provenance: "daily-health-data-observation",
+      provenance: "immutable-health-sync-snapshot",
     });
+    expect(result.resultingState.weightFilterState?.estimatedWeightKg).toBe(80);
+    expect(result.observations.weightFilterObservation).toEqual({
+      snapshotId: 1,
+      valueKg: 80,
+      receivedAt: `${date}T12:00:00.000Z`,
+      provenance: "immutable-health-sync-snapshot",
+    });
+  });
+
+  it("assimilates scale observations into the separate filter without changing V7 compartments", () => {
+    const date = "2026-09-01";
+    const prior = runtimeStateFromStructuralStateV7({
+      fatMassKg: 24,
+      skeletalMuscleKg: 31,
+      otherLeanTissueKg: 19,
+      glycogenKg: 0.5,
+      glycogenWaterKg: 1.35,
+      ecfDeviationKg: 0,
+      transientExerciseWaterKg: 0,
+      adaptiveThermogenesisKcalPerDay: 0,
+      weightFilterState: { estimatedWeightKg: 80, varianceKg2: 0.25 },
+    });
+    const input = {
+      date,
+      priorState: prior,
+      exposureHistory: exposure(date),
+      sources: sources(date, { observedWeightKg: 80 }),
+    };
+    const baseline = buildPhysiologyDayV7(input);
+    const withNewScaleObservation = buildPhysiologyDayV7({
+      ...input,
+      sources: sources(date, { observedWeightKg: 88 }),
+    });
+
+    expect(withNewScaleObservation.observations.observedWeightKg).toMatchObject({
+      availability: "available",
+      valueKg: 88,
+    });
+    expect(withNewScaleObservation.resultingState.compartments)
+      .toEqual(baseline.resultingState.compartments);
+    expect(baseline.resultingState.weightFilterState?.estimatedWeightKg).toBe(80);
+    expect(withNewScaleObservation.resultingState.weightFilterState?.estimatedWeightKg)
+      .toBeGreaterThan(baseline.resultingState.weightFilterState!.estimatedWeightKg);
+    expect(withNewScaleObservation.resultingState.weightFilterState?.estimatedWeightKg)
+      .toBeLessThan(88);
+    expect(withNewScaleObservation.resultingState.weightFilterState?.varianceKg2)
+      .toBeLessThan(prior.weightFilterState!.varianceKg2);
+  });
+
+  it("carries a new weighing forward causally and only changes observation uncertainty between weigh-ins", () => {
+    const fromDate = "2026-09-01";
+    const dates = [fromDate, "2026-09-02", "2026-09-03"];
+    const result = rebuildPhysiologyRangeV7({
+      fromDate,
+      toDate: dates.at(-1)!,
+      initialState: runtimeStateFromStructuralStateV7({
+        fatMassKg: 24,
+        skeletalMuscleKg: 31,
+        otherLeanTissueKg: 19,
+        glycogenKg: 0.5,
+        glycogenWaterKg: 1.35,
+        ecfDeviationKg: 0,
+        transientExerciseWaterKg: 0,
+        adaptiveThermogenesisKcalPerDay: 0,
+        weightFilterState: { estimatedWeightKg: 80, varianceKg2: 0.25 },
+      }),
+      sources: {
+        days: [
+          sources(dates[0]!, { observedWeightKg: 80.5 }),
+          sources(dates[1]!, { observedWeightKg: null }),
+          sources(dates[2]!, { observedWeightKg: 81 }),
+        ],
+        exposure: {
+          historyFromDate: fromDate,
+          days: dates.map((date) => ({ date, workoutFeedObserved: true })),
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+
+    const [first, noWeighIn, nextWeighIn] = result.days;
+    expect(first!.resultingState.weightFilterState!.estimatedWeightKg).toBeGreaterThan(80);
+    expect(first!.resultingState.weightFilterState!.estimatedWeightKg).toBeLessThan(80.5);
+    expect(noWeighIn!.resultingState.weightFilterState!.estimatedWeightKg)
+      .toBe(first!.resultingState.weightFilterState!.estimatedWeightKg);
+    expect(noWeighIn!.resultingState.weightFilterState!.varianceKg2)
+      .toBeGreaterThan(first!.resultingState.weightFilterState!.varianceKg2);
+    expect(nextWeighIn!.resultingState.weightFilterState!.estimatedWeightKg)
+      .toBeGreaterThan(noWeighIn!.resultingState.weightFilterState!.estimatedWeightKg);
+    expect(result.days.map((day) => day.resultingState.compartments))
+      .toEqual([first!.resultingState.compartments, first!.resultingState.compartments, first!.resultingState.compartments]);
   });
 
   it("carries a prior muscle number only as simulation bookkeeping", () => {

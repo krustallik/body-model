@@ -466,6 +466,11 @@ describe("conservative deterministic personalization", () => {
     expect(result.status).toBe("defaults-retained");
     expect(result.diagnostics.parameterAtBound).toContain("personalOffsetKcalPerDay");
     expect(result.diagnostics.warnings).toContain("parameter-at-bound");
+    expect(result.diagnostics.warnings).not.toContain("validation-improvement-too-small");
+    expect(result.diagnostics.attemptedOffsetPersonalOffsetKcalPerDay).toBe(500);
+    expect(Number.isFinite(result.diagnostics.attemptedOffsetValidationNis)).toBe(true);
+    expect(result.diagnostics.attemptedOffsetValidationNis).not.toBe(result.diagnostics.defaultValidationNis);
+    expect(result.diagnostics.validationNis).toBe(result.diagnostics.defaultValidationNis);
   });
 
   it("reports an attempted Activity multiplier at its bound", () => {
@@ -478,6 +483,9 @@ describe("conservative deterministic personalization", () => {
     expect(result.status).not.toBe("fully-calibrated");
     expect(result.diagnostics.parameterAtBound).toContain("activityCalibration");
     expect(result.diagnostics.warnings).toContain("parameter-at-bound");
+    expect(Number.isFinite(result.diagnostics.attemptedFullPersonalOffsetKcalPerDay)).toBe(true);
+    expect(Number.isFinite(result.diagnostics.attemptedFullActivityCalibration)).toBe(true);
+    expect(Number.isFinite(result.diagnostics.attemptedFullValidationNis)).toBe(true);
   });
 
   it("falls back when the configured local loss probe detects a ridge", () => {

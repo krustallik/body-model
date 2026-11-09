@@ -218,6 +218,54 @@ const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
     deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
   }),
+  "src/app/diagnostics/diagnostics-client.tsx": Object.freeze({
+    migrationOriginBlob: "d5e47a040fb9b873281d335866023486328f8be5",
+    deployBlob: "ca0bdbb6c4eea2add6582d3b8c2efb41a49d6150",
+  }),
+  "src/app/diagnostics/diagnostics.module.css": Object.freeze({
+    migrationOriginBlob: "3c124754a0379a38189f0c533f04b9672a11d8b7",
+    deployBlob: "48e7987fe31ce7adf39dabbdd625d0eca4dbcba2",
+  }),
+  "src/app/forecast/forecast-client.tsx": Object.freeze({
+    migrationOriginBlob: "05387123abbe85b433242789bdf0e715ef9fc1c8",
+    deployBlob: "34d165e767d877e8ce793eb2862054918984c002",
+  }),
+  "src/app/forecast/forecast.module.css": Object.freeze({
+    migrationOriginBlob: "f5d14b15ac35a3928e91e2c77ed20f9d3a2fcf7a",
+    deployBlob: "5e00559bbd9404cc2e52f43c2cbda43e8ffc673e",
+  }),
+  "src/app/goal/goal-client.tsx": Object.freeze({
+    migrationOriginBlob: "426d261b324ca1d9f6aaa7ae0496c506a1d4a326",
+    deployBlob: "cc702dd843c18eb7453f94f7e7063e4036932e66",
+  }),
+  "src/app/goal/goal.module.css": Object.freeze({
+    migrationOriginBlob: "6b2488d5f52ba70ba5f76ea750923427a07549c8",
+    deployBlob: "4f0099b54b9759c26b14520e30592d05c89a8ca0",
+  }),
+  "src/components/app-nav.module.css": Object.freeze({
+    migrationOriginBlob: "24a27d85cd28ad79bd55443d9ba4e35318b67d94",
+    deployBlob: "259f6182e76ff6fbf299100c330ea755f09e71c1",
+  }),
+  "src/modules/model-diagnostics/model-diagnostics.repository.ts": Object.freeze({
+    migrationOriginBlob: "efd71caef3bd542d78f48ae3b3d6855c9a816408",
+    deployBlob: "f48e4ec4cb494e260770c4718e8ab05b803548c0",
+  }),
+  "src/modules/model-diagnostics/model-diagnostics.service.ts": Object.freeze({
+    migrationOriginBlob: "0d8c97651ac1abfc5106cc7e4910757102fdb79a",
+    deployBlob: "da7f7b9813893b7e28cc50c19b837acf80a2f62f",
+  }),
+  "src/modules/model-diagnostics/model-diagnostics.ts": Object.freeze({
+    migrationOriginBlob: "1ce3580714046eb0d503e3234e1df7418758fdf2",
+    deployBlob: "6f1a99c957e83d17dd2a63b6efd3d55fd06999f7",
+  }),
+  "src/modules/model-diagnostics/model-diagnostics.types.ts": Object.freeze({
+    migrationOriginBlob: "1987ca98b62dcd0ae070ba0355a05b7624927297",
+    deployBlob: "98e301aa627c3d268679dcef8b8fa26d867b4ca9",
+  }),
+  "src/modules/model-forecast/forecast-ui.ts": Object.freeze({
+    migrationOriginBlob: "f3677f8381df1730324916acea663994954c0c85",
+    deployBlob: "05d3bac7928921d6d4fe90f806a02d3da03b8c81",
+  }),
   "docs/architecture/project-overview.md": Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "d3c3cef21a356238fa2e8f05a2ebde2e52612c04",

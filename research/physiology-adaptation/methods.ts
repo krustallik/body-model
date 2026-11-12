@@ -15,6 +15,22 @@ import type { WeightSnapshotObservation } from "@/model/weight-observation-filte
 export { latestWeightSnapshotsAsOf };
 export type { WeightSnapshotObservation };
 
+export function halfForecastDrift(anchorKg: number | null, forecastKg: number): number | null {
+  return anchorKg === null ? null : anchorKg + 0.5 * (forecastKg - anchorKg);
+}
+
+export function withinDonorWindow(date: string, from: string, through: string): boolean {
+  return date >= from && date <= through;
+}
+
+export function forecastRobustLogSpread(values: readonly number[], fallback: number): number {
+  const logs = values.filter((value) => Number.isFinite(value) && value > 0).map(Math.log).sort((a, b) => a - b);
+  if (logs.length < 7) return fallback;
+  const median = logs[Math.floor(logs.length / 2)]!;
+  const deviations = logs.map((value) => Math.abs(value - median)).sort((a, b) => a - b);
+  return Math.min(1, Math.max(0.03, 1.4826 * deviations[Math.floor(deviations.length / 2)]!));
+}
+
 export type TimestampedSource = {
   profileId: number;
   createdAt: string | Date;

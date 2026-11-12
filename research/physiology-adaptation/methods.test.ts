@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { localDateTimeToInstant } from "@/model/time-zone";
 import {
+  halfForecastDrift,
+  forecastRobustLogSpread,
+  withinDonorWindow,
   boundedOnlineCorrection,
   adaptiveLocalLevelWeightFilterAsOf,
   assessUncertaintyAwareFallback,
@@ -31,6 +34,24 @@ import {
 const dailyResiduals = (values: readonly number[]) => values.map((residualKg, index) => ({
   date: new Date(Date.UTC(2033, 0, 1 + index)).toISOString().slice(0, 10), residualKg,
 }));
+
+test("forecast drift shrinkage keeps its anchor and handles missing weight", () => {
+  assert.equal(halfForecastDrift(90, 88), 89);
+  assert.equal(halfForecastDrift(90, 92), 91);
+  assert.equal(halfForecastDrift(null, 92), null);
+});
+
+test("forecast donor window includes both boundaries", () => {
+  assert.equal(withinDonorWindow("2026-09-14", "2026-09-14", "2026-11-08"), true);
+  assert.equal(withinDonorWindow("2026-11-08", "2026-09-14", "2026-11-08"), true);
+  assert.equal(withinDonorWindow("2026-11-09", "2026-09-14", "2026-11-08"), false);
+});
+
+test("forecast variability uses the fallback for sparse positive donors and bounds stable history", () => {
+  assert.equal(forecastRobustLogSpread([0, 1, 2, 3, 4, 5, 6], 0.25), 0.25);
+  assert.equal(forecastRobustLogSpread([2, 2, 2, 2, 2, 2, 2], 0.25), 0.03);
+  assert.equal(forecastRobustLogSpread([1, 1, 1, 1, 1000, 1000, 1000, 1000], 0.25), 1);
+});
 
 test("as-of input projection excludes delayed and later-edited rows and isolates tenants", () => {
   const rows = [

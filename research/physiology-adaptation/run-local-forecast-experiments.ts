@@ -16,6 +16,7 @@ import { projectReliableForecastBehaviorDay } from "@/modules/model-forecast/mod
 import { runForecastWithInternalArtifacts } from "@/modules/model-forecast/forecast-engine";
 import { DEFAULT_FORECAST_CONFIG, type ForecastBehaviorDay, type ForecastDateSummary, type ForecastScenario } from "@/modules/model-forecast/forecast.types";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
+import { forecastRobustLogSpread as robustLogSpread, halfForecastDrift, withinDonorWindow } from "./methods";
 import { adaptiveLocalLevelWeightFilterAsOf, assessUncertaintyAwareFallback, boundedOnlineCorrection, causalWeightFilterAsOf, estimateEnergyDriftCorrection, estimatePersistentBias, estimateResidualPersistence, estimateTwoTimescaleResidual, filterOnlyStateCorrection, latestWeightSnapshotsAsOf, newOutcomeResidualIfEligible, outcomeArrivedAfterCutoff, prequentialIntervalWidening, prepareActivityIntervalSnapshots, projectPreparedActivityIntervalsAsOf, residualsAvailableAt, robustTrendWeightForecast, selectAsOfSources, waterOnlyInitializationCorrection, weightOutcomeLabelsAsOf, type ForecastIntervalOutcome } from "./methods";
 
 const DEFAULT_LOCAL_DB = { host: "127.0.0.1", port: 55449, serverPort: 55449,
@@ -32,7 +33,7 @@ const CUTOFF_DATE = process.env.BODYCAST_RESEARCH_CUTOFF_DATE ?? "";
 const ORIGIN_START = process.env.BODYCAST_RESEARCH_ORIGIN_START ?? "";
 const ORIGIN_END = process.env.BODYCAST_RESEARCH_ORIGIN_END ?? "";
 const ROOT = path.join(process.env.LOCALAPPDATA!, "BodyCastForensics", "physiology-research");
-const OUTPUT = path.join(ROOT, "offline-experiments-summary.json");
+const OUTPUT = path.join(ROOT, "offline-experiments-trend-shrinkage-aligned.json");
 const ISO = (value: Date | string) => value instanceof Date ? value.toISOString() : value;
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function healthSyncSnapshotFingerprint(rows: readonly unknown[]): string {
@@ -131,7 +132,9 @@ async function main() {
   }
   if (LOCAL_DB.host !== "127.0.0.1"
       || !/^bodycast_[a-z0-9_]*_test(?:_[0-9]{8})?$/.test(LOCAL_DB.database)
-      || !/^bodycast_[a-z0-9_]+_test$/.test(LOCAL_DB.user)
+      || !(/^bodycast_[a-z0-9_]+_test$/.test(LOCAL_DB.user)
+        || (LOCAL_DB.user === DEFAULT_LOCAL_DB.user && LOCAL_DB.database === DEFAULT_LOCAL_DB.database
+          && LOCAL_DB.port === DEFAULT_LOCAL_DB.port && LOCAL_DB.serverPort === DEFAULT_LOCAL_DB.serverPort))
       || !Number.isInteger(LOCAL_DB.port) || LOCAL_DB.port < 1 || LOCAL_DB.port > 65535
       || !Number.isInteger(LOCAL_DB.serverPort) || LOCAL_DB.serverPort < 1 || LOCAL_DB.serverPort > 65535) {
     throw new Error("Research replay accepts only an explicit local bodycast *_test database identity");
@@ -362,7 +365,7 @@ async function main() {
   const origins: string[] = [];
   for (let d = originFirst; d <= originLast; d = addCalendarDays(d, 1)) origins.push(d);
   const scenario: ForecastScenario = { mode: "recent-behavior", donorLookbackDays: 56, blockLengthDays: 7 };
-  const config = { ...DEFAULT_FORECAST_CONFIG, pathCount: 256 };
+  const config = { ...DEFAULT_FORECAST_CONFIG };
   const horizons = [1, 3, 7, 14] as const;
   const forecastByOrigin = new Map<string, { baseline: ForecastDateSummary[]; init: ForecastDateSummary[]; filter: ForecastDateSummary[]; energy: ForecastDateSummary[]; energyDrift: ForecastDateSummary[]; energyDriftDiagnostics: unknown; residualPersistenceDiagnostics: unknown; source: string; donorCount: number; originLatestWeightKg: number; effectiveOriginDate: string; calibration: unknown; initRequestedDeltaKg: number | null; initAppliedDeltaKg: number | null; onlineCorrectionKg: number | null }>();
   const weightBaselinesByOrigin = new Map<string, { lastKnownWeightKg: number | null; causalFilterWeightKg: number | null; adaptiveFilterWeightKg: number | null; adaptiveFilterVarianceKg2: number | null; adaptiveProcessNoiseVarianceKg2PerDay: number | null; robustTrend: Record<string, { estimateKg: number; slopeKgPerDay: number; observationCount: number } | null>; knownWeightCount: number }>();
@@ -594,7 +597,7 @@ async function main() {
     if (originLatestWeight == null) { coverageByOrigin.push({ origin: originDate, status: "no-origin-weight", knownDays: modelObs.length,
       donorCount: 0, calibrationStatus: calibration.status, inputHash }); continue; }
     const donorFrom = addCalendarDays(effectiveOriginDate, -55);
-    const donorBuilt = resolvedPrefix.filter((d) => d.input.date >= donorFrom && d.input.date < effectiveOriginDate);
+    const donorBuilt = resolvedPrefix.filter((d) => withinDonorWindow(d.input.date, donorFrom, effectiveOriginDate));
     const donors: ForecastBehaviorDay[] = eligibleHistoricalDonors(episode.modelVersion, donorBuilt)
       .map(projectReliableForecastBehaviorDay).filter((x): x is ForecastBehaviorDay => x !== null);
     const fallback = episode.baselineNutritionFallback;
@@ -606,10 +609,11 @@ async function main() {
       coverageByOrigin.push({ origin: originDate, status: "no-as-of-donors-or-fallback", knownDays: modelObs.length, donorCount: 0,
         calibrationStatus: calibration.status, inputHash }); continue;
     }
-    const evidence = { donorDayCount: donors.length, source: donors.length > 0 ? "observed-history" as const : "engineering-fallback" as const,
-      nutritionLogStandardDeviation: config.fallbackNutritionLogStandardDeviation,
-      macroCompositionLogStandardDeviation: config.fallbackMacroCompositionLogStandardDeviation,
-      walkingLogStandardDeviation: config.fallbackWalkingLogStandardDeviation };
+    const enoughDonors = donors.length >= config.minimumReliableDonorDays;
+    const evidence = { donorDayCount: donors.length, source: enoughDonors ? "observed-history" as const : "engineering-fallback" as const,
+      nutritionLogStandardDeviation: enoughDonors ? robustLogSpread(donors.map((d) => d.nutrition.caloriesKcal), config.fallbackNutritionLogStandardDeviation) : config.fallbackNutritionLogStandardDeviation,
+      macroCompositionLogStandardDeviation: enoughDonors ? robustLogSpread(donors.flatMap(({ nutrition }) => [nutrition.proteinG / nutrition.caloriesKcal, nutrition.fatG / nutrition.caloriesKcal, nutrition.carbsG / nutrition.caloriesKcal]), config.fallbackMacroCompositionLogStandardDeviation) : config.fallbackMacroCompositionLogStandardDeviation,
+      walkingLogStandardDeviation: enoughDonors ? robustLogSpread(donors.map((d) => d.outsideWorkWalkingDistanceKm), config.fallbackWalkingLogStandardDeviation) : config.fallbackWalkingLogStandardDeviation };
     const common = { seed: 9000 + origins.indexOf(originDate), startDate: addCalendarDays(effectiveOriginDate, 1), horizonDays: 14,
       modelVersion: episode.modelVersion, recoveryVersion: null, sourceFingerprint: sha({ inputHash, episode: episode.id, originDate, effectiveOriginDate }),
       scenarioFingerprint: sha({ scenario, originDate, effectiveOriginDate, seed: 9000 + origins.indexOf(originDate) }), initialStateQuality: "deterministic" as const,
@@ -786,7 +790,7 @@ async function main() {
       "fixedKalmanAnchor", "adaptiveKalmanAnchor",
       "robustTrendTheilSen", "initialLevelWaterSensitivity", "filterOnlyNegativeControl",
       "twoTimescaleResidual", "robustOnlineBias", "residualPersistenceAR1", "energyDriftCalibration",
-      "prequentialConformalInterval", "acceptedEnergyCalibration", "uncertaintyFallback",
+      "prequentialConformalInterval", "acceptedEnergyCalibration", "uncertaintyFallback", "halfForecastDrift",
     ].map((key) => [key, []]));
     const fallbackAssessments: Array<{ originDate: string; sampleCount: number; intervalCoverage: number | null; fallbackToLastKnown: boolean }> = [];
     const conformalDiagnostics: Array<{ originDate: string; sampleCount: number; empiricalPriorCoverage: number | null; widenByKg: number | null }> = [];
@@ -853,6 +857,12 @@ async function main() {
       }
       if (weightBaseline.lastKnownWeightKg !== null) {
         rowsByCandidate.lastKnownWeight!.push({ originDate, prediction: weightBaseline.lastKnownWeightKg, observed, fallback: false });
+        // Research hypothesis: regularize the simulated change toward persistence.
+        // The weight anchor and physiology are both known at issue time.
+        const prediction = halfForecastDrift(weightBaseline.lastKnownWeightKg, active.median)!;
+        const shift = prediction - active.median;
+        rowsByCandidate.halfForecastDrift!.push({ originDate, prediction, observed,
+          p05: active.p05 + shift, p95: active.p95 + shift, fallback: false });
       }
       const trend = weightBaseline.robustTrend[String(horizon)];
       if (trend !== null) {
@@ -992,6 +1002,7 @@ async function main() {
     })),
     notes: [
       "These are conditional counterfactual rolling-origin reconstructions, not as-issued forecasts; historical forecast snapshots were not persisted.",
+      "activeForecast is the reconstructed counterfactual comparator, not a stored as-issued forecast; current-day anchor and source revision histories may differ.",
       "Inputs after the configured local cutoff are excluded. Episode-calculation physiology forecasts are scored only when the full deterministic source prefix through that issue date is available; this runner does not replay the V7 daily runtime.",
       "Weight-only last-known and Theil-Sen 14-day baselines are evaluated independently at the same local-date cutoff. They use only scale observations received before the cutoff and score only labels first received after it.",
       "HealthSyncSnapshot records are sparse updates. The as-of projection merges field-present values by receipt time, follows the sync writer's omitted-versus-explicit-null semantics, and reconstructs daily walking totals from timestamped raw snapshots. Origins with unreconstructable source gaps fail closed.",

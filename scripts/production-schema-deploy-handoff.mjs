@@ -223,14 +223,6 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "252f5c6797f961dddeab4a0d758c7d35610271f8",
     deployBlob: "df94bdd1e86dba85d7b37875e10f9af1496b2601",
   }),
-  "scripts/deploy.sh": Object.freeze({
-    migrationOriginBlob: "557dafb14f1b68e3cd0d904a8668a1f1073bd025",
-    deployBlob: Object.freeze([
-      "019604bb624322d2099b8f05c8f9d63f218cf256",
-      "d61f76029dd457bae62ccdeec25b212c0094c9f6",
-      "9ffffae4430876b2e06ae590fa0c6e58490b20e8",
-    ]),
-  }),
   "README.md": Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
     deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
@@ -370,6 +362,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     deployBlob: Object.freeze([
       "019604bb624322d2099b8f05c8f9d63f218cf256",
       "d61f76029dd457bae62ccdeec25b212c0094c9f6",
+      "9ffffae4430876b2e06ae590fa0c6e58490b20e8",
     ]),
   }),
   "scripts/production-traffic-cutover.sh": Object.freeze({

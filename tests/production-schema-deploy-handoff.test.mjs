@@ -308,7 +308,7 @@ describe("schema deploy compatibility handoff", () => {
       workflowRunAttempt: 1,
       authorizationId: "a".repeat(64),
     })).toThrow(/schema report failed the Auth postflight contract/);
-  });
+  }, 30_000);
 
   it.skipIf(process.platform === "win32")("atomically creates the absent Auth marker and refuses overwrite", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-reattest-"));

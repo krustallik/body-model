@@ -34,6 +34,14 @@ const AUTH_PREVIOUS_DEPLOY_SHA = "c616eba0f874c8c481cb889fade149b68f9ba590";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
+function allowedDeployBlobs(binding) {
+  return Array.isArray(binding?.deployBlob) ? binding.deployBlob : [binding?.deployBlob];
+}
+
+function candidateDeployBlob(filePath) {
+  return execFileSync("git", ["rev-parse", `:${filePath}`], { encoding: "utf8" }).trim();
+}
+
 function ensureHandoffHistory() {
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA, DEPLOY_SHA], { stdio: "ignore" });
@@ -386,9 +394,9 @@ describe("schema deploy compatibility handoff", () => {
       "public/training/exercises/single-leg-standing-calf-raise.png",
     ]) {
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[exerciseReleasePath];
-      expect(binding?.deployBlob).toMatch(/^[a-f0-9]{40}$/);
-      expect(execFileSync("git", ["rev-parse", `${currentDeploySha}:${exerciseReleasePath}`], { encoding: "utf8" }).trim())
-        .toBe(binding.deployBlob);
+      const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${exerciseReleasePath}`], { encoding: "utf8" }).trim();
+      expect(allowedDeployBlobs(binding)).toContain(actualDeployBlob);
+      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(exerciseReleasePath));
     }
     for (const authReleasePath of [
       "src/app/api/registration/password-setup/route.ts",
@@ -400,10 +408,24 @@ describe("schema deploy compatibility handoff", () => {
       "src/modules/auth/registration-users.ts",
     ]) {
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[authReleasePath];
-      expect(binding?.deployBlob).toMatch(/^[a-f0-9]{40}$/);
-      expect(currentCompatibility.changedPathObjects[authReleasePath]).toEqual(binding);
-      expect(execFileSync("git", ["rev-parse", `${currentDeploySha}:${authReleasePath}`], { encoding: "utf8" }).trim())
-        .toBe(binding.deployBlob);
+      const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${authReleasePath}`], { encoding: "utf8" }).trim();
+      expect(allowedDeployBlobs(binding)).toContain(actualDeployBlob);
+      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(authReleasePath));
+      expect(currentCompatibility.changedPathObjects[authReleasePath]).toEqual({
+        migrationOriginBlob: binding?.migrationOriginBlob,
+        deployBlob: actualDeployBlob,
+      });
+    }
+    for (const candidatePath of [
+      ".github/workflows/deploy-production.yml",
+      "src/app/auth.module.css",
+      "src/app/login/page.tsx",
+      "src/app/settings/profile/page.tsx",
+      "src/app/settings/profile/profile-client.tsx",
+      "src/app/settings/profile/profile.module.css",
+    ]) {
+      expect(allowedDeployBlobs(AUTH_MULTIUSER_CONTENT_BOUND_PATHS[candidatePath]))
+        .toContain(candidateDeployBlob(candidatePath));
     }
     expect(currentCompatibility.changedPathObjects["src/model/weight-observation-filter.ts"]).toMatchObject({
       migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
@@ -1053,10 +1075,9 @@ describe("schema deploy compatibility handoff", () => {
 
     execFileSync(process.execPath, [script, "--validate-marker", markerPath], { cwd: process.cwd() });
     execFileSync(process.execPath, [script, "--check", markerPath, TRAINING_MIGRATION_SHA, process.cwd()], { cwd: process.cwd() });
-  // On Windows, the compatibility check verifies every committed migration
-  // blob twice (fixture construction and deployed CLI); measured bounded time
-  // is ~5.5s for the nine-migration manifest.
-  }, 8_000);
+  // This validates the migration path once in-process and twice through the
+  // deployed CLI, so allow headroom for the Windows Git subprocess cost.
+  }, 30_000);
 
   it.each([
     ["wrong manifest", { manifestId: "unified-v4-republication-v1" }],

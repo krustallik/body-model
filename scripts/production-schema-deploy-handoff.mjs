@@ -221,7 +221,11 @@ const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerf
 export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   ".github/workflows/deploy-production.yml": Object.freeze({
     migrationOriginBlob: "252f5c6797f961dddeab4a0d758c7d35610271f8",
-    deployBlob: "df94bdd1e86dba85d7b37875e10f9af1496b2601",
+    deployBlob: Object.freeze([
+      "df94bdd1e86dba85d7b37875e10f9af1496b2601",
+      "905a5a24753119dd1263e523c996354465789591",
+      "8bafe564ba68b2f90814f15025120405c6ae300b",
+    ]),
   }),
   "src/app/api/registration/password-setup/route.ts": Object.freeze({
     migrationOriginBlob: null,
@@ -237,7 +241,59 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/app/auth-flow.tsx": Object.freeze({
     migrationOriginBlob: "a94d77373434b1d4ef3c35ee47a2445ecd3ad8fb",
-    deployBlob: "d4841a8265496fae056f906fb99199089bab7dc5",
+    deployBlob: Object.freeze([
+      "d4841a8265496fae056f906fb99199089bab7dc5",
+      "baf559384fbafcf1ccc92cc817f682d4f5934f95",
+    ]),
+  }),
+  "src/app/auth.module.css": Object.freeze({
+    migrationOriginBlob: "d6e8e825e6d50fb26e888f439aacf5d23ffa20c1",
+    deployBlob: "8a9e166e988ddd1fa477f1152b8f7e626f9a2731",
+  }),
+  "src/app/login/page.tsx": Object.freeze({
+    migrationOriginBlob: "83a9e6107a68e17b163b4a954a7226fb9f93fd6d",
+    deployBlob: Object.freeze([
+      "6af4eb87d58d93515fa485f85003a9bf31de996d",
+      "2a4908e39ce1b808be5ba9eef6254054b4987caa",
+    ]),
+  }),
+  "src/app/settings/profile/page.tsx": Object.freeze({
+    migrationOriginBlob: "10ea5d494935371ce8d30496c87ffb1907da22e0",
+    deployBlob: Object.freeze([
+      "556d6f9ce00c786804c6a24c43e646e6e421ffde",
+      "5bb4e015c0b87791d71669ff3327ce19a8175c43",
+    ]),
+  }),
+  "src/app/settings/profile/profile-client.tsx": Object.freeze({
+    migrationOriginBlob: "47eacddc1ec3d7ee9f5e73cb655ef9243eef39cf",
+    deployBlob: Object.freeze([
+      "ac8909279dd69f220457e7016578fe5a6ef4f969",
+      "8fd45683daed08578c76c225aaa3129b4b4b1de4",
+    ]),
+  }),
+  "src/app/settings/profile/profile.module.css": Object.freeze({
+    migrationOriginBlob: "0d56843afe2879f5bdb7fc55984c79091760a546",
+    deployBlob: Object.freeze([
+      "37887c270039f6354bc1aff08d5851cba2fdad12",
+      "7772aa1cea23764f754d3ff00f7e481f24327024",
+    ]),
+  }),
+  "src/app/training/exercise-images.ts": Object.freeze({
+    migrationOriginBlob: "f7e8a57cb8e331b6f1fb4eabc36012de16f480f1",
+    deployBlob: Object.freeze([
+      "758e27fce4a5b645870d0fa42478211f7c35ee21",
+      "fa64117cdf86a80590b45fd17a39c4dd6f54545d",
+      "3c79724636bd2630b78c9544efe7f92c7d94c03a",
+      "8ce0b61e949ca18a1b914f9ccaadbbc9a84242a5",
+    ]),
+  }),
+  "src/app/training/training-exercise-pane.tsx": Object.freeze({
+    migrationOriginBlob: "ab90d59ad0c5922caa19e6e0ae591dc04cbc6870",
+    deployBlob: Object.freeze([
+      "6c6bcf9b29cf98309092814a23c0708e67a90802",
+      "d4bd39c6a35f44a0d08668e11ee77cf1d6573734",
+      "c9cbe4e5813af800cf495f37d55a75034884844b",
+    ]),
   }),
   "src/app/register/page.tsx": Object.freeze({
     migrationOriginBlob: "8cdf4ac669863efb0bace4ca4de5d88361573b12",
@@ -245,7 +301,15 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/lib/auth.ts": Object.freeze({
     migrationOriginBlob: "0d0a733b2ff30c09a8277bc83809faeb6920ad61",
-    deployBlob: "cf400f4040db655e4dd127f0821968cd098c3608",
+    deployBlob: Object.freeze([
+      "cf400f4040db655e4dd127f0821968cd098c3608",
+      "94a010a9e5ba24c876b6f934272dccb48ff6f45b",
+      "b044300d509fce08a5094bb2a1b382dc1a26aed2",
+    ]),
+  }),
+  "src/modules/auth/policy.ts": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "f92e8b18e493dbdfe16c81275f56eccadb57608c",
   }),
   "src/modules/auth/registration-users.ts": Object.freeze({
     migrationOriginBlob: null,
@@ -409,17 +473,9 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "3aea7779d5a3b5e8438367be7e372a224672fb8d",
     deployBlob: "c2d45ada47d6c63eaa744a365bce8200d23e61e2",
   }),
-  "src/app/training/exercise-images.ts": Object.freeze({
-    migrationOriginBlob: "f7e8a57cb8e331b6f1fb4eabc36012de16f480f1",
-    deployBlob: "758e27fce4a5b645870d0fa42478211f7c35ee21",
-  }),
   "src/app/training/exercise-info.ts": Object.freeze({
     migrationOriginBlob: "0f310bb071b918a2cb95bfe2d8e75033bf14811f",
     deployBlob: "e155126c355c79e404e56d756b73821b057a7a12",
-  }),
-  "src/app/training/training-exercise-pane.tsx": Object.freeze({
-    migrationOriginBlob: "ab90d59ad0c5922caa19e6e0ae591dc04cbc6870",
-    deployBlob: "6c6bcf9b29cf98309092814a23c0708e67a90802",
   }),
   "src/app/training/session-accounting-panel.tsx": Object.freeze({
     migrationOriginBlob: "3d60397e44947547d5b1dfdf9f89a338c79f3954",

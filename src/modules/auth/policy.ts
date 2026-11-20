@@ -1,0 +1,2 @@
+export const AUTH_OTP_EXPIRES_IN_SECONDS = 300;
+export const AUTH_OTP_UI_RESEND_DELAY_SECONDS = 30;

@@ -33,10 +33,50 @@ const EXERCISE_IMAGE_BY_CATALOG_NAME: Record<string, string> = {
   "Відведення ноги вбік на нижньому блоці": "/training/exercises/cable-hip-abduction.png",
 };
 
+// Session snapshots can contain a localized exercise name. Resolve persisted
+// illustrations by the linked catalog identity first, then retain the exact
+// name lookup for older snapshots and program previews.
+const EXERCISE_IMAGE_BY_STABLE_KEY: Record<string, string> = {
+  dumbbell_russian_twist: "/training/exercises/dumbbell-russian-twist.png",
+  bulgarian_split_squat: "/training/exercises/bulgarian-split-squat.png",
+  forward_dumbbell_lunge: "/training/exercises/forward-dumbbell-lunge.png",
+  cable_hip_abduction: "/training/exercises/cable-hip-abduction.png",
+  cable_glute_kickback: "/training/exercises/cable-glute-kickback.png",
+  pushup_handles: "/training/exercises/push-up-on-handles.jpg",
+  hyperextension: "/training/exercises/hyperextension.jpg",
+  incline_dumbbell_press_30deg: "/training/exercises/incline-dumbbell-press-30.jpg",
+  seated_dumbbell_press: "/training/exercises/seated-dumbbell-shoulder-press.jpg",
+  supported_dumbbell_wrist_curl: "/training/exercises/wrist-curl-on-bench.jpg",
+  cable_leg_curl: "/training/exercises/cable-leg-curl.png",
+  one_arm_concentration_curl: "/training/exercises/one-arm-curl-from-knee.jpg",
+  incline_seated_rotating_dumbbell_curl: "/training/exercises/incline-dumbbell-curl.jpg",
+  one_arm_lateral_raise: "/training/exercises/one-arm-lateral-raise.jpg",
+  cable_hip_adduction: "/training/exercises/cable-hip-adduction.png",
+  goblet_squat: "/training/exercises/goblet-squat.png",
+  dumbbell_crunch: "/training/exercises/dumbbell-crunch.png",
+  barbell_hip_thrust: "/training/exercises/barbell-hip-thrust.png",
+  seated_calf_raise: "/training/exercises/seated-calf-raise.png",
+  single_leg_standing_calf_raise: "/training/exercises/single-leg-standing-calf-raise.png",
+  pull_up: "/training/exercises/pull-up.png",
+  flat_dumbbell_fly: "/training/exercises/flat-dumbbell-fly.jpg",
+  one_arm_cable_triceps_extension: "/training/exercises/one-arm-cable-pushdown.jpg",
+  bent_over_one_arm_dumbbell_triceps_extension: "/training/exercises/dumbbell-triceps-kickback.jpg",
+  romanian_deadlift: "/training/exercises/romanian-deadlift.png",
+  front_foot_elevated_split_squat: "/training/exercises/front-foot-elevated-split-squat.png",
+  one_arm_seated_cable_row: "/training/exercises/seated-one-arm-cable-row.jpg",
+};
+
 export function resolveExerciseImageSrc(input: {
+  stableKey?: string | null;
   catalogName?: string | null;
   snapshotExerciseName?: string | null;
 }): string | null {
+  const stableKey = input.stableKey?.trim();
+  if (stableKey) {
+    const stableImage = EXERCISE_IMAGE_BY_STABLE_KEY[stableKey];
+    if (stableImage) return stableImage;
+  }
+
   const candidates = [input.catalogName, input.snapshotExerciseName]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => value.trim());

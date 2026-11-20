@@ -17,6 +17,23 @@ describe("exercise image catalog mapping", () => {
     })).toBe("/training/exercises/hyperextension.jpg");
   });
 
+  it("resolves active sessions by stable key when their snapshot name is localized", () => {
+    expect(resolveExerciseImageSrc({
+      stableKey: "incline_dumbbell_press_30deg",
+      snapshotExerciseName: "30° incline dumbbell press",
+    })).toBe("/training/exercises/incline-dumbbell-press-30.jpg");
+    expect(resolveExerciseImageSrc({
+      stableKey: "front_foot_elevated_split_squat",
+      snapshotExerciseName: "Front-foot-elevated split squat",
+    })).toBe("/training/exercises/front-foot-elevated-split-squat.png");
+    const pushupImage = resolveExerciseImageSrc({
+      stableKey: "pushup_handles",
+      snapshotExerciseName: "Push-up on handles",
+    });
+    expect(pushupImage).toBe("/training/exercises/push-up-on-handles.jpg");
+    expect(existsSync(join(process.cwd(), "public", "training", "exercises", "push-up-on-handles.jpg"))).toBe(true);
+  });
+
   it("returns null when no image exists (no broken placeholder)", () => {
     expect(resolveExerciseImageSrc({
       snapshotExerciseName: "Unknown custom lift",

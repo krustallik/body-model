@@ -1,20 +1,421 @@
-.page { min-height: 100vh; display: grid; place-items: center; padding: 32px 18px; background: #080b0a; color: #edf4f0; }
-.card { width: min(100%, 480px); padding: clamp(24px, 5vw, 42px); border: 1px solid #30423c; border-radius: 22px; background: #111817; box-shadow: 0 24px 80px #0008; }
-.brand { display: inline-flex; flex-direction: column; gap: 3px; color: #f1f6f3; font-size: 20px; font-weight: 750; text-decoration: none; margin-bottom: 36px; }
-.brand span { color: #73bfa6; font-size: 10px; letter-spacing: .15em; text-transform: uppercase; }
-.eyebrow { margin: 0 0 9px; color: #78cfb0; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
-.card h1 { margin: 0; font-size: clamp(30px, 7vw, 42px); line-height: 1.08; letter-spacing: -.035em; }
-.description { color: #a7b9b1; line-height: 1.6; }
-.form { display: grid; gap: 17px; margin-top: 28px; }
-.form label { display: grid; gap: 8px; color: #c6d4ce; font-size: 14px; }
-.form input { width: 100%; min-height: 48px; padding: 11px 13px; border: 1px solid #40544c; border-radius: 10px; outline: none; background: #0b100e; color: #eef4f1; font: inherit; }
-.form input:focus-visible { border-color: #58c99e; box-shadow: 0 0 0 3px #58c99e33; }
-.form button, .secondary { min-height: 46px; border: 1px solid #53bd96; border-radius: 10px; background: #45b98f; color: #07120e; font: inherit; font-weight: 750; cursor: pointer; }
-.form button:disabled, .secondary:disabled { cursor: wait; opacity: .65; }
-.secondary { width: 100%; margin-top: 12px; background: transparent; color: #9be0c4; }
-.error, .notice { margin: 0; padding: 11px 13px; border-radius: 9px; line-height: 1.45; }
-.error { background: #381d1e; color: #ff9b99; }
-.notice { background: #142720; color: #a8e1c8; }
-.links { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 25px; }
-.links a { color: #88d7b6; font-size: 14px; }
-@media (max-width: 390px) { .card { padding: 23px 19px; } }
+.page {
+  box-sizing: border-box;
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  color: var(--ink);
+  background:
+    radial-gradient(ellipse at 15% 10%, color-mix(in srgb, var(--primary) 13%, transparent), transparent 36rem),
+    var(--bg);
+}
+
+.card {
+  box-sizing: border-box;
+  width: min(100%, 34rem);
+  padding: clamp(1.35rem, 5vw, 2.6rem);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--surface-2) 55%, transparent), transparent 48%),
+    var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  box-shadow: 0 1.5rem 4rem #0008, inset 0 1px 0 color-mix(in srgb, #fff 3%, transparent);
+}
+
+.brand {
+  display: inline-grid;
+  gap: 0.35rem;
+  margin-bottom: 2.25rem;
+  color: var(--ink);
+  font-size: 1.3rem;
+  font-weight: 850;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.brand span {
+  color: var(--text-secondary);
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  margin: 0 0 0.65rem;
+  color: var(--primary-strong);
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.card h1 {
+  margin: 0;
+  font-size: clamp(2rem, 6vw, 2.8rem);
+  line-height: 1.03;
+  letter-spacing: -0.045em;
+}
+
+.description {
+  margin: 0.85rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.stepList {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1.4rem 0 1.2rem;
+  padding: 0;
+  list-style: none;
+}
+
+.stepList li {
+  display: grid;
+  grid-template-columns: 1.8rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.62rem 0.7rem;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--inset) 55%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.stepList .current {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
+}
+
+.stepList .done {
+  color: var(--success-strong);
+}
+
+.stepNumber {
+  display: grid;
+  width: 1.6rem;
+  height: 1.6rem;
+  place-items: center;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 0.72rem;
+}
+
+.current .stepNumber {
+  color: var(--primary-ink);
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.done .stepNumber {
+  color: var(--success-strong);
+  border-color: color-mix(in srgb, var(--success) 55%, var(--border));
+}
+
+.stepStatus {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-weight: 750;
+}
+
+.current .stepStatus {
+  color: var(--primary-strong);
+}
+
+.identityNotice,
+.recipient {
+  margin: 1rem 0 0;
+  padding: 0.9rem 1rem;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.identityNotice p {
+  margin: 0;
+}
+
+.identityNotice strong {
+  display: block;
+  margin-top: 0.5rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.identityNotice small {
+  display: block;
+  margin-top: 0.65rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.recipient {
+  margin-top: 0;
+}
+
+.recipient strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.35rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.field > input,
+.passwordControl input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0.72rem 0.85rem;
+  color: var(--ink);
+  background: var(--inset);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.7rem;
+  font: inherit;
+  font-size: 0.92rem;
+  transition: border-color var(--ease), background-color var(--ease), box-shadow var(--ease);
+}
+
+.field > input:focus-visible,
+.passwordControl input:focus-visible,
+.primary:focus-visible,
+.secondary:focus-visible,
+.textButton:focus-visible,
+.passwordToggle:focus-visible,
+.links a:focus-visible,
+.primaryLink:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.field > input:focus-visible,
+.passwordControl input:focus-visible {
+  border-color: var(--primary);
+}
+
+.passwordControl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  overflow: hidden;
+  background: var(--inset);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.7rem;
+}
+
+.passwordControl:focus-within {
+  border-color: var(--primary);
+}
+
+.passwordControl input {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.passwordToggle {
+  min-width: 4.25rem;
+  padding: 0.35rem 0.55rem;
+  color: var(--primary-strong);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.codeMeta {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.primary,
+.primaryLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
+  padding: 0.75rem 1rem;
+  color: var(--primary-ink);
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--primary-strong) 36%, transparent);
+  border-radius: 0.75rem;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent);
+  font: inherit;
+  font-weight: 850;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--ease), border-color var(--ease), transform var(--ease);
+}
+
+.primary:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.secondary,
+.textButton {
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  color: var(--primary-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 0.7rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.secondary:disabled,
+.textButton:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.codeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+
+.textButton {
+  color: var(--text-secondary);
+  background: transparent;
+  border-color: transparent;
+}
+
+.error,
+.notice,
+.success {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.error {
+  color: var(--danger-strong);
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border));
+}
+
+.notice {
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.success {
+  color: var(--success-strong);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+}
+
+.completion {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.35rem;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem 1.1rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.links a {
+  color: var(--primary-strong);
+  font-size: 0.8rem;
+  font-weight: 750;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.2em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .primary:not(:disabled):hover,
+  .primaryLink:hover {
+    background: var(--primary-strong);
+    transform: translateY(-1px);
+  }
+
+  .secondary:not(:disabled):hover {
+    background: var(--elevated);
+    border-color: var(--primary);
+  }
+}
+
+@media (max-width: 420px) {
+  .page {
+    padding: 0.75rem;
+  }
+
+  .card {
+    padding: 1.25rem 1rem;
+    border-radius: 0.95rem;
+  }
+
+  .brand {
+    margin-bottom: 1.75rem;
+  }
+
+  .stepList li {
+    grid-template-columns: 1.65rem minmax(0, 1fr) auto;
+    gap: 0.45rem;
+    padding-inline: 0.55rem;
+  }
+
+  .stepStatus {
+    font-size: 0.6rem;
+  }
+
+  .codeActions > button {
+    flex: 1 1 10rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .field > input,
+  .passwordControl input,
+  .primary,
+  .primaryLink,
+  .secondary {
+    transition-duration: 0.01ms;
+  }
+}

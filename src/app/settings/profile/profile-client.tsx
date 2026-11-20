@@ -51,7 +51,7 @@ async function readError(response: Response, uk = false): Promise<{ message: str
   }
 }
 
-export function ProfileClient({ onboarding = false }: { onboarding?: boolean }) {
+export function ProfileClient({ onboarding = false, accountEmail }: { onboarding?: boolean; accountEmail?: string }) {
   const router = useRouter();
   const { locale, setLocale } = useI18n();
   const uk = locale === "uk";
@@ -61,6 +61,29 @@ export function ProfileClient({ onboarding = false }: { onboarding?: boolean }) 
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saved, setSaved] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+
+  async function signOut() {
+    setSigningOut(true);
+    setSignOutError(null);
+    try {
+      const response = await fetch("/api/auth/sign-out", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(uk ? "Не вдалося завершити сеанс. Спробуйте ще раз." : "Could not sign out. Please try again.");
+      router.replace("/login");
+      router.refresh();
+    } catch (caught) {
+      setSignOutError(caught instanceof Error ? caught.message : (uk ? "Не вдалося завершити сеанс." : "Could not sign out."));
+    } finally {
+      setSigningOut(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -135,6 +158,39 @@ export function ProfileClient({ onboarding = false }: { onboarding?: boolean }) 
         <h1>{onboarding ? (uk ? "Заповніть свій профіль." : "Set up your profile.") : (uk ? "Ваш профіль." : "Your profile.")}</h1>
         <p>{onboarding ? (uk ? "Вкажіть власні дані, щоб розрахунки працювали для вас." : "Add your own details so calculations are personalized to you.") : (uk ? "Збережіть основні персональні дані та мову інтерфейсу." : "Keep your basic personal details and interface language.")}</p>
       </section>
+
+      {!onboarding && accountEmail && (
+        <section className={styles.securityCard} aria-labelledby="account-security-title">
+          <div className={styles.securityIntro}>
+            <div>
+              <p className={styles.eyebrow}>{uk ? "Обліковий запис" : "Account"}</p>
+              <h2 id="account-security-title">{uk ? "Акаунт і безпека" : "Account and security"}</h2>
+            </div>
+            <p>{uk ? "Керуйте входом і захистом акаунта." : "Manage how you sign in and protect your account."}</p>
+          </div>
+          <dl className={styles.securityDetails}>
+            <div>
+              <dt>{uk ? "Email" : "Email address"}</dt>
+              <dd>{accountEmail}</dd>
+            </div>
+            <div>
+              <dt>{uk ? "Статус email" : "Email status"}</dt>
+              <dd><span className={styles.verifiedMark} aria-hidden="true">✓</span>{uk ? "Підтверджено" : "Verified"}</dd>
+            </div>
+          </dl>
+          <div className={styles.securityActions}>
+            <Link className={styles.changePasswordAction} href="/settings/security">
+              {uk ? "Змінити пароль" : "Change password"}
+              <span>{uk ? "Підтвердіть зміну кодом з email" : "Confirm the change with an email code"}</span>
+            </Link>
+            <button className={styles.signOutAction} type="button" disabled={signingOut} onClick={() => void signOut()}>
+              {signingOut ? (uk ? "Завершення сеансу…" : "Signing out…") : (uk ? "Вийти з акаунта" : "Sign out")}
+              <span>{uk ? "Завершити цей сеанс на пристрої" : "End this session on this device"}</span>
+            </button>
+          </div>
+          {signOutError && <p className={styles.error} role="alert">{signOutError}</p>}
+        </section>
+      )}
 
       <section className={styles.card} aria-labelledby="profile-form-title">
         <div className={styles.cardHeading}>
@@ -220,7 +276,6 @@ export function ProfileClient({ onboarding = false }: { onboarding?: boolean }) 
         )}
       </section>
       {!onboarding && <ProfileApiKeys />}
-      {!onboarding && <p className={styles.links}><Link href="/settings/security">{uk ? "Безпека акаунта й пароль" : "Account security and password"}</Link></p>}
     </main>
   );
 }

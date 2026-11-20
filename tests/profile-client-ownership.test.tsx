@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const localeState = vi.hoisted(() => ({ current: "en" as "en" | "uk" }));
+const routerState = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }));
 
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
@@ -11,7 +12,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => routerState,
 }));
 vi.mock("@/i18n/i18n-provider", () => ({
   useI18n: () => ({ locale: localeState.current, setLocale: vi.fn() }),
@@ -36,6 +37,7 @@ const legacyProfile = {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
   localeState.current = "en";
 });
 
@@ -89,5 +91,33 @@ describe("ProfileClient goal ownership", () => {
     expect(updatePayload).not.toHaveProperty("targetWeightKg");
     expect(updatePayload).not.toHaveProperty("targetDate");
     expect(await screen.findByRole("status")).toBeTruthy();
+  });
+
+  it("shows account security actions and sends JSON on sign out", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "/api/auth/sign-out") return new Response(null, { status: 200 });
+      if (url === "/api/v1/profile") return Response.json({ profile: legacyProfile });
+      if (url === "/api/v1/profile/stepper-equipment") return Response.json({ assignments: [] });
+      throw new Error("unexpected request");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = userEvent.setup();
+    render(<ProfileClient accountEmail="account@example.invalid" />);
+    expect(await screen.findByRole("heading", { name: "Account and security" })).toBeTruthy();
+    expect(screen.getByText("account@example.invalid")).toBeTruthy();
+    expect(screen.getByText("Verified")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Change password/ }).getAttribute("href")).toBe("/settings/security");
+
+    await user.click(screen.getByRole("button", { name: /Sign out/ }));
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/sign-out", expect.objectContaining({
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      credentials: "same-origin",
+    }));
+    expect(routerState.replace).toHaveBeenCalledWith("/login");
+    expect(routerState.refresh).toHaveBeenCalledOnce();
   });
 });

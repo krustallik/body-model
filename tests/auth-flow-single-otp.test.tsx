@@ -39,19 +39,19 @@ describe("single-OTP public registration", () => {
     render(<AuthFlow mode="register" />);
     await user.type(screen.getByLabelText("Email"), "new.person@example.invalid");
     await user.type(screen.getByLabelText("Name"), "New Person");
-    await user.click(screen.getByRole("button", { name: "Send code" }));
-    await user.type(await screen.findByLabelText("Email verification code"), "123456");
+    await user.click(screen.getByRole("button", { name: "Send verification code" }));
+    await user.type(await screen.findByLabelText("Six-digit email code"), "123456");
     await user.click(screen.getByRole("button", { name: "Verify email" }));
 
-    expect(await screen.findByLabelText("Create password")).toBeTruthy();
-    expect(screen.getByLabelText("Repeat password")).toBeTruthy();
-    expect(screen.queryByLabelText("One-time code")).toBeNull();
-    expect(screen.queryByLabelText("Email verification code")).toBeNull();
+    expect(await screen.findByLabelText("New password")).toBeTruthy();
+    expect(screen.getByLabelText("Confirm new password")).toBeTruthy();
+    expect(screen.queryByLabelText("One-time code from email")).toBeNull();
+    expect(screen.queryByLabelText("Six-digit email code")).toBeNull();
     expect(screen.getByText("Email verified. Create a password to finish registration.")).toBeTruthy();
     expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain("/api/registration/password-reset/request");
 
-    await user.type(screen.getByLabelText("Create password"), "Synthetic-Test-Password-123");
-    await user.type(screen.getByLabelText("Repeat password"), "Synthetic-Test-Password-123");
+    await user.type(screen.getByLabelText("New password"), "Synthetic-Test-Password-123");
+    await user.type(screen.getByLabelText("Confirm new password"), "Synthetic-Test-Password-123");
     await user.click(screen.getByRole("button", { name: "Create password" }));
 
     expect(fetchMock).toHaveBeenCalledWith("/api/registration/password-setup", expect.objectContaining({

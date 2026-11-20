@@ -405,6 +405,7 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           DEPLOY_SHA: ${{ needs.authorize.outputs.candidate_sha }}
           DEPLOY_MODE: ${{ needs.authorize.outputs.deploy_mode }}
+          AUTH_HANDOFF_REATTEST: ${{ needs.authorize.outputs.auth_handoff_reattest }}
           RELEASE_WORKFLOW_RUN_ID: ${{ github.run_id }}
           RELEASE_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |

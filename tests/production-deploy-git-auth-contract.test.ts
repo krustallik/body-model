@@ -5,6 +5,15 @@ import { describe, expect, it } from "vitest";
 const workflow = readFileSync(resolve(".github/workflows/deploy-production.yml"), "utf8").replace(/\r\n/g, "\n");
 
 describe("production checkout GitHub authentication contract", () => {
+  it("passes the handoff re-attestation input to the same step that constructs the remote command", () => {
+    const deployStepStart = workflow.indexOf("- name: Deploy exact SHA through the fixed production script");
+    const nextStep = workflow.indexOf("\n      - name:", deployStepStart + 1);
+    const deployStep = workflow.slice(deployStepStart, nextStep === -1 ? undefined : nextStep);
+
+    expect(deployStep).toContain("AUTH_HANDOFF_REATTEST: ${{ needs.authorize.outputs.auth_handoff_reattest }}");
+    expect(deployStep).toContain("'$AUTH_HANDOFF_REATTEST'");
+  });
+
   it("uses the root-only read-only deploy key only for canonical SSH origin before fetching", () => {
     const originCheck = workflow.indexOf('ORIGIN_URL="$(git remote get-url origin)"');
     const keyPath = workflow.indexOf('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"');

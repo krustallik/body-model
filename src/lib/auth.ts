@@ -4,6 +4,7 @@ import { emailOTP } from "better-auth/plugins";
 import { getEnv } from "@/lib/env";
 import { prisma } from "@/lib/db/prisma";
 import { sendAuthEmail } from "@/modules/auth/email";
+import { AUTH_OTP_EXPIRES_IN_SECONDS } from "@/modules/auth/policy";
 import { provisionProfileAfterEmailVerification } from "@/modules/auth/profile-provisioning";
 import { databaseAuthRateLimitStorage } from "@/modules/auth/rate-limit";
 
@@ -52,7 +53,7 @@ export const auth = betterAuth({
   plugins: [emailOTP({
     overrideDefaultEmailVerification: true,
     disableSignUp: true,
-    expiresIn: 300,
+    expiresIn: AUTH_OTP_EXPIRES_IN_SECONDS,
     allowedAttempts: 3,
     storeOTP: "hashed",
     resendStrategy: "rotate",

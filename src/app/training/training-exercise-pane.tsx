@@ -766,6 +766,7 @@ export function ExercisePane(props: ExercisePaneProps) {
   const completedSets = sets.length;
   const plannedSets = exercise.plannedSets;
   const imageSrc = resolveExerciseImageSrc({
+    stableKey: exercise.stableKey,
     snapshotExerciseName: exercise.snapshotExerciseName,
   });
   const info = resolveExerciseInfo({

@@ -42,6 +42,7 @@ let initialProfileOneTrainingState: Awaited<ReturnType<typeof saveProfileOneTrai
 let auth: typeof import("@/lib/auth")["auth"];
 let registrationStart: typeof import("@/app/api/registration/start/route").POST;
 let registrationResend: typeof import("@/app/api/registration/resend/route").POST;
+let registrationPasswordSetup: typeof import("@/app/api/registration/password-setup/route").POST;
 let passwordResetRequest: typeof import("@/app/api/registration/password-reset/request/route").POST;
 let login: typeof import("@/app/api/account/login/route").POST;
 let passwordChangeRequest: typeof import("@/app/api/account/password-change/request/route").POST;
@@ -192,6 +193,7 @@ describe("auth and tenant registration integration", () => {
     ({ auth } = await import("@/lib/auth"));
     ({ POST: registrationStart } = await import("@/app/api/registration/start/route"));
     ({ POST: registrationResend } = await import("@/app/api/registration/resend/route"));
+    ({ POST: registrationPasswordSetup } = await import("@/app/api/registration/password-setup/route"));
     ({ POST: passwordResetRequest } = await import("@/app/api/registration/password-reset/request/route"));
     ({ POST: login } = await import("@/app/api/account/login/route"));
     ({ POST: passwordChangeRequest } = await import("@/app/api/account/password-change/request/route"));
@@ -398,7 +400,18 @@ describe("auth and tenant registration integration", () => {
     profileIds.add(provisioned.profile.id);
     expect(provisioned.profile.id).not.toBe(1);
     expect(await prisma.exerciseCatalog.count({ where: { profileId: provisioned.profile.id } })).toBeGreaterThan(0);
-    expect(await prisma.session.count({ where: { userId: pending.id } })).toBe(0);
+    expect(await prisma.session.count({ where: { userId: pending.id } })).toBe(1);
+    const verificationCookie = cookieHeader(verified);
+    expect(verificationCookie).not.toBe("");
+    expect(mailbox.get(email) ?? []).toHaveLength(0);
+    expect(await prisma.account.count({ where: { userId: pending.id } })).toBe(0);
+    const initialPassword = `Initial-${crypto.randomUUID()}-pass`;
+    const passwordSet = await registrationPasswordSetup(requestWithCookie(
+      "/api/registration/password-setup", { password: initialPassword }, verificationCookie,
+    ));
+    expect(passwordSet.status).toBe(200);
+    expect(await prisma.account.count({ where: { userId: pending.id, providerId: "credential" } })).toBe(1);
+    expect((await login(request({ email, password: initialPassword }))).status).toBe(200);
     const replay = await httpAuth.POST(authHttpRequest("/email-otp/verify-email", { email, otp }));
     expect(replay.status).toBeGreaterThanOrEqual(400);
 
@@ -595,7 +608,7 @@ describe("auth and tenant registration integration", () => {
     const profile = await prisma.profile.findUniqueOrThrow({ where: { userId: pending.id }, select: { id: true } });
     profileIds.add(profile.id);
     expect(await prisma.profile.count({ where: { userId: pending.id } })).toBe(1);
-    expect(await prisma.session.count({ where: { userId: pending.id } })).toBe(0);
+    expect(await prisma.session.count({ where: { userId: pending.id } })).toBe(1);
   });
 
   it("scopes API keys to their verified Profiles and revokes all sessions after OTP password change", async () => {
@@ -1078,10 +1091,19 @@ describe("auth and tenant registration integration", () => {
       userIds.add(user.id);
       expect(await prisma.profile.count({ where: { userId: user.id } })).toBe(0);
 
-      const verified = await auth.api.verifyEmailOTP({
-        headers: new Headers({ origin }), body: { email, otp: nextOtp(email) },
+      const verifiedResponse = await auth.api.verifyEmailOTP({
+        headers: new Headers({ origin }), body: { email, otp: nextOtp(email) }, asResponse: true,
       });
-      expect(verified).toMatchObject({ status: true, token: null });
+      expect(verifiedResponse.status).toBe(200);
+      const verified = await verifiedResponse.json() as { status: boolean; token: string | null };
+      expect(verified).toMatchObject({ status: true });
+      const ownerCookie = cookieHeader(verifiedResponse);
+      expect(ownerCookie).not.toBe("");
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
+      const { getSessionPrincipal } = await import("@/modules/auth/access");
+      expect(await getSessionPrincipal(new Request(`${origin}/api/profile`, {
+        headers: { origin, cookie: ownerCookie },
+      }))).toBeNull();
       const bound = await prisma.profile.findUniqueOrThrow({ where: { id: 1 }, select: { userId: true, sex: true, dateOfBirth: true, heightCm: true } });
       expect(bound).toEqual({ ...original, userId: user.id });
       expect(await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { passwordChangeRequired: true } }))

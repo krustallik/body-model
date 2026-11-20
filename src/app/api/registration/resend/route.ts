@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db/prisma";
 import { runAuthEmailFlow } from "@/modules/auth/email-flow";
 import { readAuthJson } from "@/modules/auth/http";
 import { reservePublicOtpEmailQuota } from "@/modules/auth/email-quota";
+import { createPendingRegistrationUser, removePendingRegistrationCredential } from "@/modules/auth/registration-users";
 
 const bodySchema = z.object({
   email: z.string().trim().email().max(320),
@@ -42,23 +43,34 @@ export async function POST(request: Request): Promise<Response> {
   await runAuthEmailFlow("registration-resend", async () => {
     const user = await prisma.user.findUnique({
       where: { email },
-      select: { emailVerified: true, profile: { select: { id: true } } },
+      select: { id: true, emailVerified: true, profile: { select: { id: true } } },
     });
     if (!user && parsed.data.name) {
       if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
         await reservePublicOtpEmailQuota();
       }
-      await auth.api.signUpEmail({
-        headers: request.headers,
-        body: {
-          email,
-          name: parsed.data.name,
-          password: randomBytes(32).toString("base64url"),
-        },
-      });
+      if (isProfileOneBootstrap) {
+        await auth.api.signUpEmail({
+          headers: request.headers,
+          body: {
+            email,
+            name: parsed.data.name,
+            password: randomBytes(32).toString("base64url"),
+          },
+        });
+      } else {
+        await createPendingRegistrationUser(email, parsed.data.name);
+        await auth.api.sendVerificationOTP({
+          headers: request.headers,
+          body: { email, type: "email-verification" },
+        });
+      }
     } else if (user && (!user.emailVerified || !user.profile)) {
       if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
         await reservePublicOtpEmailQuota();
+      }
+      if (!isProfileOneBootstrap && !user.profile) {
+        await removePendingRegistrationCredential(user.id);
       }
       await auth.api.sendVerificationOTP({
         headers: request.headers,

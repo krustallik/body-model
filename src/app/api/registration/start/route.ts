@@ -7,6 +7,7 @@ import { enforceAuthRequestLimit, isTrustedOrigin, originRejected } from "@/modu
 import { runAuthEmailFlow } from "@/modules/auth/email-flow";
 import { reservePublicOtpEmailQuota } from "@/modules/auth/email-quota";
 import { readAuthJson } from "@/modules/auth/http";
+import { createPendingRegistrationUser, removePendingRegistrationCredential } from "@/modules/auth/registration-users";
 
 const bodySchema = z.object({
   email: z.string().trim().email().max(320),
@@ -49,17 +50,31 @@ export async function POST(request: Request): Promise<Response> {
       if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
         await reservePublicOtpEmailQuota();
       }
-      await auth.api.signUpEmail({
-        headers: request.headers,
-        body: {
-          email,
-          name: parsed.data.name,
-          password: randomBytes(32).toString("base64url"),
-        },
-      });
+      if (isProfileOneBootstrap) {
+        // Profile 1 remains on its separately authorized temporary-password flow.
+        await auth.api.signUpEmail({
+          headers: request.headers,
+          body: {
+            email,
+            name: parsed.data.name,
+            password: randomBytes(32).toString("base64url"),
+          },
+        });
+      } else {
+        await createPendingRegistrationUser(email, parsed.data.name);
+        await auth.api.sendVerificationOTP({
+          headers: request.headers,
+          body: { email, type: "email-verification" },
+        });
+      }
     } else if (!existing.emailVerified || !existing.profile) {
       if (env.AUTH_PUBLIC_REGISTRATION_ENABLED === "true" && !isProfileOneBootstrap) {
         await reservePublicOtpEmailQuota();
+      }
+      if (!isProfileOneBootstrap && !existing.profile) {
+        // The previous pending flow created an unknown random credential.
+        // It is safe to remove only while no Profile has been provisioned.
+        await removePendingRegistrationCredential(existing.id);
       }
       // If verification succeeded but Profile provisioning failed, require a
       // fresh proof of mailbox control before retrying the idempotent upsert.

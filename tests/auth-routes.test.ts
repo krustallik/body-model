@@ -8,6 +8,7 @@ const routeMocks = vi.hoisted(() => ({
     requestPasswordResetEmailOTP: vi.fn(),
     createVerificationOTP: vi.fn(),
     resetPasswordEmailOTP: vi.fn(),
+    setPassword: vi.fn(),
     signOut: vi.fn(),
   },
   forwardAuthRequest: vi.fn(),
@@ -28,7 +29,8 @@ const routeMocks = vi.hoisted(() => ({
     getSessionPrincipal: vi.fn(),
   },
   prisma: {
-    user: { findUnique: vi.fn() },
+    user: { findUnique: vi.fn(), create: vi.fn() },
+    account: { deleteMany: vi.fn(), findFirst: vi.fn() },
   },
 }));
 
@@ -54,7 +56,9 @@ import { POST as login } from "@/app/api/account/login/route";
 import { POST as requestPasswordChange } from "@/app/api/account/password-change/request/route";
 import { POST as authPost } from "@/app/api/auth/[...all]/route";
 import { POST as requestPasswordReset } from "@/app/api/registration/password-reset/request/route";
+import { POST as setRegistrationPassword } from "@/app/api/registration/password-setup/route";
 import { POST as startRegistration } from "@/app/api/registration/start/route";
+import { POST as resendRegistration } from "@/app/api/registration/resend/route";
 import { DELETE as revokeApiKeyRoute, GET as listApiKeys, PATCH as rotateApiKeyRoute, POST as createApiKey } from "@/app/api/v1/profile/api-keys/route";
 
 const publicAuthEnv = {
@@ -87,6 +91,7 @@ describe("authentication route security boundaries", () => {
     routeMocks.authApi.requestPasswordResetEmailOTP.mockResolvedValue(undefined);
     routeMocks.authApi.createVerificationOTP.mockResolvedValue("654321");
     routeMocks.authApi.resetPasswordEmailOTP.mockResolvedValue(undefined);
+    routeMocks.authApi.setPassword.mockResolvedValue({ status: true });
     routeMocks.authApi.signOut.mockResolvedValue(new Response(null, { status: 200 }));
     routeMocks.forwardAuthRequest.mockResolvedValue(Response.json({ ok: true }));
     routeMocks.hashPassword.mockResolvedValue("dummy-hash");
@@ -101,6 +106,9 @@ describe("authentication route security boundaries", () => {
     routeMocks.rotateApiKey.mockResolvedValue(null);
     routeMocks.revokeApiKey.mockResolvedValue(false);
     routeMocks.prisma.user.findUnique.mockResolvedValue(null);
+    routeMocks.prisma.user.create.mockResolvedValue({ id: "pending-user" });
+    routeMocks.prisma.account.deleteMany.mockResolvedValue({ count: 0 });
+    routeMocks.prisma.account.findFirst.mockResolvedValue(null);
   });
 
   it("rejects unverified login without calling Better Auth and normalizes verified login", async () => {
@@ -126,17 +134,20 @@ describe("authentication route security boundaries", () => {
     }));
   });
 
-  it("starts registration with a server-generated password and re-proves pending registrations", async () => {
+  it("starts public registration without a credential and re-proves pending registrations", async () => {
     const created = await startRegistration(post("/api/registration/start", {
       email: " New.User@Example.Invalid ", name: "New User",
     }));
 
     expect(created.status).toBe(202);
     expect(await created.json()).toEqual({ requestReceived: true });
-    expect(routeMocks.authApi.signUpEmail).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.objectContaining({ email: "new.user@example.invalid", name: "New User" }),
+    expect(routeMocks.prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ email: "new.user@example.invalid", name: "New User", emailVerified: false }),
+    });
+    expect(routeMocks.authApi.sendVerificationOTP).toHaveBeenCalledWith(expect.objectContaining({
+      body: { email: "new.user@example.invalid", type: "email-verification" },
     }));
-    expect(routeMocks.authApi.signUpEmail.mock.calls[0]?.[0].body.password).not.toBe("New User");
+    expect(routeMocks.authApi.signUpEmail).not.toHaveBeenCalled();
     expect(routeMocks.reservePublicOtpEmailQuota).toHaveBeenCalledTimes(1);
 
     routeMocks.prisma.user.findUnique.mockResolvedValueOnce({
@@ -150,8 +161,55 @@ describe("authentication route security boundaries", () => {
     expect(routeMocks.authApi.sendVerificationOTP).toHaveBeenCalledWith(expect.objectContaining({
       body: { email: "new.user@example.invalid", type: "email-verification" },
     }));
-    expect(routeMocks.authApi.signUpEmail).toHaveBeenCalledTimes(1);
+    expect(routeMocks.prisma.account.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "pending-1", providerId: "credential" },
+    });
+    expect(routeMocks.authApi.signUpEmail).not.toHaveBeenCalled();
     expect(routeMocks.reservePublicOtpEmailQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("resends signup OTP without creating a password credential", async () => {
+    const response = await resendRegistration(post("/api/registration/resend", {
+      email: "new.user@example.invalid", name: "New User",
+    }));
+
+    expect(response.status).toBe(202);
+    expect(routeMocks.prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ email: "new.user@example.invalid", emailVerified: false }),
+    });
+    expect(routeMocks.authApi.sendVerificationOTP).toHaveBeenCalledWith(expect.objectContaining({
+      body: { email: "new.user@example.invalid", type: "email-verification" },
+    }));
+    expect(routeMocks.authApi.signUpEmail).not.toHaveBeenCalled();
+  });
+
+  it("sets the initial password through the verified session without a second OTP", async () => {
+    routeMocks.access.getAuthenticatedUser.mockResolvedValueOnce({
+      userId: "user-23", profileId: 23, email: "person@example.invalid", passwordChangeRequired: false,
+    });
+
+    const response = await setRegistrationPassword(post("/api/registration/password-setup", {
+      password: "long-initial-password-123",
+    }));
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.authApi.setPassword).toHaveBeenCalledWith(expect.objectContaining({
+      body: { newPassword: "long-initial-password-123" },
+    }));
+    expect(routeMocks.authApi.resetPasswordEmailOTP).not.toHaveBeenCalled();
+  });
+
+  it("keeps Profile 1 forced password replacement out of public initial-password setup", async () => {
+    routeMocks.access.getAuthenticatedUser.mockResolvedValueOnce({
+      userId: "owner-user", profileId: 1, email: "owner@example.invalid", passwordChangeRequired: true,
+    });
+
+    const response = await setRegistrationPassword(post("/api/registration/password-setup", {
+      password: "long-owner-password-123",
+    }));
+
+    expect(response.status).toBe(409);
+    expect(routeMocks.authApi.setPassword).not.toHaveBeenCalled();
   });
 
   it("keeps public registration generic when its abuse budget is exhausted", async () => {

@@ -30,6 +30,7 @@ readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 readonly BODYCAST_RECOVERED_V4_SERVE="${BODYCAST_RECOVERED_V4_SERVE:-0}"
 readonly BODYCAST_MIGRATION_FREE_CANDIDATE="${BODYCAST_MIGRATION_FREE_CANDIDATE:-0}"
+readonly BODYCAST_AUTH_HANDOFF_REATTEST="${BODYCAST_AUTH_HANDOFF_REATTEST:-0}"
 readonly BODYCAST_RELEASE_WORKFLOW_RUN_ID="${BODYCAST_RELEASE_WORKFLOW_RUN_ID:-}"
 readonly BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT="${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT:-}"
 
@@ -47,6 +48,14 @@ if [[ "$BODYCAST_RECOVERED_V4_SERVE" != "0" && "$BODYCAST_RECOVERED_V4_SERVE" !=
 fi
 if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" != "0" && "$BODYCAST_MIGRATION_FREE_CANDIDATE" != "1" ]]; then
   echo "BODYCAST_MIGRATION_FREE_CANDIDATE must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_AUTH_HANDOFF_REATTEST" != "0" && "$BODYCAST_AUTH_HANDOFF_REATTEST" != "1" ]]; then
+  echo "BODYCAST_AUTH_HANDOFF_REATTEST must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_AUTH_HANDOFF_REATTEST" == "1" && "$BODYCAST_MIGRATION_FREE_CANDIDATE" != "1" ]]; then
+  echo "Auth handoff re-attestation is available only inside the owner-authorized migration-free serving path." >&2
   exit 1
 fi
 if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
@@ -91,6 +100,56 @@ run_schema_preflight() {
   fi
 }
 
+capture_auth_handoff_schema_report() {
+  [[ "$BODYCAST_AUTH_HANDOFF_REATTEST" == "1" ]] || return 0
+  auth_handoff_report_path="/run/bodycast-auth-handoff-preflight.${BODYCAST_RELEASE_WORKFLOW_RUN_ID}.${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT}.json"
+  [[ ! -e "$auth_handoff_report_path" && ! -L "$auth_handoff_report_path" ]] || {
+    echo "Auth schema preflight evidence already exists for this deploy attempt." >&2; return 1;
+  }
+  local temporary
+  umask 077
+  temporary="$(mktemp "/run/bodycast-auth-handoff-preflight.${BODYCAST_RELEASE_WORKFLOW_RUN_ID}.${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT}.XXXXXX")"
+  if ! bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$temporary"; then
+    rm -f -- "$temporary"
+    echo "Read-only production DB schema inventory failed before maintenance." >&2
+    return 1
+  fi
+  chmod 600 "$temporary"
+  mv -- "$temporary" "$auth_handoff_report_path"
+  echo "Captured private read-only DB identity, migration ledger, schema inventory, and logical fingerprint before maintenance."
+}
+
+read_migration_free_authorization_id() {
+  local receipt_file="${BODYCAST_MIGRATION_FREE_ATTESTATION_RECEIPT_FILE:-}"
+  bodycast_assert_migration_free_attestation_receipt "$DEPLOY_SHA" \
+    "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT"
+  [[ "$receipt_file" == "/run/bodycast-migration-free-receipt.${BODYCAST_RELEASE_WORKFLOW_RUN_ID}.${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT}" ]] || {
+    echo "One-use OIDC receipt path does not match this exact deploy run." >&2; return 1;
+  }
+  local -a receipt_lines=()
+  mapfile -t receipt_lines < "$receipt_file"
+  [[ "${#receipt_lines[@]}" -eq 5 \
+    && "${receipt_lines[0]}" == "schema=1" \
+    && "${receipt_lines[1]}" == "release_sha=$DEPLOY_SHA" \
+    && "${receipt_lines[2]}" == "run_id=$BODYCAST_RELEASE_WORKFLOW_RUN_ID" \
+    && "${receipt_lines[3]}" == "run_attempt=$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" \
+    && "${receipt_lines[4]}" =~ ^jti_digest=[a-f0-9]{64}$ ]] || {
+    echo "One-use OIDC receipt is malformed or not bound to this deploy attempt." >&2; return 1;
+  }
+  BODYCAST_MIGRATION_FREE_AUTHORIZATION_ID="${receipt_lines[4]#jti_digest=}"
+  export BODYCAST_MIGRATION_FREE_AUTHORIZATION_ID
+}
+
+validate_auth_handoff_schema_report() {
+  [[ "$BODYCAST_AUTH_HANDOFF_REATTEST" == "1" ]] || return 0
+  read_migration_free_authorization_id
+  node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --validate-auth-reattest \
+    "$auth_handoff_report_path" "$DEPLOY_SHA" "$ROOT_DIR" \
+    "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" \
+    "$BODYCAST_MIGRATION_FREE_AUTHORIZATION_ID"
+  echo "The exact 77-migration Auth postflight/schema compatibility contract and candidate lineage pass before maintenance."
+}
+
 release_state="PREPARE"
 maintenance_marker=""
 route_stage=""
@@ -112,7 +171,15 @@ active_schema_cutover=false
 active_recovered_v4_release=false
 auth_multiuser_migration_free=0
 migration_free_expected_migration_count=74
+auth_handoff_report_path=""
 post_commit_probe_failed=false
+
+cleanup_auth_handoff_report() {
+  if [[ -n "$auth_handoff_report_path" && "$auth_handoff_report_path" == /run/bodycast-auth-handoff-preflight.*.json ]]; then
+    rm -f -- "$auth_handoff_report_path"
+  fi
+}
+trap cleanup_auth_handoff_report EXIT
 
 stop_exact_app_container() {
   local expected_sha="$1" expected_image_id="$2" expected_container_id="${3:-}" existing_app app_sha app_image_id app_container_id app_state restart_policy remaining_app
@@ -343,7 +410,14 @@ assert_current_main_sha
 
 marker_status=1
 if read_release_marker; then marker_status=0; else marker_status=$?; fi
-if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$marker_status" -ne 1 ]]; then
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$BODYCAST_AUTH_HANDOFF_REATTEST" == "1" ]]; then
+  [[ "$marker_status" -eq 1 ]] || {
+    echo "Auth schema re-attestation is only available when both current and legacy release markers are absent." >&2
+    release_failure 1
+  }
+  auth_multiuser_migration_free=2
+  migration_free_expected_migration_count=77
+elif [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$marker_status" -ne 1 ]]; then
   if [[ "$marker_status" -eq 0 \
     && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
     && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
@@ -428,10 +502,12 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
   database_identity_before="$(bodycast_capture_production_db_identity "$DB_CONTAINER")"
 fi
 run_schema_preflight
+capture_auth_handoff_schema_report
 if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
   bodycast_prepare_migration_free_attestation "$DEPLOY_SHA" \
     "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT"
 fi
+validate_auth_handoff_schema_report
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" && "$marker_status" -eq 1 ]] \
     && is_current_release_already_serving; then
@@ -445,7 +521,30 @@ fi
 
 # Maintenance is externally proven before prior-release capture or any app stop.
 publish_and_confirm_maintenance
-if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" ]]; then
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "2" ]]; then
+  bodycast_assert_production_db_identity_unchanged "$database_identity_before"
+  read_migration_free_authorization_id
+  bodycast_prepare_release_marker_directory
+  node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --reattest-auth \
+    "$BODYCAST_RELEASE_MARKER_PATH" "$BODYCAST_RELEASE_MARKER_LEGACY_PATH" "$auth_handoff_report_path" \
+    "$DEPLOY_SHA" "$ROOT_DIR" "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" \
+    "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" "$BODYCAST_MIGRATION_FREE_AUTHORIZATION_ID"
+  read_release_marker || release_failure 1
+  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+    && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+    && "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" == "18e67d53856af1f4742bbe9626abbd005b70e8bf" \
+    && "$BODYCAST_MARKER_DEPLOY_SHA" == "$DEPLOY_SHA" \
+    && "$BODYCAST_MARKER_STATE" == "schema-applied" \
+    && "$BODYCAST_MARKER_WORKFLOW_RUN_ID" == "$BODYCAST_RELEASE_WORKFLOW_RUN_ID" \
+    && "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" == "$BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT" \
+    && "$BODYCAST_MARKER_AUTHORIZATION_ID" == "$BODYCAST_MIGRATION_FREE_AUTHORIZATION_ID" ]] || {
+    echo "Auth schema re-attestation did not create the exact OIDC-bound schema-applied marker." >&2
+    release_failure 1
+  }
+  marker_status=0
+  auth_multiuser_migration_free=1
+  echo "Published exact-SHA Auth schema evidence from historical owner migration, current read-only 77/77 ledger/schema report, and consumed OIDC receipt."
+elif [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" ]]; then
   # Advance only the audited app-ready handoff after compatibility, schema,
   # and maintenance checks pass; this app-only path never runs migrations.
   node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --apply \

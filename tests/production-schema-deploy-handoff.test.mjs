@@ -1,13 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   AUTH_MULTIUSER_CONTENT_BOUND_PATHS,
+  AUTH_MULTIUSER_MIGRATION_CI_RUN_ID,
+  AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+  AUTH_MULTIUSER_MIGRATION_WORKFLOW_RUN_ID,
+  AUTH_MULTIUSER_MIGRATION_ACTOR_ID,
   SCHEMA_DEPLOY_HANDOFF_PROVENANCE, SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA,
   V4_REPUBLICATION_HANDOFF_PROVENANCE, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
-  applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
+  applyAuthSchemaReattestation, applySchemaDeployHandoff, buildAuthSchemaReattestation,
+  evaluateSchemaDeployHandoff, parseSchemaDeployMarker, validateHistoricalAuthMigrationRuns,
   readGitCompatibility, renderSchemaDeployTransition,
   validateSchemaDeployHandoffMarker,
 } from "../scripts/production-schema-deploy-handoff.mjs";
@@ -16,6 +21,7 @@ import {
   AUTH_MULTIUSER_MANIFEST,
   TRAINING_MUTATION_LEDGER_MANIFEST,
 } from "../scripts/production-migration-manifests.mjs";
+import { ALL_REVIEWED_OBJECTS } from "../scripts/production-migration-preflight.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
@@ -97,6 +103,30 @@ function v4AppReadyMarkerText(overrides = {}) {
     state: "app-ready",
     ...overrides,
   });
+}
+
+function authPostflightReport() {
+  const migrationDirectories = [...AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations, ...AUTH_MULTIUSER_MANIFEST.migrations]
+    .map(({ name }) => name).sort();
+  const migrations = [...AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations, ...AUTH_MULTIUSER_MANIFEST.migrations]
+    .map((migration) => ({ name: migration.name, checksum: migration.sha256, startedAt: "2026-11-01T00:00:00.000Z",
+      finishedAt: "2026-11-01T00:00:01.000Z", rolledBackAt: null, hasLogs: false, logsFingerprint: "d41d8cd98f00b204e9800998ecf8427e" }));
+  const absent = new Set(AUTH_MULTIUSER_MANIFEST.postflightAbsentObjects);
+  const signature = (name) => AUTH_MULTIUSER_MANIFEST.postflightSignatureEquals[name]
+    ?? AUTH_MULTIUSER_MANIFEST.postflightSignatureIncludes[name]
+    ?? "reviewed-test-signature";
+  const objects = ALL_REVIEWED_OBJECTS.map((name) => ({
+    name,
+    present: !absent.has(name),
+    kind: absent.has(name) ? "missing" : "constraint",
+    signature: absent.has(name) ? null : signature(name),
+  }));
+  return {
+    identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311",
+      role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
+    logicalDataFingerprint: "d".repeat(64), migrations, objects,
+    migrationDirectories,
+  };
 }
 
 function dynamicWorkoutMarkerText(releaseSha, overrides = {}) {
@@ -228,6 +258,83 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
+  it("requires the exact historical owner migration and its successful exact-SHA CI", () => {
+    const migrationRun = {
+      id: Number(AUTH_MULTIUSER_MIGRATION_WORKFLOW_RUN_ID), path: ".github/workflows/production-migrate.yml",
+      event: "workflow_dispatch", status: "completed", conclusion: "success", head_sha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      head_branch: "main", run_attempt: 1, actor: { id: Number(AUTH_MULTIUSER_MIGRATION_ACTOR_ID) },
+      repository: { full_name: "krustallik/body-model" },
+    };
+    const ciRun = {
+      id: Number(AUTH_MULTIUSER_MIGRATION_CI_RUN_ID), path: ".github/workflows/ci.yml",
+      event: "push", status: "completed", conclusion: "success", head_sha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      head_branch: "main", run_attempt: 1, actor: { id: Number(AUTH_MULTIUSER_MIGRATION_ACTOR_ID) },
+      repository: { full_name: "krustallik/body-model" },
+    };
+    expect(validateHistoricalAuthMigrationRuns(migrationRun, ciRun)).toBe(true);
+    expect(() => validateHistoricalAuthMigrationRuns({ ...migrationRun, conclusion: "failure" }, ciRun)).toThrow(/historical owner-authorized Auth migration/);
+    expect(() => validateHistoricalAuthMigrationRuns(migrationRun, { ...ciRun, head_sha: "f".repeat(40) })).toThrow(/historical owner-authorized Auth migration/);
+  });
+
+  it("creates an Auth marker only from the full read-only schema and migration evidence", () => {
+    const report = authPostflightReport();
+    const plan = buildAuthSchemaReattestation({
+      report,
+      deploySha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      repo: process.cwd(),
+      workflowRunId: "40123456789",
+      workflowRunAttempt: 1,
+      authorizationId: "a".repeat(64),
+    });
+    expect(plan.marker).toMatchObject({
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      migrationOriginSha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      deploySha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      state: "schema-applied",
+      workflowRunId: "40123456789",
+      workflowRunAttempt: 1,
+      authorizationId: "a".repeat(64),
+    });
+    expect(plan.schemaInventoryDigest).toMatch(/^[a-f0-9]{64}$/);
+
+    const incomplete = structuredClone(report);
+    incomplete.objects.find(({ name }) => name === "User_email_key").present = false;
+    incomplete.objects.find(({ name }) => name === "User_email_key").signature = null;
+    expect(() => buildAuthSchemaReattestation({
+      report: incomplete,
+      deploySha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      repo: process.cwd(),
+      workflowRunId: "40123456789",
+      workflowRunAttempt: 1,
+      authorizationId: "a".repeat(64),
+    })).toThrow(/schema report failed the Auth postflight contract/);
+  });
+
+  it.skipIf(process.platform === "win32")("atomically creates the absent Auth marker and refuses overwrite", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-reattest-"));
+    directories.push(directory);
+    const reportPath = path.join(directory, "report.json");
+    const markerPath = path.join(directory, "marker-directory", "marker");
+    const markerDirectory = path.dirname(markerPath);
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(markerDirectory));
+    await writeFile(reportPath, JSON.stringify(authPostflightReport()), { mode: 0o600 });
+    await chmod(reportPath, 0o600);
+    const options = {
+      markerPath,
+      legacyMarkerPath: path.join(directory, "legacy-marker"),
+      reportPath,
+      deploySha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      repo: process.cwd(),
+      workflowRunId: "40123456789",
+      workflowRunAttempt: 1,
+      authorizationId: "a".repeat(64),
+    };
+    const created = await applyAuthSchemaReattestation(options);
+    expect(created.marker.state).toBe("schema-applied");
+    expect(parseSchemaDeployMarker(await readFile(markerPath, "utf8")).marker.authorizationId).toBe("a".repeat(64));
+    await expect(applyAuthSchemaReattestation(options)).rejects.toThrow(/existing release marker/);
+  }, 30_000);
+
   it("keeps the existing Auth app-ready marker valid and blocks an unreviewed README change", () => {
     const previousDeploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const previousCompatibility = readGitCompatibility(process.cwd(), previousDeploySha,

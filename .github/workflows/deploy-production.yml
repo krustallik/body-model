@@ -32,6 +32,11 @@ on:
         required: true
         default: false
         type: boolean
+      reattest_auth_handoff:
+        description: Re-attest the previously owner-applied Auth schema only from the pinned historical migration run and a fresh exact-schema read-only report
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -52,6 +57,7 @@ jobs:
       reason: ${{ steps.gate.outputs.reason }}
       ci_run_url: ${{ steps.gate.outputs.ci_run_url }}
       deploy_mode: ${{ steps.gate.outputs.deploy_mode }}
+      auth_handoff_reattest: ${{ steps.gate.outputs.auth_handoff_reattest }}
     steps:
       - name: Checkout main gate helpers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -75,12 +81,16 @@ jobs:
           FRESH_EMPTY_INSTALL: ${{ inputs.fresh_empty_install }}
           SERVE_RECOVERED_V4: ${{ inputs.serve_recovered_v4 }}
           MIGRATION_FREE_SERVING: ${{ inputs.migration_free_serving }}
+          AUTH_HANDOFF_REATTEST: ${{ inputs.reattest_auth_handoff }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_EVENT_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -Eeuo pipefail
           [[ "$REPOSITORY" == "krustallik/body-model" && "$REF" == "refs/heads/main" ]] || {
             echo "::error::Production deploy must run from the canonical repository and main branch."; exit 1;
+          }
+          [[ "$AUTH_HANDOFF_REATTEST" != "true" || ( "$EVENT_NAME" == "workflow_dispatch" && "$MIGRATION_FREE_SERVING" == "true" ) ]] || {
+            echo "::error::Auth schema re-attestation requires the exact owner-dispatched migration-free serving path."; exit 1;
           }
           gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-deploy-run.json"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
@@ -209,6 +219,21 @@ jobs:
           console.log(JSON.stringify(result, null, 2));
           NODE
           fi
+          if [[ "$AUTH_HANDOFF_REATTEST" == "true" ]]; then
+            gh api repos/krustallik/body-model/actions/runs/41545707543 > "$RUNNER_TEMP/auth-migration-run.json"
+            gh api repos/krustallik/body-model/actions/runs/41542857004 > "$RUNNER_TEMP/auth-migration-ci-run.json"
+            node --input-type=module - "$RUNNER_TEMP/auth-migration-run.json" "$RUNNER_TEMP/auth-migration-ci-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { validateHistoricalAuthMigrationRuns } from "./scripts/production-schema-deploy-handoff.mjs";
+          validateHistoricalAuthMigrationRuns(
+            JSON.parse(readFileSync(process.argv[2], "utf8")),
+            JSON.parse(readFileSync(process.argv[3], "utf8")),
+          );
+          NODE
+            echo "auth_handoff_reattest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "auth_handoff_reattest=false" >> "$GITHUB_OUTPUT"
+          fi
           DECISION="$(grep '^decision=' "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2-)"
           if [[ "$DECISION" == "skip" ]]; then
             echo "A newer main SHA superseded this completed CI run; no production job will start." >> "$GITHUB_STEP_SUMMARY"
@@ -227,7 +252,10 @@ jobs:
           elif [[ "$MODE" == "recovered-v4-serving" ]]; then
             echo "- mode: separately confirmed exact-SHA serving after a completed no-app V4 recovery; candidate starts behind verified maintenance and traffic commits only under the PostgreSQL currentness fence" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "$MODE" == "migration-free-serving" ]]; then
-            echo "- mode: owner-confirmed migration-free exact-SHA app replacement; maintenance remains active until the unchanged database/raw-input identity, 74/74 schema, healthy candidate, and held Training/Unified currentness fence pass" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: owner-confirmed migration-free exact-SHA app replacement; maintenance remains active until DB/raw-input identity, exact schema, healthy candidate, and held Training/Unified currentness fence pass" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$AUTH_HANDOFF_REATTEST" == "true" ]]; then
+              echo "- Auth lineage: re-attested only from the pinned historical owner migration/CI and a fresh read-only full schema report; no migrations or DDL run" >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "- mode: owner-authorized non-serving schema-cutover deploy; traffic remains in maintenance" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -341,6 +369,7 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           DEPLOY_MODE: ${{ needs.authorize.outputs.deploy_mode }}
+          AUTH_HANDOFF_REATTEST: ${{ needs.authorize.outputs.auth_handoff_reattest }}
         run: |
           set -Eeuo pipefail
           : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
@@ -395,6 +424,8 @@ jobs:
           DEPLOY_MODE="${5:-}"
           RELEASE_WORKFLOW_RUN_ID="${6:-}"
           RELEASE_WORKFLOW_RUN_ATTEMPT="${7:-}"
+          REATTEST_AUTH_HANDOFF="${8:-false}"
+          [[ "$REATTEST_AUTH_HANDOFF" == "true" || "$REATTEST_AUTH_HANDOFF" == "false" ]] || { echo "Auth handoff re-attestation dispatch input is malformed." >&2; exit 2; }
           OIDC_TOKEN_FILE=""
           if [[ "$DEPLOY_MODE" == "migration-free-serving" ]]; then
             [[ "$RELEASE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]{0,19}$ \
@@ -469,7 +500,10 @@ jobs:
               getent ahostsv4 "$APP_HOST" | awk '$1 == "169.58.239.149" { found = 1 } END { exit !found }' || {
                 echo "APP_HOST does not resolve to the authorized BodyCast VPS." >&2; exit 1;
               }
+              AUTH_HANDOFF_REATTEST_VALUE=0
+              [[ "$REATTEST_AUTH_HANDOFF" == "true" ]] && AUTH_HANDOFF_REATTEST_VALUE=1
               BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 BODYCAST_MIGRATION_FREE_CANDIDATE=1 \
+                BODYCAST_AUTH_HANDOFF_REATTEST="$AUTH_HANDOFF_REATTEST_VALUE" \
                 BODYCAST_MIGRATION_FREE_OIDC_TOKEN_FILE="$OIDC_TOKEN_FILE" \
                 BODYCAST_RELEASE_WORKFLOW_RUN_ID="$RELEASE_WORKFLOW_RUN_ID" \
                 BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT="$RELEASE_WORKFLOW_RUN_ATTEMPT" \
@@ -485,7 +519,7 @@ jobs:
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
           [[ "$RELEASE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ && "$RELEASE_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Workflow run binding is malformed."; exit 1; }
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$DEPLOY_MODE' '$RELEASE_WORKFLOW_RUN_ID' '$RELEASE_WORKFLOW_RUN_ATTEMPT'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$DEPLOY_MODE' '$RELEASE_WORKFLOW_RUN_ID' '$RELEASE_WORKFLOW_RUN_ATTEMPT' '$AUTH_HANDOFF_REATTEST'"
           if [[ "$DEPLOY_MODE" == "migration-free-serving" ]]; then
             OIDC_TOKEN="$(node --input-type=module <<'NODE'
           const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;

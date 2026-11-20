@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
+import { link, lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST } from "./production-migration-manifests.mjs";
+import { evaluateProductionPostflight, schemaInventoryDigest } from "./production-migration-preflight.mjs";
 import { PROGRAMLESS_STRENGTH_SESSIONS_CAPABILITY, readProductionAppCapabilitiesAtSha } from "./production-app-capabilities.mjs";
 
+export const AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA = "18e67d53856af1f4742bbe9626abbd005b70e8bf";
+export const AUTH_MULTIUSER_MIGRATION_WORKFLOW_RUN_ID = "41545707543";
+export const AUTH_MULTIUSER_MIGRATION_CI_RUN_ID = "41542857004";
+export const AUTH_MULTIUSER_MIGRATION_ACTOR_ID = "126446430";
 export const SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA = "62b6961dde7036100c8af7281e7bfab75bb662db";
 export const V4_REPUBLICATION_MIGRATION_ORIGIN_SHA = "8b4a195e8afb67c0a913d0175a030e01cc665732";
 export const SCHEMA_DEPLOY_HANDOFF_PROVENANCE = Object.freeze({
@@ -214,6 +219,18 @@ const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock
 const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma"]);
 const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
 export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+  ".github/workflows/deploy-production.yml": Object.freeze({
+    migrationOriginBlob: "252f5c6797f961dddeab4a0d758c7d35610271f8",
+    deployBlob: "df94bdd1e86dba85d7b37875e10f9af1496b2601",
+  }),
+  "scripts/deploy.sh": Object.freeze({
+    migrationOriginBlob: "557dafb14f1b68e3cd0d904a8668a1f1073bd025",
+    deployBlob: Object.freeze([
+      "019604bb624322d2099b8f05c8f9d63f218cf256",
+      "d61f76029dd457bae62ccdeec25b212c0094c9f6",
+      "9ffffae4430876b2e06ae590fa0c6e58490b20e8",
+    ]),
+  }),
   "README.md": Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
     deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
@@ -681,6 +698,138 @@ export function serializeSchemaDeployHandoff(marker) {
     reject("serialized handoff did not round-trip");
   }
   return Buffer.from(text, "utf8");
+}
+
+export function validateHistoricalAuthMigrationRuns(migrationRun, ciRun) {
+  const runIsExact = migrationRun?.id === Number(AUTH_MULTIUSER_MIGRATION_WORKFLOW_RUN_ID)
+    && migrationRun.path === ".github/workflows/production-migrate.yml"
+    && migrationRun.event === "workflow_dispatch"
+    && migrationRun.status === "completed" && migrationRun.conclusion === "success"
+    && migrationRun.head_sha === AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA
+    && migrationRun.head_branch === "main" && migrationRun.run_attempt === 1
+    && String(migrationRun.actor?.id ?? "") === AUTH_MULTIUSER_MIGRATION_ACTOR_ID
+    && migrationRun.repository?.full_name === "krustallik/body-model";
+  const ciIsExact = ciRun?.id === Number(AUTH_MULTIUSER_MIGRATION_CI_RUN_ID)
+    && ciRun.path === ".github/workflows/ci.yml"
+    && ciRun.event === "push"
+    && ciRun.status === "completed" && ciRun.conclusion === "success"
+    && ciRun.head_sha === AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA
+    && ciRun.head_branch === "main" && ciRun.run_attempt === 1
+    && String(ciRun.actor?.id ?? "") === AUTH_MULTIUSER_MIGRATION_ACTOR_ID
+    && ciRun.repository?.full_name === "krustallik/body-model";
+  if (!runIsExact || !ciIsExact) reject("the historical owner-authorized Auth migration and its exact-SHA CI evidence do not match the pinned release lineage");
+  return true;
+}
+
+export function buildAuthSchemaReattestation({ report, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId }) {
+  if (!SHA.test(String(deploySha ?? "")) || !/^[1-9][0-9]{0,19}$/.test(String(workflowRunId ?? ""))
+    || !Number.isSafeInteger(workflowRunAttempt) || workflowRunAttempt < 1
+    || !/^[a-f0-9]{64}$/.test(String(authorizationId ?? ""))) {
+    reject("Auth schema re-attestation is not bound to an exact deploy SHA and one-use owner OIDC receipt");
+  }
+  let compatibility;
+  try {
+    compatibility = readGitCompatibility(repo, deploySha, AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA, AUTH_MULTIUSER_MANIFEST_ID);
+  } catch (error) {
+    reject(`the exact candidate is not compatible with the verified Auth schema origin: ${String(error?.message ?? error)}`);
+  }
+  assertCompatibleChangedPaths(compatibility.changedPaths, compatibility.changedPathObjects,
+    AUTH_MULTIUSER_CONTENT_BOUND_PATHS, AUTH_MULTIUSER_NON_RUNTIME_PATH);
+  assertCriticalObjects(compatibility.criticalObjects, AUTH_MULTIUSER_CRITICAL_TREES, AUTH_MULTIUSER_CRITICAL_FILES);
+  if (compatibility.isAncestor !== true) reject("the candidate is not a descendant of the verified Auth migration origin");
+
+  let migrationDirectories;
+  try {
+    migrationDirectories = git(repo, ["ls-tree", "-d", "--name-only", `${deploySha}:prisma/migrations`]).split("\n").filter(Boolean);
+  } catch { reject("the exact candidate migration tree could not be read"); }
+  const schema = evaluateProductionPostflight(report, migrationDirectories, AUTH_MULTIUSER_MANIFEST_ID);
+  if (schema.ready !== true) reject(`the read-only production schema report failed the Auth postflight contract (${schema.blockers.length} blocker(s))`);
+  if (!/^[a-f0-9]{64}$/.test(String(report.logicalDataFingerprint ?? ""))) reject("the read-only production report is missing its logical-data fingerprint");
+
+  const migrationRows = [...report.migrations].map((row) => ({
+    name: row.name, checksum: row.checksum, startedAt: row.startedAt, finishedAt: row.finishedAt,
+    rolledBackAt: row.rolledBackAt, hasLogs: row.hasLogs, logsFingerprint: row.logsFingerprint,
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  const evidence = {
+    contract: "bodycast-auth-schema-reattest-v1",
+    migration: {
+      workflowRunId: AUTH_MULTIUSER_MIGRATION_WORKFLOW_RUN_ID,
+      workflowPath: ".github/workflows/production-migrate.yml",
+      sha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+      ciRunId: AUTH_MULTIUSER_MIGRATION_CI_RUN_ID,
+      actorId: AUTH_MULTIUSER_MIGRATION_ACTOR_ID,
+    },
+    candidate: { sha: deploySha, workflowRunId: String(workflowRunId), workflowRunAttempt },
+    databaseIdentityDigest: sha256(Buffer.from(JSON.stringify(report.identity), "utf8")),
+    migrationHistoryDigest: sha256(Buffer.from(JSON.stringify(migrationRows), "utf8")),
+    schemaInventoryDigest: schemaInventoryDigest(report.objects),
+    logicalDataFingerprint: report.logicalDataFingerprint,
+  };
+  const sourceMarkerDigest = sha256(Buffer.from(JSON.stringify(evidence), "utf8"));
+  const lineageDigest = sha256(Buffer.from(`bodycast-auth-schema-reattest-lineage-v1\n${sourceMarkerDigest}\n${authorizationId}\n`, "utf8"));
+  const compatibilityHash = compatibilityDigest({
+    migrationOriginSha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+    deploySha,
+    changedPaths: compatibility.changedPaths,
+    changedPathObjects: compatibility.changedPathObjects,
+    criticalObjects: compatibility.criticalObjects,
+  });
+  const marker = {
+    manifestId: AUTH_MULTIUSER_MANIFEST_ID,
+    migrationOriginSha: AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
+    deploySha,
+    state: "schema-applied",
+    workflowRunId: String(workflowRunId),
+    workflowRunAttempt,
+    authorizationId,
+    lineageDigest,
+    spawnState: "started",
+    sourceMarkerDigest,
+    compatibilityDigest: compatibilityHash,
+  };
+  return { marker, bytes: serializeSchemaDeployHandoff(marker), schemaInventoryDigest: evidence.schemaInventoryDigest };
+}
+
+export async function applyAuthSchemaReattestation({ markerPath, legacyMarkerPath, reportPath, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId }) {
+  const markerDirectory = path.dirname(markerPath);
+  const directoryInfo = await lstat(markerDirectory).catch(() => null);
+  if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()) reject("the production release marker directory is missing or unsafe");
+  for (const candidate of [markerPath, legacyMarkerPath]) {
+    if (!candidate) continue;
+    const existing = await lstat(candidate).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+    if (existing) reject("an existing release marker appeared; Auth schema re-attestation only starts from an absent marker");
+  }
+  const reportInfo = await lstat(reportPath).catch(() => null);
+  if (!reportInfo?.isFile() || reportInfo.isSymbolicLink() || (reportInfo.mode & 0o077) !== 0) reject("the production schema report is missing, linked, or not private");
+  const reportText = await readFile(reportPath, "utf8");
+  if (Buffer.byteLength(reportText, "utf8") > 32 * 1024 * 1024) reject("the production schema report exceeds the bounded size");
+  let report;
+  try { report = JSON.parse(reportText); } catch { reject("the production schema report is malformed"); }
+  const plan = buildAuthSchemaReattestation({ report, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId });
+  const lockPath = `${markerPath}.lock`;
+  const lock = await open(lockPath, "wx", 0o600).catch((error) => {
+    if (error?.code === "EEXIST") reject("another schema deploy handoff is already active or interrupted");
+    throw error;
+  });
+  const temporary = path.join(markerDirectory, `.auth-schema-reattest.${process.pid}.${Date.now()}`);
+  try {
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(plan.bytes); await handle.sync(); }
+    finally { await handle.close(); }
+    for (const candidate of [markerPath, legacyMarkerPath]) {
+      if (!candidate) continue;
+      const existing = await lstat(candidate).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+      if (existing) reject("a release marker appeared during Auth schema re-attestation");
+    }
+    await link(temporary, markerPath);
+    await unlink(temporary);
+    await fsyncDirectory(markerDirectory);
+    return { action: "write", marker: plan.marker, schemaInventoryDigest: plan.schemaInventoryDigest };
+  } finally {
+    await unlink(temporary).catch(() => {});
+    await lock.close();
+    await unlink(lockPath).catch(() => {});
+  }
 }
 
 function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths = CONTENT_BOUND_PATHS, unboundNonRuntimePath) {
@@ -1254,7 +1403,26 @@ export async function applySchemaDeployHandoff({ markerPath, deploySha, repo, be
 }
 
 async function main() {
-  const [mode, markerPath, second, third] = process.argv.slice(2);
+  const [mode, markerPath, second, third, ...remaining] = process.argv.slice(2);
+  if (mode === "--validate-auth-reattest") {
+    const [reportPath, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId] = [markerPath, second, third, ...remaining];
+    if (![reportPath, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId].every(Boolean)) {
+      reject("usage: --validate-auth-reattest <report> <deploy-sha> <repository> <run-id> <attempt> <authorization-id>");
+    }
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    buildAuthSchemaReattestation({ report, deploySha, repo, workflowRunId,
+      workflowRunAttempt: Number(workflowRunAttempt), authorizationId });
+    return;
+  }
+  if (mode === "--reattest-auth") {
+    const [legacyMarkerPath, reportPath, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId] = [second, third, ...remaining];
+    if (![markerPath, legacyMarkerPath, reportPath, deploySha, repo, workflowRunId, workflowRunAttempt, authorizationId].every(Boolean)) {
+      reject("usage: --reattest-auth <marker> <legacy-marker> <report> <deploy-sha> <repository> <run-id> <attempt> <authorization-id>");
+    }
+    await applyAuthSchemaReattestation({ markerPath, legacyMarkerPath, reportPath, deploySha, repo,
+      workflowRunId, workflowRunAttempt: Number(workflowRunAttempt), authorizationId });
+    return;
+  }
   if (mode === "--check" || mode === "--apply") {
     const deploySha = second;
     const repo = third || process.cwd();

@@ -128,6 +128,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
           ],
         },
         select: { id: true, name: true, stableKey: true },
+        orderBy: { id: "asc" },
       });
       expect(relatedRows).toEqual([
         ...relatedBefore.filter(({ id }) => id !== existing?.id),

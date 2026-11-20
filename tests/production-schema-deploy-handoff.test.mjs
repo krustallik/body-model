@@ -280,7 +280,7 @@ describe("schema deploy compatibility handoff", () => {
     ]) {
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[exerciseReleasePath];
       expect(binding?.deployBlob).toMatch(/^[a-f0-9]{40}$/);
-      expect(execFileSync("git", ["hash-object", `--path=${exerciseReleasePath}`, "--", exerciseReleasePath], { encoding: "utf8" }).trim())
+      expect(execFileSync("git", ["rev-parse", `${currentDeploySha}:${exerciseReleasePath}`], { encoding: "utf8" }).trim())
         .toBe(binding.deployBlob);
     }
     expect(currentCompatibility.changedPathObjects["src/model/weight-observation-filter.ts"]).toMatchObject({

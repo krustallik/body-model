@@ -373,11 +373,11 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/app/training/exercise-images.ts": Object.freeze({
     migrationOriginBlob: "f7e8a57cb8e331b6f1fb4eabc36012de16f480f1",
-    deployBlob: "1c45fd91cb8c14c1734128322c7248cd0e92fe38",
+    deployBlob: "758e27fce4a5b645870d0fa42478211f7c35ee21",
   }),
   "src/app/training/exercise-info.ts": Object.freeze({
     migrationOriginBlob: "0f310bb071b918a2cb95bfe2d8e75033bf14811f",
-    deployBlob: "e3710b95ac88412b0d9cbe900914ec2a978ccc35",
+    deployBlob: "e155126c355c79e404e56d756b73821b057a7a12",
   }),
   "src/app/training/training-exercise-pane.tsx": Object.freeze({
     migrationOriginBlob: "ab90d59ad0c5922caa19e6e0ae591dc04cbc6870",
@@ -397,7 +397,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/app/training/exercise-load-config-editor.tsx": Object.freeze({
     migrationOriginBlob: "ce7fff772c06e03c2cd9f5e4facb84abc7c5d72c",
-    deployBlob: "b448e0268ffa365f0dc1d728a4fbc27e0d7fa85c",
+    deployBlob: "5f766256a43903d60d2be10a542e60ff1d8278dd",
   }),
   "src/app/training/training-labels.ts": Object.freeze({
     migrationOriginBlob: "503587495e9dd9ed428715668cf34978c0faa94f",
@@ -405,15 +405,15 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/training/canonical-exercise-identity.ts": Object.freeze({
     migrationOriginBlob: "22d496aaa71a85a52517a94da249e5df6008588e",
-    deployBlob: "b126b24dda39c056f3925d3c1cd5be97afba386c",
+    deployBlob: "378cd9d6cf0f5b0d46c901454a25712c620d342d",
   }),
   "src/modules/training/external-load-accounting.ts": Object.freeze({
     migrationOriginBlob: "5e379d1fb29b0acccea763858c718eb6f7bf1378",
-    deployBlob: "6cdeebec95018103d86573ef1882bb48e3740c65",
+    deployBlob: "0cc1694d4e5ad27eddbe2e492d28ed8e637c1437",
   }),
   "src/modules/training/load-accounting-v1.ts": Object.freeze({
     migrationOriginBlob: "dc1f97440c0334666275c5df2398479f52c397a9",
-    deployBlob: "a6b6a5d0d800fd140f1ede6d58c378264de242b3",
+    deployBlob: "d747be980284e44bf10d099edd823ff8da5ab54c",
   }),
   "src/modules/training/training.constants.ts": Object.freeze({
     migrationOriginBlob: "e21d9fdd64700f4b6ee8f84c22a457fc08972c4d",
@@ -421,7 +421,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/training/training.repository.ts": Object.freeze({
     migrationOriginBlob: "302a8a821f5983bcb289b40462032541932645c6",
-    deployBlob: "ea6755a09557d361ccb286ceefc970253e2ade93",
+    deployBlob: "f87c9896e702b9ad825b053e8a31de4a5ba4bf10",
   }),
   "public/training/exercises/barbell-hip-thrust.png": Object.freeze({
     migrationOriginBlob: null,

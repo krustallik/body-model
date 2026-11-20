@@ -2655,10 +2655,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     expect(await db.dailyHealthData.findUnique({ where: { id: dailyId } })).not.toBeNull();
     expect(await db.strengthDiarySession.count({ where: { id: { in: fixture.sessions.map((row) => row.id) } } })).toBe(0);
     expect(await db.profile.findUnique({ where: { id: fixture.profiles[0]!.id } })).toEqual(firstCleanup.deletedProfiles > 0 ? null : profileBeforeCleanup);
+    const stableCatalogCountBeforeFinalCleanup = await db.exerciseCatalog.count({ where: { stableKey: { not: null } } });
     await db.workout.delete({ where: { id: SENTINEL_WORKOUT_ID } });
     const finalCleanup = await persistence!.cleanupStage01Namespace(db);
     expect(await db.dailyHealthData.findUnique({ where: { id: dailyId } })).toBeNull();
     expect(await db.profile.findUnique({ where: { id: fixture.profiles[0]!.id } })).toEqual(finalCleanup.deletedProfiles > 0 ? null : profileBeforeCleanup);
-    expect(await db.exerciseCatalog.count({ where: { stableKey: { not: null } } })).toBe(18);
+    expect(await db.exerciseCatalog.count({ where: { stableKey: { not: null } } })).toBe(stableCatalogCountBeforeFinalCleanup);
   });
 });

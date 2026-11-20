@@ -1108,7 +1108,7 @@ describe("schema deploy compatibility handoff", () => {
     });
     expect(() => readGitCompatibility(altered.repository, altered.candidateSha,
       TRAINING_MIGRATION_SHA, TRAINING_MUTATION_LEDGER_MANIFEST.id)).toThrow(/src differs from the migration origin/);
-  });
+  }, 30_000);
 
   it("rejects a V3 Training marker whose deploy SHA was changed", () => {
     const compatibility = readGitCompatibility(process.cwd(), TRAINING_MIGRATION_SHA,

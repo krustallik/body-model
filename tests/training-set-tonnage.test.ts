@@ -103,7 +103,7 @@ describe("external load accounting + ordinary tonnage", () => {
 
   it("covers every canonical stableKey with explicit load-accounting semantics", () => {
     const coverage = approvedExternalLoadAccountingCoverageV1();
-    expect(coverage).toEqual({ expected: 18, mapped: 18, missingStableKeys: [] });
+    expect(coverage).toEqual({ expected: 27, mapped: 27, missingStableKeys: [] });
     for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
       expect(lookupExternalLoadAccountingV1(identity.stableKey)).not.toBeNull();
     }

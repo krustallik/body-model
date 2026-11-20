@@ -1125,7 +1125,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     if (current.resistanceType === RESISTANCE.RESISTANCE_BAND) {
       const band = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(band) || band <= 0) {
-        setError(uk ? "Вкажіть опір резинки." : "Enter band resistance.");
+        setError(uk ? "Вкажіть номінальний опір." : "Enter nominal resistance.");
         return;
       }
       payload.bandNominalResistanceKg = band;

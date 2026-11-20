@@ -1,6 +1,6 @@
 /**
  * Presentation mapping: ExerciseCatalog.name → static illustration.
- * Keys are the exact seeded catalog names (stable unique with profileId).
+ * Keys are exact canonical catalog names (stable unique with profileId).
  * Lookup never uses program/session index.
  */
 const EXERCISE_IMAGE_BY_CATALOG_NAME: Record<string, string> = {
@@ -22,6 +22,15 @@ const EXERCISE_IMAGE_BY_CATALOG_NAME: Record<string, string> = {
   "Присідання з гантеллю в руках": "/training/exercises/goblet-squat.png",
   "Прямі скручування з гантеллю на прес": "/training/exercises/dumbbell-crunch.png",
   "Бокові скручування з гантеллю на прес": "/training/exercises/dumbbell-russian-twist.png",
+  "Спліт-присідання з піднятою передньою стопою": "/training/exercises/front-foot-elevated-split-squat.png",
+  "Румунська тяга (Romanian Deadlift)": "/training/exercises/romanian-deadlift.png",
+  "Згинання ніг із нижнім блоком": "/training/exercises/cable-leg-curl.png",
+  "Підйом таза зі штангою (Hip Thrust)": "/training/exercises/barbell-hip-thrust.png",
+  "Відведення ноги назад із нижнім блоком": "/training/exercises/cable-glute-kickback.png",
+  "Підйоми на носок стоячи на одній нозі": "/training/exercises/single-leg-standing-calf-raise.png",
+  "Підйоми на носок сидячи": "/training/exercises/seated-calf-raise.png",
+  "Приведення ноги на нижньому блоці": "/training/exercises/cable-hip-adduction.png",
+  "Відведення ноги вбік на нижньому блоці": "/training/exercises/cable-hip-abduction.png",
 };
 
 export function resolveExerciseImageSrc(input: {

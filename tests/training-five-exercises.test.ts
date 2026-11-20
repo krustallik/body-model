@@ -13,9 +13,9 @@ const expected = [
 ] as const;
 
 describe("five supported Training exercises", () => {
-  it("adds exactly five unique stable identities without renaming existing catalog entries", () => {
-    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(18);
-    expect(new Set(CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey)).size).toBe(18);
+  it("keeps the canonical catalog identities unique without renaming existing entries", () => {
+    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(27);
+    expect(new Set(CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey)).size).toBe(27);
     for (const exercise of expected) {
       expect(CANONICAL_EXERCISE_IDENTITIES).toContainEqual({ stableKey: exercise.key, displayName: exercise.name });
     }

@@ -128,7 +128,7 @@ describe("Stage 01 literal load accounting golden", () => {
 
 describe("versioned config and execution semantics", () => {
   it("accepts per-hand pairs, one implement across both hands, bars, and unilateral work", () => {
-    expect(Object.keys(LEGACY_LOAD_CONFIGS_V1)).toHaveLength(18);
+    expect(Object.keys(LEGACY_LOAD_CONFIGS_V1)).toHaveLength(27);
     expect(loadConfigV1Schema.safeParse(LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg).success).toBe(true);
     expect(LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg).toMatchObject({
       inventoryCount: 2, loadedSides: 2, loadInput: "per-implement-kg", repsMeaning: "per-side",

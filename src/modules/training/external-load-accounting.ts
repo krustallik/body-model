@@ -86,6 +86,15 @@ const REGISTRY_ENTRIES: readonly RegistryEntry[] = [
   { stableKey: "goblet_squat", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
   { stableKey: "dumbbell_crunch", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
   { stableKey: "dumbbell_russian_twist", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
+  { stableKey: "front_foot_elevated_split_squat", accounting: unilateralDumbbellPairBothSides },
+  { stableKey: "romanian_deadlift", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
+  { stableKey: "cable_leg_curl", accounting: unilateralBothSides },
+  { stableKey: "barbell_hip_thrust", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
+  { stableKey: "cable_glute_kickback", accounting: unilateralBothSides },
+  { stableKey: "single_leg_standing_calf_raise", accounting: unilateralBothSides },
+  { stableKey: "seated_calf_raise", accounting: { entryBasis: "total-external-load", setExecution: "single-total-load", ordinaryTonnageFactor: 1 } },
+  { stableKey: "cable_hip_adduction", accounting: unilateralBothSides },
+  { stableKey: "cable_hip_abduction", accounting: unilateralBothSides },
 ] as const;
 
 export const EXTERNAL_LOAD_ACCOUNTING_REGISTRY_V1: ReadonlyMap<

@@ -772,7 +772,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     } else if (current.resistanceType === RESISTANCE.RESISTANCE_BAND) {
       const band = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(band) || band <= 0) {
-        setError(uk ? "Вкажіть номінальний опір резинки (кг)." : "Enter band nominal resistance (kg).");
+        setError(uk ? "Вкажіть номінальний опір (кг)." : "Enter nominal resistance (kg).");
         return;
       }
       payload.bandNominalResistanceKg = band;
@@ -1900,7 +1900,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                           const load = exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null
                             ? `${set.weightKg}kg`
                             : exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null
-                              ? `${set.bandNominalResistanceKg}kg band`
+                              ? `${set.bandNominalResistanceKg}kg nominal resistance`
                               : exercise.resistanceType === RESISTANCE.BODYWEIGHT
                                 ? additionalLoadKg !== undefined && additionalLoadKg > 0
                                   ? `${uk ? "власна вага" : "bodyweight"} +${formatLoadKg(additionalLoadKg, intlLocale)} ${uk ? "кг" : "kg"}`

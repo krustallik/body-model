@@ -7,7 +7,10 @@ import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/mo
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { selectPersistedEnergyResolutionV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
-import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
+import {
+  ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES,
+  CANONICAL_EXERCISE_IDENTITIES,
+} from "./canonical-exercise-identity";
 import {
   DIARY_COMPLETENESS,
   ENTRY_MODE,
@@ -930,6 +933,7 @@ export class TrainingRepository {
     activeOnly?: boolean;
   }): Promise<ExerciseCatalogDto[]> {
     const profileId = requireProfileId(options.profileId);
+    await this.ensureProfileOneExerciseCatalogExtensions(profileId);
     const activeOnly = options.activeOnly ?? true;
     const rows = await this.db.exerciseCatalog.findMany({
       where: {
@@ -940,6 +944,75 @@ export class TrainingRepository {
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
     return rows.map(toCatalogDto);
+  }
+
+  /**
+   * Profile 1 predates authenticated profile provisioning. Add only the new,
+   * canonical catalog rows on its first catalog read without a schema/data
+   * migration. Existing rows are never re-keyed, renamed, reactivated, or
+   * otherwise rewritten; conflicting names/keys fail closed.
+   */
+  private async ensureProfileOneExerciseCatalogExtensions(profileId: number): Promise<void> {
+    if (profileId !== 1) return;
+
+    const identities = ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES;
+    const where = {
+      profileId,
+      OR: [
+        { stableKey: { in: identities.map(({ stableKey }) => stableKey) } },
+        { name: { in: identities.map(({ displayName }) => displayName) } },
+      ],
+    };
+    const existing = await this.db.exerciseCatalog.findMany({
+      where,
+      select: { id: true, name: true, stableKey: true, isActive: true },
+    });
+    const additions: Array<{
+      profileId: number;
+      name: string;
+      stableKey: string;
+      isActive: true;
+    }> = [];
+
+    for (const identity of identities) {
+      const byKey = existing.filter((row) => row.stableKey === identity.stableKey);
+      const byName = existing.filter((row) => row.name === identity.displayName);
+      if (byKey.length > 1 || byName.length > 1) {
+        throw new Error(`ExerciseCatalog duplicate identity for ${identity.stableKey}`);
+      }
+      const keyed = byKey[0];
+      const named = byName[0];
+      if (keyed || named) {
+        if (!keyed || !named || keyed.id !== named.id
+          || keyed.name !== identity.displayName || keyed.stableKey !== identity.stableKey
+          || !keyed.isActive) {
+          throw new Error(`ExerciseCatalog conflict for ${identity.stableKey}`);
+        }
+        continue;
+      }
+      additions.push({
+        profileId,
+        name: identity.displayName,
+        stableKey: identity.stableKey,
+        isActive: true,
+      });
+    }
+
+    if (additions.length === 0) return;
+    await this.db.exerciseCatalog.createMany({ data: additions, skipDuplicates: true });
+
+    const persisted = await this.db.exerciseCatalog.findMany({
+      where,
+      select: { id: true, name: true, stableKey: true, isActive: true },
+    });
+    for (const identity of identities) {
+      const keyed = persisted.filter((row) => row.stableKey === identity.stableKey);
+      const named = persisted.filter((row) => row.name === identity.displayName);
+      if (keyed.length !== 1 || named.length !== 1 || keyed[0]!.id !== named[0]!.id
+        || !keyed[0]!.isActive || keyed[0]!.name !== identity.displayName) {
+        throw new Error(`ExerciseCatalog conflict while adding ${identity.stableKey}`);
+      }
+    }
   }
 
   /**

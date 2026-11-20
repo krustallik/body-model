@@ -14,14 +14,23 @@ export const RESISTANCE = {
 export type ResistanceType = (typeof RESISTANCE)[keyof typeof RESISTANCE];
 
 /**
- * New program/session entries retain an editable resistance selector. This is
- * merely the safe default for the canonical standard pull-up, not a restriction
- * on recording a weighted variation later.
+ * New program/session entries retain an editable resistance selector. These
+ * canonical defaults reflect the recorded load source; users can still choose
+ * a different supported resistance type for a variation.
  */
 export function recommendedResistanceTypeForCatalogStableKey(
   stableKey: string | null | undefined,
 ): ResistanceType {
-  return stableKey === "pull_up" ? RESISTANCE.BODYWEIGHT : RESISTANCE.EXTERNAL_WEIGHT;
+  if (stableKey === "pull_up") return RESISTANCE.BODYWEIGHT;
+  if ([
+    "one_arm_cable_triceps_extension",
+    "one_arm_seated_cable_row",
+    "cable_leg_curl",
+    "cable_glute_kickback",
+    "cable_hip_adduction",
+    "cable_hip_abduction",
+  ].includes(stableKey ?? "")) return RESISTANCE.RESISTANCE_BAND;
+  return RESISTANCE.EXTERNAL_WEIGHT;
 }
 
 export const SESSION_STATUS = {
@@ -80,7 +89,7 @@ export const DIARY_COMPLETENESS = {
 export type DiaryCompleteness = (typeof DIARY_COMPLETENESS)[keyof typeof DIARY_COMPLETENESS];
 
 /**
- * Exact Ukrainian display names for the original supported catalog.
+ * Exact Ukrainian display names for the supported catalog.
  * Identity for model code is CANONICAL_EXERCISE_IDENTITIES[].stableKey — not these names.
  */
 export const SEEDED_EXERCISE_NAMES = CANONICAL_EXERCISE_IDENTITIES.map(

@@ -110,13 +110,22 @@ describe("versioned exercise anatomy mapping v1", () => {
     })).toBeNull();
   });
 
-  it("keeps the five new entries explicitly unmapped where current anatomy taxonomy has no supported categories", () => {
+  it("keeps canonical exercises explicitly unmapped where current anatomy taxonomy has no supported categories", () => {
     expect(CANONICAL_EXERCISES_WITHOUT_V7_MAPPING).toEqual([
       "bulgarian_split_squat",
       "forward_dumbbell_lunge",
       "goblet_squat",
       "dumbbell_crunch",
       "dumbbell_russian_twist",
+      "front_foot_elevated_split_squat",
+      "romanian_deadlift",
+      "cable_leg_curl",
+      "barbell_hip_thrust",
+      "cable_glute_kickback",
+      "single_leg_standing_calf_raise",
+      "seated_calf_raise",
+      "cable_hip_adduction",
+      "cable_hip_abduction",
     ]);
     for (const stableKey of CANONICAL_EXERCISES_WITHOUT_V7_MAPPING) {
       expect(buildExerciseAnatomySnapshotV1(stableKey)).toMatchObject({

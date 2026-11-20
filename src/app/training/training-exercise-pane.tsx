@@ -44,7 +44,7 @@ function setLoadLabel(
     exercise.resistanceType === RESISTANCE.RESISTANCE_BAND
     && set.bandNominalResistanceKg !== null
   ) {
-    return `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`;
+    return `${set.bandNominalResistanceKg} ${uk ? "кг номінального опору" : "kg nominal resistance"}`;
   }
   const bodyweightLabel = uk ? "власна вага" : "bodyweight";
   const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
@@ -66,7 +66,7 @@ function historyLoadLabel(
     return `${set.weightKg} ${uk ? "кг" : "kg"}`;
   }
   if (resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null) {
-    return `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`;
+    return `${set.bandNominalResistanceKg} ${uk ? "кг номінального опору" : "kg nominal resistance"}`;
   }
   const bodyweightLabel = uk ? "власна вага" : "bodyweight";
   const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
@@ -309,7 +309,7 @@ function HistoricalSetRow({
     } else if (entry.resistanceType === RESISTANCE.RESISTANCE_BAND) {
       const bandNominalResistanceKg = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(bandNominalResistanceKg) || bandNominalResistanceKg <= 0) {
-        setError(uk ? "Вкажіть опір резинки." : "Enter band resistance.");
+        setError(uk ? "Вкажіть номінальний опір." : "Enter nominal resistance.");
         return;
       }
       payload.bandNominalResistanceKg = bandNominalResistanceKg;
@@ -513,7 +513,7 @@ function HistoricalSetRow({
           </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy || mutationBlocked} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => { setAdditionalLoadDirty(true); setDraft((current) => ({ ...current, additionalLoadKg: event.target.value })); }} /></label>}
-          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
           {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
           <label><span>RIR</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
           <label className={styles.workoutHistoryComment}><span>{uk ? "Коментар" : "Comment"}</span><textarea disabled={busy || mutationBlocked} maxLength={500} value={draft.comment} onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))} /></label>
@@ -695,7 +695,7 @@ function LiveLoggedSetRow({
           <section className={`${styles.liveEntry} ${styles.liveSetInlineEditor}`} aria-label={uk ? `Редагування підходу ${set.setNumber}` : `Edit set ${set.setNumber}`}>
             <div className={styles.liveFields}>
               {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label className={styles.liveField}><span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.weightKg} onChange={(event) => onDraftChange({ ...draft, weightKg: event.target.value })} /></label>}
-              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
               {exercise.resistanceType === RESISTANCE.BODYWEIGHT && <label className={styles.liveField}><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => onDraftChange({ ...draft, additionalLoadKg: event.target.value })} /></label>}
               {asymmetricReps ? <>
                 <label className={styles.liveField}><span>{uk ? "Повтори зліва" : "Left reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" value={draft.leftReps} onChange={(event) => onDraftChange({ ...draft, leftReps: event.target.value })} /></label>
@@ -896,7 +896,7 @@ export function ExercisePane(props: ExercisePaneProps) {
             )}
             {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && (
               <label className={styles.liveField}>
-                <span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span>
+                <span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span>
                 <input
                   inputMode="decimal"
                   autoComplete="off"

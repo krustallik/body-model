@@ -12,7 +12,7 @@ export function trainingSessionTitle(programName: string | null, uk: boolean): s
 
 export function resistanceLabel(type: ResistanceType, uk: boolean): string {
   if (type === RESISTANCE.EXTERNAL_WEIGHT) return uk ? "Зовнішня вага" : "External weight";
-  if (type === RESISTANCE.RESISTANCE_BAND) return uk ? "Резинки" : "Resistance bands";
+  if (type === RESISTANCE.RESISTANCE_BAND) return uk ? "Номінальний опір" : "Nominal resistance";
   return uk ? "Власна вага" : "Bodyweight";
 }
 

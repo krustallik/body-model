@@ -306,7 +306,7 @@ export function ExerciseLoadConfigEditor({
           ? "Enter the weight of one implement from a pair. Both implements are counted automatically; enter reps once for the whole set."
           : "Enter the weight of one implement. Enter reps once for the whole set; the exercise rule accounts for its setup."
       : mode === "band-logged-side"
-        ? uk ? "Номінальний опір рахується окремо від зовнішньої ваги: значення для підходу × записані повтори." : "Nominal band resistance stays separate from external load: the set value × entered repetitions."
+        ? uk ? "Номінальний опір блока або резинки обліковується окремо від зовнішньої ваги: значення для підходу × записані повтори." : "Nominal cable or band resistance is accounted separately from external load: the set value × entered repetitions."
         : mode === "band-each-side"
           ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує сумарний внесок обох сторін." : "The entered rep count applies equally to the left and right; the example shows their combined contribution."
           : mode === "bodyweight-per-side"

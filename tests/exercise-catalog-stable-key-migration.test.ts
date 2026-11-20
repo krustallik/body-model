@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import {
+  ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES,
+  CANONICAL_EXERCISE_IDENTITIES,
+} from "@/modules/training/canonical-exercise-identity";
 
 const stableKeyMigrationPath = "prisma/migrations/20260917200000_add_exercise_catalog_stable_key/migration.sql";
 const pullUpMigrationPath = "prisma/migrations/20260920190000_add_pull_up_exercise_catalog/migration.sql";
@@ -19,12 +22,20 @@ describe("ExerciseCatalog stable-key migration contract", () => {
     expect(stableKeyMigration).toContain("RAISE EXCEPTION 'ExerciseCatalog stableKey conflict for a canonical exercise'");
   });
 
-  it("covers every canonical identity across immutable catalog migrations", () => {
+  it("keeps existing identities in migrations and the nine additions migration-free", () => {
     const canonicalCatalogMigrations = `${stableKeyMigration}\n${pullUpMigration}\n${fiveExerciseMigration}`;
+    const additions = new Set<string>(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey));
+    const previouslyMigrated = CANONICAL_EXERCISE_IDENTITIES.filter(({ stableKey }) => !additions.has(stableKey));
 
-    for (const exercise of CANONICAL_EXERCISE_IDENTITIES) {
+    expect(previouslyMigrated).toHaveLength(18);
+    for (const exercise of previouslyMigrated) {
       expect(canonicalCatalogMigrations).toContain(exercise.stableKey);
       expect(canonicalCatalogMigrations).toContain(exercise.displayName);
+    }
+
+    for (const exercise of ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES) {
+      expect(canonicalCatalogMigrations).not.toContain(exercise.stableKey);
+      expect(canonicalCatalogMigrations).not.toContain(exercise.displayName);
     }
 
     expect(pullUpMigration).toContain("'pull_up'");

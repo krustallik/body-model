@@ -213,7 +213,7 @@ const CRITICAL_TREES = ["prisma"];
 const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];
 const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma"]);
 const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
-const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   "README.md": Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
     deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
@@ -370,6 +370,94 @@ const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   "scripts/production-release-marker.sh": Object.freeze({
     migrationOriginBlob: "3aea7779d5a3b5e8438367be7e372a224672fb8d",
     deployBlob: "c2d45ada47d6c63eaa744a365bce8200d23e61e2",
+  }),
+  "src/app/training/exercise-images.ts": Object.freeze({
+    migrationOriginBlob: "f7e8a57cb8e331b6f1fb4eabc36012de16f480f1",
+    deployBlob: "1c45fd91cb8c14c1734128322c7248cd0e92fe38",
+  }),
+  "src/app/training/exercise-info.ts": Object.freeze({
+    migrationOriginBlob: "0f310bb071b918a2cb95bfe2d8e75033bf14811f",
+    deployBlob: "e3710b95ac88412b0d9cbe900914ec2a978ccc35",
+  }),
+  "src/app/training/training-exercise-pane.tsx": Object.freeze({
+    migrationOriginBlob: "ab90d59ad0c5922caa19e6e0ae591dc04cbc6870",
+    deployBlob: "6c6bcf9b29cf98309092814a23c0708e67a90802",
+  }),
+  "src/app/training/session-accounting-panel.tsx": Object.freeze({
+    migrationOriginBlob: "3d60397e44947547d5b1dfdf9f89a338c79f3954",
+    deployBlob: "0bd81716820d49d260edea7d656699199b5e31cb",
+  }),
+  "src/app/training/sessions/[id]/session-client.tsx": Object.freeze({
+    migrationOriginBlob: "d085fb60abcd1911efa49ee2061429a553992b8b",
+    deployBlob: "9c89a3751af7fa51b7f921b8ba1970e21496ea7e",
+  }),
+  "src/app/training/sessions/[id]/edit/session-edit-client.tsx": Object.freeze({
+    migrationOriginBlob: "c338a7d9f38be5d296c94916283807c91f708160",
+    deployBlob: "075310f73317c0160b51e36c9955cb5667384e82",
+  }),
+  "src/app/training/exercise-load-config-editor.tsx": Object.freeze({
+    migrationOriginBlob: "ce7fff772c06e03c2cd9f5e4facb84abc7c5d72c",
+    deployBlob: "b448e0268ffa365f0dc1d728a4fbc27e0d7fa85c",
+  }),
+  "src/app/training/training-labels.ts": Object.freeze({
+    migrationOriginBlob: "503587495e9dd9ed428715668cf34978c0faa94f",
+    deployBlob: "164138be83b309a09722bed8774696f7187f5795",
+  }),
+  "src/modules/training/canonical-exercise-identity.ts": Object.freeze({
+    migrationOriginBlob: "22d496aaa71a85a52517a94da249e5df6008588e",
+    deployBlob: "b126b24dda39c056f3925d3c1cd5be97afba386c",
+  }),
+  "src/modules/training/external-load-accounting.ts": Object.freeze({
+    migrationOriginBlob: "5e379d1fb29b0acccea763858c718eb6f7bf1378",
+    deployBlob: "6cdeebec95018103d86573ef1882bb48e3740c65",
+  }),
+  "src/modules/training/load-accounting-v1.ts": Object.freeze({
+    migrationOriginBlob: "dc1f97440c0334666275c5df2398479f52c397a9",
+    deployBlob: "a6b6a5d0d800fd140f1ede6d58c378264de242b3",
+  }),
+  "src/modules/training/training.constants.ts": Object.freeze({
+    migrationOriginBlob: "e21d9fdd64700f4b6ee8f84c22a457fc08972c4d",
+    deployBlob: "583449d202bbc3703787bc02c84937b9e1592768",
+  }),
+  "src/modules/training/training.repository.ts": Object.freeze({
+    migrationOriginBlob: "302a8a821f5983bcb289b40462032541932645c6",
+    deployBlob: "ea6755a09557d361ccb286ceefc970253e2ade93",
+  }),
+  "public/training/exercises/barbell-hip-thrust.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "090fb793ae0d301df4bf57f925d5e77e40329af3",
+  }),
+  "public/training/exercises/cable-glute-kickback.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "a670976b2160010363b53d6caf9923001000314b",
+  }),
+  "public/training/exercises/cable-hip-abduction.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "c544e4b37f12c4a8da935912693de4407c3773c8",
+  }),
+  "public/training/exercises/cable-hip-adduction.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "609364fba69d7b7f8742609d7d83a09732026110",
+  }),
+  "public/training/exercises/cable-leg-curl.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "aa34afaefc6dda49d20d154cdc7062631c6d3683",
+  }),
+  "public/training/exercises/front-foot-elevated-split-squat.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "efb1b41194235954a88e438b0698848923f23457",
+  }),
+  "public/training/exercises/romanian-deadlift.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "7d7af7a722f7f4e771f198a2c8a18d4f108926bc",
+  }),
+  "public/training/exercises/seated-calf-raise.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "dd0cd0fd93014dccdec417c02d738b210f569b74",
+  }),
+  "public/training/exercises/single-leg-standing-calf-raise.png": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "5fa5165b31acbdbd5b4e19707960ddabd33813b3",
   }),
 });
 const ADVANCEABLE_V3_STATES = new Set(["schema-applied", "app-ready"]);

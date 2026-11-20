@@ -23,14 +23,23 @@ describe("exercise image catalog mapping", () => {
     })).toBeNull();
   });
 
-  it("covers all eighteen catalog exercises and resolves the five supplied images", () => {
-    expect(knownExerciseImageCatalogNames()).toHaveLength(18);
+  it("covers all twenty-seven catalog exercises and resolves the supplied images", () => {
+    expect(knownExerciseImageCatalogNames()).toHaveLength(27);
     const expected = [
       ["Болгарські присідання з упором задньої ноги на лаву", "bulgarian-split-squat.png"],
       ["Випади вперед", "forward-dumbbell-lunge.png"],
       ["Присідання з гантеллю в руках", "goblet-squat.png"],
       ["Прямі скручування з гантеллю на прес", "dumbbell-crunch.png"],
       ["Бокові скручування з гантеллю на прес", "dumbbell-russian-twist.png"],
+      ["Спліт-присідання з піднятою передньою стопою", "front-foot-elevated-split-squat.png"],
+      ["Румунська тяга (Romanian Deadlift)", "romanian-deadlift.png"],
+      ["Згинання ніг із нижнім блоком", "cable-leg-curl.png"],
+      ["Підйом таза зі штангою (Hip Thrust)", "barbell-hip-thrust.png"],
+      ["Відведення ноги назад із нижнім блоком", "cable-glute-kickback.png"],
+      ["Підйоми на носок стоячи на одній нозі", "single-leg-standing-calf-raise.png"],
+      ["Підйоми на носок сидячи", "seated-calf-raise.png"],
+      ["Приведення ноги на нижньому блоці", "cable-hip-adduction.png"],
+      ["Відведення ноги вбік на нижньому блоці", "cable-hip-abduction.png"],
     ] as const;
     for (const [name, file] of expected) {
       expect(resolveExerciseImageSrc({ catalogName: name })).toBe(`/training/exercises/${file}`);

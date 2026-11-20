@@ -282,9 +282,9 @@ function legacySingleDumbbellPerMovement(setupId: string): LoadConfigV1 {
   };
 }
 
-function legacyBand(setupId: string): LoadConfigV1 {
+function legacyBand(setupId: string, equipmentId = "resistance-band"): LoadConfigV1 {
   return {
-    ...common(1, 2, "unilateral", "resistance-band", setupId),
+    ...common(1, 2, "unilateral", equipmentId, setupId),
     accountingKind: "band-nominal-per-logged-side",
     resistanceType: "band-nominal",
     loadInput: "nominal-kg-per-logged-side",
@@ -346,6 +346,33 @@ export const LEGACY_LOAD_CONFIGS_V1: Readonly<Record<
   goblet_squat: immutableConfig(legacySingleDumbbellPerMovement("goblet-hold")),
   dumbbell_crunch: immutableConfig(legacySingleDumbbellPerMovement("crunch-load")),
   dumbbell_russian_twist: immutableConfig(legacySingleDumbbellPerMovement("russian-twist-load")),
+  front_foot_elevated_split_squat: immutableConfig(legacyDumbbellPairPerSide("front-foot-elevated-split-squat-dumbbell-pair")),
+  romanian_deadlift: immutableConfig({
+    ...common(1, 2, "simultaneous", "barbell", "romanian-deadlift"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  cable_leg_curl: immutableConfig(legacyBand("lower-pulley-leg-curl-cuff", "cable-stack")),
+  barbell_hip_thrust: immutableConfig({
+    ...common(1, 2, "simultaneous", "barbell", "hip-thrust-pad"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  cable_glute_kickback: immutableConfig(legacyBand("lower-pulley-ankle-cuff", "cable-stack")),
+  single_leg_standing_calf_raise: immutableConfig(legacyPerSide("dumbbell", "single-leg-calf-raise")),
+  seated_calf_raise: immutableConfig({
+    ...common(1, 2, "simultaneous", "dumbbell", "seated-calf-raise-on-thighs"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  cable_hip_adduction: immutableConfig(legacyBand("lower-pulley-ankle-cuff-adduction", "cable-stack")),
+  cable_hip_abduction: immutableConfig(legacyBand("lower-pulley-ankle-cuff-abduction", "cable-stack")),
 });
 
 export type ConfigProvenanceV1 = {

@@ -109,7 +109,7 @@ function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: b
   const labels: Record<LoadAccountingBreakdownContributionV1["basis"], [string, string]> = {
     "per-implement-kg": ["кг на снаряд", "kg per implement"],
     "complete-setup-kg": ["кг на всю систему", "kg for complete setup"],
-    "nominal-kg-per-logged-side": ["номінальний опір резинки", "nominal band resistance"],
+    "nominal-kg-per-logged-side": ["номінальний опір", "nominal resistance"],
     "bodyweight-reference": ["референс маси тіла", "bodyweight reference"],
     sets: ["підходи", "sets"],
     repetitions: ["повторення", "repetitions"],
@@ -204,9 +204,9 @@ function contributionValue(contribution: DisplayContribution, uk: boolean): stri
 function compactCategoryLabel(category: LoadAccountingBreakdownContributionV1["category"], uk: boolean): string {
   const labels: Record<LoadAccountingBreakdownContributionV1["category"], [string, string]> = {
     externalLoadVolume: ["Зовнішнє", "External"],
-    bandNominalPerLoggedSide: ["Резинки", "Bands"],
-    bandNominalLeftSide: ["Резинки", "Bands"],
-    bandNominalRightSide: ["Резинки", "Bands"],
+    bandNominalPerLoggedSide: ["Номінальний опір", "Nominal resistance"],
+    bandNominalLeftSide: ["Номінальний опір", "Nominal resistance"],
+    bandNominalRightSide: ["Номінальний опір", "Nominal resistance"],
     bodyweightSets: ["Власна вага", "Bodyweight"],
     bodyweightRepetitions: ["Власна вага", "Bodyweight"],
     bodyweightReferenceVolume: ["Власна вага", "Bodyweight"],
@@ -250,7 +250,7 @@ function BreakdownRow({
     : null;
   const loadParts = [
     row.enteredLoad.externalKg !== null ? numberText(row.enteredLoad.externalKg, uk) + (uk ? " кг" : " kg") : null,
-    row.enteredLoad.bandNominalKg !== null ? numberText(row.enteredLoad.bandNominalKg, uk) + (uk ? " кг резинки" : " kg band") : null,
+    row.enteredLoad.bandNominalKg !== null ? numberText(row.enteredLoad.bandNominalKg, uk) + (uk ? " кг номінального опору" : " kg nominal resistance") : null,
     bodyweightConfig
       ? reference.status === "unavailable"
         ? (uk ? "референс маси недоступний" : "bodyweight reference unavailable")
@@ -390,7 +390,7 @@ export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, 
                 uk={uk}
               />
               <MetricCard
-                label={uk ? "Резинки" : "Bands"}
+                label={uk ? "Номінальний опір" : "Nominal resistance"}
                 metric={combinedBandMetric(accounting)}
                 unit={uk ? "ном. кг × повтори" : "nominal kg × reps"}
                 tone="bands"

@@ -202,7 +202,7 @@ describe("persisted session accounting UI", () => {
     expect(screen.getByText("4 667")).toBeTruthy();
     expect(screen.getByText(/2\s770,2/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Зовнішнє навантаження" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Резинки" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Номінальний опір" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Власна вага" })).toBeTruthy();
     expect(screen.queryByText(/ліва сторона|права сторона|left side|right side|logged side/i)).toBeNull();
     expect(screen.queryByText(/Підходи з власною вагою|Повторення з власною вагою|Bodyweight sets|Bodyweight repetitions/i)).toBeNull();
@@ -242,7 +242,7 @@ describe("persisted session accounting UI", () => {
         },
       },
     })} uk />);
-    const bands = screen.getByRole("heading", { name: "Резинки" }).closest("article");
+    const bands = screen.getByRole("heading", { name: "Номінальний опір" }).closest("article");
     expect(bands?.textContent).toContain("480");
   });
   it("shows bodyweight contribution provenance for exact, nearest, as-of, and unavailable values", async () => {

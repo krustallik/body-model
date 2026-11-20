@@ -1,7 +1,10 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
-import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import {
+  ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES,
+  CANONICAL_EXERCISE_IDENTITIES,
+} from "@/modules/training/canonical-exercise-identity";
 import { TrainingRepository } from "@/modules/training/training.repository";
 
 requireIsolatedStage01Database(process.env.DATABASE_URL, process.env.BODYCAST_STAGE01_MODE, "test");
@@ -38,16 +41,108 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     }
   });
 
-  it("exposes all eighteen canonical rows through the catalog repository surface", async () => {
-    await trainingRepository.ensureCanonicalExerciseCatalog(1);
-    const rows = (await trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
-      .filter((row) => CANONICAL_EXERCISE_IDENTITIES.some((exercise) => exercise.displayName === row.name));
+  it("exposes all twenty-seven canonical rows through the catalog repository surface", async () => {
+    const existing = await prisma.exerciseCatalog.findMany({
+      where: {
+        profileId: 1,
+        OR: [
+          { stableKey: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey) } },
+          { name: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName) } },
+        ],
+      },
+      select: { id: true },
+    });
+    const preexistingIds = new Set(existing.map(({ id }) => id));
 
-    expect(rows).toHaveLength(18);
-    expect(new Map(rows.map((row) => [row.name, row.stableKey]))).toEqual(new Map(
-      CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.displayName, exercise.stableKey]),
-    ));
-    expect(rows.every((row) => row.stableKey != null)).toBe(true);
+    try {
+      const rows = (await trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
+        .filter((row) => CANONICAL_EXERCISE_IDENTITIES.some((exercise) => exercise.displayName === row.name));
+
+      expect(rows).toHaveLength(27);
+      expect(new Map(rows.map((row) => [row.name, row.stableKey]))).toEqual(new Map(
+        CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.displayName, exercise.stableKey]),
+      ));
+      expect(rows.every((row) => row.stableKey != null)).toBe(true);
+      const repeated = (await trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
+        .filter((row) => CANONICAL_EXERCISE_IDENTITIES.some((exercise) => exercise.displayName === row.name));
+      expect(repeated.map(({ id, stableKey }) => [id, stableKey])).toEqual(rows.map(({ id, stableKey }) => [id, stableKey]));
+    } finally {
+      const insertedIds = (await prisma.exerciseCatalog.findMany({
+        where: {
+          profileId: 1,
+          OR: [
+            { stableKey: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey) } },
+            { name: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName) } },
+          ],
+        },
+        select: { id: true },
+      })).map(({ id }) => id).filter((id) => !preexistingIds.has(id));
+      if (insertedIds.length > 0) {
+        await prisma.exerciseCatalog.deleteMany({ where: { profileId: 1, id: { in: insertedIds } } });
+      }
+    }
+  });
+
+  it("fails closed when a Profile 1 catalog name conflicts with a new stable identity", async () => {
+    const identity = ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES[0]!;
+    const relatedBefore = await prisma.exerciseCatalog.findMany({
+      where: {
+        profileId: 1,
+        OR: [
+          { stableKey: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey) } },
+          { name: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName) } },
+        ],
+      },
+      select: { id: true, name: true, stableKey: true },
+    });
+    const byName = relatedBefore.find(({ name }) => name === identity.displayName);
+    const byKey = relatedBefore.find(({ stableKey }) => stableKey === identity.stableKey);
+    const existing = byName ?? byKey;
+    const wrongStableKey = `profile_one_conflict_${Date.now()}`;
+    let conflictId: number;
+
+    if (existing) {
+      const conflict = await prisma.exerciseCatalog.update({
+        where: { id: existing.id },
+        data: { name: identity.displayName, stableKey: wrongStableKey },
+        select: { id: true },
+      });
+      conflictId = conflict.id;
+    } else {
+      const conflict = await prisma.exerciseCatalog.create({
+        data: { profileId: 1, name: identity.displayName, stableKey: wrongStableKey },
+        select: { id: true },
+      });
+      conflictId = conflict.id;
+    }
+
+    try {
+      await expect(trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
+        .rejects.toThrow(/ExerciseCatalog conflict for front_foot_elevated_split_squat/);
+      const relatedRows = await prisma.exerciseCatalog.findMany({
+        where: {
+          profileId: 1,
+          OR: [
+            { stableKey: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey) } },
+            { name: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName) } },
+          ],
+        },
+        select: { id: true, name: true, stableKey: true },
+      });
+      expect(relatedRows).toEqual([
+        ...relatedBefore.filter(({ id }) => id !== existing?.id),
+        { id: conflictId, name: identity.displayName, stableKey: wrongStableKey },
+      ].sort((left, right) => left.id - right.id));
+    } finally {
+      if (existing) {
+        await prisma.exerciseCatalog.update({
+          where: { id: existing.id },
+          data: { name: existing.name, stableKey: existing.stableKey },
+        });
+      } else {
+        await prisma.exerciseCatalog.delete({ where: { id: conflictId } });
+      }
+    }
   });
 
   it("allows null custom identity, scopes non-null uniqueness by profile, and preserves keys on rename", async () => {
@@ -92,7 +187,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
 
     const ensured = await trainingRepository.ensureCanonicalExerciseCatalog(profileSeed);
     const keyed = ensured.filter((row) => row.stableKey != null);
-    expect(keyed).toHaveLength(18);
+    expect(keyed).toHaveLength(27);
     expect(new Map(keyed.map((row) => [row.stableKey, row.name]))).toEqual(new Map(
       CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.stableKey, exercise.displayName]),
     ));
@@ -102,7 +197,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
     await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
     const fresh = await trainingRepository.listCatalog({ profileId: secondProfile, activeOnly: false });
-    expect(fresh).toHaveLength(18);
+    expect(fresh).toHaveLength(27);
     expect(new Set(fresh.map((row) => row.stableKey))).toEqual(
       new Set(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey)),
     );
@@ -147,29 +242,47 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     const beforeProgramExercises = await prisma.programExercise.count();
     const beforeSets = await prisma.strengthSet.count();
 
-    await trainingRepository.ensureCanonicalExerciseCatalog(1);
+    const beforeCatalogIds = new Set(beforeCatalog.map(({ id }) => id));
+    try {
+      await trainingRepository.ensureCanonicalExerciseCatalog(1);
 
-    const afterExercises = await prisma.strengthSessionExercise.findMany({
-      orderBy: { id: "asc" },
-      select: {
-        id: true,
-        sourceExerciseCatalogId: true,
-        muscleMappingSnapshot: true,
-        snapshotExerciseName: true,
-      },
-    });
-    const afterCatalog = await prisma.exerciseCatalog.findMany({
-      where: { profileId: 1, stableKey: { not: null } },
-      orderBy: { id: "asc" },
-      select: { id: true, name: true, stableKey: true },
-    });
+      const afterExercises = await prisma.strengthSessionExercise.findMany({
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          sourceExerciseCatalogId: true,
+          muscleMappingSnapshot: true,
+          snapshotExerciseName: true,
+        },
+      });
+      const afterCatalog = await prisma.exerciseCatalog.findMany({
+        where: { profileId: 1, stableKey: { not: null } },
+        orderBy: { id: "asc" },
+        select: { id: true, name: true, stableKey: true },
+      });
 
-    expect(afterExercises).toEqual(beforeExercises);
-    expect(afterCatalog).toEqual(beforeCatalog);
-    expect(await prisma.strengthDiarySession.count()).toBe(beforeSessions);
-    expect(await prisma.trainingProgram.count()).toBe(beforePrograms);
-    expect(await prisma.programExercise.count()).toBe(beforeProgramExercises);
-    expect(await prisma.strengthSet.count()).toBe(beforeSets);
-    expect(beforeCatalog).toHaveLength(18);
+      expect(afterExercises).toEqual(beforeExercises);
+      expect(afterCatalog.filter(({ id }) => beforeCatalogIds.has(id))).toEqual(beforeCatalog);
+      const afterCatalogByKey = new Map(afterCatalog.map(({ stableKey, name }) => [stableKey, name]));
+      for (const identity of ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES) {
+        expect(afterCatalogByKey.get(identity.stableKey)).toBe(identity.displayName);
+      }
+      expect(await prisma.strengthDiarySession.count()).toBe(beforeSessions);
+      expect(await prisma.trainingProgram.count()).toBe(beforePrograms);
+      expect(await prisma.programExercise.count()).toBe(beforeProgramExercises);
+      expect(await prisma.strengthSet.count()).toBe(beforeSets);
+      expect(afterCatalog.length).toBeGreaterThanOrEqual(beforeCatalog.length);
+    } finally {
+      const insertedIds = (await prisma.exerciseCatalog.findMany({
+        where: {
+          profileId: 1,
+          stableKey: { in: ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey) },
+        },
+        select: { id: true },
+      })).map(({ id }) => id).filter((id) => !beforeCatalogIds.has(id));
+      if (insertedIds.length > 0) {
+        await prisma.exerciseCatalog.deleteMany({ where: { profileId: 1, id: { in: insertedIds } } });
+      }
+    }
   });
 });

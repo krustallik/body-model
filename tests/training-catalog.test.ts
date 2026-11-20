@@ -3,8 +3,8 @@ import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exer
 import { SEEDED_EXERCISE_NAMES } from "@/modules/training/training.constants";
 
 describe("SEEDED_EXERCISE_NAMES", () => {
-  it("matches the supported Ukrainian names seeded by the strength diary migrations", () => {
-    expect(SEEDED_EXERCISE_NAMES).toHaveLength(18);
+  it("matches the supported Ukrainian names in the canonical catalog", () => {
+    expect(SEEDED_EXERCISE_NAMES).toHaveLength(27);
     expect([...SEEDED_EXERCISE_NAMES]).toEqual([
       "Жим гантелей на похилій лаві вгору (30°)",
       "Розведення гантелей на горизонтальній лаві",
@@ -24,16 +24,25 @@ describe("SEEDED_EXERCISE_NAMES", () => {
       "Присідання з гантеллю в руках",
       "Прямі скручування з гантеллю на прес",
       "Бокові скручування з гантеллю на прес",
+      "Спліт-присідання з піднятою передньою стопою",
+      "Румунська тяга (Romanian Deadlift)",
+      "Згинання ніг із нижнім блоком",
+      "Підйом таза зі штангою (Hip Thrust)",
+      "Відведення ноги назад із нижнім блоком",
+      "Підйоми на носок стоячи на одній нозі",
+      "Підйоми на носок сидячи",
+      "Приведення ноги на нижньому блоці",
+      "Відведення ноги вбік на нижньому блоці",
     ]);
   });
 
   it("assigns every supported exercise an explicit immutable ASCII stable key", () => {
-    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(18);
+    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(27);
     expect(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.displayName))
       .toEqual([...SEEDED_EXERCISE_NAMES]);
 
     const stableKeys = CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey);
-    expect(new Set(stableKeys)).toHaveLength(18);
+    expect(new Set(stableKeys)).toHaveLength(27);
     expect(stableKeys.every((stableKey) => /^[a-z0-9_]+$/.test(stableKey))).toBe(true);
   });
 

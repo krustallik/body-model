@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  AUTH_MULTIUSER_CONTENT_BOUND_PATHS,
   SCHEMA_DEPLOY_HANDOFF_PROVENANCE, SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA,
   V4_REPUBLICATION_HANDOFF_PROVENANCE, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
   applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
@@ -253,6 +254,35 @@ describe("schema deploy compatibility handoff", () => {
     const currentCompatibility = readGitCompatibility(process.cwd(), currentDeploySha,
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
     expect(currentCompatibility.changedPaths).toContain("README.md");
+    for (const exerciseReleasePath of [
+      "src/app/training/exercise-images.ts",
+      "src/app/training/exercise-info.ts",
+      "src/app/training/training-exercise-pane.tsx",
+      "src/app/training/session-accounting-panel.tsx",
+      "src/app/training/sessions/[id]/session-client.tsx",
+      "src/app/training/sessions/[id]/edit/session-edit-client.tsx",
+      "src/app/training/exercise-load-config-editor.tsx",
+      "src/app/training/training-labels.ts",
+      "src/modules/training/canonical-exercise-identity.ts",
+      "src/modules/training/external-load-accounting.ts",
+      "src/modules/training/load-accounting-v1.ts",
+      "src/modules/training/training.constants.ts",
+      "src/modules/training/training.repository.ts",
+      "public/training/exercises/barbell-hip-thrust.png",
+      "public/training/exercises/cable-glute-kickback.png",
+      "public/training/exercises/cable-hip-abduction.png",
+      "public/training/exercises/cable-hip-adduction.png",
+      "public/training/exercises/cable-leg-curl.png",
+      "public/training/exercises/front-foot-elevated-split-squat.png",
+      "public/training/exercises/romanian-deadlift.png",
+      "public/training/exercises/seated-calf-raise.png",
+      "public/training/exercises/single-leg-standing-calf-raise.png",
+    ]) {
+      const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[exerciseReleasePath];
+      expect(binding?.deployBlob).toMatch(/^[a-f0-9]{40}$/);
+      expect(execFileSync("git", ["hash-object", `--path=${exerciseReleasePath}`, "--", exerciseReleasePath], { encoding: "utf8" }).trim())
+        .toBe(binding.deployBlob);
+    }
     expect(currentCompatibility.changedPathObjects["src/model/weight-observation-filter.ts"]).toMatchObject({
       migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
       deployBlob: "d9820a4387dacd1dd3d517b6a1365ac0a87a343f",

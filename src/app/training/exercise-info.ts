@@ -246,6 +246,68 @@ const EXERCISE_INFO_BY_CATALOG_NAME: Record<string, ExerciseInfoCopy> = {
     cuesUk: ["обертайте грудну клітку контрольовано", "рухайтеся корпусом, не смикайте гантель", "виконуйте повторення в обидва боки"],
     cuesEn: ["rotate the torso under control", "turn through the trunk instead of swinging the dumbbell", "perform repetitions on both sides"],
   },
+  "Спліт-присідання з піднятою передньою стопою": {
+    primaryMusclesUk: "квадрицепси, сідничні м’язи",
+    primaryMusclesEn: "quadriceps, glutes",
+    secondaryMusclesUk: "задня поверхня стегна, литкові м’язи",
+    secondaryMusclesEn: "hamstrings, calves",
+    cuesUk: ["поставте передню стопу на невисоку опору", "опускайтеся під контролем", "зберігайте рівновагу між сторонами"],
+    cuesEn: ["place the front foot on a low platform", "lower under control", "keep balance consistent on both sides"],
+  },
+  "Румунська тяга (Romanian Deadlift)": {
+    primaryMusclesUk: "задня поверхня стегна, сідничні м’язи",
+    primaryMusclesEn: "hamstrings, glutes",
+    secondaryMusclesUk: "розгиначі спини",
+    secondaryMusclesEn: "spinal erectors",
+    cuesUk: ["відводьте таз назад із м’яко зігнутими колінами", "тримайте штангу близько до ніг", "зупиніть опускання до втрати стабільного положення спини"],
+    cuesEn: ["hinge at the hips with softly bent knees", "keep the bar close to your legs", "stop the descent before losing a stable back position"],
+  },
+  "Згинання ніг із нижнім блоком": {
+    primaryMusclesUk: "задня поверхня стегна",
+    primaryMusclesEn: "hamstrings",
+    secondaryMusclesUk: "литкові м’язи",
+    secondaryMusclesEn: "calves",
+    cuesUk: ["закріпіть манжету на щиколотці", "згинайте коліно без ривка", "контролюйте повернення ноги"],
+    cuesEn: ["secure the cuff at the ankle", "flex the knee without jerking", "control the leg as it returns"],
+  },
+  "Підйом таза зі штангою (Hip Thrust)": {
+    primaryMusclesUk: "сідничні м’язи",
+    primaryMusclesEn: "glutes",
+    secondaryMusclesUk: "задня поверхня стегна",
+    secondaryMusclesEn: "hamstrings",
+    cuesUk: ["розташуйте верх спини на опорі", "піднімайте таз без перерозгинання попереку", "контролюйте опускання штанги"],
+    cuesEn: ["set your upper back against the support", "raise the hips without overextending the lower back", "control the bar on the descent"],
+  },
+  "Відведення ноги назад із нижнім блоком": {
+    primaryMusclesUk: "сідничні м’язи",
+    primaryMusclesEn: "glutes",
+    cuesUk: ["закріпіть манжету на щиколотці", "рухайте ногу назад із нерухомим тазом", "не прогинайте поперек"],
+    cuesEn: ["secure the cuff at the ankle", "move the leg back while keeping the pelvis steady", "avoid arching the lower back"],
+  },
+  "Підйоми на носок стоячи на одній нозі": {
+    primaryMusclesUk: "литкові м’язи",
+    primaryMusclesEn: "calves",
+    cuesUk: ["за потреби тримайтеся за опору", "піднімайте й опускайте п’яту контрольовано", "виконайте заплановані повторення з обох боків"],
+    cuesEn: ["hold a support if needed", "raise and lower the heel under control", "complete the planned repetitions on both sides"],
+  },
+  "Підйоми на носок сидячи": {
+    primaryMusclesUk: "литкові м’язи",
+    primaryMusclesEn: "calves",
+    cuesUk: ["розташуйте навантаження стабільно на стегнах", "рухайтеся через гомілковостопний суглоб", "контролюйте нижню точку"],
+    cuesEn: ["keep the load stable on your thighs", "move through the ankles", "control the bottom position"],
+  },
+  "Приведення ноги на нижньому блоці": {
+    primaryMusclesUk: "привідні м’язи стегна",
+    primaryMusclesEn: "hip adductors",
+    cuesUk: ["закріпіть манжету на щиколотці", "ведіть ногу контрольовано до середньої лінії", "утримуйте корпус нерухомо"],
+    cuesEn: ["secure the cuff at the ankle", "move the leg under control toward the midline", "keep the torso steady"],
+  },
+  "Відведення ноги вбік на нижньому блоці": {
+    primaryMusclesUk: "сідничні м’язи, відвідні м’язи стегна",
+    primaryMusclesEn: "glutes, hip abductors",
+    cuesUk: ["закріпіть манжету на щиколотці", "ведіть ногу вбік без повороту таза", "контролюйте повернення до опори"],
+    cuesEn: ["secure the cuff at the ankle", "move the leg outward without rotating the pelvis", "control the return"],
+  },
 };
 
 export function resolveExerciseInfo(input: {

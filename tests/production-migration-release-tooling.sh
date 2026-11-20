@@ -172,6 +172,9 @@ cp "$ROOT/scripts/production-release-marker.sh" "$FIXTURE_ROOT/scripts/productio
 cp "$ROOT/scripts/production-db-identity.sh" "$FIXTURE_ROOT/scripts/production-db-identity.sh"
 cp "$ROOT/scripts/production-deploy-attestation.sh" "$FIXTURE_ROOT/scripts/production-deploy-attestation.sh"
 cp "$ROOT/scripts/production-schema-deploy-handoff.mjs" "$FIXTURE_ROOT/scripts/production-schema-deploy-handoff.mjs"
+cp "$ROOT/scripts/production-migration-preflight.mjs" "$ROOT/scripts/production-migration-integrity.mjs" \
+  "$ROOT/scripts/production-migration-authorization.mjs" "$ROOT/scripts/production-writer-drain.mjs" \
+  "$ROOT/scripts/postgres-database-identity.mjs" "$ROOT/scripts/github-owner-identity.mjs" "$FIXTURE_ROOT/scripts/"
 cp "$ROOT/scripts/production-app-capabilities.mjs" "$FIXTURE_ROOT/scripts/production-app-capabilities.mjs"
 cp "$ROOT/scripts/production-app-capabilities.json" "$FIXTURE_ROOT/scripts/production-app-capabilities.json"
 cp "$LOCK" "$FIXTURE_ROOT/scripts/production-release-lock.sh"

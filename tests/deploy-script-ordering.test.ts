@@ -378,25 +378,28 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(cutoverSh).toContain("SERVING_COMMIT_OCCURRED=true");
   });
 
-  it("advances a compatible Auth schema handoff only after exact schema preflight and maintenance", () => {
+  it("reattests an Auth schema only after maintenance drains and removes the prior app", () => {
     const authCheck = deploySh.indexOf('BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1"');
     const schemaPreflight = deploySh.indexOf("run_schema_preflight", authCheck);
-    const schemaReportCapture = deploySh.indexOf("capture_auth_handoff_schema_report", schemaPreflight);
-    const schemaReportValidation = deploySh.indexOf("validate_auth_handoff_schema_report", schemaReportCapture);
     const maintenance = deploySh.indexOf("publish_and_confirm_maintenance", schemaPreflight);
-    const authReattest = deploySh.indexOf('production-schema-deploy-handoff.mjs" --reattest-auth', maintenance);
-    const appStop = deploySh.indexOf('stop_exact_app_container "$previous_app_sha"', maintenance);
+    const previousReleaseCapture = deploySh.indexOf("capture_previous_release", maintenance);
+    const appStop = deploySh.indexOf('stop_exact_app_container "$previous_app_sha"', previousReleaseCapture);
+    const schemaReportCapture = deploySh.indexOf("capture_auth_handoff_schema_report", appStop);
+    const schemaReportValidation = deploySh.indexOf("validate_auth_handoff_schema_report", schemaReportCapture);
+    const authReattest = deploySh.indexOf('production-schema-deploy-handoff.mjs" --reattest-auth', schemaReportValidation);
     const authAdvance = deploySh.indexOf("# Advance only the audited app-ready handoff", maintenance);
     const handoffApply = deploySh.indexOf('production-schema-deploy-handoff.mjs" --apply', authAdvance);
 
     expect(authCheck).toBeGreaterThan(-1);
     expect(deploySh).toContain("migration_free_expected_migration_count=77");
     expect(schemaPreflight).toBeGreaterThan(authCheck);
-    expect(schemaReportCapture).toBeGreaterThan(schemaPreflight);
-    expect(schemaReportValidation).toBeGreaterThan(schemaReportCapture);
     expect(maintenance).toBeGreaterThan(schemaPreflight);
-    expect(authReattest).toBeGreaterThan(maintenance);
-    expect(appStop).toBeGreaterThan(authReattest);
+    expect(previousReleaseCapture).toBeGreaterThan(maintenance);
+    expect(appStop).toBeGreaterThan(previousReleaseCapture);
+    expect(schemaReportCapture).toBeGreaterThan(schemaPreflight);
+    expect(schemaReportCapture).toBeGreaterThan(appStop);
+    expect(schemaReportValidation).toBeGreaterThan(schemaReportCapture);
+    expect(authReattest).toBeGreaterThan(schemaReportValidation);
     expect(authAdvance).toBeGreaterThan(maintenance);
     expect(handoffApply).toBeGreaterThan(authAdvance);
     expect(deploySh).toContain('&& ! ( "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" )');

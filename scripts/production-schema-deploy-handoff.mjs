@@ -455,6 +455,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "019604bb624322d2099b8f05c8f9d63f218cf256",
       "d61f76029dd457bae62ccdeec25b212c0094c9f6",
       "9ffffae4430876b2e06ae590fa0c6e58490b20e8",
+      "b9ac4565b6a352d52fae63d66495ca364e795281",
     ]),
   }),
   "scripts/production-traffic-cutover.sh": Object.freeze({

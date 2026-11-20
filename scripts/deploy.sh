@@ -109,7 +109,8 @@ capture_auth_handoff_schema_report() {
   local temporary
   umask 077
   temporary="$(mktemp "/run/bodycast-auth-handoff-preflight.${BODYCAST_RELEASE_WORKFLOW_RUN_ID}.${BODYCAST_RELEASE_WORKFLOW_RUN_ATTEMPT}.XXXXXX")"
-  if ! bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$temporary"; then
+  if ! BODYCAST_DB_PREFLIGHT_MANIFEST=auth-multiuser-v1 \
+    bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$temporary"; then
     rm -f -- "$temporary"
     echo "Read-only production DB schema inventory failed after maintenance and app stop." >&2
     return 1

@@ -406,6 +406,7 @@ describe("schema deploy compatibility handoff", () => {
       "src/app/register/page.tsx",
       "src/lib/auth.ts",
       "src/modules/auth/registration-users.ts",
+      "scripts/production-db-target.sh",
     ]) {
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[authReleasePath];
       const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${authReleasePath}`], { encoding: "utf8" }).trim();
@@ -465,8 +466,9 @@ describe("schema deploy compatibility handoff", () => {
     expect(compatibility.criticalObjects).toHaveProperty("Dockerfile");
     expect(compatibility.changedPaths.every((changed) => changed.startsWith("tests/")
       || changed === ".github/workflows/production-full-history-recalculate.yml"
-      || ["scripts/deploy.sh", "scripts/production-release-marker.sh", "scripts/production-schema-deploy-handoff.mjs",
-        "scripts/production-traffic-cutover.sh", "scripts/production-route-primitives.sh"].includes(changed))).toBe(true);
+      || ["scripts/deploy.sh", "scripts/production-db-target.sh", "scripts/production-release-marker.sh",
+        "scripts/production-schema-deploy-handoff.mjs", "scripts/production-traffic-cutover.sh",
+        "scripts/production-route-primitives.sh"].includes(changed))).toBe(true);
 
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-auth-schema-handoff-"));
     directories.push(directory);

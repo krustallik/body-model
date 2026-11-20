@@ -458,6 +458,13 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "b9ac4565b6a352d52fae63d66495ca364e795281",
     ]),
   }),
+  "scripts/production-db-target.sh": Object.freeze({
+    migrationOriginBlob: "6ee2fb323364c065c0723a42861c6bdc0a120a70",
+    deployBlob: Object.freeze([
+      "6ee2fb323364c065c0723a42861c6bdc0a120a70",
+      "c3a7a37cf46c2653b05906515c5f3785be768a46",
+    ]),
+  }),
   "scripts/production-traffic-cutover.sh": Object.freeze({
     migrationOriginBlob: "3fd321d857e2aa024e4875a2689a588dc07078ee",
     deployBlob: Object.freeze([

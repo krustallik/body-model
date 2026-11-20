@@ -36,6 +36,28 @@ verify_report_endpoint() {
   assert_fixed_database_container_unchanged
 }
 
+run_readonly_db_report() (
+  local target_url="$1"
+  local topology_report="$2"
+  local manifest_id="${3:-}"
+  local sql
+  if [[ -n "$manifest_id" ]]; then
+    sql="$(cd "$ROOT_DIR" && node scripts/production-db-preflight.mjs --manifest "$manifest_id")"
+  else
+    sql="$(cd "$ROOT_DIR" && node scripts/production-db-preflight.mjs)"
+  fi
+  [[ "$sql" == *"BEGIN READ ONLY;"* && "$sql" == *"SELECT json_build_object("* && "$sql" == *"COMMIT;"* ]] || {
+    echo "Rendered production DB report query is missing its read-only transaction contract." >&2
+    return 1
+  }
+  export BODYCAST_PSQL_DATABASE_URL="$target_url"
+  printf '%s\n' "$sql" | docker exec -i --env BODYCAST_PSQL_DATABASE_URL \
+    --env "BODYCAST_WRITER_TOPOLOGY_JSON=$topology_report" \
+    --env 'PGAPPNAME=bodycast-production-preflight' \
+    --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
+    "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON" --file=-'
+)
+
 case "${1:-}" in
   --psql-url)
     effective_psql_url
@@ -53,15 +75,8 @@ case "${1:-}" in
     TARGET_URL="$(effective_psql_url)"
     TOPOLOGY_REPORT="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
       bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
-    export BODYCAST_PSQL_DATABASE_URL="$TARGET_URL"
+    RAW_REPORT="$(run_readonly_db_report "$TARGET_URL" "$TOPOLOGY_REPORT" "${BODYCAST_DB_PREFLIGHT_MANIFEST:-}")"
     unset TARGET_URL
-    RAW_REPORT="$(docker exec -i --env BODYCAST_PSQL_DATABASE_URL \
-      --env "BODYCAST_WRITER_TOPOLOGY_JSON=$TOPOLOGY_REPORT" \
-      --env 'PGAPPNAME=bodycast-production-preflight' \
-      --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-      "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"'
-    )"
-    unset BODYCAST_PSQL_DATABASE_URL
     verify_report_endpoint "$RAW_REPORT"
     printf '%s\n' "$RAW_REPORT" | node --input-type=module -e '
       import { readFileSync } from "node:fs";
@@ -83,15 +98,8 @@ case "${1:-}" in
     DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
     [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
     TARGET_URL="$(effective_psql_url)"
-    export BODYCAST_PSQL_DATABASE_URL="$TARGET_URL"
+    RAW_REPORT="$(run_readonly_db_report "$TARGET_URL" "$TOPOLOGY_BEFORE" "${BODYCAST_DB_PREFLIGHT_MANIFEST:-}")"
     unset TARGET_URL
-    RAW_REPORT="$(docker exec -i --env BODYCAST_PSQL_DATABASE_URL \
-      --env "BODYCAST_WRITER_TOPOLOGY_JSON=$TOPOLOGY_BEFORE" \
-      --env 'PGAPPNAME=bodycast-production-preflight' \
-      --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-      "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"'
-    )"
-    unset BODYCAST_PSQL_DATABASE_URL
     verify_report_endpoint "$RAW_REPORT"
     TOPOLOGY_AFTER="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
       bash "$ROOT_DIR/scripts/production-writer-drain.sh" --pre-maintenance-report)"
@@ -131,15 +139,8 @@ NODE
     # binding the old app image. It explicitly cannot attest writer drain or
     # admit migration; the normal --preflight path must pass after app removal.
     TOPOLOGY_REPORT='{"schemaVersion":1,"contract":"bodycast-previous-app-compatibility-snapshot-v1","ready":false,"blockers":["writer drain is not asserted by a previous-app compatibility snapshot"]}'
-    export BODYCAST_PSQL_DATABASE_URL="$TARGET_URL"
+    RAW_REPORT="$(run_readonly_db_report "$TARGET_URL" "$TOPOLOGY_REPORT" "${BODYCAST_DB_PREFLIGHT_MANIFEST:-}")"
     unset TARGET_URL
-    RAW_REPORT="$(docker exec -i --env BODYCAST_PSQL_DATABASE_URL \
-      --env "BODYCAST_WRITER_TOPOLOGY_JSON=$TOPOLOGY_REPORT" \
-      --env 'PGAPPNAME=bodycast-production-preflight' \
-      --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-      "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"'
-    )"
-    unset BODYCAST_PSQL_DATABASE_URL
     verify_report_endpoint "$RAW_REPORT"
     printf '%s\n' "$RAW_REPORT"
     ;;

@@ -223,6 +223,34 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "252f5c6797f961dddeab4a0d758c7d35610271f8",
     deployBlob: "df94bdd1e86dba85d7b37875e10f9af1496b2601",
   }),
+  "src/app/api/registration/password-setup/route.ts": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "76f686a89f2ff9caf5c2aca2cdb414d4fe37b52e",
+  }),
+  "src/app/api/registration/resend/route.ts": Object.freeze({
+    migrationOriginBlob: "6c352fc4983b9f15d955dfda5647905af29b2fcb",
+    deployBlob: "fb88885e93ca29f21b84ad2a87f81dfff91d34a0",
+  }),
+  "src/app/api/registration/start/route.ts": Object.freeze({
+    migrationOriginBlob: "774849f9e96522fbc838dfd3651f6391d3e2e90f",
+    deployBlob: "81d1b92594672ce62ea3eb4d421012e6d700bd4c",
+  }),
+  "src/app/auth-flow.tsx": Object.freeze({
+    migrationOriginBlob: "a94d77373434b1d4ef3c35ee47a2445ecd3ad8fb",
+    deployBlob: "d4841a8265496fae056f906fb99199089bab7dc5",
+  }),
+  "src/app/register/page.tsx": Object.freeze({
+    migrationOriginBlob: "8cdf4ac669863efb0bace4ca4de5d88361573b12",
+    deployBlob: "7d8080640c95abfb26ee9a447ca365eef84ca552",
+  }),
+  "src/lib/auth.ts": Object.freeze({
+    migrationOriginBlob: "0d0a733b2ff30c09a8277bc83809faeb6920ad61",
+    deployBlob: "cf400f4040db655e4dd127f0821968cd098c3608",
+  }),
+  "src/modules/auth/registration-users.ts": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "f3d70949fda81052014235d27f1cf88c79f02493",
+  }),
   "README.md": Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
     deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",

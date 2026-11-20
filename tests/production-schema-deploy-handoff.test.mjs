@@ -390,6 +390,21 @@ describe("schema deploy compatibility handoff", () => {
       expect(execFileSync("git", ["rev-parse", `${currentDeploySha}:${exerciseReleasePath}`], { encoding: "utf8" }).trim())
         .toBe(binding.deployBlob);
     }
+    for (const authReleasePath of [
+      "src/app/api/registration/password-setup/route.ts",
+      "src/app/api/registration/resend/route.ts",
+      "src/app/api/registration/start/route.ts",
+      "src/app/auth-flow.tsx",
+      "src/app/register/page.tsx",
+      "src/lib/auth.ts",
+      "src/modules/auth/registration-users.ts",
+    ]) {
+      const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[authReleasePath];
+      expect(binding?.deployBlob).toMatch(/^[a-f0-9]{40}$/);
+      expect(currentCompatibility.changedPathObjects[authReleasePath]).toEqual(binding);
+      expect(execFileSync("git", ["rev-parse", `${currentDeploySha}:${authReleasePath}`], { encoding: "utf8" }).trim())
+        .toBe(binding.deployBlob);
+    }
     expect(currentCompatibility.changedPathObjects["src/model/weight-observation-filter.ts"]).toMatchObject({
       migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
       deployBlob: "d9820a4387dacd1dd3d517b6a1365ac0a87a343f",

@@ -591,5 +591,14 @@ describe("persisted session accounting UI", () => {
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
     expect(screen.getByLabelText("Частка маси у відсотках")).toHaveProperty("value", "70");
     expect(screen.getByText(/70% — приблизна частка для віджимань від ручок/)).toBeTruthy();
+
+    cleanup();
+    render(<ExerciseLoadConfigEditor catalogId={22} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} stableKey="knee_push_up_floor" uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+    expect(screen.getByLabelText("Частка маси у відсотках")).toHaveProperty("value", "");
+    expect(screen.getByText(/не підставляється автоматично/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
+    expect(requests).toHaveLength(2);
+    expect(screen.getByRole("alert").textContent).toMatch(/Введіть частку маси/);
   });
 });

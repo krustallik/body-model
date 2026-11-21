@@ -22,7 +22,7 @@ describe("ExerciseCatalog stable-key migration contract", () => {
     expect(stableKeyMigration).toContain("RAISE EXCEPTION 'ExerciseCatalog stableKey conflict for a canonical exercise'");
   });
 
-  it("keeps existing identities in migrations and the nine additions migration-free", () => {
+  it("keeps existing identities in migrations and all additive identities migration-free", () => {
     const canonicalCatalogMigrations = `${stableKeyMigration}\n${pullUpMigration}\n${fiveExerciseMigration}`;
     const additions = new Set<string>(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey));
     const previouslyMigrated = CANONICAL_EXERCISE_IDENTITIES.filter(({ stableKey }) => !additions.has(stableKey));

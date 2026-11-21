@@ -199,15 +199,20 @@ export function ExerciseLoadConfigEditor({
   const current = parsedCurrent.success ? parsedCurrent.data : null;
   const legacyDefault = legacyDefaultFor(stableKey);
   const displayedConfig = current ?? legacyDefault;
+  const requiresExplicitBodyweightShare = [
+    "knee_push_up_floor",
+    "knee_push_up_hands_bench",
+    "incline_push_up_hands_bench",
+  ].includes(stableKey ?? "") && !(displayedConfig && "bodyweightFraction" in displayedConfig);
   const [mode, setMode] = useState<ConfigMode>(() => modeFor(displayedConfig, resistanceType));
   const inventoryCount = displayedConfig?.inventoryCount ?? 1;
   const [loadedSides, setLoadedSides] = useState<1 | 2>(initialLoadedSides(displayedConfig, resistanceType));
   const execution = displayedConfig?.execution ?? "simultaneous";
-  const [bodyweightFractionPercent, setBodyweightFractionPercent] = useState(String(
-    100 * (displayedConfig && "bodyweightFraction" in displayedConfig
+  const [bodyweightFractionPercent, setBodyweightFractionPercent] = useState(() => requiresExplicitBodyweightShare
+    ? ""
+    : String(100 * (displayedConfig && "bodyweightFraction" in displayedConfig
       ? displayedConfig.bodyweightFraction
-      : stableKey === "pushup_handles" ? CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1 : 1),
-  ));
+      : stableKey === "pushup_handles" ? CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1 : 1)));
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -339,7 +344,9 @@ export function ExerciseLoadConfigEditor({
   function saveSelected() {
     const config = selectedConfig(`training-ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
     if (!config) {
-      setError(uk ? "Перевірте введену частку маси: потрібно значення від 1% до 100%." : "Check the body mass share: enter a value from 1% to 100%.");
+      setError(uk
+        ? "Введіть частку маси від 1% до 100%, щоб зберегти правило обліку ваги тіла."
+        : "Enter a body mass share from 1% to 100% to save the bodyweight accounting rule.");
       return;
     }
     void save(config);
@@ -398,7 +405,13 @@ export function ExerciseLoadConfigEditor({
                 <span aria-hidden="true">%</span>
               </div>
               <span id="load-config-bodyweight-help" className={styles.loadConfigNote}>
-                {uk ? "Наприклад, 70% — приблизна частка для віджимань від ручок." : "For example, 70% is the approximate share for handle push-ups."}
+                {requiresExplicitBodyweightShare
+                  ? uk
+                    ? "Частку для цієї варіації не задано. Вкажіть її лише за власним правилом; значення не підставляється автоматично."
+                    : "No share is defined for this variation. Enter one only if you have a chosen rule; no value is assumed automatically."
+                  : uk
+                    ? "Наприклад, 70% — приблизна частка для віджимань від ручок."
+                    : "For example, 70% is the approximate share for handle push-ups."}
               </span>
             </label>
           )}

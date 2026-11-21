@@ -41,7 +41,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     }
   });
 
-  it("exposes all twenty-seven canonical rows through the catalog repository surface", async () => {
+  it("exposes all fifty canonical rows through the catalog repository surface", async () => {
     const existing = await prisma.exerciseCatalog.findMany({
       where: {
         profileId: 1,
@@ -58,7 +58,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
       const rows = (await trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
         .filter((row) => CANONICAL_EXERCISE_IDENTITIES.some((exercise) => exercise.displayName === row.name));
 
-      expect(rows).toHaveLength(27);
+      expect(rows).toHaveLength(50);
       expect(new Map(rows.map((row) => [row.name, row.stableKey]))).toEqual(new Map(
         CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.displayName, exercise.stableKey]),
       ));
@@ -188,7 +188,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
 
     const ensured = await trainingRepository.ensureCanonicalExerciseCatalog(profileSeed);
     const keyed = ensured.filter((row) => row.stableKey != null);
-    expect(keyed).toHaveLength(27);
+    expect(keyed).toHaveLength(50);
     expect(new Map(keyed.map((row) => [row.stableKey, row.name]))).toEqual(new Map(
       CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.stableKey, exercise.displayName]),
     ));
@@ -198,7 +198,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
     await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
     const fresh = await trainingRepository.listCatalog({ profileId: secondProfile, activeOnly: false });
-    expect(fresh).toHaveLength(27);
+    expect(fresh).toHaveLength(50);
     expect(new Set(fresh.map((row) => row.stableKey))).toEqual(
       new Set(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey)),
     );

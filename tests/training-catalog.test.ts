@@ -4,7 +4,7 @@ import { SEEDED_EXERCISE_NAMES } from "@/modules/training/training.constants";
 
 describe("SEEDED_EXERCISE_NAMES", () => {
   it("matches the supported Ukrainian names in the canonical catalog", () => {
-    expect(SEEDED_EXERCISE_NAMES).toHaveLength(27);
+    expect(SEEDED_EXERCISE_NAMES).toHaveLength(50);
     expect([...SEEDED_EXERCISE_NAMES]).toEqual([
       "Жим гантелей на похилій лаві вгору (30°)",
       "Розведення гантелей на горизонтальній лаві",
@@ -33,16 +33,39 @@ describe("SEEDED_EXERCISE_NAMES", () => {
       "Підйоми на носок сидячи",
       "Приведення ноги на нижньому блоці",
       "Відведення ноги вбік на нижньому блоці",
+      "Жим гантелей лежачи на горизонтальній лаві (0°)",
+      "Махи гантелями перед собою (обидві руки)",
+      "Махи гантелями перед собою (почергово)",
+      "Махи гантелями в боки (обидві руки)",
+      "Тяга прямого грифа до підборіддя стоячи (Barbell Upright Row)",
+      "Молоткові згинання стоячи (обидві руки)",
+      "Молоткові згинання стоячи (почергово)",
+      "Згинання гантелей із супінацією (обидві руки)",
+      "Згинання гантелей із супінацією (почергово)",
+      "Віджимання з колін від підлоги",
+      "Віджимання з колін, руки на лаві",
+      "Віджимання від лави з прямими ногами",
+      "Тяга гантелі однією рукою з упором на лаву",
+      "Французький жим однією рукою лежачи на горизонтальній лаві (0°)",
+      "Французький жим однією гантеллю двома руками лежачи на горизонтальній лаві (0°)",
+      "Французький жим однією рукою з-за голови на похилій лаві (30°)",
+      "Французький жим однією гантеллю двома руками з-за голови на похилій лаві (30°)",
+      "Французький жим однією рукою з-за голови сидячи, спинка 90°",
+      "Французький жим однією гантеллю двома руками з-за голови сидячи, спинка 90°",
+      "Французький жим з EZ-грифом лежачи на горизонтальній лаві (0°)",
+      "Французький жим з EZ-грифом лежачи на похилій лаві (30°)",
+      "Французький жим з EZ-грифом з-за голови сидячи, спинка 90°",
+      "Французький жим з EZ-грифом з-за голови сидячи, спинка 30°",
     ]);
   });
 
   it("assigns every supported exercise an explicit immutable ASCII stable key", () => {
-    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(27);
+    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(50);
     expect(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.displayName))
       .toEqual([...SEEDED_EXERCISE_NAMES]);
 
     const stableKeys = CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey);
-    expect(new Set(stableKeys)).toHaveLength(27);
+    expect(new Set(stableKeys)).toHaveLength(50);
     expect(stableKeys.every((stableKey) => /^[a-z0-9_]+$/.test(stableKey))).toBe(true);
   });
 

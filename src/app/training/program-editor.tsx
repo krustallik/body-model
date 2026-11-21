@@ -12,6 +12,7 @@ import {
 } from "@/modules/training/training.constants";
 import type { ExerciseCatalogDto, TrainingProgramDto } from "@/modules/training/training.types";
 import { ExerciseLoadConfigEditor } from "./exercise-load-config-editor";
+import { ExercisePicker } from "./exercise-picker";
 import { readApiError, resistanceLabel } from "./training-labels";
 import { safeTrainingReturnHref } from "./training-url-state";
 import styles from "./training.module.css";
@@ -55,6 +56,7 @@ export function ProgramEditorClient({
   const [addCatalogId, setAddCatalogId] = useState<string>("");
   const [addPlannedSets, setAddPlannedSets] = useState("3");
   const [addResistance, setAddResistance] = useState<ResistanceType>(RESISTANCE.EXTERNAL_WEIGHT);
+  const [exercisePickerOpen, setExercisePickerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,13 +110,13 @@ export function ProgramEditorClient({
     };
   }, [programId, uk]);
 
-  function addExercise() {
+  function addExercise(): boolean {
     const catalogId = Number(addCatalogId);
     const plannedSets = Number(addPlannedSets);
     const item = catalog.find((entry) => entry.id === catalogId);
     if (!item || !Number.isFinite(plannedSets) || plannedSets < 1) {
       setError(uk ? "Оберіть вправу та кількість підходів." : "Pick an exercise and planned sets.");
-      return;
+      return false;
     }
     setExercises((current) => [
       ...current,
@@ -127,6 +129,7 @@ export function ProgramEditorClient({
       },
     ]);
     setError(null);
+    return true;
   }
 
   function selectCatalogExercise(catalogId: string) {
@@ -322,28 +325,11 @@ export function ProgramEditorClient({
               ))}
 
               <div className={styles.addExercise}>
-                <label className={styles.field}>
-                  <span>{uk ? "З каталогу" : "From catalog"}</span>
-                  <select value={addCatalogId} onChange={(event) => selectCatalogExercise(event.target.value)}>
-                    {catalog.map((item) => (
-                      <option key={item.id} value={item.id}>{item.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className={styles.field}>
-                  <span>{uk ? "Підходи" : "Sets"}</span>
-                  <input type="number" min={1} max={50} value={addPlannedSets} onChange={(event) => setAddPlannedSets(event.target.value)} />
-                </label>
-                <label className={styles.field}>
-                  <span>{uk ? "Опір" : "Resistance"}</span>
-                  <select value={addResistance} onChange={(event) => setAddResistance(event.target.value as ResistanceType)}>
-                    <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                    <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
-                    <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
-                  </select>
-                </label>
-                <button className={styles.secondaryButton} type="button" onClick={addExercise}>
-                  {uk ? "Додати" : "Add"}
+                <button className={styles.secondaryButton} type="button" disabled={loading || catalog.length === 0} onClick={() => {
+                  setAddCatalogId("");
+                  setExercisePickerOpen(true);
+                }}>
+                  {uk ? "Обрати вправу з каталогу" : "Choose exercise from catalog"}
                 </button>
               </div>
             </div>
@@ -360,6 +346,38 @@ export function ProgramEditorClient({
             </div>
           </div>
         </form>
+      )}
+      {exercisePickerOpen && (
+        <ExercisePicker
+          open
+          exercises={catalog}
+          uk={uk}
+          selectedId={addCatalogId ? Number(addCatalogId) : null}
+          loading={loading}
+          error={error}
+          onSelect={(exercise) => selectCatalogExercise(String(exercise.id))}
+          onClose={() => setExercisePickerOpen(false)}
+          onConfirm={() => {
+            if (addExercise()) setExercisePickerOpen(false);
+          }}
+          confirmLabel={uk ? "Додати вправу" : "Add exercise"}
+          footerContent={(
+            <div className={styles.exerciseFields}>
+              <label className={styles.field}>
+                <span>{uk ? "Планові підходи" : "Planned sets"}</span>
+                <input type="number" min={1} max={50} value={addPlannedSets} onChange={(event) => setAddPlannedSets(event.target.value)} />
+              </label>
+              <label className={styles.field}>
+                <span>{uk ? "Тип опору" : "Resistance type"}</span>
+                <select value={addResistance} onChange={(event) => setAddResistance(event.target.value as ResistanceType)}>
+                  <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
+                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                  <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
+                </select>
+              </label>
+            </div>
+          )}
+        />
       )}
     </main>
   );

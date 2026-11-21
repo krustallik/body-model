@@ -31,10 +31,11 @@ const expected = [
 
 describe("nine new Training exercises", () => {
   it("adds the requested stable identities once, without aliases colliding", () => {
-    expect(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES).toHaveLength(9);
-    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(27);
-    expect(new Set(CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey)).size).toBe(27);
-    expect(new Set(CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName)).size).toBe(27);
+    const requestedKeys = new Set<string>(expected.map(({ key }) => key));
+    expect(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.filter(({ stableKey }) => requestedKeys.has(stableKey))).toHaveLength(9);
+    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(50);
+    expect(new Set(CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey)).size).toBe(50);
+    expect(new Set(CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName)).size).toBe(50);
     for (const item of expected) {
       expect(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES).toContainEqual({ stableKey: item.key, displayName: item.name });
     }
@@ -42,7 +43,7 @@ describe("nine new Training exercises", () => {
 
   it("keeps cable-stack nominal resistance distinct from external loads", () => {
     for (const item of expected) {
-      const config = LEGACY_LOAD_CONFIGS_V1[item.key];
+      const config = LEGACY_LOAD_CONFIGS_V1[item.key]!;
       expect(loadConfigV1Schema.safeParse(config).success).toBe(true);
       expect(config.resistanceType).toBe(item.resistance);
       expect(config.equipment.equipmentId).toBeTruthy();

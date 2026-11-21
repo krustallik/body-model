@@ -7,6 +7,12 @@ import { NextResponse, type NextRequest } from "next/server";
  * treated as authorization.
  */
 export function proxy(request: NextRequest) {
+  // Exercise/category illustrations are public static files. The image optimizer
+  // fetches them without the browser session cookie, so they must bypass the
+  // optimistic page redirect. Training APIs still authenticate independently.
+  if (/^\/training\/(?:categories|exercises)\/[^/]+\.(?:webp|png|jpe?g)$/i.test(request.nextUrl.pathname)) {
+    return NextResponse.next();
+  }
   if (getSessionCookie(request)) return NextResponse.next();
   return NextResponse.redirect(new URL("/login", request.url));
 }

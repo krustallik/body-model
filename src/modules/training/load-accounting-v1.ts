@@ -314,10 +314,10 @@ function immutableConfig<T extends LoadConfigV1>(config: T): Readonly<T> {
 }
 
 /** Frozen identity-to-config map for canonical exercises. */
-export const LEGACY_LOAD_CONFIGS_V1: Readonly<Record<
+export const LEGACY_LOAD_CONFIGS_V1: Readonly<Partial<Record<
   CanonicalExerciseStableKey,
   Readonly<LoadConfigV1>
->> = Object.freeze({
+>>> = Object.freeze({
   incline_dumbbell_press_30deg: immutableConfig(legacyDumbbellPair()),
   flat_dumbbell_fly: immutableConfig(legacyDumbbellPair()),
   pushup_handles: immutableConfig(legacyBodyweight("push-up-handles", "pair", {
@@ -373,6 +373,58 @@ export const LEGACY_LOAD_CONFIGS_V1: Readonly<Record<
   }),
   cable_hip_adduction: immutableConfig(legacyBand("lower-pulley-ankle-cuff-adduction", "cable-stack")),
   cable_hip_abduction: immutableConfig(legacyBand("lower-pulley-ankle-cuff-abduction", "cable-stack")),
+  flat_dumbbell_bench_press: immutableConfig(legacyDumbbellPair()),
+  dumbbell_front_raise_bilateral: immutableConfig(legacyDumbbellPair()),
+  dumbbell_front_raise_alternating: immutableConfig(legacyDumbbellPair("alternating")),
+  dumbbell_lateral_raise_bilateral: immutableConfig(legacyDumbbellPair()),
+  barbell_upright_row: immutableConfig({
+    ...common(1, 2, "simultaneous", "barbell", "upright-row-straight-bar"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  dumbbell_hammer_curl_bilateral: immutableConfig(legacyDumbbellPair()),
+  dumbbell_hammer_curl_alternating: immutableConfig(legacyDumbbellPair("alternating")),
+  dumbbell_supinated_curl_bilateral: immutableConfig(legacyDumbbellPair()),
+  dumbbell_supinated_curl_alternating: immutableConfig(legacyDumbbellPair("alternating")),
+  one_arm_dumbbell_row_bench_supported: immutableConfig(legacyPerSide("dumbbell", "bench-supported-row")),
+  lying_single_arm_dumbbell_triceps_extension_flat: immutableConfig(legacyPerSide("dumbbell", "lying-triceps-extension-flat")),
+  lying_two_hand_dumbbell_triceps_extension_flat: immutableConfig(legacySingleDumbbellPerMovement("lying-two-hand-triceps-extension-flat")),
+  overhead_single_arm_dumbbell_triceps_extension_incline_30: immutableConfig(legacyPerSide("dumbbell", "overhead-triceps-extension-incline-30")),
+  overhead_two_hand_dumbbell_triceps_extension_incline_30: immutableConfig(legacySingleDumbbellPerMovement("overhead-two-hand-triceps-extension-incline-30")),
+  overhead_single_arm_dumbbell_triceps_extension_seated_90: immutableConfig(legacyPerSide("dumbbell", "overhead-triceps-extension-seated-90")),
+  overhead_two_hand_dumbbell_triceps_extension_seated_90: immutableConfig(legacySingleDumbbellPerMovement("overhead-two-hand-triceps-extension-seated-90")),
+  lying_ez_bar_triceps_extension_flat_0: immutableConfig({
+    ...common(1, 2, "simultaneous", "ez-bar", "lying-triceps-extension-flat"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  lying_ez_bar_triceps_extension_incline_30: immutableConfig({
+    ...common(1, 2, "simultaneous", "ez-bar", "lying-triceps-extension-incline-30"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  overhead_ez_bar_triceps_extension_seated_90: immutableConfig({
+    ...common(1, 2, "simultaneous", "ez-bar", "overhead-triceps-extension-seated-90"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  overhead_ez_bar_triceps_extension_seated_30: immutableConfig({
+    ...common(1, 2, "simultaneous", "ez-bar", "overhead-triceps-extension-seated-30"),
+    accountingKind: "external-complete-setup-per-movement",
+    resistanceType: "external",
+    loadInput: "complete-setup-kg",
+    repsMeaning: "per-movement",
+  }),
+  // These bodyweight variants have different mechanical advantages. Keep their
+  // reference-load fraction unset until a user chooses it in the load editor.
 });
 
 export type ConfigProvenanceV1 = {
@@ -666,13 +718,14 @@ export function legacyLoadConfigForIdentityV1(input: IdentityEvidenceV1): {
   if (!input.stableKey || !stableKeyIsCanonical(input.stableKey)) {
     return { config: null, provenance: null };
   }
+  const config = LEGACY_LOAD_CONFIGS_V1[input.stableKey] ?? null;
   return {
-    config: LEGACY_LOAD_CONFIGS_V1[input.stableKey],
-    provenance: {
+    config,
+    provenance: config ? {
       kind: "legacy-interpretation",
       version: LEGACY_LOAD_INTERPRETATION_V1,
       stableKey: input.stableKey,
-    },
+    } : null,
   };
 }
 

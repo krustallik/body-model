@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveExerciseInfo } from "@/app/training/exercise-info";
 import { resolveExerciseImageSrc } from "@/app/training/exercise-images";
+import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 
 describe("exercise presentation copy", () => {
   it("resolves muscles and cues by catalog name", () => {
@@ -27,5 +28,16 @@ describe("exercise presentation copy", () => {
     expect(resolveExerciseInfo({
       snapshotExerciseName: "Підтягування на перекладині",
     })?.primaryMusclesEn).toMatch(/lats/);
+  });
+
+  it("provides bilingual muscle labels and cues for every canonical exercise", () => {
+    for (const exercise of CANONICAL_EXERCISE_IDENTITIES) {
+      const info = resolveExerciseInfo({ catalogName: exercise.displayName });
+      expect(info, exercise.stableKey).not.toBeNull();
+      expect(info?.primaryMusclesUk, exercise.stableKey).toBeTruthy();
+      expect(info?.primaryMusclesEn, exercise.stableKey).toBeTruthy();
+      expect(info?.cuesUk.length, exercise.stableKey).toBeGreaterThan(0);
+      expect(info?.cuesEn.length, exercise.stableKey).toBeGreaterThan(0);
+    }
   });
 });

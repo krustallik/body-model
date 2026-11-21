@@ -21,7 +21,8 @@ export type ResistanceType = (typeof RESISTANCE)[keyof typeof RESISTANCE];
 export function recommendedResistanceTypeForCatalogStableKey(
   stableKey: string | null | undefined,
 ): ResistanceType {
-  if (stableKey === "pull_up") return RESISTANCE.BODYWEIGHT;
+  if (["pull_up", "knee_push_up_floor", "knee_push_up_hands_bench", "incline_push_up_hands_bench"]
+    .includes(stableKey ?? "")) return RESISTANCE.BODYWEIGHT;
   if ([
     "one_arm_cable_triceps_extension",
     "one_arm_seated_cable_row",

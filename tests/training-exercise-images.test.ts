@@ -5,6 +5,8 @@ import {
   knownExerciseImageCatalogNames,
   resolveExerciseImageSrc,
 } from "@/app/training/exercise-images";
+import { EXERCISE_PICKER_CATEGORIES } from "@/app/training/exercise-picker-catalog";
+import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 
 describe("exercise image catalog mapping", () => {
   it("maps by stable ExerciseCatalog name, not index", () => {
@@ -40,8 +42,8 @@ describe("exercise image catalog mapping", () => {
     })).toBeNull();
   });
 
-  it("covers all twenty-seven catalog exercises and resolves the supplied images", () => {
-    expect(knownExerciseImageCatalogNames()).toHaveLength(27);
+  it("covers every canonical catalog exercise and resolves the supplied images", () => {
+    expect(knownExerciseImageCatalogNames()).toHaveLength(50);
     const expected = [
       ["Болгарські присідання з упором задньої ноги на лаву", "bulgarian-split-squat.png"],
       ["Випади вперед", "forward-dumbbell-lunge.png"],
@@ -62,6 +64,17 @@ describe("exercise image catalog mapping", () => {
       expect(resolveExerciseImageSrc({ catalogName: name })).toBe(`/training/exercises/${file}`);
       expect(resolveExerciseImageSrc({ snapshotExerciseName: name })).toBe(`/training/exercises/${file}`);
       expect(existsSync(join(process.cwd(), "public", "training", "exercises", file))).toBe(true);
+    }
+  });
+
+  it("has a real image file for every canonical exercise and picker category", () => {
+    for (const exercise of CANONICAL_EXERCISE_IDENTITIES) {
+      const image = resolveExerciseImageSrc({ stableKey: exercise.stableKey, catalogName: exercise.displayName });
+      expect(image, exercise.stableKey).not.toBeNull();
+      expect(existsSync(join(process.cwd(), "public", image!.replace(/^\//, ""))), exercise.stableKey).toBe(true);
+    }
+    for (const category of EXERCISE_PICKER_CATEGORIES) {
+      expect(existsSync(join(process.cwd(), "public", category.imageSrc.replace(/^\//, ""))), category.id).toBe(true);
     }
   });
 });

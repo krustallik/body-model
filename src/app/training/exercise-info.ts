@@ -310,6 +310,47 @@ const EXERCISE_INFO_BY_CATALOG_NAME: Record<string, ExerciseInfoCopy> = {
   },
 };
 
+const copy = (
+  primaryMusclesUk: string,
+  primaryMusclesEn: string,
+  cuesUk: string[],
+  cuesEn: string[],
+  secondaryMusclesUk?: string,
+  secondaryMusclesEn?: string,
+): ExerciseInfoCopy => ({
+  primaryMusclesUk,
+  primaryMusclesEn,
+  ...(secondaryMusclesUk && secondaryMusclesEn ? { secondaryMusclesUk, secondaryMusclesEn } : {}),
+  cuesUk,
+  cuesEn,
+});
+
+const ADDITIONAL_EXERCISE_INFO_BY_CATALOG_NAME: Record<string, ExerciseInfoCopy> = {
+  "Жим гантелей лежачи на горизонтальній лаві (0°)": copy("груди", "chest", ["зафіксуйте лопатки на лаві", "опускайте гантелі контрольовано", "не зводьте гантелі ударом"], ["set your shoulder blades on the bench", "lower the dumbbells under control", "avoid clashing the dumbbells at the top"], "передні дельти, трицепси", "front delts, triceps"),
+  "Махи гантелями перед собою (обидві руки)": copy("передні дельти", "front delts", ["піднімайте гантелі перед собою до рівня плечей", "зберігайте легкий згин у ліктях", "не розгойдуйте корпус"], ["raise both dumbbells in front to shoulder height", "keep a soft bend in the elbows", "avoid swinging your torso"], "верх грудей", "upper chest"),
+  "Махи гантелями перед собою (почергово)": copy("передні дельти", "front delts", ["піднімайте по одній гантелі до рівня плеча", "повертайте руку під контролем", "не нахиляйте корпус"], ["raise one dumbbell at a time to shoulder height", "lower each arm under control", "keep your torso upright"], "верх грудей", "upper chest"),
+  "Махи гантелями в боки (обидві руки)": copy("середні дельти", "middle delts", ["ведіть лікті вбік", "піднімайте до комфортного рівня плечей", "не підкидайте гантелі інерцією"], ["lead out with your elbows", "raise to a comfortable shoulder-height range", "avoid using momentum"], "верхні трапеції", "upper traps"),
+  "Тяга прямого грифа до підборіддя стоячи (Barbell Upright Row)": copy("середні дельти, верхні трапеції", "middle delts, upper traps", ["тягніть гриф близько до корпуса", "не піднімайте лікті вище комфортного рівня", "зупиніться при дискомфорті в плечі"], ["keep the bar close to your body", "stop before your elbows pass a comfortable height", "stop if you feel shoulder discomfort"], "біцепси", "biceps"),
+  "Молоткові згинання стоячи (обидві руки)": copy("плечовий м’яз, біцепси", "brachialis, biceps", ["утримуйте нейтральний хват", "не рухайте ліктями вперед", "опускайте гантелі без розгойдування"], ["keep a neutral grip", "avoid drifting your elbows forward", "lower without swinging"], "плечопроменеві м’язи", "brachioradialis"),
+  "Молоткові згинання стоячи (почергово)": copy("плечовий м’яз, біцепси", "brachialis, biceps", ["зберігайте нейтральний хват", "згинайте руки по черзі", "не розгойдуйте корпус"], ["keep a neutral grip", "curl one arm at a time", "avoid swinging your torso"], "плечопроменеві м’язи", "brachioradialis"),
+  "Згинання гантелей із супінацією (обидві руки)": copy("біцепси", "biceps", ["повертайте долоні догори під час згинання", "тримайте лікті біля корпуса", "контролюйте опускання"], ["turn your palms up as you curl", "keep your elbows near your torso", "control the lowering phase"], "плечовий і плечопроменевий м’язи", "brachialis and brachioradialis"),
+  "Згинання гантелей із супінацією (почергово)": copy("біцепси", "biceps", ["по черзі повертайте долоню догори", "тримайте плече нерухомим", "не використовуйте інерцію"], ["supinate one hand at a time", "keep the upper arm steady", "avoid using momentum"], "плечовий і плечопроменевий м’язи", "brachialis and brachioradialis"),
+  "Віджимання з колін від підлоги": copy("груди", "chest", ["спирайтеся на долоні та коліна", "тримайте корпус рівною лінією від голови до колін", "опускайте груди контрольовано"], ["support yourself on your hands and knees", "keep a straight line from head to knees", "lower your chest under control"], "трицепси, передні дельти", "triceps, front delts"),
+  "Віджимання з колін, руки на лаві": copy("груди", "chest", ["поставте долоні на стійку лаву, коліна залиште на підлозі", "тримайте корпус від голови до колін рівно", "опускайте груди до краю лави"], ["place your hands on a stable bench and keep your knees on the floor", "keep a straight line from head to knees", "lower your chest toward the bench edge"], "трицепси, передні дельти", "triceps, front delts"),
+  "Віджимання від лави з прямими ногами": copy("груди", "chest", ["поставте долоні на стійку лаву, ноги тримайте прямими", "зберігайте одну лінію від голови до п’ят", "опускайте груди контрольовано"], ["place your hands on a stable bench and keep your legs straight", "maintain one line from head to heels", "lower your chest under control"], "трицепси, передні дельти", "triceps, front delts"),
+  "Тяга гантелі однією рукою з упором на лаву": copy("найширші, середня спина", "lats, mid-back", ["спирайтеся рукою й коліном на лаву", "тягніть лікоть до таза", "не розвертайте корпус"], ["support yourself with one hand and knee on the bench", "pull your elbow toward your hip", "avoid rotating your torso"], "біцепс, задні дельти", "biceps, rear delts"),
+  "Французький жим однією рукою лежачи на горизонтальній лаві (0°)": copy("трицепс", "triceps", ["лежачи на горизонтальній лаві, тримайте плече стабільно", "згинайте й розгинайте лікоть однієї руки", "не відводьте лікоть убік"], ["lie on a flat bench and keep the upper arm steady", "bend and extend one elbow", "avoid flaring the elbow outward"]),
+  "Французький жим однією гантеллю двома руками лежачи на горизонтальній лаві (0°)": copy("трицепс", "triceps", ["лежачи утримуйте одну гантель двома руками", "згинайте лікті, опускаючи гантель контрольовано", "розгинайте руки без розведення ліктів"], ["lie down and hold one dumbbell with both hands", "bend your elbows to lower the dumbbell under control", "extend without flaring your elbows"]),
+  "Французький жим однією рукою з-за голови на похилій лаві (30°)": copy("трицепс", "triceps", ["спинка лави встановлена на 30°", "тримайте плече над головою та згинайте лікоть", "виконуйте рух однією рукою без повороту корпуса"], ["set the bench backrest to 30°", "keep the upper arm overhead and bend at the elbow", "work one arm without rotating your torso"]),
+  "Французький жим однією гантеллю двома руками з-за голови на похилій лаві (30°)": copy("трицепс", "triceps", ["спинка лави встановлена на 30°", "утримуйте одну гантель двома руками за головою", "розгинайте лікті без прогину в попереку"], ["set the bench backrest to 30°", "hold one dumbbell with both hands behind your head", "extend your elbows without arching your lower back"]),
+  "Французький жим однією рукою з-за голови сидячи, спинка 90°": copy("трицепс", "triceps", ["сядьте зі спинкою 90° і стабілізуйте корпус", "тримайте плече над головою", "розгинайте лікоть однієї руки без розгойдування"], ["sit against a 90° backrest and stabilize your torso", "keep the upper arm overhead", "extend one elbow without swinging"]),
+  "Французький жим однією гантеллю двома руками з-за голови сидячи, спинка 90°": copy("трицепс", "triceps", ["сядьте зі спинкою 90° та тримайте одну гантель двома руками", "опускайте її за головою згинанням ліктів", "зберігайте корпус стабільним"], ["sit against a 90° backrest and hold one dumbbell with both hands", "lower it behind your head by bending the elbows", "keep your torso steady"]),
+  "Французький жим з EZ-грифом лежачи на горизонтальній лаві (0°)": copy("трицепс", "triceps", ["ляжте на горизонтальну лаву та візьміть EZ-гриф зручним хватом", "згинайте лікті, опускаючи гриф контрольовано", "не перетворюйте рух на жим"], ["lie on a flat bench and take a comfortable EZ-bar grip", "bend your elbows to lower the bar under control", "keep the movement an extension, not a press"]),
+  "Французький жим з EZ-грифом лежачи на похилій лаві (30°)": copy("трицепс", "triceps", ["встановіть спинку лави на 30°", "лежачи згинайте й розгинайте лікті з EZ-грифом", "опускайте гриф у контрольовану комфортну точку"], ["set the bench backrest to 30°", "bend and extend your elbows with the EZ bar while lying", "lower the bar to a controlled, comfortable point"]),
+  "Французький жим з EZ-грифом з-за голови сидячи, спинка 90°": copy("трицепс", "triceps", ["сядьте зі спинкою 90°", "утримуйте EZ-гриф над головою та згинайте лікті", "не розводьте лікті різко в боки"], ["sit against a 90° backrest", "hold the EZ bar overhead and bend your elbows", "avoid forcing the elbows wide"]),
+  "Французький жим з EZ-грифом з-за голови сидячи, спинка 30°": copy("трицепс", "triceps", ["встановіть спинку лави на 30° та сядьте", "опускайте EZ-гриф за голову згинанням ліктів", "тримайте корпус і плечі стабільними"], ["set the backrest to 30° and sit", "lower the EZ bar behind your head by bending your elbows", "keep your torso and upper arms steady"]),
+};
+
 export function resolveExerciseInfo(input: {
   catalogName?: string | null;
   snapshotExerciseName?: string | null;
@@ -319,7 +360,7 @@ export function resolveExerciseInfo(input: {
     .map((value) => value.trim());
 
   for (const name of candidates) {
-    const exact = EXERCISE_INFO_BY_CATALOG_NAME[name];
+    const exact = EXERCISE_INFO_BY_CATALOG_NAME[name] ?? ADDITIONAL_EXERCISE_INFO_BY_CATALOG_NAME[name];
     if (exact) return exact;
   }
   return null;

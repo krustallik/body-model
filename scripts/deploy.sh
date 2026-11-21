@@ -498,6 +498,14 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -ne 0 \
 fi
 
 compose config --quiet
+[[ -d "$ROOT_DIR/public" && ! -L "$ROOT_DIR/public" ]] || {
+  echo "The public asset tree is unavailable or linked; refusing to build an unreadable runtime image." >&2
+  release_failure 1
+}
+chmod -R a+rX -- "$ROOT_DIR/public" || {
+  echo "Could not make public assets readable to the non-root app user." >&2
+  release_failure 1
+}
 assert_existing_db_healthy
 if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
   database_identity_before="$(bodycast_capture_production_db_identity "$DB_CONTAINER")"

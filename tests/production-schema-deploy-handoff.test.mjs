@@ -368,6 +368,12 @@ describe("schema deploy compatibility handoff", () => {
       expect(allowedDeployBlobs(binding)).toContain(workingBlob);
     }
   });
+  it("pins the candidate public-asset permission fix by exact deploy-script blob", () => {
+    const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS["scripts/deploy.sh"];
+    const workingBlob = execFileSync("git", ["hash-object", "scripts/deploy.sh"], { encoding: "utf8" }).trim();
+    expect(binding?.migrationOriginBlob).toBe("557dafb14f1b68e3cd0d904a8668a1f1073bd025");
+    expect(allowedDeployBlobs(binding)).toContain(workingBlob);
+  });
   it("keeps the existing Auth app-ready marker valid and blocks an unreviewed README change", () => {
     const previousDeploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const previousCompatibility = readGitCompatibility(process.cwd(), previousDeploySha,

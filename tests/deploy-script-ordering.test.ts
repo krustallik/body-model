@@ -213,6 +213,21 @@ describe("production maintenance-first deploy safety contracts", () => {
     );
   });
 
+  it("normalizes public asset traversal and read permissions before entering maintenance or building the runtime image", () => {
+    const publicTreeGuardAt = deploySh.indexOf('[[ -d "$ROOT_DIR/public" && ! -L "$ROOT_DIR/public" ]]');
+    const publicPermissionsAt = deploySh.indexOf('chmod -R a+rX -- "$ROOT_DIR/public"');
+    const maintenanceAt = deploySh.indexOf("publish_and_confirm_maintenance\n");
+    const toolsBuildAt = deploySh.indexOf("compose --profile tools build migrate");
+    const appBuildAt = deploySh.indexOf('compose build "$APP_SERVICE"');
+
+    expect(publicTreeGuardAt).toBeGreaterThan(-1);
+    expect(publicPermissionsAt).toBeGreaterThan(publicTreeGuardAt);
+    expect(publicPermissionsAt).toBeLessThan(maintenanceAt);
+    expect(publicPermissionsAt).toBeLessThan(toolsBuildAt);
+    expect(publicPermissionsAt).toBeLessThan(appBuildAt);
+    expect(deploySh).toContain("refusing to build an unreadable runtime image");
+  });
+
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {
     expect(deploySh).not.toMatch(/compose\s+up\s+-d\s+db\b/);
     expect(deploySh).not.toMatch(/compose\s+up\s+-d\s+\"\$DB/);

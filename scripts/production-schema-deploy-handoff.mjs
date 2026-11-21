@@ -219,6 +219,10 @@ const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock
 const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma"]);
 const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
 export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+  "src/modules/health/normalize-shortcut-numeric-values.ts": Object.freeze({
+    migrationOriginBlob: "21d794a84044655b88a6f2eeb0a2d72ff5ce9b1e",
+    deployBlob: "f3cdcb33d6496b0b7f7036ea9dde7001331c5299",
+  }),
   ".github/workflows/deploy-production.yml": Object.freeze({
     migrationOriginBlob: "252f5c6797f961dddeab4a0d758c7d35610271f8",
     deployBlob: Object.freeze([

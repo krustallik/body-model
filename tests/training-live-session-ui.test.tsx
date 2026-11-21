@@ -874,7 +874,7 @@ describe("Live training session mobile UI", () => {
     });
     let persistedSession = active;
     const finishCalls: string[] = [];
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
@@ -895,9 +895,11 @@ describe("Live training session mobile UI", () => {
     await user.click(screen.getByRole("button", { name: "Меню сесії" }));
     const sessionMenu = screen.getByRole("dialog", { name: "Дії" });
     await user.click(within(sessionMenu).getByRole("button", { name: "Завершити тренування" }));
+    await user.click(screen.getByRole("button", { name: "Завершити" }));
 
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
     expect(finishCalls).toHaveLength(1);
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -910,7 +912,7 @@ describe("Live training session mobile UI", () => {
       updatedAt: "2026-10-16T06:30:00.000Z",
     });
     let persistedSession = active;
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
@@ -929,11 +931,13 @@ describe("Live training session mobile UI", () => {
     await screen.findByText("ТИСНИ");
     await user.click(screen.getByRole("button", { name: "Меню сесії" }));
     await user.click(within(screen.getByRole("dialog", { name: "Дії" })).getByRole("button", { name: "Завершити тренування" }));
+    await user.click(screen.getByRole("button", { name: "Завершити" }));
 
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith(
       expect.stringMatching(/^\/training\?recentPage=3&programsRefresh=\d+$/),
     ));
     expect(persistedSession.status).toBe(SESSION_STATUS.COMPLETED);
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it("swipes left to advance exercise and image", async () => {
@@ -2371,7 +2375,7 @@ describe("Live training session mobile UI", () => {
       return null;
     });
 
-    render(<SessionClient sessionId={42} />);
+    const { container } = render(<SessionClient sessionId={42} />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy());
     await user.type(screen.getByLabelText("Повтори"), "12");
     await user.click(screen.getByRole("button", { name: "Додати підхід" }));
@@ -2379,5 +2383,21 @@ describe("Live training session mobile UI", () => {
       expect(screen.getByRole("dialog", { name: "Завершити тренування?" })).toBeTruthy();
       expect(screen.getByText(/100% плану/)).toBeTruthy();
     });
+    const finishDialog = screen.getByRole("dialog", { name: "Завершити тренування?" });
+    expect(finishDialog.getAttribute("aria-modal")).toBe("true");
+    expect(container.querySelector("[inert]")).not.toBeNull();
+    const keepTraining = screen.getByRole("button", { name: "Ще потренуюсь" });
+    const finish = screen.getByRole("button", { name: "Завершити" });
+    const exerciseHeading = container.querySelector<HTMLElement>("[data-finish-focus-target]");
+    expect(exerciseHeading).not.toBeNull();
+    expect(keepTraining).toBe(document.activeElement);
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(finish).toBe(document.activeElement);
+    await user.keyboard("{Tab}");
+    expect(keepTraining).toBe(document.activeElement);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Завершити тренування?" })).toBeNull());
+    expect(container.querySelector("[inert]")).toBeNull();
+    expect(exerciseHeading).toBe(document.activeElement);
   });
 });

@@ -791,7 +791,13 @@ export function ExercisePane(props: ExercisePaneProps) {
   return (
     <div className={styles.workoutMain}>
       <div className={styles.workoutHero}>
-        <h1 className={styles.workoutTitle}>{exercise.snapshotExerciseName}</h1>
+        <h1
+          data-finish-focus-target
+          tabIndex={-1}
+          className={styles.workoutTitle}
+        >
+          {exercise.snapshotExerciseName}
+        </h1>
         <div className={styles.workoutStatusRow}>
           <span className={styles.liveBadge}>{resistanceLabel(exercise.resistanceType, uk)}</span>
           <span

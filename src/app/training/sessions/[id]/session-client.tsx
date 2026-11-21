@@ -181,6 +181,9 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const exercisePickerDialogRef = useRef<HTMLDivElement | null>(null);
   const exercisePickerCancelRef = useRef<HTMLButtonElement | null>(null);
   const restoreExercisePickerFocusRef = useRef(false);
+  const finishOfferKeepTrainingRef = useRef<HTMLButtonElement | null>(null);
+  const finishOfferOpenerRef = useRef<HTMLElement | null>(null);
+  const restoreFinishOfferFocusRef = useRef(false);
 
   const load = useCallback(async (readOnly = false) => {
     if (saveInFlightRef.current) return;
@@ -616,6 +619,27 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
   }, [exercisePickerOpen]);
 
+  useEffect(() => {
+    if (finishOffer) {
+      restoreFinishOfferFocusRef.current = false;
+      const activeElement = document.activeElement;
+      finishOfferOpenerRef.current = activeElement instanceof HTMLElement
+        && activeElement !== document.body
+        && activeElement !== document.documentElement
+        && !activeElement.matches(":disabled")
+        ? activeElement
+        : null;
+      finishOfferKeepTrainingRef.current?.focus();
+      return;
+    }
+    if (restoreFinishOfferFocusRef.current) {
+      restoreFinishOfferFocusRef.current = false;
+      if (finishOfferOpenerRef.current?.isConnected) finishOfferOpenerRef.current.focus();
+      else document.querySelector<HTMLElement>("[data-finish-focus-target]")?.focus();
+      finishOfferOpenerRef.current = null;
+    }
+  }, [finishOffer]);
+
   function goToNeighbor(delta: -1 | 1) {
     const nextId = neighborExerciseId(exercises, focusedExerciseId, delta);
     if (nextId == null) return;
@@ -1047,6 +1071,39 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
   }
 
+  function closeFinishOffer() {
+    restoreFinishOfferFocusRef.current = true;
+    setFinishOffer(false);
+  }
+
+  function handleFinishOfferKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeFinishOffer();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = event.currentTarget;
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => !element.closest("[hidden]"));
+    if (focusable.length === 0) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   async function addCatalogExercise() {
     if (!session || typeof catalogExerciseId !== "number") return;
     setBusy(true);
@@ -1141,8 +1198,12 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   async function finishSession(skipConfirm = false) {
     if (!session || finishInFlightRef.current) return;
-    if (!skipConfirm && !window.confirm(uk ? "Завершити тренування?" : "Finish this workout?")) return;
+    if (!skipConfirm) {
+      setFinishOffer(true);
+      return;
+    }
     finishInFlightRef.current = true;
+    if (finishOffer) restoreFinishOfferFocusRef.current = true;
     setFinishOffer(false);
     setBusy(true);
     setError(null);
@@ -1480,7 +1541,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         clockEndedAt={session.webEndedAt}
         clockTicking
         autoAdvanceNonce={autoAdvanceNonce}
-        inertBackground={exercisePickerOpen}
+        inertBackground={exercisePickerOpen || finishOffer}
         menuOpen={menuOpen}
         onToggleMenu={() => setMenuOpen((value) => !value)}
         onCloseMenu={() => setMenuOpen(false)}
@@ -1613,8 +1674,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             </div>
           )}
           {finishOffer && (
-          <div className={styles.workoutFinishDialog} role="presentation">
-            <div className={styles.workoutFinishCard} role="dialog" aria-labelledby="finish-offer-title">
+          <div className={styles.workoutFinishDialog} role="presentation" onKeyDown={handleFinishOfferKeyDown}>
+            <div className={styles.workoutFinishCard} role="dialog" aria-modal="true" aria-labelledby="finish-offer-title" tabIndex={-1}>
               <h2 id="finish-offer-title">
                 {uk ? "Завершити тренування?" : "Finish this workout?"}
               </h2>
@@ -1637,9 +1698,10 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               )}
               <div className={styles.workoutFinishActions}>
                 <button
+                  ref={finishOfferKeepTrainingRef}
                   className={styles.liveSecondary}
                   type="button"
-                  onClick={() => setFinishOffer(false)}
+                  onClick={closeFinishOffer}
                 >
                   {uk ? "Ще потренуюсь" : "Keep training"}
                 </button>

@@ -354,6 +354,20 @@ describe("schema deploy compatibility handoff", () => {
       expect(allowedDeployBlobs(binding)).toContain(workingBlob);
     }
   });
+  it("pins exact candidate blobs for URL-backed exercise picker runtime changes", () => {
+    for (const [filePath, migrationOriginBlob] of [
+      ["src/app/training/exercise-picker.tsx", null],
+      ["src/app/training/program-editor.tsx", "fb7ba4532f32a7ac9448f42e56f5daaecdc1a5e3"],
+      ["src/app/training/sessions/[id]/session-client.tsx", "d085fb60abcd1911efa49ee2061429a553992b8b"],
+      ["src/app/training/training.module.css", "583c713bc4aa9c16f1e3434b45808d9b9b98f7b4"],
+      ["src/app/training/exercise-picker-url-state.ts", null],
+    ]) {
+      const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[filePath];
+      const workingBlob = execFileSync("git", ["hash-object", filePath], { encoding: "utf8" }).trim();
+      expect(binding?.migrationOriginBlob).toBe(migrationOriginBlob);
+      expect(allowedDeployBlobs(binding)).toContain(workingBlob);
+    }
+  });
   it("keeps the existing Auth app-ready marker valid and blocks an unreviewed README change", () => {
     const previousDeploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const previousCompatibility = readGitCompatibility(process.cwd(), previousDeploySha,

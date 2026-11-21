@@ -724,6 +724,24 @@
     box-shadow var(--training-ease);
 }
 
+.programExerciseIdentity {
+  display: flex;
+  flex: 1 1 12rem;
+  min-width: 0;
+  align-items: center;
+  gap: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+.programExerciseThumbnail {
+  flex: none;
+  width: 4rem;
+  height: 4rem;
+  object-fit: contain;
+  border-radius: 0.5rem;
+  background: var(--training-surface-inset, #0b0e0f);
+}
+
 .exerciseRowHeader {
   display: flex;
   align-items: flex-start;

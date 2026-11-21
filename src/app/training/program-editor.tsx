@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
@@ -12,7 +13,9 @@ import {
 } from "@/modules/training/training.constants";
 import type { ExerciseCatalogDto, TrainingProgramDto } from "@/modules/training/training.types";
 import { ExerciseLoadConfigEditor } from "./exercise-load-config-editor";
+import { resolveExerciseImageSrc } from "./exercise-images";
 import { ExercisePicker } from "./exercise-picker";
+import { EXERCISE_PICKER_URL_PARAMS, openExercisePickerUrl, resolveExercisePickerMovement, updateExercisePickerUrl, useExercisePickerOpenFromUrl } from "./exercise-picker-url-state";
 import { readApiError, resistanceLabel } from "./training-labels";
 import { safeTrainingReturnHref } from "./training-url-state";
 import styles from "./training.module.css";
@@ -56,7 +59,7 @@ export function ProgramEditorClient({
   const [addCatalogId, setAddCatalogId] = useState<string>("");
   const [addPlannedSets, setAddPlannedSets] = useState("3");
   const [addResistance, setAddResistance] = useState<ResistanceType>(RESISTANCE.EXTERNAL_WEIGHT);
-  const [exercisePickerOpen, setExercisePickerOpen] = useState(false);
+  const exercisePickerOpen = useExercisePickerOpenFromUrl();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +77,14 @@ export function ProgramEditorClient({
         const catalogBody = await catalogRes.json() as { exercises: ExerciseCatalogDto[] };
         if (!cancelled) {
           setCatalog(catalogBody.exercises);
-          if (catalogBody.exercises[0]) setAddCatalogId(String(catalogBody.exercises[0].id));
+          const currentUrl = new URL(window.location.href);
+          const pickerOpen = currentUrl.searchParams.get(EXERCISE_PICKER_URL_PARAMS.open) === "1";
+          const requestedExercise = resolveExercisePickerMovement(
+            catalogBody.exercises,
+            currentUrl.searchParams.get(EXERCISE_PICKER_URL_PARAMS.movement),
+          );
+          if (pickerOpen) setAddCatalogId(requestedExercise ? String(requestedExercise.id) : "");
+          else if (catalogBody.exercises[0]) setAddCatalogId(String(catalogBody.exercises[0].id));
         }
 
         if (programId !== undefined) {
@@ -136,6 +146,19 @@ export function ProgramEditorClient({
     setAddCatalogId(catalogId);
     const selected = catalog.find((item) => item.id === Number(catalogId));
     setAddResistance(recommendedResistanceTypeForCatalogStableKey(selected?.stableKey));
+  }
+
+  function openExercisePicker() {
+    const requestedExercise = resolveExercisePickerMovement(
+      catalog,
+      new URL(window.location.href).searchParams.get(EXERCISE_PICKER_URL_PARAMS.movement),
+    );
+    setAddCatalogId(requestedExercise ? String(requestedExercise.id) : "");
+    openExercisePickerUrl();
+  }
+
+  function closeExercisePicker() {
+    updateExercisePickerUrl({ [EXERCISE_PICKER_URL_PARAMS.open]: null });
   }
 
   function moveExercise(index: number, direction: -1 | 1) {
@@ -259,76 +282,86 @@ export function ProgramEditorClient({
                 <div className={styles.empty}>
                   <span>{uk ? "Додайте вправи з каталогу нижче." : "Add exercises from the catalog below."}</span>
                 </div>
-              ) : exercises.map((exercise, index) => (
-                <article className={styles.exerciseRow} key={exercise.key}>
-                  <div className={styles.exerciseRowHeader}>
-                    <strong>{exercise.catalogName}</strong>
-                    <div className={styles.rowActions}>
-                      <button className={styles.textButton} type="button" onClick={() => moveExercise(index, -1)} disabled={index === 0}>
-                        ↑
-                      </button>
-                      <button className={styles.textButton} type="button" onClick={() => moveExercise(index, 1)} disabled={index === exercises.length - 1}>
-                        ↓
-                      </button>
-                      <button className={styles.textButton} type="button" onClick={() => removeExercise(index)}>
-                        {uk ? "Прибрати" : "Remove"}
-                      </button>
+              ) : exercises.map((exercise, index) => {
+                const catalogExercise = catalog.find((item) => item.id === exercise.catalogId);
+                const imageSrc = resolveExerciseImageSrc({
+                  stableKey: catalogExercise?.stableKey,
+                  catalogName: catalogExercise?.name,
+                  snapshotExerciseName: exercise.catalogName,
+                });
+                return (
+                  <article className={styles.exerciseRow} key={exercise.key}>
+                    <div className={styles.exerciseRowHeader}>
+                      <div className={styles.programExerciseIdentity}>
+                        {imageSrc && (
+                          <Image className={styles.programExerciseThumbnail} src={imageSrc} alt="" width={64} height={64} unoptimized={process.env.NODE_ENV !== "production"} />
+                        )}
+                        <strong>{exercise.catalogName}</strong>
+                      </div>
+                      <div className={styles.rowActions}>
+                        <button className={styles.textButton} type="button" onClick={() => moveExercise(index, -1)} disabled={index === 0}>
+                          ↑
+                        </button>
+                        <button className={styles.textButton} type="button" onClick={() => moveExercise(index, 1)} disabled={index === exercises.length - 1}>
+                          ↓
+                        </button>
+                        <button className={styles.textButton} type="button" onClick={() => removeExercise(index)}>
+                          {uk ? "Прибрати" : "Remove"}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className={styles.exerciseFields}>
-                    <label className={styles.field}>
-                      <span>{uk ? "Підходи" : "Planned sets"}</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={50}
-                        value={exercise.plannedSets}
-                        onChange={(event) => {
-                          const plannedSets = Number(event.target.value);
-                          setExercises((current) => current.map((item, i) => (
-                            i === index ? { ...item, plannedSets: Number.isFinite(plannedSets) ? plannedSets : item.plannedSets } : item
-                          )));
-                        }}
-                      />
-                    </label>
-                    <label className={styles.field}>
-                      <span>{uk ? "Опір" : "Resistance"}</span>
-                      <select
-                        value={exercise.resistanceType}
-                        onChange={(event) => {
-                          const resistanceType = event.target.value as ResistanceType;
-                          setExercises((current) => current.map((item, i) => (
-                            i === index ? { ...item, resistanceType } : item
-                          )));
-                        }}
-                      >
-                        <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                        <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
-                        <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
-                      </select>
-                    </label>
-                  </div>
-                  <ExerciseLoadConfigEditor
-                    key={`${exercise.key}-${exercise.resistanceType}`}
-                    catalogId={exercise.catalogId}
-                    configuration={catalog.find((item) => item.id === exercise.catalogId)?.loadAccountingConfig}
-                    stableKey={catalog.find((item) => item.id === exercise.catalogId)?.stableKey}
-                    resistanceType={exercise.resistanceType}
-                    uk={uk}
-                    onSaved={(configuration) => {
-                      setCatalog((items) => items.map((item) => item.id === exercise.catalogId
-                        ? { ...item, loadAccountingConfig: configuration }
-                        : item));
-                    }}
-                  />
-                </article>
-              ))}
+                    <div className={styles.exerciseFields}>
+                      <label className={styles.field}>
+                        <span>{uk ? "Підходи" : "Planned sets"}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={exercise.plannedSets}
+                          onChange={(event) => {
+                            const plannedSets = Number(event.target.value);
+                            setExercises((current) => current.map((item, i) => (
+                              i === index ? { ...item, plannedSets: Number.isFinite(plannedSets) ? plannedSets : item.plannedSets } : item
+                            )));
+                          }}
+                        />
+                      </label>
+                      <label className={styles.field}>
+                        <span>{uk ? "Опір" : "Resistance"}</span>
+                        <select
+                          value={exercise.resistanceType}
+                          onChange={(event) => {
+                            const resistanceType = event.target.value as ResistanceType;
+                            setExercises((current) => current.map((item, i) => (
+                              i === index ? { ...item, resistanceType } : item
+                            )));
+                          }}
+                        >
+                          <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
+                          <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                          <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
+                        </select>
+                      </label>
+                    </div>
+                    <ExerciseLoadConfigEditor
+                      key={`${exercise.key}-${exercise.resistanceType}`}
+                      catalogId={exercise.catalogId}
+                      configuration={catalogExercise?.loadAccountingConfig}
+                      stableKey={catalogExercise?.stableKey}
+                      resistanceType={exercise.resistanceType}
+                      uk={uk}
+                      onSaved={(configuration) => {
+                        setCatalog((items) => items.map((item) => item.id === exercise.catalogId
+                          ? { ...item, loadAccountingConfig: configuration }
+                          : item));
+                      }}
+                    />
+                  </article>
+                );
+              })}
 
               <div className={styles.addExercise}>
-                <button className={styles.secondaryButton} type="button" disabled={loading || catalog.length === 0} onClick={() => {
-                  setAddCatalogId("");
-                  setExercisePickerOpen(true);
-                }}>
+                <button className={styles.secondaryButton} type="button" disabled={loading || catalog.length === 0} onClick={openExercisePicker}>
                   {uk ? "Обрати вправу з каталогу" : "Choose exercise from catalog"}
                 </button>
               </div>
@@ -356,9 +389,9 @@ export function ProgramEditorClient({
           loading={loading}
           error={error}
           onSelect={(exercise) => selectCatalogExercise(String(exercise.id))}
-          onClose={() => setExercisePickerOpen(false)}
+          onClose={closeExercisePicker}
           onConfirm={() => {
-            if (addExercise()) setExercisePickerOpen(false);
+            if (addExercise()) closeExercisePicker();
           }}
           confirmLabel={uk ? "Додати вправу" : "Add exercise"}
           footerContent={(

@@ -53,6 +53,7 @@ import {
 } from "../../training-exercise-workspace";
 import { SessionAccountingPanel } from "../../session-accounting-panel";
 import { ExercisePicker } from "../../exercise-picker";
+import { EXERCISE_PICKER_URL_PARAMS, openExercisePickerUrl, resolveExercisePickerMovement, updateExercisePickerUrl, useExercisePickerOpenFromUrl } from "../../exercise-picker-url-state";
 import { safeTrainingReturnHref } from "../../training-url-state";
 import styles from "../../training.module.css";
 import {
@@ -165,7 +166,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [energyReadAttempt, setEnergyReadAttempt] = useState(0);
   const [energyReadError, setEnergyReadError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [exercisePickerOpen, setExercisePickerOpen] = useState(false);
+  const exercisePickerOpen = useExercisePickerOpenFromUrl();
   const [exercisePickerError, setExercisePickerError] = useState<string | null>(null);
   const [exerciseCatalog, setExerciseCatalog] = useState<ExerciseCatalogDto[]>([]);
   const [catalogExerciseId, setCatalogExerciseId] = useState<number | "">("");
@@ -992,39 +993,49 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   function closeExercisePicker() {
     exercisePickerRequestIdRef.current += 1;
-    setExercisePickerOpen(false);
     setLoadingExerciseCatalog(false);
     setExercisePickerError(null);
+    updateExercisePickerUrl({ [EXERCISE_PICKER_URL_PARAMS.open]: null });
   }
 
-  async function openExercisePicker() {
-    setExercisePickerOpen(true);
+  function openExercisePicker() {
     setExercisePickerError(null);
-    setCatalogExerciseId("");
-    const requestId = ++exercisePickerRequestIdRef.current;
-    if (exerciseCatalog.length > 0) {
-      setLoadingExerciseCatalog(false);
-      return;
-    }
-    setLoadingExerciseCatalog(true);
-    try {
-      const response = await fetchWithTrainingTimeout("/api/v1/training/exercises", { cache: "no-store" });
-      if (!response.ok) {
-        const message = await readApiError(response, uk);
-        if (requestId !== exercisePickerRequestIdRef.current) return;
-        setExercisePickerError(message);
-        return;
-      }
-      const body = await response.json() as { exercises: ExerciseCatalogDto[] };
-      if (requestId !== exercisePickerRequestIdRef.current) return;
-      setExerciseCatalog(body.exercises);
-    } catch {
-      if (requestId !== exercisePickerRequestIdRef.current) return;
-      setExercisePickerError(uk ? "Не вдалося завантажити каталог вправ." : "Could not load the exercise catalog.");
-    } finally {
-      if (requestId === exercisePickerRequestIdRef.current) setLoadingExerciseCatalog(false);
-    }
+    const requestedExercise = resolveExercisePickerMovement(
+      exerciseCatalog,
+      new URL(window.location.href).searchParams.get(EXERCISE_PICKER_URL_PARAMS.movement),
+    );
+    setCatalogExerciseId(requestedExercise ? requestedExercise.id : "");
+    openExercisePickerUrl();
   }
+
+  useEffect(() => {
+    if (!exercisePickerOpen || exerciseCatalog.length > 0 || exercisePickerError) return;
+    const requestId = ++exercisePickerRequestIdRef.current;
+    void (async () => {
+      try {
+        const response = await fetchWithTrainingTimeout("/api/v1/training/exercises", { cache: "no-store" });
+        if (!response.ok) {
+          const message = await readApiError(response, uk);
+          if (requestId !== exercisePickerRequestIdRef.current) return;
+          setExercisePickerError(message);
+          return;
+        }
+        const body = await response.json() as { exercises: ExerciseCatalogDto[] };
+        if (requestId !== exercisePickerRequestIdRef.current) return;
+        setExerciseCatalog(body.exercises);
+        const requestedExercise = resolveExercisePickerMovement(
+          body.exercises,
+          new URL(window.location.href).searchParams.get(EXERCISE_PICKER_URL_PARAMS.movement),
+        );
+        setCatalogExerciseId(requestedExercise ? requestedExercise.id : "");
+      } catch {
+        if (requestId !== exercisePickerRequestIdRef.current) return;
+        setExercisePickerError(uk ? "Не вдалося завантажити каталог вправ." : "Could not load the exercise catalog.");
+      } finally {
+        if (requestId === exercisePickerRequestIdRef.current) setLoadingExerciseCatalog(false);
+      }
+    })();
+  }, [exercisePickerError, exercisePickerOpen, exerciseCatalog.length, uk]);
 
   function closeFinishOffer() {
     restoreFinishOfferFocusRef.current = true;
@@ -1419,7 +1430,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             exercises={exerciseCatalog}
             uk={uk}
             selectedId={typeof catalogExerciseId === "number" ? catalogExerciseId : null}
-            loading={loadingExerciseCatalog}
+            loading={loadingExerciseCatalog || (exercisePickerOpen && exerciseCatalog.length === 0 && !exercisePickerError)}
             busy={busy}
             error={exercisePickerError}
             onSelect={(exercise) => {
@@ -1428,7 +1439,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             }}
             onConfirm={() => void addCatalogExercise()}
             onClose={closeExercisePicker}
-            onRetry={() => void openExercisePicker()}
+            onRetry={() => setExercisePickerError(null)}
             confirmLabel={uk ? "Додати вправу" : "Add exercise"}
             footerContent={(
               <label className={styles.liveField}>
@@ -1559,7 +1570,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               exercises={exerciseCatalog}
               uk={uk}
               selectedId={typeof catalogExerciseId === "number" ? catalogExerciseId : null}
-              loading={loadingExerciseCatalog}
+              loading={loadingExerciseCatalog || (exercisePickerOpen && exerciseCatalog.length === 0 && !exercisePickerError)}
               busy={busy}
               error={exercisePickerError}
               onSelect={(exercise) => {
@@ -1568,7 +1579,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               }}
               onConfirm={() => void addCatalogExercise()}
               onClose={closeExercisePicker}
-              onRetry={() => void openExercisePicker()}
+              onRetry={() => setExercisePickerError(null)}
               confirmLabel={uk ? "Додати вправу" : "Add exercise"}
               footerContent={(
                 <label className={styles.liveField}>

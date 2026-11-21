@@ -511,6 +511,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "9c89a3751af7fa51b7f921b8ba1970e21496ea7e",
       "a57eb6d4b9fa963f2176bc81411776235b96ac11",
       "879ac3ce55658e1d2dee845cada46045c2b147e0",
+      "e5dc70985bddeced732844b7d15b7eab363a6219",
     ]),
   }),
   "src/app/training/sessions/[id]/edit/session-edit-client.tsx": Object.freeze({
@@ -613,9 +614,31 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   "public/training/exercises/overhead-two-hand-dumbbell-triceps-extension-seated-90.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "953e742aaf29b896f7b1654ff2ef555909994f4c" }),
   "src/app/training/exercise-picker-catalog.ts": Object.freeze({ migrationOriginBlob: null, deployBlob: "20e29fbc9cef04e4d3abdca11c2bfe74708d9bc2" }),
   "src/app/training/exercise-picker.module.css": Object.freeze({ migrationOriginBlob: null, deployBlob: "3c9952ca294eeb95514fdf5129d432d9e5791b59" }),
-  "src/app/training/exercise-picker.tsx": Object.freeze({ migrationOriginBlob: null, deployBlob: "68d66903d3d227c16b5c404e1a5f2d24c75768ed" }),
-  "src/app/training/program-editor.tsx": Object.freeze({ migrationOriginBlob: "fb7ba4532f32a7ac9448f42e56f5daaecdc1a5e3", deployBlob: "4d49188decb73f4a8da2bbd8931c8663367e0d83" }),
-  "src/app/training/training.module.css": Object.freeze({ migrationOriginBlob: "583c713bc4aa9c16f1e3434b45808d9b9b98f7b4", deployBlob: "07fd3e4ea3ffd6890dbdc26ca1830a71ef3f9251" }),
+  "src/app/training/exercise-picker.tsx": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: Object.freeze([
+      "68d66903d3d227c16b5c404e1a5f2d24c75768ed",
+      "d435ffc688aca08ccc2a56679fd64c215b5029d8",
+    ]),
+  }),
+  "src/app/training/program-editor.tsx": Object.freeze({
+    migrationOriginBlob: "fb7ba4532f32a7ac9448f42e56f5daaecdc1a5e3",
+    deployBlob: Object.freeze([
+      "4d49188decb73f4a8da2bbd8931c8663367e0d83",
+      "096cc54187d9aac29d8aba244b54d3f6dc9816f0",
+    ]),
+  }),
+  "src/app/training/training.module.css": Object.freeze({
+    migrationOriginBlob: "583c713bc4aa9c16f1e3434b45808d9b9b98f7b4",
+    deployBlob: Object.freeze([
+      "07fd3e4ea3ffd6890dbdc26ca1830a71ef3f9251",
+      "61e6130ee24437f8ef4318a0433d3a302e7b4704",
+    ]),
+  }),
+  "src/app/training/exercise-picker-url-state.ts": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "955becda2e6010e563fdae6f92d7535896ab289a",
+  }),
   "src/proxy.ts": Object.freeze({ migrationOriginBlob: "b010c51862a6a68c8ccc892d4a6a3be5049b35d8", deployBlob: "a0a4745a63f9318b569d050aca5cc529dee03648" }),
 });
 const ADVANCEABLE_V3_STATES = new Set(["schema-applied", "app-ready"]);

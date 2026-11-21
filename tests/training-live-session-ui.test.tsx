@@ -241,6 +241,7 @@ describe("Live training session mobile UI", () => {
 
   afterEach(() => {
     cleanup();
+    window.history.replaceState(window.history.state, "", "/training/sessions/42");
     setCreateOperations.rows.clear();
     setCreateOperations.failWrites = false;
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalViewportWidth });

@@ -293,6 +293,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "6c6bcf9b29cf98309092814a23c0708e67a90802",
       "d4bd39c6a35f44a0d08668e11ee77cf1d6573734",
       "c9cbe4e5813af800cf495f37d55a75034884844b",
+      "5e3b17f7fd2bc33238d6dae9eb7abea6d1b8c101",
     ]),
   }),
   "src/app/register/page.tsx": Object.freeze({
@@ -492,7 +493,10 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/app/training/sessions/[id]/session-client.tsx": Object.freeze({
     migrationOriginBlob: "d085fb60abcd1911efa49ee2061429a553992b8b",
-    deployBlob: "9c89a3751af7fa51b7f921b8ba1970e21496ea7e",
+    deployBlob: Object.freeze([
+      "9c89a3751af7fa51b7f921b8ba1970e21496ea7e",
+      "a57eb6d4b9fa963f2176bc81411776235b96ac11",
+    ]),
   }),
   "src/app/training/sessions/[id]/edit/session-edit-client.tsx": Object.freeze({
     migrationOriginBlob: "c338a7d9f38be5d296c94916283807c91f708160",

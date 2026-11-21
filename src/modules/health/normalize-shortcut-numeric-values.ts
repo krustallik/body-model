@@ -147,6 +147,10 @@ function normalizeBpmValues(value: unknown, expectedCount: number): unknown[] {
   return lines.map(parseShortcutNumber);
 }
 
+function isEmptyRestingHeartRateValue(value: unknown): boolean {
+  return value === null || value === undefined || value === 0;
+}
+
 function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"): unknown {
   if (typeof value === "string") {
     try {
@@ -160,7 +164,27 @@ function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"
   const sourceValue = valueKey === "bpminpeace"
     ? pickIgnoreCase(value, ["bvminpeace", "bpminpeace", "bpm"])
     : pickIgnoreCase(value, ["bpm", "values"]);
-  return { timestamps, [valueKey]: normalizeBpmValues(sourceValue, timestamps.length) };
+  const values = normalizeBpmValues(sourceValue, timestamps.length);
+
+  if (valueKey === "bpminpeace") {
+    // Shortcuts' empty Number field can arrive as 0. It is not a measured BPM;
+    // discard only aligned empty markers (or an all-empty value with no times).
+    if (timestamps.length === values.length) {
+      const samples = timestamps.flatMap((timestamp, index) => {
+        const bpm = values[index];
+        return isEmptyRestingHeartRateValue(bpm) ? [] : [{ timestamp, bpm }];
+      });
+      return {
+        timestamps: samples.map((sample) => sample.timestamp),
+        [valueKey]: samples.map((sample) => sample.bpm),
+      };
+    }
+    if (timestamps.length === 0 && values.length > 0 && values.every(isEmptyRestingHeartRateValue)) {
+      return { timestamps: [], [valueKey]: [] };
+    }
+  }
+
+  return { timestamps, [valueKey]: values };
 }
 
 function parseMaybeJsonObject(value: unknown): unknown {

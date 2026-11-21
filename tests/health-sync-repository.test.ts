@@ -105,6 +105,14 @@ describe("Prisma health synchronization repository", () => {
       data: [expect.objectContaining({ date: "2026-08-21", bpm: 57, source: "shortcut" })],
     }));
   });
+  it("does not persist an empty resting-HR series", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay({
+      date: "2026-08-21",
+      bpminpeace: { timestamps: [], bpminpeace: [] },
+    });
+    expect(transaction.restingHeartRateSample.createMany).not.toHaveBeenCalled();
+  });
   it("stores the original parsed day as rawPayload", async () => {
     const { repository, transaction } = repositoryFixture();
     const day = { date: "2026-08-21", weightKg: null, steps: 1234 };

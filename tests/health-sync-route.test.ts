@@ -151,6 +151,48 @@ describe("POST /api/v1/health/sync", () => {
     });
   });
 
+  it("accepts an empty Shortcuts resting-HR Number field as no measurement", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({
+      days: [{
+        date: "2026-11-21",
+        bpminpeace: { timestamps: "", bvminpeace: 0 },
+      }],
+    }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
+      days: [{
+        date: "2026-11-21",
+        bpminpeace: { timestamps: [], bpminpeace: [] },
+      }],
+    });
+  });
+
+  it("drops a zero resting-HR placeholder but preserves aligned real samples", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({
+      days: [{
+        date: "2026-11-21",
+        bpminpeace: {
+          timestamps: "2026-11-21T07:00:00+01:00\\n2026-11-21T07:01:00+01:00",
+          bvminpeace: "0\\n57",
+        },
+      }],
+    }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
+      days: [{
+        date: "2026-11-21",
+        bpminpeace: {
+          timestamps: ["2026-11-21T07:01:00+01:00"],
+          bpminpeace: [57],
+        },
+      }],
+    });
+  });
+
   it("expands the timestamped range nutrition/body metrics without touching other feeds", async () => {
     syncHealthData.mockResolvedValue({ status: "ok", received: 3, created: 3, updated: 0, dates: [] });
     const response = await POST(request({ days: [{

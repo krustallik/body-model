@@ -21,6 +21,15 @@ function isLocale(value: unknown): value is Locale {
   return value === "uk" || value === "en";
 }
 
+function isAuthPage(pathname: string): boolean {
+  return pathname === "/login" || pathname === "/register" || pathname === "/forgot-password";
+}
+
+async function fetchProfileLocale(): Promise<{ profile?: { locale?: unknown } } | null> {
+  const response = await fetch("/api/v1/profile", { cache: "no-store" });
+  return response.ok ? response.json() : null;
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("uk");
   const pathname = usePathname();
@@ -37,12 +46,19 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       ? window.setTimeout(() => applyLocale(storedLocale), 0)
       : null;
 
-    if (pathname.startsWith("/body-map")) {
+    if (pathname.startsWith("/body-map") || pathname === "/password-setup") {
       return () => { if (storedLocaleTimer !== null) window.clearTimeout(storedLocaleTimer); };
     }
     let active = true;
-    fetch("/api/v1/profile", { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : null)
+    const profileLocale = isAuthPage(pathname)
+      ? fetch("/api/auth/get-session", { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((body: { user?: { emailVerified?: unknown; passwordChangeRequired?: unknown } } | null) => {
+          if (!active || body?.user?.emailVerified !== true || body.user.passwordChangeRequired === true) return null;
+          return fetchProfileLocale();
+        })
+      : fetchProfileLocale();
+    profileLocale
       .then((body: { profile?: { locale?: unknown } } | null) => {
         if (active && isLocale(body?.profile?.locale)) applyLocale(body.profile.locale);
       })

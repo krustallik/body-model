@@ -1160,6 +1160,7 @@ describe("Live training session mobile UI", () => {
 
     await user.click(opener);
     dialog = await screen.findByRole("dialog", { name: "Каталог вправ" });
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("searchbox", { name: "Пошук усіх вправ" })));
     expect(catalogRequestIndex).toBe(2);
     pendingRequests[0]!.resolve(Response.json({ exercises: [{
       id: 9,
@@ -1178,6 +1179,7 @@ describe("Live training session mobile UI", () => {
 
     await user.click(opener);
     dialog = await screen.findByRole("dialog", { name: "Каталог вправ" });
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("searchbox", { name: "Пошук усіх вправ" })));
     expect(catalogRequestIndex).toBe(3);
     pendingRequests[1]!.reject(new Error("catalog unavailable after close"));
     await waitFor(() => expect(within(dialog).getByRole("status")).toBeTruthy());

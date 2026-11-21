@@ -293,6 +293,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "fa64117cdf86a80590b45fd17a39c4dd6f54545d",
       "3c79724636bd2630b78c9544efe7f92c7d94c03a",
       "8ce0b61e949ca18a1b914f9ccaadbbc9a84242a5",
+      "666d34618ec1ec5010e7ba3d44533cf9a7968786",
     ]),
   }),
   "src/app/training/training-exercise-pane.tsx": Object.freeze({
@@ -498,7 +499,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/app/training/exercise-info.ts": Object.freeze({
     migrationOriginBlob: "0f310bb071b918a2cb95bfe2d8e75033bf14811f",
-    deployBlob: "e155126c355c79e404e56d756b73821b057a7a12",
+    deployBlob: Object.freeze(["e155126c355c79e404e56d756b73821b057a7a12", "efffbd8bd49f1a7e45468f752f24e3aab4abf587"]),
   }),
   "src/app/training/session-accounting-panel.tsx": Object.freeze({
     migrationOriginBlob: "3d60397e44947547d5b1dfdf9f89a338c79f3954",
@@ -509,6 +510,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     deployBlob: Object.freeze([
       "9c89a3751af7fa51b7f921b8ba1970e21496ea7e",
       "a57eb6d4b9fa963f2176bc81411776235b96ac11",
+      "879ac3ce55658e1d2dee845cada46045c2b147e0",
     ]),
   }),
   "src/app/training/sessions/[id]/edit/session-edit-client.tsx": Object.freeze({
@@ -517,7 +519,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/app/training/exercise-load-config-editor.tsx": Object.freeze({
     migrationOriginBlob: "ce7fff772c06e03c2cd9f5e4facb84abc7c5d72c",
-    deployBlob: "5f766256a43903d60d2be10a542e60ff1d8278dd",
+    deployBlob: Object.freeze(["5f766256a43903d60d2be10a542e60ff1d8278dd", "6a0378c72c90652f1e715aa7d8d5bf9ebeaaa666"]),
   }),
   "src/app/training/training-labels.ts": Object.freeze({
     migrationOriginBlob: "503587495e9dd9ed428715668cf34978c0faa94f",
@@ -525,19 +527,19 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/training/canonical-exercise-identity.ts": Object.freeze({
     migrationOriginBlob: "22d496aaa71a85a52517a94da249e5df6008588e",
-    deployBlob: "378cd9d6cf0f5b0d46c901454a25712c620d342d",
+    deployBlob: Object.freeze(["378cd9d6cf0f5b0d46c901454a25712c620d342d", "44b2f7fb215500a26004ceed76a98e9107e33863"]),
   }),
   "src/modules/training/external-load-accounting.ts": Object.freeze({
     migrationOriginBlob: "5e379d1fb29b0acccea763858c718eb6f7bf1378",
-    deployBlob: "0cc1694d4e5ad27eddbe2e492d28ed8e637c1437",
+    deployBlob: Object.freeze(["0cc1694d4e5ad27eddbe2e492d28ed8e637c1437", "a835068c69a3e5e8d0079291223c540122fe0596"]),
   }),
   "src/modules/training/load-accounting-v1.ts": Object.freeze({
     migrationOriginBlob: "dc1f97440c0334666275c5df2398479f52c397a9",
-    deployBlob: "d747be980284e44bf10d099edd823ff8da5ab54c",
+    deployBlob: Object.freeze(["d747be980284e44bf10d099edd823ff8da5ab54c", "b047dca0e371c52579ced39c9fafe5aa38015251"]),
   }),
   "src/modules/training/training.constants.ts": Object.freeze({
     migrationOriginBlob: "e21d9fdd64700f4b6ee8f84c22a457fc08972c4d",
-    deployBlob: "583449d202bbc3703787bc02c84937b9e1592768",
+    deployBlob: Object.freeze(["583449d202bbc3703787bc02c84937b9e1592768", "8ba5447f447e2ec2f5140591b6a9eda52da2a096"]),
   }),
   "src/modules/training/training.repository.ts": Object.freeze({
     migrationOriginBlob: "302a8a821f5983bcb289b40462032541932645c6",
@@ -579,6 +581,42 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "5fa5165b31acbdbd5b4e19707960ddabd33813b3",
   }),
+  "public/training/categories/abs.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "f6f7d5f8d833217588f118ff8fdb2f4bdc188352" }),
+  "public/training/categories/arms.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "939b80dede7d931dd05b2f355f0722ddde437421" }),
+  "public/training/categories/back.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "578fffef79610075e16cfbedffbcf4d37ff9215b" }),
+  "public/training/categories/chest.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "3228d57bc9ed396b9311f5e2d9b24b88ed4bd933" }),
+  "public/training/categories/glutes.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "f83fb4d259b2583b9cee036518012e5ebb249333" }),
+  "public/training/categories/legs.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "9568ab2e2f4c28947fe171f96eb71d1ad25d5a40" }),
+  "public/training/categories/shoulders.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "bc1a79352026dc216ee9257750cf1f14568e0e29" }),
+  "public/training/exercises/barbell-upright-row.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "36b3c854f50b2c60538c3f07f25f4158050a8d96" }),
+  "public/training/exercises/dumbbell-front-raise-alternating.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "285292eacc105968180d5a4237ca923ab91c18fa" }),
+  "public/training/exercises/dumbbell-front-raise-bilateral.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "40aa61f886474732a507f76d62ad6fa9ab0014e1" }),
+  "public/training/exercises/dumbbell-hammer-curl-alternating.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "a656985bd62e11703849c2e117f89d411b337cfa" }),
+  "public/training/exercises/dumbbell-hammer-curl-bilateral.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "8e54e2b9719b76cd345d76c9b2d7bfb829952a22" }),
+  "public/training/exercises/dumbbell-lateral-raise-bilateral.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "4d879679a62f5a039195f82eacc798930aff620d" }),
+  "public/training/exercises/dumbbell-supinated-curl-alternating.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "2a9ee93651a624be1ac26e5099fa5f4c35e2aefc" }),
+  "public/training/exercises/dumbbell-supinated-curl-bilateral.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "f67c78a52416a6b2b06186f2d30d66f96aa67d5d" }),
+  "public/training/exercises/flat-dumbbell-bench-press.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "2daa81174947963899676548928446a11c7dce8d" }),
+  "public/training/exercises/incline-push-up-bench.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "f03d0bca64e1c20bbafa1e7f77a3de0233622d50" }),
+  "public/training/exercises/knee-push-up-bench.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "e363d32f81fe306281a70f8088061cf507a9af44" }),
+  "public/training/exercises/knee-push-up-floor.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "3eeae07d846719eade20235b234584fd9594579f" }),
+  "public/training/exercises/lying-ez-bar-triceps-extension-flat.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "1bdfa2e85c22aebe824c02acbe202d32c7ed510e" }),
+  "public/training/exercises/lying-ez-bar-triceps-extension-incline-30.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "8f04e7127dfac30c27235e49bf743293d3f6019b" }),
+  "public/training/exercises/lying-single-arm-dumbbell-triceps-extension-flat.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "8451b83d114cbc892f7f610a245541cece8ebad4" }),
+  "public/training/exercises/lying-two-hand-dumbbell-triceps-extension-flat.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: ["1da0a926ac33d6f51ee60aadee1477502a3ed430", "553f90134ca9249e09ab429ec1ba100115839950"] }),
+  "public/training/exercises/one-arm-dumbbell-row-bench-supported.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "a36ebd1d00b7a00f19cae407ad988c64e2a683cb" }),
+  "public/training/exercises/overhead-ez-bar-triceps-extension-seated-30.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "e37e2d62d15e4b555d58a23026861db2eafce334" }),
+  "public/training/exercises/overhead-ez-bar-triceps-extension-seated-90.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "0fbd8270e1d9640a0c769f86775ad8c421236597" }),
+  "public/training/exercises/overhead-single-arm-dumbbell-triceps-extension-incline-30.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "7a9a261b161e014da181b087b2eaf604767f597b" }),
+  "public/training/exercises/overhead-single-arm-dumbbell-triceps-extension-seated-90.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "9787cb263248f0a73db0b5965dfd7dd838c2339c" }),
+  "public/training/exercises/overhead-two-hand-dumbbell-triceps-extension-incline-30.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "16966267672623f65997aa803f4c7b2b93dae58f" }),
+  "public/training/exercises/overhead-two-hand-dumbbell-triceps-extension-seated-90.webp": Object.freeze({ migrationOriginBlob: null, deployBlob: "953e742aaf29b896f7b1654ff2ef555909994f4c" }),
+  "src/app/training/exercise-picker-catalog.ts": Object.freeze({ migrationOriginBlob: null, deployBlob: "20e29fbc9cef04e4d3abdca11c2bfe74708d9bc2" }),
+  "src/app/training/exercise-picker.module.css": Object.freeze({ migrationOriginBlob: null, deployBlob: "3c9952ca294eeb95514fdf5129d432d9e5791b59" }),
+  "src/app/training/exercise-picker.tsx": Object.freeze({ migrationOriginBlob: null, deployBlob: "68d66903d3d227c16b5c404e1a5f2d24c75768ed" }),
+  "src/app/training/program-editor.tsx": Object.freeze({ migrationOriginBlob: "fb7ba4532f32a7ac9448f42e56f5daaecdc1a5e3", deployBlob: "4d49188decb73f4a8da2bbd8931c8663367e0d83" }),
+  "src/app/training/training.module.css": Object.freeze({ migrationOriginBlob: "583c713bc4aa9c16f1e3434b45808d9b9b98f7b4", deployBlob: "07fd3e4ea3ffd6890dbdc26ca1830a71ef3f9251" }),
+  "src/proxy.ts": Object.freeze({ migrationOriginBlob: "b010c51862a6a68c8ccc892d4a6a3be5049b35d8", deployBlob: "a0a4745a63f9318b569d050aca5cc529dee03648" }),
 });
 const ADVANCEABLE_V3_STATES = new Set(["schema-applied", "app-ready"]);
 const DYNAMIC_WORKOUT_CRITICAL_TREES = Object.freeze([...CRITICAL_TREES, "src/modules/training", ".github/workflows"]);

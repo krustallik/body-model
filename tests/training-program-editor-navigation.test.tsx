@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const navigation = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
@@ -45,7 +45,11 @@ describe("Training program editor return context", () => {
 
     render(<ProgramEditorClient />);
     await user.type(await screen.findByLabelText("Name"), "Push day");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Choose exercise from catalog" }));
+    const picker = await screen.findByRole("dialog", { name: "Exercise catalog" });
+    await user.click(within(picker).getByRole("button", { name: /^All exercises/ }));
+    await user.click(await within(picker).findByRole("button", { name: /Push up/ }));
+    await user.click(within(picker).getByRole("button", { name: "Add exercise" }));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(navigation.push).toHaveBeenCalledWith(expect.stringMatching(/^\/training\?recentPage=2&programsRefresh=\d+$/)));

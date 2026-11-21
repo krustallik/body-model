@@ -156,10 +156,10 @@ async function assertMigrationFreeEnergyAcceptanceV1(client: typeof prisma) {
       },
     }),
     client.workout.findMany({
-      // Health source rows are global in the single-profile schema: Workout
-      // and DailyHealthData do not carry profileId. Query all visible raw rows
-      // so an unaliased Workout cannot be hidden from the acceptance gate.
-      where: { hiddenFromHistory: false },
+      // Workouts are profile-owned. Keep this acceptance read in the same
+      // tenant scope as the aliases above so another profile cannot block or
+      // influence this profile's serving transition.
+      where: { profileId, hiddenFromHistory: false },
       select: {
         id: true, sourceIdentity: true, type: true, startAt: true, createdAt: true, hiddenFromHistory: true,
         activeEnergyKcal: true, manualActiveEnergyKcal: true, manualStepCount: true, updatedAt: true,
@@ -206,11 +206,11 @@ async function assertMigrationFreeEnergyAcceptanceV1(client: typeof prisma) {
       select: { sessionId: true, sourceFingerprint: true, modelRevision: true, result: true },
     }),
     client.healthMetricSample.findMany({
-      where: { metric: "weight-kg", source: "apple-health-shortcut" },
+      where: { profileId, metric: "weight-kg", source: "apple-health-shortcut" },
       select: { id: true, date: true, timestamp: true, value: true, source: true },
     }),
     client.dailyHealthData.findMany({
-      where: { weightKg: { not: null } }, select: { date: true, weightKg: true },
+      where: { profileId, weightKg: { not: null } }, select: { date: true, weightKg: true },
     }),
     client.modelEpisode.findMany({
       where: { profileId },

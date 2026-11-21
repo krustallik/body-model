@@ -265,6 +265,9 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(trafficCheck).toContain("--owner-authorized-active-energy-convergence");
     expect(trafficCheck).toContain("--wait-training-refresh-generations");
     expect(trafficCheck).toContain("exact Prisma database identity");
+    expect(trafficCheck).toContain('where: { profileId, hiddenFromHistory: false }');
+    expect(trafficCheck).toContain('where: { profileId, metric: "weight-kg", source: "apple-health-shortcut" }');
+    expect(trafficCheck).toContain('where: { profileId, weightKg: { not: null } }');
     expect(trafficCheck).toContain("recalculateModelEpisode({ profileId, requireDependentStages: true })");
     expect(trafficCheck).toContain("rebuildUnifiedExperimentalPhysiologyStateV1({");
     expect(trafficCheck).toContain("fromDate: recalculation.effectiveReplayFromDate");

@@ -327,7 +327,10 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/unified-v4-traffic-check.ts": Object.freeze({
     migrationOriginBlob: "109395c697f53934123e73c75920be6cd58ea447",
-    deployBlob: "f26b76f5fa49f4f6a0e578a315743f926b89a397",
+    deployBlob: Object.freeze([
+      "f26b76f5fa49f4f6a0e578a315743f926b89a397",
+      "43e455b797bdcf81bcb625800af819c0845fcd4a",
+    ]),
   }),
   "README.md": Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",

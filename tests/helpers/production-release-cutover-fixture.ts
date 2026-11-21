@@ -889,6 +889,7 @@ export function createFixture(): Fixture {
   const bin = path.join(root, "bin");
   const routes = path.join(root, "routes");
   mkdirSync(path.join(repo, "scripts"), { recursive: true });
+  mkdirSync(path.join(repo, "public"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   mkdirSync(routes, { recursive: true });
 

@@ -250,6 +250,10 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: "d6e8e825e6d50fb26e888f439aacf5d23ffa20c1",
     deployBlob: "8a9e166e988ddd1fa477f1152b8f7e626f9a2731",
   }),
+  "src/i18n/i18n-provider.tsx": Object.freeze({
+    migrationOriginBlob: "1c56ca6a7c24df91da54f502e14785adb6a52634",
+    deployBlob: "7a593f817f9da79d974b6ac03f14ebe12b51547b",
+  }),
   "src/app/login/page.tsx": Object.freeze({
     migrationOriginBlob: "83a9e6107a68e17b163b4a954a7226fb9f93fd6d",
     deployBlob: Object.freeze([

@@ -409,7 +409,7 @@ describe("schema deploy compatibility handoff", () => {
       expect(allowedDeployBlobs(binding)).toContain(actualDeployBlob);
       expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(exerciseReleasePath));
     }
-    for (const authReleasePath of [
+    for (const releasePath of [
       "src/app/api/registration/password-setup/route.ts",
       "src/app/api/registration/resend/route.ts",
       "src/app/api/registration/start/route.ts",
@@ -417,13 +417,14 @@ describe("schema deploy compatibility handoff", () => {
       "src/app/register/page.tsx",
       "src/lib/auth.ts",
       "src/modules/auth/registration-users.ts",
+      "src/i18n/i18n-provider.tsx",
       "scripts/production-db-target.sh",
     ]) {
-      const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[authReleasePath];
-      const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${authReleasePath}`], { encoding: "utf8" }).trim();
+      const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[releasePath];
+      const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${releasePath}`], { encoding: "utf8" }).trim();
       expect(allowedDeployBlobs(binding)).toContain(actualDeployBlob);
-      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(authReleasePath));
-      expect(currentCompatibility.changedPathObjects[authReleasePath]).toEqual({
+      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(releasePath));
+      expect(currentCompatibility.changedPathObjects[releasePath]).toEqual({
         migrationOriginBlob: binding?.migrationOriginBlob,
         deployBlob: actualDeployBlob,
       });

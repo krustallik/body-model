@@ -116,7 +116,7 @@ describe("production maintenance-first deploy safety contracts", () => {
     const transactionTimeoutMs = Number(trafficCheck.match(/const transactionTimeoutMs = (\d+)_000;/)?.[1]) * 1_000;
     const routeSafetyMarginMs = Number(trafficCheck.match(/const routeSafetyMarginMs = (\d+)_000;/)?.[1]) * 1_000;
     const minimumRouteBudgetMs = Number(trafficCheck.match(/const minimumRouteBudgetMs = (\d+)_000;/)?.[1]) * 1_000;
-    const observedProductionVerificationMs = 80_000;
+    const observedProductionVerificationMs = 185_000;
     expect(transactionTimeoutMs - observedProductionVerificationMs - routeSafetyMarginMs)
       .toBeGreaterThanOrEqual(minimumRouteBudgetMs);
 

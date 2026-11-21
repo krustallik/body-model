@@ -343,6 +343,17 @@ describe("schema deploy compatibility handoff", () => {
     await expect(applyAuthSchemaReattestation(options)).rejects.toThrow(/existing release marker/);
   }, 30_000);
 
+  it("pins the current migration-free fence script blobs on the effective Auth map entries", () => {
+    for (const [filePath, migrationOriginBlob] of [
+      ["scripts/production-traffic-cutover.sh", "3fd321d857e2aa024e4875a2689a588dc07078ee"],
+      ["scripts/unified-v4-traffic-check.ts", "109395c697f53934123e73c75920be6cd58ea447"],
+    ]) {
+      const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[filePath];
+      const workingBlob = execFileSync("git", ["hash-object", filePath], { encoding: "utf8" }).trim();
+      expect(binding?.migrationOriginBlob).toBe(migrationOriginBlob);
+      expect(allowedDeployBlobs(binding)).toContain(workingBlob);
+    }
+  });
   it("keeps the existing Auth app-ready marker valid and blocks an unreviewed README change", () => {
     const previousDeploySha = AUTH_PREVIOUS_DEPLOY_SHA;
     const previousCompatibility = readGitCompatibility(process.cwd(), previousDeploySha,

@@ -316,6 +316,10 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "f3d70949fda81052014235d27f1cf88c79f02493",
   }),
+  "scripts/unified-v4-traffic-check.ts": Object.freeze({
+    migrationOriginBlob: "109395c697f53934123e73c75920be6cd58ea447",
+    deployBlob: "f26b76f5fa49f4f6a0e578a315743f926b89a397",
+  }),
   "README.md": Object.freeze({
     migrationOriginBlob: "aa8edb763d217c0f8791c6f630f700d04fb42295",
     deployBlob: "63c696a7d6699edec9c743c1c9fe8cb5cce99cbf",
@@ -473,6 +477,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "3fd321d857e2aa024e4875a2689a588dc07078ee",
       "4b7ed6e33ad583bc058b6a17bdd95a1269ae3f5c",
       "046a694a3044d9e51273bb16a0ba3848c1ac3a8b",
+      "fc59d0aac9e166291135e920aa5979064e296eac",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({

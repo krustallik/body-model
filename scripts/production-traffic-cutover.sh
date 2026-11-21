@@ -821,14 +821,14 @@ serve_training_release() {
   # route-transition window remains available after production verification.
   coproc BODYCAST_TRAINING_V4_FENCE {
     if [[ "$migration_free_serving" == "true" ]]; then
-      timeout 305s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
+      timeout 425s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
         -e BODYCAST_EXPECTED_PRISMA_DB_IDENTITY="$expected_prisma_database_identity" \
         -e BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE="$expected_health_sync_audit_retention_baseline" \
         -e BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS="$expected_health_sync_audit_prune_events" --entrypoint node migrate \
         /app/scripts/unified-v4-traffic-check.mjs \
         --profile-id 1 --hold-currentness-fence --expected-raw-input-fingerprint "$expected_raw_source_fingerprint"
     else
-      timeout 305s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
+      timeout 425s docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps --interactive --no-TTY \
         --entrypoint node migrate /app/scripts/unified-v4-traffic-check.mjs \
         --profile-id 1 --hold-currentness-fence
     fi
@@ -836,7 +836,7 @@ serve_training_release() {
   fence_pid="$BODYCAST_TRAINING_V4_FENCE_PID"
   exec {fence_output_fd}<&"${BODYCAST_TRAINING_V4_FENCE[0]}"
   exec {fence_input_fd}>&"${BODYCAST_TRAINING_V4_FENCE[1]}"
-  fence_deadline=$((SECONDS + 305))
+  fence_deadline=$((SECONDS + 425))
   while (( SECONDS < fence_deadline )); do
     fence_remaining=$((fence_deadline - SECONDS))
     if IFS= read -r -t "$fence_remaining" -u "$fence_output_fd" fence_line; then

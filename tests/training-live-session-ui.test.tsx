@@ -1070,8 +1070,9 @@ describe("Live training session mobile UI", () => {
     const view = render(<SessionClient sessionId={42} />);
     const pickerOpener = await screen.findByRole("button", { name: "Додати вправу" });
     await user.click(pickerOpener);
-    const picker = await screen.findByRole("dialog", { name: "Додати вправу" });
-    await user.selectOptions(await screen.findByLabelText("Вправа з каталогу"), "9");
+    const picker = await screen.findByRole("dialog", { name: "Каталог вправ" });
+    await user.click(within(picker).getByRole("button", { name: /^Груди/ }));
+    await user.click(within(picker).getByRole("button", { name: /Віджимання від ручок/ }));
     await user.selectOptions(screen.getByLabelText("Тип опору"), RESISTANCE.BODYWEIGHT);
     await user.click(within(picker).getByRole("button", { name: "Додати вправу" }));
 
@@ -1136,23 +1137,29 @@ describe("Live training session mobile UI", () => {
     render(<SessionClient sessionId={42} />);
     const opener = await screen.findByRole("button", { name: "Додати вправу" });
     await user.click(opener);
-    let dialog = await screen.findByRole("dialog", { name: "Додати вправу" });
+    let dialog = await screen.findByRole("dialog", { name: "Каталог вправ" });
     const cancel = within(dialog).getByRole("button", { name: "Скасувати" });
-    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    const search = within(dialog).getByRole("searchbox", { name: "Пошук усіх вправ" });
+    const resistance = within(dialog).getByLabelText("Тип опору");
+    await waitFor(() => expect(document.activeElement).toBe(search));
     expect(opener.parentElement?.hasAttribute("inert")).toBe(true);
     expect(within(dialog).getByRole("status").textContent).toContain("Завантаження каталогу");
 
     await user.tab();
+    expect(document.activeElement).toBe(resistance);
+    await user.tab();
     expect(document.activeElement).toBe(cancel);
     await user.tab({ shift: true });
-    expect(document.activeElement).toBe(cancel);
+    expect(document.activeElement).toBe(resistance);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(search);
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Додати вправу" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Каталог вправ" })).toBeNull());
     expect(document.activeElement).toBe(opener);
     expect(opener.parentElement?.hasAttribute("inert")).toBe(false);
 
     await user.click(opener);
-    dialog = await screen.findByRole("dialog", { name: "Додати вправу" });
+    dialog = await screen.findByRole("dialog", { name: "Каталог вправ" });
     expect(catalogRequestIndex).toBe(2);
     pendingRequests[0]!.resolve(Response.json({ exercises: [{
       id: 9,
@@ -1163,14 +1170,14 @@ describe("Live training session mobile UI", () => {
       muscleMapping: null,
     }] }));
     await waitFor(() => expect(within(dialog).getByRole("status")).toBeTruthy());
-    expect(within(dialog).queryByLabelText("Вправа з каталогу")).toBeNull();
+    expect(within(dialog).getByRole("status").textContent).toContain("Завантаження каталогу");
 
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Додати вправу" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Каталог вправ" })).toBeNull());
     expect(document.activeElement).toBe(opener);
 
     await user.click(opener);
-    dialog = await screen.findByRole("dialog", { name: "Додати вправу" });
+    dialog = await screen.findByRole("dialog", { name: "Каталог вправ" });
     expect(catalogRequestIndex).toBe(3);
     pendingRequests[1]!.reject(new Error("catalog unavailable after close"));
     await waitFor(() => expect(within(dialog).getByRole("status")).toBeTruthy());
@@ -1183,19 +1190,10 @@ describe("Live training session mobile UI", () => {
       archivedAt: null,
       muscleMapping: null,
     }] }));
-    const catalogSelect = await within(dialog).findByLabelText("Вправа з каталогу");
-    expect(catalogSelect).toBeTruthy();
-    await user.selectOptions(catalogSelect, "10");
+    await user.click(await within(dialog).findByRole("button", { name: /^Усі вправи/ }));
+    await user.click(await within(dialog).findByRole("button", { name: /Підтягування/ }));
     const addButton = within(dialog).getByRole("button", { name: "Додати вправу" });
     expect((addButton as HTMLButtonElement).disabled).toBe(false);
-    await user.tab();
-    await user.tab();
-    await user.tab();
-    expect(document.activeElement).toBe(addButton);
-    await user.tab();
-    expect(document.activeElement).toBe(catalogSelect);
-    await user.tab({ shift: true });
-    expect(document.activeElement).toBe(addButton);
     expect(mutations).not.toHaveBeenCalled();
   });
 
@@ -1222,26 +1220,35 @@ describe("Live training session mobile UI", () => {
     const opener = within(actionMenu).getByRole("button", { name: "Додати вправу" });
     await user.click(opener);
 
-    const picker = await screen.findByRole("dialog", { name: "Додати вправу" });
+    const picker = await screen.findByRole("dialog", { name: "Каталог вправ" });
     const cancel = within(picker).getByRole("button", { name: "Скасувати" });
-    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    const search = within(picker).getByRole("searchbox", { name: "Пошук усіх вправ" });
+    const resistance = within(picker).getByLabelText("Тип опору");
+    await waitFor(() => expect(document.activeElement).toBe(search));
     expect(within(picker).getByRole("status")).toBeTruthy();
     await user.tab();
+    expect(document.activeElement).toBe(resistance);
+    await user.tab();
     expect(document.activeElement).toBe(cancel);
+    await user.tab();
+    expect(document.activeElement).toBe(within(picker).getByRole("button", { name: "Закрити каталог" }));
     await user.tab({ shift: true });
     expect(document.activeElement).toBe(cancel);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(resistance);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(search);
     expect(document.querySelector(`.${styles.workoutFrame}`)?.hasAttribute("inert")).toBe(true);
     catalogRequest.reject(new Error("catalog unavailable"));
     expect(await within(picker).findByRole("alert")).toBeTruthy();
-    expect(within(picker).getByRole("button", { name: "Скасувати" })).toBeTruthy();
-    const firstSelect = within(picker).getByLabelText("Вправа з каталогу");
+    const retry = within(picker).getByRole("button", { name: "Спробувати ще раз" });
     await user.tab();
-    expect(document.activeElement).toBe(firstSelect);
+    expect(document.activeElement).toBe(retry);
     await user.tab({ shift: true });
-    expect(document.activeElement).toBe(cancel);
+    expect(document.activeElement).toBe(search);
 
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Додати вправу" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Каталог вправ" })).toBeNull());
     expect(document.activeElement).toBe(opener);
     expect(document.querySelector(`.${styles.workoutFrame}`)?.hasAttribute("inert")).toBe(false);
     expect((repsInput as HTMLInputElement).value).toBe("8");

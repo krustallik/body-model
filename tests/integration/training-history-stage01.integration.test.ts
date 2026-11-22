@@ -7,7 +7,7 @@ import {
   STAGE01_PUSH_ROWS_V1,
 } from "../fixtures/training-load-accounting-stage01-golden-v1";
 import { requireIsolatedStage01Database } from "../../src/modules/training/testing/require-isolated-database";
-import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "../../src/modules/training/load-accounting-v1";
+import { BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1 } from "../../src/modules/training/load-accounting-v1";
 import { TrainingRepository } from "../../src/modules/training/training.repository";
 import { TrainingService } from "../../src/modules/training/training.service";
 import { currentPhysiologyV7Versions, versionsAreCurrent } from "../../src/modules/model-episodes/physiology-v7-persistence";
@@ -446,7 +446,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         const isVersionedPushUp = fixtureRow?.[0] === "pushup_handles";
         const expectedConfigProvenance = {
           kind: isVersionedPushUp ? "session-snapshot" : "legacy-interpretation",
-          version: isVersionedPushUp ? CANONICAL_PUSH_UP_CONFIG_VERSION_V1 : "bodycast-historical-load-entry-v1",
+          version: isVersionedPushUp ? BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1 : "bodycast-historical-load-entry-v1",
           stableKey: fixtureRow?.[0],
         };
         expect(row.config.provenance).toMatchObject(expectedConfigProvenance);

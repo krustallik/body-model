@@ -1,17 +1,23 @@
 "use client";
 
-import { useMemo } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { AnatomyIdV2 } from "@/modules/training/body-map-catalog-v2";
 import type {
   BodyMapAnalyticsWeeksV1,
+  BodyMapAnalyticsCoverageSourceV1,
   BodyMapTrainingAnalyticsResponseV1,
 } from "@/modules/training/body-map-training-analytics-v1";
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import { bodyMapAnatomyLabel } from "./body-map-localization";
 import styles from "./body-map-training-analytics-panel.module.css";
 
 type GroupReport = BodyMapTrainingAnalyticsResponseV1["groups"][number];
+type ExerciseSet = GroupReport["exercises"][number]["sets"][number];
 type ViewLevel = "OVERVIEW" | "GROUP_DETAIL" | "SUBREGION_DETAIL";
+type CoverageFilter = "coverage:sessions" | "coverage:recorded" | "coverage:mapped" | "coverage:partial" | "coverage:unmapped";
+type SourceFilter = "direct" | "indirect" | "mapped" | "days" | CoverageFilter | `rir:${number}` | `week:${string}` | `week-direct:${string}` | `week-indirect:${string}`;
 
 function count(value: number | null, uk: boolean): string {
   return value === null ? (uk ? "Недоступно" : "Unavailable") : new Intl.NumberFormat(uk ? "uk-UA" : "en-US").format(value);
@@ -45,8 +51,68 @@ export function BodyMapTrainingAnalyticsPanel({
 }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter | null>(null);
+  const sourceRecordsRef = useRef<HTMLElement | null>(null);
   const contexts = useMemo(() => new Map((analytics?.sessionContexts ?? []).map((context) => [context.sessionId, context])), [analytics]);
   const maxWeeklySets = Math.max(1, ...(groupReport?.weekly ?? []).map(({ totalUniqueSetCount }) => totalUniqueSetCount));
+  const sourceSets = useMemo(() => {
+    if (!groupReport || !sourceFilter) return [];
+    return groupReport.exercises.flatMap((exercise) => exercise.sets.map((set) => ({ exercise, set })))
+      .filter(({ set }) => !anatomyId || set.anatomyIds.includes(anatomyId))
+      .filter(({ set }) => {
+        if (sourceFilter === "direct") return anatomyId
+          ? set.directAnatomyIds.includes(anatomyId)
+          : set.directAnatomyIds.length > 0;
+        if (sourceFilter === "indirect") return anatomyId
+          ? set.indirectAnatomyIds.includes(anatomyId)
+          : set.indirectAnatomyIds.length > 0;
+        if (sourceFilter === "days" || sourceFilter === "mapped") return true;
+        if (sourceFilter.startsWith("week-direct:")) return weekStartForDate(set.sessionDate) === sourceFilter.slice(12)
+          && (anatomyId ? set.directAnatomyIds.includes(anatomyId) : set.directAnatomyIds.length > 0);
+        if (sourceFilter.startsWith("week-indirect:")) return weekStartForDate(set.sessionDate) === sourceFilter.slice(14)
+          && (anatomyId ? set.indirectAnatomyIds.includes(anatomyId) : set.indirectAnatomyIds.length > 0);
+        if (sourceFilter.startsWith("week:")) return weekStartForDate(set.sessionDate) === sourceFilter.slice(5);
+        if (sourceFilter.startsWith("coverage:")) return false;
+        return set.rir === Number(sourceFilter.slice(4));
+      })
+      .sort((left, right) => left.set.sessionDate.localeCompare(right.set.sessionDate)
+        || left.set.exerciseIndex - right.set.exerciseIndex || left.set.setNumber - right.set.setNumber);
+  }, [anatomyId, groupReport, sourceFilter]);
+  const coverageSources = useMemo(() => {
+    if (!analytics || !sourceFilter?.startsWith("coverage:")) return [];
+    if (sourceFilter === "coverage:recorded") return analytics.coverage.sources;
+    if (sourceFilter === "coverage:mapped") return analytics.coverage.sources.filter((source) => source.projectedToBodyMap);
+    if (sourceFilter === "coverage:partial") return analytics.coverage.sources.filter((source) => source.mappingCoverage === "partial");
+    if (sourceFilter === "coverage:unmapped") return analytics.coverage.sources.filter((source) => !source.projectedToBodyMap);
+    return [];
+  }, [analytics, sourceFilter]);
+
+  useEffect(() => {
+    if (!sourceFilter || !sourceRecordsRef.current) return;
+    const section = sourceRecordsRef.current;
+    section.focus({ preventScroll: true });
+    section.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
+  }, [sourceFilter]);
+
+  function showSources(filter: SourceFilter) {
+    setSourceFilter(filter);
+  }
+
+  function sourceFilterLabel(filter: SourceFilter): string {
+    if (filter === "direct") return uk ? "прямих підходів" : "direct sets";
+    if (filter === "indirect") return uk ? "допоміжних підходів" : "indirect sets";
+    if (filter === "days") return uk ? "записаних тренувальних днів" : "logged training days";
+    if (filter === "mapped") return uk ? "зіставлених підходів" : "mapped sets";
+    if (filter === "coverage:sessions") return uk ? "завершених сесій" : "completed sessions";
+    if (filter === "coverage:recorded") return uk ? "записаних підходів" : "recorded sets";
+    if (filter === "coverage:mapped") return uk ? "зіставлених підходів" : "mapped sets";
+    if (filter === "coverage:partial") return uk ? "підходів із частковим мапінгом" : "partially mapped sets";
+    if (filter === "coverage:unmapped") return uk ? "підходів без мапінгу" : "unmapped sets";
+    if (filter.startsWith("week-direct:")) return `${uk ? "прямих підходів за тиждень від" : "direct sets for week of"} ${dateLabel(filter.slice(12))}`;
+    if (filter.startsWith("week-indirect:")) return `${uk ? "допоміжних підходів за тиждень від" : "indirect sets for week of"} ${dateLabel(filter.slice(14))}`;
+    if (filter.startsWith("week:")) return `${uk ? "тижня від" : "week of"} ${dateLabel(filter.slice(5))}`;
+    return `RIR ${filter.slice(4)}`;
+  }
 
   const trendLabel = (status: NonNullable<GroupReport>["exercises"][number]["performanceTrend"]["status"]) => {
     if (uk) {
@@ -85,6 +151,10 @@ export function BodyMapTrainingAnalyticsPanel({
     return new Intl.DateTimeFormat(intlLocale, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`));
   }
 
+  function dateTimeLabel(value: string): string {
+    return new Intl.DateTimeFormat(intlLocale, { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value));
+  }
+
   function periodControl() {
     return <div className={styles.periodRow}>
       <label className={styles.periodField}>
@@ -120,12 +190,38 @@ export function BodyMapTrainingAnalyticsPanel({
         </div>
         <p className={styles.provenance}>{coverageNote()}</p>
         <div className={styles.summaryMetrics}>
-          <Metric label={uk ? "Завершені сесії" : "Completed sessions"} value={count(analytics.coverage.completedSessionCount, uk)} />
-          <Metric label={uk ? "Записані підходи" : "Recorded sets"} value={count(analytics.coverage.recordedSetCount, uk)} />
-          <Metric label={uk ? "Зіставлені підходи" : "Mapped sets"} value={count(analytics.coverage.mappedSetCount, uk)} />
-          <Metric label={uk ? "Частковий мапінг" : "Partial mappings"} value={count(analytics.coverage.partiallyMappedSetCount, uk)} />
-          <Metric label={uk ? "Підходи без мапінгу" : "Sets without mapping"} value={count(analytics.coverage.unmappedSetCount, uk)} />
+          <Metric label={uk ? "Завершені сесії" : "Completed sessions"} value={count(analytics.coverage.completedSessionCount, uk)} sourceFilter="coverage:sessions" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+          <Metric label={uk ? "Записані підходи" : "Recorded sets"} value={count(analytics.coverage.recordedSetCount, uk)} sourceFilter="coverage:recorded" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+          <Metric label={uk ? "Зіставлені підходи" : "Mapped sets"} value={count(analytics.coverage.mappedSetCount, uk)} sourceFilter="coverage:mapped" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+          <Metric label={uk ? "Частковий мапінг" : "Partial mappings"} value={count(analytics.coverage.partiallyMappedSetCount, uk)} sourceFilter="coverage:partial" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+          <Metric label={uk ? "Підходи без мапінгу" : "Sets without mapping"} value={count(analytics.coverage.unmappedSetCount, uk)} sourceFilter="coverage:unmapped" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
         </div>
+        {sourceFilter === "coverage:sessions" && <CoverageSourceRecords
+          sectionRef={sourceRecordsRef}
+          heading={uk ? "Джерельні сесії" : "Source sessions"}
+          note={uk ? "Завершені сесії, включені до періоду; відкрийте сесію, щоб переглянути вправи й збережені підходи." : "Completed sessions included in this window; open a session to review its exercises and saved sets."}
+          sessions={analytics.sessions}
+          sources={[]}
+          filter="coverage:sessions"
+          uk={uk}
+          dateLabel={dateLabel}
+          exerciseLabel={exerciseLabel}
+          locale={locale}
+          onClose={() => setSourceFilter(null)}
+        />}
+        {sourceFilter && sourceFilter !== "coverage:sessions" && sourceFilter.startsWith("coverage:") && <CoverageSourceRecords
+          sectionRef={sourceRecordsRef}
+          heading={uk ? "Джерельні підходи" : "Source sets"}
+          note={uk ? `Сирі записи, що формують показник: ${sourceFilterLabel(sourceFilter)}. Частковий мапінг може одночасно входити до кількості зіставлених підходів.` : `Raw set records contributing to ${sourceFilterLabel(sourceFilter)}. A partial mapping can also be included in the mapped-set count.`}
+          sessions={[]}
+          sources={coverageSources}
+          filter={sourceFilter as Exclude<CoverageFilter, "coverage:sessions">}
+          uk={uk}
+          dateLabel={dateLabel}
+          exerciseLabel={exerciseLabel}
+          locale={locale}
+          onClose={() => setSourceFilter(null)}
+        />}
         {analytics.sessions.length === 0 && <p className={styles.emptyState}>{uk ? "За цей період немає завершених сесій у щоденнику. Це не доводить, що тренувань не було." : "No completed diary sessions are recorded for this period. This does not prove that no workouts occurred."}</p>}
       </>}
 
@@ -138,11 +234,24 @@ export function BodyMapTrainingAnalyticsPanel({
           <span className={styles.coverageTag} data-coverage={groupReport.mappingCoverage}>{groupReport.mappingCoverage === "complete-for-input" ? (uk ? "Повний мапінг записів" : "Mapped logged entries") : groupReport.mappingCoverage === "partial" ? (uk ? "Частковий мапінг" : "Partial mapping") : (uk ? "Недоступно" : "Unavailable")}</span>
         </div>
         <div className={styles.summaryMetrics}>
-          <Metric label={uk ? "Прямі підходи" : "Direct sets"} value={count(groupReport.directUniqueSetCount, uk)} />
-          <Metric label={uk ? "Допоміжні підходи" : "Indirect sets"} value={count(groupReport.indirectUniqueSetCount, uk)} />
-          <Metric label={uk ? "Унікальні зіставлені підходи" : "Unique mapped sets"} value={count(groupReport.totalUniqueSetCount, uk)} />
-          <Metric label={uk ? "Тренувальні дні з мапінгом" : "Logged exposure days"} value={count(groupReport.loggedTrainingDayCount, uk)} />
+              <Metric label={uk ? "Прямі підходи" : "Direct sets"} value={count(groupReport.directUniqueSetCount, uk)} sourceFilter="direct" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+              <Metric label={uk ? "Допоміжні підходи" : "Indirect sets"} value={count(groupReport.indirectUniqueSetCount, uk)} sourceFilter="indirect" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+              <Metric label={uk ? "Унікальні зіставлені підходи" : "Unique mapped sets"} value={count(groupReport.totalUniqueSetCount, uk)} sourceFilter="mapped" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+              <Metric label={uk ? "Тренувальні дні з мапінгом" : "Logged exposure days"} value={count(groupReport.loggedTrainingDayCount, uk)} sourceFilter="days" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
         </div>
+        {sourceFilter && !sourceFilter.startsWith("coverage:") && <SourceRecords
+          sectionRef={sourceRecordsRef}
+          heading={uk ? "Джерельні записи" : "Source records"}
+          note={uk ? `Підходи, з яких складено показник: ${sourceFilterLabel(sourceFilter)}.` : `Diary entries contributing to ${sourceFilterLabel(sourceFilter)}.`}
+          entries={sourceSets}
+          filter={sourceFilter}
+          anatomyId={anatomyId}
+          emptyLabel={uk ? "Для цього показника немає зіставлених джерельних підходів." : "No mapped source sets contribute to this metric."}
+          uk={uk}
+          dateLabel={dateLabel}
+          exerciseLabel={exerciseLabel}
+          onClose={() => setSourceFilter(null)}
+        />}
         <LoggedExposureIntervals intervals={groupReport.loggedExposureIntervals} uk={uk} dateLabel={dateLabel} />
         <p className={styles.provenance}>{uk ? "Кількість описує зіставлені підходи з журналу, а не виміряну активацію чи ріст м’язів." : "The count describes mapped diary sets, not measured activation or muscle growth."}</p>
 
@@ -151,9 +260,21 @@ export function BodyMapTrainingAnalyticsPanel({
           {groupReport.weekly.length === 0
             ? <p className={styles.emptyState}>{uk ? "Немає записаних тренувальних тижнів." : "No logged training weeks."}</p>
             : <ul className={styles.weekList}>{groupReport.weekly.map((week) => <li key={week.weekStart}>
-              <div className={styles.weekMeta}><span>{uk ? "Тиждень від" : "Week of"} {dateLabel(week.weekStart)}</span><span>{week.totalUniqueSetCount} {uk ? "підх." : "sets"} · {week.loggedSessionCount} {uk ? "сес." : "sessions"}</span></div>
+              <div className={styles.weekMeta}>
+                <span>{uk ? "Тиждень від" : "Week of"} {dateLabel(week.weekStart)}</span>
+                <span>
+                  <button className={styles.weekSourceButton} type="button" aria-label={uk ? `Показати джерельні підходи за тиждень від ${dateLabel(week.weekStart)}: ${week.totalUniqueSetCount}` : `Show source sets for week of ${dateLabel(week.weekStart)}: ${week.totalUniqueSetCount}`} aria-expanded={sourceFilter === `week:${week.weekStart}`} aria-controls={sourceFilter === `week:${week.weekStart}` ? "body-map-source-records" : undefined} onClick={() => showSources(`week:${week.weekStart}`)}>{week.totalUniqueSetCount} {uk ? "підх." : "sets"}</button>
+                  <span aria-hidden="true"> · </span>
+                  <button className={styles.weekSourceButton} type="button" aria-label={uk ? `Показати джерельні сесії за тиждень від ${dateLabel(week.weekStart)}: ${week.loggedSessionCount}` : `Show source sessions for week of ${dateLabel(week.weekStart)}: ${week.loggedSessionCount}`} aria-expanded={sourceFilter === `week:${week.weekStart}`} aria-controls={sourceFilter === `week:${week.weekStart}` ? "body-map-source-records" : undefined} onClick={() => showSources(`week:${week.weekStart}`)}>{week.loggedSessionCount} {uk ? "сес." : "sessions"}</button>
+                </span>
+              </div>
               <div className={styles.barTrack} aria-hidden="true"><span style={{ width: `${Math.max(2, week.totalUniqueSetCount / maxWeeklySets * 100)}%` }} /></div>
-              <small>{uk ? "Прямі" : "Direct"}: {week.directUniqueSetCount} · {uk ? "допоміжні" : "indirect"}: {week.indirectUniqueSetCount}{week.mappingCoverage === "partial" ? ` · ${uk ? "мапінг частковий" : "partial mapping"}` : ""}</small>
+              <small>
+                {uk ? "Прямі" : "Direct"}: <button className={styles.weekSourceButton} type="button" aria-label={uk ? `Показати прямі джерельні підходи за тиждень від ${dateLabel(week.weekStart)}: ${week.directUniqueSetCount}` : `Show direct source sets for week of ${dateLabel(week.weekStart)}: ${week.directUniqueSetCount}`} aria-expanded={sourceFilter === `week-direct:${week.weekStart}`} aria-controls={sourceFilter === `week-direct:${week.weekStart}` ? "body-map-source-records" : undefined} onClick={() => showSources(`week-direct:${week.weekStart}`)}>{week.directUniqueSetCount}</button>
+                <span aria-hidden="true"> · </span>
+                {uk ? "допоміжні" : "Indirect"}: <button className={styles.weekSourceButton} type="button" aria-label={uk ? `Показати допоміжні джерельні підходи за тиждень від ${dateLabel(week.weekStart)}: ${week.indirectUniqueSetCount}` : `Show indirect source sets for week of ${dateLabel(week.weekStart)}: ${week.indirectUniqueSetCount}`} aria-expanded={sourceFilter === `week-indirect:${week.weekStart}`} aria-controls={sourceFilter === `week-indirect:${week.weekStart}` ? "body-map-source-records" : undefined} onClick={() => showSources(`week-indirect:${week.weekStart}`)}>{week.indirectUniqueSetCount}</button>
+                {week.mappingCoverage === "partial" ? ` · ${uk ? "мапінг частковий" : "partial mapping"}` : ""}
+              </small>
             </li>)}</ul>}
         </section>
 
@@ -161,7 +282,7 @@ export function BodyMapTrainingAnalyticsPanel({
           <h3>{uk ? "Записаний RIR" : "Reported RIR"}</h3>
           {groupReport.rirCounts.length === 0
             ? <p className={styles.emptyState}>{uk ? "RIR не вказаний у зіставлених підходах." : "RIR was not reported for mapped sets."}</p>
-            : <div className={styles.rirList}>{groupReport.rirCounts.map(({ rir, uniqueSetCount }) => <span key={rir}>RIR {rir}: <b>{uniqueSetCount}</b></span>)}</div>}
+            : <div className={styles.rirList}>{groupReport.rirCounts.map(({ rir, uniqueSetCount }) => <button type="button" key={rir} aria-label={uk ? `Показати джерельні підходи з RIR ${rir}: ${uniqueSetCount}` : `Show source sets with RIR ${rir}: ${uniqueSetCount}`} aria-expanded={sourceFilter === `rir:${rir}`} aria-controls={sourceFilter === `rir:${rir}` ? "body-map-source-records" : undefined} onClick={() => showSources(`rir:${rir}`)}>RIR {rir}: <b>{uniqueSetCount}</b></button>)}</div>}
           <small className={styles.provenance}>{uk ? `RIR записаний у ${groupReport.reportedRirSetCount} підходах; не вказаний у ${groupReport.unreportedRirSetCount}. Значення є самозвітом і не перетворюється на «ефективні підходи».` : `RIR is recorded for ${groupReport.reportedRirSetCount} sets and unreported for ${groupReport.unreportedRirSetCount}. It is self-reported and is not converted into “effective sets.”`}</small>
         </section>
 
@@ -213,6 +334,7 @@ export function BodyMapTrainingAnalyticsPanel({
                         {first.plannedRir !== null ? ` · RIR ${first.plannedRir}` : ""}
                         {" · "}{uk ? "Факт" : "Actual"}: {first.actualExerciseSetCount} {uk ? "записаних підх." : "logged sets"}
                       </p>
+                      {first.sessionIntent === "easy-deload" && <EasyDayPlanStatus first={first} sets={sessionSets} uk={uk} />}
                       {first.precedingExercises.length > 0 && <p className={styles.preceding}>
                         {uk ? "Перед цією вправою" : "Earlier in this session"}: {first.precedingExercises.map((previous) => `${exerciseLabel(previous.stableKey, previous.name)} (${previous.loggedSets})`).join(" · ")}
                       </p>}
@@ -237,13 +359,17 @@ export function BodyMapTrainingAnalyticsPanel({
                       <div className={styles.contextGrid}>
                         <div><b>{uk ? "Сон за цю календарну дату" : "Sleep on this calendar date"}</b>
                           {context?.sleep
-                            ? <small>{(context.sleep.totalSleepMinutes / 60).toLocaleString(intlLocale, { maximumFractionDigits: 1 })} {uk ? "год" : "h"} · {context.sleep.segmentCount} {uk ? "сегм." : "segments"}{context.sleep.source.length ? ` · ${context.sleep.source.join(", ")}` : ""}</small>
+                            ? <small>{dateLabel(context.sleep.sleepDate)} · {(context.sleep.totalSleepMinutes / 60).toLocaleString(intlLocale, { maximumFractionDigits: 1 })} {uk ? "год" : "h"} · {context.sleep.segmentCount} {uk ? "сегм." : "segments"}{context.sleep.source.length ? ` · ${context.sleep.source.join(", ")}` : ""}</small>
                             : <small>{uk ? "Запису сну немає; це не означає нуль сну." : "No sleep record found; this does not mean zero sleep."}</small>}
                         </div>
                         <div><b>{uk ? "Харчовий запис за день тренування" : "Nutrition record for training day"}</b>
                           {context?.nutrition.status === "recorded"
-                            ? <small>{context.nutrition.caloriesKcal === null ? "—" : `${count(context.nutrition.caloriesKcal, uk)} kcal`} · {context.nutrition.proteinG === null ? "—" : `${count(context.nutrition.proteinG, uk)} g ${uk ? "білка" : "protein"}`} · {uk ? "щоденний запис здоров’я" : "daily health record"}</small>
-                            : <small>{uk ? "Калорії та білок за цю дату не записані." : "Calories and protein were not recorded for this date."}</small>}
+                            ? <>
+                              <small>{context.nutrition.caloriesKcal === null ? (uk ? "Ккал не записані" : "Calories not recorded") : `${count(context.nutrition.caloriesKcal, uk)} kcal`} · {context.nutrition.proteinG === null ? (uk ? "білок не записаний" : "protein not recorded") : `${count(context.nutrition.proteinG, uk)} g ${uk ? "білка" : "protein"}`} · {uk ? "щоденний запис здоров’я" : "daily health record"}</small>
+                              {context.nutrition.updatedAt && <small>{uk ? "Оновлено" : "Updated"}: {dateTimeLabel(context.nutrition.updatedAt)}</small>}
+                            </>
+                            : <small>{uk ? "Запису ккал або білка за цю дату немає; це не означає нульове споживання." : "No calorie or protein record was found for this date; this does not mean zero intake."}</small>}
+                          <small>{uk ? "Повнота харчового журналу, особиста ціль і середні за 7/28 днів у цьому джерелі недоступні." : "Food-log completeness, personal targets, and 7/28-day averages are unavailable from this source."}</small>
                         </div>
                       </div>
                     </article>;
@@ -262,11 +388,24 @@ export function BodyMapTrainingAnalyticsPanel({
           const anatomy = groupReport.anatomy.find((row) => row.anatomyId === anatomyId);
           return anatomy ? <>
             <div className={styles.summaryMetrics}>
-              <Metric label={uk ? "Прямі підходи" : "Direct sets"} value={count(anatomy.directUniqueSetCount, uk)} />
-              <Metric label={uk ? "Допоміжні підходи" : "Indirect sets"} value={count(anatomy.indirectUniqueSetCount, uk)} />
-              <Metric label={uk ? "Унікальні зіставлені підходи" : "Unique mapped sets"} value={count(anatomy.totalUniqueSetCount, uk)} />
-              <Metric label={uk ? "Тренувальні дні з мапінгом" : "Logged exposure days"} value={count(anatomy.loggedTrainingDayCount, uk)} />
+              <Metric label={uk ? "Прямі підходи" : "Direct sets"} value={count(anatomy.directUniqueSetCount, uk)} sourceFilter="direct" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+              <Metric label={uk ? "Допоміжні підходи" : "Indirect sets"} value={count(anatomy.indirectUniqueSetCount, uk)} sourceFilter="indirect" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+              <Metric label={uk ? "Унікальні зіставлені підходи" : "Unique mapped sets"} value={count(anatomy.totalUniqueSetCount, uk)} sourceFilter="mapped" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
+              <Metric label={uk ? "Тренувальні дні з мапінгом" : "Logged exposure days"} value={count(anatomy.loggedTrainingDayCount, uk)} sourceFilter="days" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
             </div>
+            {sourceFilter && !sourceFilter.startsWith("coverage:") && <SourceRecords
+              sectionRef={sourceRecordsRef}
+              heading={uk ? "Джерельні записи" : "Source records"}
+              note={uk ? `Підходи, з яких складено показник: ${sourceFilterLabel(sourceFilter)}.` : `Diary entries contributing to ${sourceFilterLabel(sourceFilter)}.`}
+              entries={sourceSets}
+              filter={sourceFilter}
+              anatomyId={anatomyId}
+              emptyLabel={uk ? "Для цього показника немає зіставлених джерельних підходів." : "No mapped source sets contribute to this metric."}
+              uk={uk}
+              dateLabel={dateLabel}
+              exerciseLabel={exerciseLabel}
+              onClose={() => setSourceFilter(null)}
+            />}
             <LoggedExposureIntervals intervals={anatomy.loggedExposureIntervals} uk={uk} dateLabel={dateLabel} />
             <p className={styles.provenance}>{anatomy.mappingCoverage === "partial"
               ? (uk ? "Підрахунок неповний: частина записів має часткове або відсутнє анатомічне зіставлення." : "Count is incomplete: some records have partial or missing anatomy mappings.")
@@ -293,8 +432,205 @@ export function BodyMapTrainingAnalyticsPanel({
   </section>;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className={styles.metric}><span>{label}</span><strong>{value}</strong></div>;
+function Metric({ label, value, sourceFilter, activeFilter, onShowSources, uk = false }: {
+  label: string;
+  value: string;
+  sourceFilter?: SourceFilter;
+  activeFilter?: SourceFilter | null;
+  onShowSources?: (filter: SourceFilter) => void;
+  uk?: boolean;
+}) {
+  return <div className={styles.metric}><span>{label}</span>{sourceFilter && onShowSources
+    ? <button className={styles.metricSourceButton} type="button" aria-label={uk ? `Показати джерельні записи для показника «${label}»: ${value}` : `Show source records for ${label}: ${value}`} aria-expanded={activeFilter === sourceFilter} aria-controls={activeFilter === sourceFilter ? "body-map-source-records" : undefined} onClick={() => onShowSources(sourceFilter)}><strong>{value}</strong></button>
+    : <strong>{value}</strong>}</div>;
+}
+
+function EasyDayPlanStatus({ first, sets, uk }: { first: ExerciseSet; sets: readonly ExerciseSet[]; uk: boolean }) {
+  const status = checkEasyDayPlan(first, sets);
+  const label = status.kind === "met"
+    ? uk ? "Факт відповідає записаним цілям легкого дня" : "Actual work matches the recorded easy-day targets"
+    : status.kind === "different"
+      ? uk ? "Факт відрізняється від записаних цілей легкого дня" : "Actual work differs from the recorded easy-day targets"
+      : uk ? "Недостатньо даних, щоб порівняти легкий день із планом" : "Not enough data to compare this easy day with its plan";
+  const targets = status.targets.map((target) => target === "sets"
+    ? uk ? "підходи" : "sets"
+    : target === "reps" ? uk ? "повторення" : "reps" : "RIR").join(", ");
+  return <p className={styles.planAdherence} data-status={status.kind}>
+    <strong>{label}</strong>
+    <small>{targets
+      ? `${uk ? "Перевірено за цілями" : "Checked against targets"}: ${targets}. `
+      : `${uk ? "Планові цілі не записані. " : "No plan targets are recorded. "}`}
+      {uk ? "Цільову вагу не збережено, тому вагу не порівнюємо." : "Planned load is not stored, so load is not compared."}</small>
+  </p>;
+}
+
+function checkEasyDayPlan(first: ExerciseSet, sets: readonly ExerciseSet[]): {
+  kind: "met" | "different" | "unavailable";
+  targets: Array<"sets" | "reps" | "rir">;
+} {
+  const targets: Array<"sets" | "reps" | "rir"> = [];
+  let matches = true;
+  let missingActual = sets.length !== first.actualExerciseSetCount;
+  if (first.plannedSets > 0) {
+    targets.push("sets");
+    matches &&= first.actualExerciseSetCount === first.plannedSets;
+  }
+  const hasRepTarget = first.plannedRepsMin !== null || first.plannedRepsMax !== null;
+  if (hasRepTarget) {
+    targets.push("reps");
+    missingActual ||= sets.length === 0;
+    matches &&= sets.every((set) => (first.plannedRepsMin === null || set.reps >= first.plannedRepsMin)
+      && (first.plannedRepsMax === null || set.reps <= first.plannedRepsMax));
+  }
+  if (first.plannedRir !== null) {
+    targets.push("rir");
+    missingActual ||= sets.length === 0 || sets.some((set) => set.rir === null);
+    matches &&= sets.every((set) => set.rir === first.plannedRir);
+  }
+  if (targets.length === 0 || missingActual) return { kind: "unavailable", targets };
+  return { kind: matches ? "met" : "different", targets };
+}
+
+function SourceRecords({
+  sectionRef,
+  heading,
+  note,
+  entries,
+  filter,
+  anatomyId,
+  emptyLabel,
+  uk,
+  dateLabel,
+  exerciseLabel,
+  onClose,
+}: {
+  sectionRef: RefObject<HTMLElement | null>;
+  heading: string;
+  note: string;
+  entries: Array<{ exercise: GroupReport["exercises"][number]; set: GroupReport["exercises"][number]["sets"][number] }>;
+  filter: SourceFilter;
+  anatomyId: AnatomyIdV2 | null;
+  emptyLabel: string;
+  uk: boolean;
+  dateLabel: (date: string) => string;
+  exerciseLabel: (stableKey: string | null, fallback: string) => string;
+  onClose: () => void;
+}) {
+  const groups = new Map<string, { exercise: GroupReport["exercises"][number]; sets: GroupReport["exercises"][number]["sets"] }>();
+  for (const { exercise, set } of entries) {
+    const key = `${set.sessionId}:${set.exerciseIndex}`;
+    const current = groups.get(key) ?? { exercise, sets: [] };
+    current.sets.push(set);
+    groups.set(key, current);
+  }
+
+  return <section className={styles.sourceRecords} id="body-map-source-records" ref={sectionRef} tabIndex={-1} aria-label={heading} aria-live="polite">
+    <div className={styles.sourceRecordsHeading}>
+      <div><h3>{heading}</h3><p>{note}</p></div>
+      <button className={styles.sourceClose} type="button" onClick={onClose}>{uk ? "Закрити" : "Close"}</button>
+    </div>
+    {groups.size === 0 ? <p className={styles.emptyState}>{emptyLabel}</p> : <ul className={styles.sourceList}>
+      {[...groups.entries()].map(([key, { exercise, sets }]) => {
+        const first = sets[0]!;
+        const setNumbers = sets.map(({ setNumber }) => setNumber).sort((left, right) => left - right).join(", ");
+        return <li key={key}>
+          <div>
+            <strong>{dateLabel(first.sessionDate)} · {exerciseLabel(exercise.stableKey, exercise.exerciseName)}</strong>
+            <small>{uk ? "Підходи" : "Sets"} {setNumbers} · {sourceExposureLabel(first, anatomyId, uk)}</small>
+            {filter === "days" && <small>{uk ? "Записаний день тренування" : "Logged training day"}</small>}
+          </div>
+          <Link href={`/training/sessions/${first.sessionId}?exercise=${first.exerciseIndex}`} prefetch={false}>{uk ? "Відкрити сесію" : "Open session"}</Link>
+        </li>;
+      })}
+    </ul>}
+  </section>;
+}
+
+function sourceExposureLabel(set: GroupReport["exercises"][number]["sets"][number], anatomyId: AnatomyIdV2 | null, uk: boolean): string {
+  const direct = anatomyId ? set.directAnatomyIds.includes(anatomyId) : set.directAnatomyIds.length > 0;
+  const indirect = anatomyId ? set.indirectAnatomyIds.includes(anatomyId) : set.indirectAnatomyIds.length > 0;
+  if (direct && indirect) return uk ? "пряме й допоміжне зіставлення" : "direct and indirect mapping";
+  if (direct) return uk ? "пряме зіставлення" : "direct mapping";
+  return uk ? "допоміжне зіставлення" : "indirect mapping";
+}
+
+function CoverageSourceRecords({
+  sectionRef,
+  heading,
+  note,
+  sessions,
+  sources,
+  filter,
+  uk,
+  dateLabel,
+  exerciseLabel,
+  locale,
+  onClose,
+}: {
+  sectionRef: RefObject<HTMLElement | null>;
+  heading: string;
+  note: string;
+  sessions: BodyMapTrainingAnalyticsResponseV1["sessions"];
+  sources: BodyMapAnalyticsCoverageSourceV1[];
+  filter: CoverageFilter;
+  uk: boolean;
+  dateLabel: (date: string) => string;
+  exerciseLabel: (stableKey: string | null, fallback: string) => string;
+  locale: "uk" | "en";
+  onClose: () => void;
+}) {
+  const sessionFilter = filter === "coverage:sessions";
+  const groups = new Map<string, BodyMapAnalyticsCoverageSourceV1[]>();
+  for (const source of sources) {
+    const key = `${source.sessionId}:${source.exerciseIndex}`;
+    groups.set(key, [...(groups.get(key) ?? []), source]);
+  }
+  const mappingStatus = (source: BodyMapAnalyticsCoverageSourceV1) => {
+    if (!source.projectedToBodyMap) {
+      return source.mappingCoverage === "partial"
+        ? uk ? "немає проєкції; мапінг частковий" : "no projection; partial mapping"
+        : uk ? "немає мапінгу до карти" : "no Body Map mapping";
+    }
+    return source.mappingCoverage === "partial"
+      ? uk ? "частковий мапінг" : "partial mapping"
+      : uk ? "мапінг доступний" : "mapped";
+  };
+  const setDescription = (source: BodyMapAnalyticsCoverageSourceV1) => {
+    const reps = `${source.reps} ${uk ? "повт." : "reps"}`;
+    const externalLoad = source.weightKg === null ? null : `${source.weightKg.toLocaleString(locale)} kg`;
+    const bandLoad = source.bandNominalResistanceKg === null ? null : `${source.bandNominalResistanceKg.toLocaleString(locale)} kg ${uk ? "номінал стрічки" : "band nominal"}`;
+    const load = externalLoad ?? bandLoad;
+    const rir = source.rir === null ? (uk ? "RIR не вказано" : "RIR not reported") : `RIR ${source.rir}`;
+    const anatomy = source.anatomyIds.length > 0
+      ? source.anatomyIds.map((id) => bodyMapAnatomyLabel(id, id.replaceAll("_", " "), locale)).join(", ")
+      : uk ? "анатомічні цілі не зіставлені" : "no mapped anatomy targets";
+    return `${uk ? "Підхід" : "Set"} ${source.setNumber}: ${reps}${load ? ` · ${load}` : ""} · ${rir} · ${mappingStatus(source)} · ${anatomy}`;
+  };
+
+  return <section className={styles.sourceRecords} id="body-map-source-records" ref={sectionRef} tabIndex={-1} aria-label={heading} aria-live="polite">
+    <div className={styles.sourceRecordsHeading}>
+      <div><h3>{heading}</h3><p>{note}</p></div>
+      <button className={styles.sourceClose} type="button" onClick={onClose}>{uk ? "Закрити" : "Close"}</button>
+    </div>
+    {sessionFilter
+      ? sessions.length === 0
+        ? <p className={styles.emptyState}>{uk ? "У вибраному періоді немає завершених сесій." : "No completed sessions are included in this window."}</p>
+        : <ul className={styles.sourceList}>{sessions.map((session) => <li key={session.id}>
+          <div><strong>{dateLabel(session.sessionDate)} · {uk ? "Сесія" : "Session"} #{session.id}</strong>
+            <small>{session.exerciseCount} {uk ? "впр." : "exercises"} · {session.recordedSetCount} {uk ? "записаних підх." : "recorded sets"}</small></div>
+          <Link href={`/training/sessions/${session.id}`} prefetch={false}>{uk ? "Відкрити сесію" : "Open session"}</Link>
+        </li>)}</ul>
+      : groups.size === 0
+        ? <p className={styles.emptyState}>{uk ? "Для цього показника немає відповідних джерельних підходів." : "No source sets match this coverage metric."}</p>
+        : <ul className={styles.sourceList}>{[...groups.entries()].map(([key, rows]) => {
+          const first = rows[0]!;
+          return <li key={key}>
+            <div><strong>{dateLabel(first.sessionDate)} · {exerciseLabel(first.exerciseStableKey, first.exerciseName)}</strong>
+              {rows.sort((left, right) => left.setNumber - right.setNumber).map((source) => <small key={source.setId}>{setDescription(source)}</small>)}</div>
+            <Link href={`/training/sessions/${first.sessionId}?exercise=${first.exerciseIndex}`} prefetch={false}>{uk ? "Відкрити сесію" : "Open session"}</Link>
+          </li>;
+        })}</ul>}
+  </section>;
 }
 
 function LoggedExposureIntervals({
@@ -329,4 +665,10 @@ function sessionIntentLabel(intent: NonNullable<BodyMapTrainingAnalyticsResponse
     "return-from-break": uk ? "Повернення після перерви" : "Return after a break",
   };
   return labels[intent];
+}
+
+function weekStartForDate(date: string): string {
+  const start = new Date(`${date}T00:00:00.000Z`);
+  start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  return start.toISOString().slice(0, 10);
 }

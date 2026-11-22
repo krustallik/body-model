@@ -550,7 +550,7 @@ describe("persisted session accounting UI", () => {
     expect(asymmetricSet.override.reps.left + asymmetricSet.override.reps.right).toBe(22);
   });
 
-  it("keeps band-side values separate and renders bodyweight shares as familiar percentages", async () => {
+  it("keeps band-side values separate, allows explicit bodyweight estimates, and leaves default push-ups count-only", async () => {
     const user = userEvent.setup();
     const requests: string[] = [];
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
@@ -589,8 +589,9 @@ describe("persisted session accounting UI", () => {
     unmountBodyweight();
     render(<ExerciseLoadConfigEditor catalogId={21} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} stableKey="pushup_handles" uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    expect(screen.getByLabelText("Частка маси у відсотках")).toHaveProperty("value", "70");
-    expect(screen.getByText(/70% — приблизна частка для віджимань від ручок/)).toBeTruthy();
+    expect(screen.getByLabelText("Частка маси у відсотках")).toHaveProperty("value", "");
+    expect(screen.getByText(/Частка не підставляється автоматично/)).toBeTruthy();
+    expect(screen.getByText(/Без явно налаштованої частки враховуються лише підходи й повторення/)).toBeTruthy();
 
     cleanup();
     render(<ExerciseLoadConfigEditor catalogId={22} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} stableKey="knee_push_up_floor" uk onSaved={() => undefined} />);

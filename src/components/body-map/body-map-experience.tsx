@@ -663,7 +663,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
           {navState.level === "OVERVIEW" && <>
             <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ОГЛЯД" : "OVERVIEW"}</p><h2>{uk ? "Групи м’язів" : "Muscle groups"}</h2></div>
             <p className={styles.muted}>{uk ? "Оберни тіло та вибери групу або натисни її у списку." : "Rotate the body, then choose a group or select it from the list."}</p>
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel level="OVERVIEW" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key="overview" level="OVERVIEW" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} />}
             <GroupList groups={manifest.bodyMapGroups} exposureStates={exposureStates} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} locale={locale} />
           </>}
 
@@ -673,7 +673,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
 
           {navState.level === "GROUP_DETAIL" && selectedGroup && focusReady && <>
             <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ГРУПА М’ЯЗІВ" : "MUSCLE GROUP"}</p><h2>{selectedGroupLabel}</h2></div>
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel level="GROUP_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`group:${selectedGroup.groupId}`} level="GROUP_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} />}
             {delivery === "development" && <div className={styles.metricCard} data-testid="group-report"><span>{uk ? "Демонстраційна експозиція" : "Demo exposure"}</span><strong>{exposureLabel(activeExposure, uk)}</strong><small>{uk ? "Фіктивні демодані; це не історія тренувань." : "Fixture data only; this is not training history."}</small></div>}
             <h3>{uk ? "М’язи та частини" : "Muscles and regions"}</h3>
             <SubregionList group={selectedGroup} manifest={manifest} locale={locale} onSelect={selectSubregion} />
@@ -692,7 +692,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
               ? <p className={styles.coverageNotice} data-testid="deep-context-status">{uk ? "Показано вибрану глибоку структуру. Поверхневі м’язи цієї групи тимчасово приглушені; решта тіла залишається видимою." : "The selected deep structure is shown in place. Superficial muscles in this group are temporarily muted; the rest of the body remains visible."}</p>
               : null}
             {selectedAnatomyCoverage?.visualAvailability === "unavailable" ? <p className={styles.coverageNotice} data-testid="source-geometry-unavailable">{uk ? "У BodyParts3D немає відповідної геометрії для цієї структури. Штучну модель не показуємо." : "No matching BodyParts3D geometry is available for this structure. No synthetic mesh is shown."}</p> : null}{selectedAnatomyCoverage?.visualAvailability === "partial" ? <p className={styles.coverageNotice} data-testid="source-geometry-partial">{uk ? "Геометрія цієї структури в BodyParts3D неповна." : "This structure has partial geometry in BodyParts3D."}</p> : null}
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel level="SUBREGION_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`subregion:${selectedGroup.groupId}:${selectedSubregion.anatomyId}`} level="SUBREGION_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} />}
             {delivery === "development" && <div className={styles.metricCard}><span>{uk ? "Дані про цю частину" : "Subregion exposure"}</span><strong>{uk ? "Недоступно в деморежимі" : "Unavailable in demo mode"}</strong><small>{uk ? "Демодані не підміняють ваш журнал." : "Demo fixtures never replace your diary."}</small></div>}
             {selectedAnatomy?.mappingCoverage === "partial" && <p className={styles.coverageNotice}>{uk ? "Підрахунок частковий: мапінг вправи не охоплює всі відповідні анатомічні дані." : "The count is partial because exercise mappings do not cover all relevant anatomy."}</p>}
           </>}
@@ -1367,6 +1367,9 @@ function TwoDimensionalFallback({ groups, locale, onSelectGroup, onReady }: {
         <circle cx="150" cy="56" r="35" /><path d="M132 91h36v29h-36zM117 119q33-20 66 0l24 22-10 123q-39 25-94 0l-10-123zM114 127 76 145 50 252l20 8 45-92M186 127l38 18 26 107-20 8-45-92M104 264q46 23 92 0l17 42-31 24h-64l-31-24zM118 326h27l-9 142-25 130-23-3 10-153zM155 326h27l20 116 9 153-23 3-25-130z" />
       </svg>
       {groups.map((group) => <button key={group.groupId} className={styles.fallbackHotspot} style={{ left: `${group.fallbackAnchor[0]}%`, top: `${group.fallbackAnchor[1]}%` } as CSSProperties} aria-label={`${uk ? "Вибрати" : "Select"} ${bodyMapGroupLabel(group.groupId, group.label, locale)}`} data-testid={`fallback-group-${group.groupId}`} onClick={() => onSelectGroup(group.groupId)}><span>{bodyMapGroupLabel(group.groupId, group.label, locale)}</span></button>)}
+    </div>
+    <div className={styles.fallbackGroupList} role="group" aria-label={uk ? "Список груп для вибору" : "Selectable muscle groups"}>
+      {groups.map((group) => <button key={group.groupId} type="button" className={styles.fallbackGroupOption} data-testid={`fallback-list-${group.groupId}`} onClick={() => onSelectGroup(group.groupId)}>{bodyMapGroupLabel(group.groupId, group.label, locale)}</button>)}
     </div>
     <p className={styles.fallbackNote}>{uk ? "Схематичні ділянки слугують для навігації, а не для анатомічної сегментації. Список груп і деталізація використовують ту саму версійну таксономію, що й 3D-сцена." : "Schematic regions are navigation aids, not anatomical segmentation. The group list and subregion detail use the same versioned taxonomy as the 3D scene."}</p>
   </div>;

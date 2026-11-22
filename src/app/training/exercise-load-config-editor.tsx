@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import {
-  CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
   calculateLoadAccountingV1,
   LEGACY_LOAD_CONFIGS_V1,
   loadConfigV1Schema,
@@ -199,20 +198,20 @@ export function ExerciseLoadConfigEditor({
   const current = parsedCurrent.success ? parsedCurrent.data : null;
   const legacyDefault = legacyDefaultFor(stableKey);
   const displayedConfig = current ?? legacyDefault;
-  const requiresExplicitBodyweightShare = [
-    "knee_push_up_floor",
-    "knee_push_up_hands_bench",
-    "incline_push_up_hands_bench",
-  ].includes(stableKey ?? "") && !(displayedConfig && "bodyweightFraction" in displayedConfig);
+  const displayedBodyweightFraction = displayedConfig?.resistanceType === "bodyweight"
+    ? displayedConfig.bodyweightFraction
+    : undefined;
+  const requiresExplicitBodyweightShare = resistanceType === RESISTANCE.BODYWEIGHT
+    && typeof displayedBodyweightFraction !== "number";
   const [mode, setMode] = useState<ConfigMode>(() => modeFor(displayedConfig, resistanceType));
   const inventoryCount = displayedConfig?.inventoryCount ?? 1;
   const [loadedSides, setLoadedSides] = useState<1 | 2>(initialLoadedSides(displayedConfig, resistanceType));
   const execution = displayedConfig?.execution ?? "simultaneous";
   const [bodyweightFractionPercent, setBodyweightFractionPercent] = useState(() => requiresExplicitBodyweightShare
     ? ""
-    : String(100 * (displayedConfig && "bodyweightFraction" in displayedConfig
-      ? displayedConfig.bodyweightFraction
-      : stableKey === "pushup_handles" ? CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1 : 1)));
+    : String(100 * (typeof displayedBodyweightFraction === "number"
+      ? displayedBodyweightFraction
+      : 1)));
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -261,7 +260,7 @@ export function ExerciseLoadConfigEditor({
 
   const previewConfig = selectedConfig("training-ui-example");
   const preview = previewConfig ? exampleResult(previewConfig) : null;
-  const previewBodyweightFraction = previewConfig && "bodyweightFraction" in previewConfig
+  const previewBodyweightFraction = previewConfig?.resistanceType === "bodyweight" && typeof previewConfig.bodyweightFraction === "number"
     ? previewConfig.bodyweightFraction : 1;
   const number = (value: number | null) => value === null ? null : formatNumber(value, uk);
   const pairLabel = previewConfig?.equipment.equipmentId === "dumbbell"
@@ -315,8 +314,8 @@ export function ExerciseLoadConfigEditor({
         : mode === "band-each-side"
           ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує сумарний внесок обох сторін." : "The entered rep count applies equally to the left and right; the example shows their combined contribution."
           : mode === "bodyweight-per-side"
-            ? uk ? "Одне число повторів застосовується однаково до кожної навантаженої сторони; частка маси враховується для обох." : "The same entered rep count applies to each loaded side; the selected share of body mass is counted for both."
-            : uk ? "Вибрана частка референсної маси застосовується один раз до кожного завершеного руху." : "The selected share of reference body mass applies once to each completed movement.";
+            ? uk ? "Одне число повторів застосовується однаково до кожної навантаженої сторони. Еквівалент маси рахується лише з явно налаштованою часткою." : "The same entered rep count applies to each loaded side. A body-mass equivalent is calculated only when an explicit share is configured."
+            : uk ? "Еквівалент референсної маси застосовується до руху лише за явно налаштованою часткою; без неї рахуються тільки підходи й повторення." : "A reference body-mass equivalent is applied to a movement only when an explicit share is configured; otherwise only sets and reps are counted.";
 
   async function save(next: unknown | null) {
     setBusy(true);
@@ -407,11 +406,11 @@ export function ExerciseLoadConfigEditor({
               <span id="load-config-bodyweight-help" className={styles.loadConfigNote}>
                 {requiresExplicitBodyweightShare
                   ? uk
-                    ? "Частку для цієї варіації не задано. Вкажіть її лише за власним правилом; значення не підставляється автоматично."
-                    : "No share is defined for this variation. Enter one only if you have a chosen rule; no value is assumed automatically."
+                    ? "Частка не підставляється автоматично. Задайте її лише за власним обґрунтованим правилом; інакше рахуються тільки підходи й повторення."
+                    : "No share is assumed automatically. Enter one only if you use an explicit, justified rule; otherwise only sets and reps are counted."
                   : uk
-                    ? "Наприклад, 70% — приблизна частка для віджимань від ручок."
-                    : "For example, 70% is the approximate share for handle push-ups."}
+                    ? "Це явно налаштована оцінка, а не виміряний опір руху."
+                    : "This is an explicitly configured estimate, not measured movement resistance."}
               </span>
             </label>
           )}
@@ -419,7 +418,9 @@ export function ExerciseLoadConfigEditor({
           <p className={styles.loadConfigExplanation}>{explanation}</p>
           {previewLine
             ? <p className={styles.loadConfigPreview} aria-live="polite" aria-atomic="true">{previewLine}</p>
-            : <p className={styles.loadConfigPreview} role="status">{uk ? "Приклад недоступний. Перевірте вибране правило." : "Example unavailable. Check the selected rule."}</p>}
+            : <p className={styles.loadConfigPreview} role="status">{requiresExplicitBodyweightShare
+              ? (uk ? "Без явно налаштованої частки враховуються лише підходи й повторення." : "Without an explicit body-mass share, only sets and reps are counted.")
+              : (uk ? "Приклад недоступний. Перевірте вибране правило." : "Example unavailable. Check the selected rule.")}</p>}
 
           <p className={styles.loadConfigNote}>
             {uk

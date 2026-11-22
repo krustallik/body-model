@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
-  CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+  BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
   calculateLoadAccountingWithBreakdownV1,
   calculateLoadAccountingV1,
   LEGACY_LOAD_CONFIGS_V1,
@@ -51,11 +50,12 @@ function valueForExercise(rows: readonly Stage01GoldenRowV1[], stableKey: string
 }
 
 describe("Stage 01 literal load accounting golden", () => {
-  it("uses a stable approximate 70% bodyweight assumption for canonical handle push-ups", () => {
+  it("counts bodyweight push-up sets and reps without an unsupported default share", () => {
     expect(LEGACY_LOAD_CONFIGS_V1.pushup_handles).toMatchObject({
-      configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
-      bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+      configVersion: BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
+      resistanceType: "bodyweight",
     });
+    expect(LEGACY_LOAD_CONFIGS_V1.pushup_handles).not.toHaveProperty("bodyweightFraction");
     expect(LEGACY_LOAD_CONFIGS_V1.pull_up).toMatchObject({ bodyweightFraction: 1 });
     const result = calculateLoadAccountingV1({
       localDate: "2026-09-24",
@@ -69,8 +69,11 @@ describe("Stage 01 literal load accounting golden", () => {
         sets: [{ reps: 10, weightKg: null, bandNominalResistanceKg: null }],
       }],
     });
-    expect(result.bodyweight.referenceVolume.value).toBe(560);
-    expect(result.bodyweight.referenceVolume.availability).toBe("available");
+    expect(result.bodyweight.sets.value).toBe(1);
+    expect(result.bodyweight.repetitions.value).toBe(10);
+    expect(result.bodyweight.referenceVolume.value).toBeNull();
+    expect(result.bodyweight.referenceVolume.availability).toBe("unavailable");
+    expect(result.bodyweight.referenceVolume.coverage.omittedReasons).toMatchObject({ "unconfigured-bodyweight-equivalent": 1 });
     expect(result.bodyweight.referenceVolume.unit).toBe("bodyweight-reference-kg-repetitions");
   });
 

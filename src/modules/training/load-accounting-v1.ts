@@ -4,7 +4,8 @@ import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 
 export const LOAD_ACCOUNTING_METHOD_V1 = "bodycast-load-accounting-v1" as const;
 export const LEGACY_LOAD_INTERPRETATION_V1 = "bodycast-historical-load-entry-v1" as const;
-export const CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1 = 0.7 as const;
+export const BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1 = "bodycast-bodyweight-count-only-v1" as const;
+/** Legacy automatic 70% snapshot version; retained only to safely read old raw snapshots. */
 export const CANONICAL_PUSH_UP_CONFIG_VERSION_V1 = "bodycast-push-up-load-approx-v1" as const;
 
 const baseShape = {
@@ -105,7 +106,7 @@ const bodyweightMovementSchema = z.object({
   resistanceType: z.literal("bodyweight"),
   loadInput: z.literal("bodyweight-reference"),
   repsMeaning: z.literal("per-movement"),
-  bodyweightFraction: z.number().finite().gt(0).max(1),
+  bodyweightFraction: z.number().finite().gt(0).max(1).optional(),
 }).strict();
 
 const bodyweightPerSideSchema = z.object({
@@ -114,7 +115,7 @@ const bodyweightPerSideSchema = z.object({
   resistanceType: z.literal("bodyweight"),
   loadInput: z.literal("bodyweight-reference"),
   repsMeaning: z.literal("per-side"),
-  bodyweightFraction: z.number().finite().gt(0).max(1),
+  bodyweightFraction: z.number().finite().gt(0).max(1).optional(),
 }).strict();
 
 export const loadConfigV1Schema = z.discriminatedUnion("accountingKind", [
@@ -295,16 +296,17 @@ function legacyBand(setupId: string, equipmentId = "resistance-band"): LoadConfi
 function legacyBodyweight(
   equipmentId: string,
   setupId: string,
-  assumption?: { bodyweightFraction: number; configVersion: string },
+  bodyweightFraction?: number,
+  configVersion: string = LEGACY_LOAD_INTERPRETATION_V1,
 ): LoadConfigV1 {
   return {
     ...common(1, 2, "simultaneous", equipmentId, setupId),
-    ...(assumption ? { configVersion: assumption.configVersion } : {}),
+    ...(configVersion === LEGACY_LOAD_INTERPRETATION_V1 ? {} : { configVersion }),
     accountingKind: "bodyweight-reference-per-movement",
     resistanceType: "bodyweight",
     loadInput: "bodyweight-reference",
     repsMeaning: "per-movement",
-    bodyweightFraction: assumption?.bodyweightFraction ?? 1,
+    ...(bodyweightFraction === undefined ? {} : { bodyweightFraction }),
   };
 }
 
@@ -320,16 +322,13 @@ export const LEGACY_LOAD_CONFIGS_V1: Readonly<Partial<Record<
 >>> = Object.freeze({
   incline_dumbbell_press_30deg: immutableConfig(legacyDumbbellPair()),
   flat_dumbbell_fly: immutableConfig(legacyDumbbellPair()),
-  pushup_handles: immutableConfig(legacyBodyweight("push-up-handles", "pair", {
-    bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
-    configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
-  })),
+  pushup_handles: immutableConfig(legacyBodyweight("push-up-handles", "pair", undefined, BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1)),
   seated_dumbbell_press: immutableConfig(legacyDumbbellPair()),
   one_arm_lateral_raise: immutableConfig(legacyPerSide()),
   one_arm_cable_triceps_extension: immutableConfig(legacyBand("one-arm-cable-extension")),
   bent_over_one_arm_dumbbell_triceps_extension: immutableConfig(legacyPerSide()),
   one_arm_seated_cable_row: immutableConfig(legacyBand("one-arm-seated-cable-row")),
-  pull_up: immutableConfig(legacyBodyweight("pull-up-bar", "bodyweight")),
+  pull_up: immutableConfig(legacyBodyweight("pull-up-bar", "bodyweight", 1)),
   hyperextension: immutableConfig({
     ...common(1, 2, "simultaneous", "dumbbell", "hyperextension-bench"),
     accountingKind: "external-per-implement-per-movement",
@@ -638,6 +637,7 @@ type OmitReason =
   | "invalid-load"
   | "missing-repetitions"
   | "missing-bodyweight-reference"
+  | "unconfigured-bodyweight-equivalent"
   | "asymmetric-side-breakdown";
 
 type MetricAccumulator = {
@@ -723,7 +723,7 @@ export function legacyLoadConfigForIdentityV1(input: IdentityEvidenceV1): {
     config,
     provenance: config ? {
       kind: "legacy-interpretation",
-      version: LEGACY_LOAD_INTERPRETATION_V1,
+      version: config.configVersion,
       stableKey: input.stableKey,
     } : null,
   };
@@ -1210,11 +1210,15 @@ function calculateLoadAccountingCoreV1(
           loadedSides: config.loadedSides,
           execution: config.execution,
           implementsPerMovement: implementsPerMovementForBreakdown(config),
-          effectiveMultiplier: referenceMultiplier,
+          effectiveMultiplier: referenceMultiplier ?? 1,
         };
         contributeWithBreakdown(bodyweightSets, 1, provenance, row, config, 1);
         contributeWithBreakdown(bodyweightReps, actualReps, provenance, row, config, 1);
-        if (validReferenceForDate(reference, input.localDate)) {
+        if (referenceMultiplier === undefined) {
+          omitWithBreakdown(
+            bodyweightReferenceVolume, "unconfigured-bodyweight-equivalent", row, config, provenance,
+          );
+        } else if (validReferenceForDate(reference, input.localDate)) {
           const referenceProvenance: ConfigProvenanceV1 = reference.status === "observed"
             || reference.status === "nearest-observed"
             ? {
@@ -1236,7 +1240,7 @@ function calculateLoadAccountingCoreV1(
             };
           contributeWithBreakdown(
             bodyweightReferenceVolume,
-            reference.valueKg * config.bodyweightFraction * actualReps,
+            reference.valueKg * referenceMultiplier * actualReps,
             provenance, row, config, referenceMultiplier, referenceProvenance,
           );
           addProvenance(bodyweightReferenceVolume, referenceProvenance);

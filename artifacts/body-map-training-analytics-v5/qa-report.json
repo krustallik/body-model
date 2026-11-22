@@ -1,0 +1,285 @@
+{
+  "status": "PASS",
+  "route": "/body-map",
+  "routeStatus": 200,
+  "database": "not used; profile and analytics API responses mocked with synthetic fixtures",
+  "renderer": "WebGL 3D asset loaded and selectable scene mesh count was positive",
+  "sceneMeshCount": 376,
+  "meshPick": {
+    "groupId": "chest",
+    "meshId": "bp3d-v4-fj1446",
+    "role": "selectable-muscle",
+    "raycastConfirmed": true
+  },
+  "responsive": [
+    {
+      "width": 360,
+      "scrollWidth": 360
+    },
+    {
+      "width": 390,
+      "scrollWidth": 390
+    },
+    {
+      "width": 768,
+      "scrollWidth": 768
+    },
+    {
+      "width": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "width": 1440,
+      "scrollWidth": 1440
+    },
+    {
+      "width": 1920,
+      "scrollWidth": 1920
+    }
+  ],
+  "periods": [
+    {
+      "weeks": 8,
+      "status": 200
+    },
+    {
+      "weeks": 12,
+      "status": 200
+    },
+    {
+      "weeks": 4,
+      "status": 200
+    }
+  ],
+  "flows": {
+    "sourceDrilldown": "all five period coverage metrics open their actual sessions or set records; mapped, partial, and unmapped records match the corresponding counters; direct, indirect, weekly, RIR, and subregion metrics have source filters",
+    "mixedAnatomyExposure": "concentration curl is direct for biceps brachii and indirect for brachialis; group and weekly indirect drilldowns return the set, and brachialis indirect is separate from direct",
+    "unavailableContext": "session with missing sleep and nutrition logs states unavailable without treating them as zero",
+    "easyDay": "explicit easy-day plan/actual comparison; different plan reported without inferring regression",
+    "exerciseOrderAndRest": "session order and recorded rest rendered",
+    "periodTrends": "phase-separated example rendered with insufficient-data state for the easy-day segment",
+    "anatomy": "pectoralis major clavicular head selected and linked to partial mapped exposure",
+    "keyboard": "Tab focus ring was visible, then Enter activated the Chest group button",
+    "reducedMotion": "prefers-reduced-motion emulation active during subregion navigation and browser history checks",
+    "history": "back/forward restored the group and subregion URL states",
+    "emptyState": "no completed diary sessions rendered without presenting missing data as a physiological zero",
+    "fallback": "2D fallback selected chest and opened the same source records",
+    "touchTargets": {
+      "fallback": [
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        },
+        {
+          "width": 166,
+          "height": 44
+        }
+      ],
+      "sourceActions": [
+        {
+          "width": 84.484375,
+          "height": 44
+        }
+      ]
+    },
+    "localization": [
+      "uk",
+      "en"
+    ]
+  },
+  "analyticsRequests": [
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 8,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 12,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "unavailable-context"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "unavailable-context"
+    },
+    {
+      "locale": "en",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "en",
+      "weeks": 4,
+      "scenario": "partial"
+    },
+    {
+      "locale": "en",
+      "weeks": 4,
+      "scenario": "empty"
+    },
+    {
+      "locale": "en",
+      "weeks": 4,
+      "scenario": "empty"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial",
+      "renderer": "2d-fallback"
+    },
+    {
+      "locale": "uk",
+      "weeks": 4,
+      "scenario": "partial",
+      "renderer": "2d-fallback"
+    }
+  ],
+  "unexpectedErrors": {
+    "page": [],
+    "console": [],
+    "request": []
+  },
+  "devIssueSummary": {
+    "label": null,
+    "messages": []
+  },
+  "fallbackDevIssueSummary": {
+    "label": "Expected renderer diagnostics from the deliberate WebGL-disabled run",
+    "messages": [
+      "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch",
+      "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch",
+      "THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.",
+      "%o"
+    ]
+  },
+  "expectedFallbackDiagnostics": [
+    "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch",
+    "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch",
+    "THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.",
+    "%o"
+  ],
+  "screenshots": [
+    "overview-uk-360.png",
+    "overview-uk-390.png",
+    "overview-uk-768.png",
+    "overview-uk-1280.png",
+    "overview-uk-1440.png",
+    "overview-uk-1920.png",
+    "coverage-unmapped-source-uk.png",
+    "chest-direct-source-uk.png",
+    "easy-day-plan-and-context-uk.png",
+    "chest-subregion-uk.png",
+    "biceps-group-indirect-uk.png",
+    "biceps-brachialis-indirect-uk.png",
+    "context-unavailable-uk.png",
+    "chest-mesh-pick-uk-1280.png",
+    "chest-group-en-1280.png",
+    "empty-state-en-1280.png",
+    "fallback-2d-map-uk-390.png",
+    "fallback-2d-chest-uk-390.png"
+  ]
+}

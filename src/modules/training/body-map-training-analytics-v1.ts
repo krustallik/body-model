@@ -93,6 +93,8 @@ export type BodyMapAnalyticsSetV1 = {
   precedingExercises: Array<{ name: string; stableKey: string | null; loggedSets: number; groupIds: BodyMapGroupIdV2[] }>;
   exposure: "direct" | "indirect";
   anatomyIds: AnatomyIdV2[];
+  directAnatomyIds: AnatomyIdV2[];
+  indirectAnatomyIds: AnatomyIdV2[];
 };
 
 export type BodyMapAnalyticsAnatomyV1 = {
@@ -132,6 +134,24 @@ export type BodyMapAnalyticsExerciseV1 = {
   performanceTrend: BodyMapAnalyticsTrendV1;
 };
 
+export type BodyMapAnalyticsCoverageSourceV1 = {
+  setId: number;
+  sessionId: number;
+  sessionDate: string;
+  exerciseName: string;
+  exerciseStableKey: string | null;
+  exerciseIndex: number;
+  setNumber: number;
+  reps: number;
+  resistanceType: string;
+  weightKg: number | null;
+  bandNominalResistanceKg: number | null;
+  rir: number | null;
+  mappingCoverage: "complete" | "partial" | "unavailable";
+  projectedToBodyMap: boolean;
+  anatomyIds: AnatomyIdV2[];
+};
+
 type BodyMapAnalyticsTrendStatusV1 = "improving" | "declining" | "steady" | "mixed" | "insufficient-data";
 
 type BodyMapAnalyticsTrendSummaryV1 = {
@@ -166,6 +186,7 @@ export type BodyMapTrainingAnalyticsV1 = {
     unmappedSetCount: number;
     mapping: "complete-for-input" | "partial" | "unknown";
     note: string;
+    sources: BodyMapAnalyticsCoverageSourceV1[];
   };
   sessions: Array<{
     id: number;
@@ -496,6 +517,7 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
   let unmappedSetCount = 0;
   let partialMappingSetCount = 0;
   const weeklyIncomplete = new Set<string>();
+  const coverageSources: BodyMapAnalyticsCoverageSourceV1[] = [];
 
   for (const session of sessions) {
     const occurredAt = eventInstant(session);
@@ -508,12 +530,31 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
       for (const set of exercise.sets) {
         recordedSetCount += 1;
         const physicalSetId = String(set.id);
+        const exerciseIndex = exercisePosition + 1;
         if (!mapping || mapping.targets.length === 0) {
           unmappedSetCount += 1;
           weeklyIncomplete.add(weekStart);
+          coverageSources.push({
+            setId: set.id,
+            sessionId: session.id,
+            sessionDate,
+            exerciseName: exercise.snapshotExerciseName,
+            exerciseStableKey: stableKey,
+            exerciseIndex,
+            setNumber: set.setNumber,
+            reps: set.reps,
+            resistanceType: exercise.resistanceType,
+            weightKg: set.weightKg,
+            bandNominalResistanceKg: set.bandNominalResistanceKg,
+            rir: set.rir,
+            mappingCoverage: "unavailable",
+            projectedToBodyMap: false,
+            anatomyIds: [],
+          });
           continue;
         }
-        if (mapping.targets.some((target) => target.coverage !== "supported")) {
+        const hasPartialMapping = mapping.targets.some((target) => target.coverage !== "supported");
+        if (hasPartialMapping) {
           partialMappingSetCount += 1;
         }
         const mappingEvent = {
@@ -530,6 +571,23 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
         } else {
           mappedSetCount += 1;
         }
+        coverageSources.push({
+          setId: set.id,
+          sessionId: session.id,
+          sessionDate,
+          exerciseName: exercise.snapshotExerciseName,
+          exerciseStableKey: stableKey,
+          exerciseIndex,
+          setNumber: set.setNumber,
+          reps: set.reps,
+          resistanceType: exercise.resistanceType,
+          weightKg: set.weightKg,
+          bandNominalResistanceKg: set.bandNominalResistanceKg,
+          rir: set.rir,
+          mappingCoverage: hasPartialMapping ? "partial" : "complete",
+          projectedToBodyMap: projected.length > 0,
+          anatomyIds: [...new Set(projected.map((row) => row.anatomyId))],
+        });
         for (const row of projected) {
           const group = groups.get(row.groupId)!;
           const week = group.weeklyEvents.get(weekStart) ?? { sessions: new Set<number>(), events: new Set<string>(), unmapped: false };
@@ -578,10 +636,14 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
               }),
             exposure: row.exposure,
             anatomyIds: [row.anatomyId],
+            directAnatomyIds: row.exposure === "direct" ? [row.anatomyId] : [],
+            indirectAnatomyIds: row.exposure === "indirect" ? [row.anatomyId] : [],
           };
           const groupSet = group.sets.get(physicalSetId);
           if (groupSet) {
             groupSet.anatomyIds = [...new Set([...groupSet.anatomyIds, row.anatomyId])];
+            if (row.exposure === "direct") groupSet.directAnatomyIds = [...new Set([...groupSet.directAnatomyIds, row.anatomyId])];
+            else groupSet.indirectAnatomyIds = [...new Set([...groupSet.indirectAnatomyIds, row.anatomyId])];
             if (row.exposure === "direct") groupSet.exposure = "direct";
           } else group.sets.set(physicalSetId, setRow);
           (row.exposure === "direct" ? group.direct : group.indirect).add(physicalSetId);
@@ -605,6 +667,8 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
           const existingSet = contribution.sets.find((candidate) => candidate.id === set.id && candidate.sessionId === session.id);
           if (existingSet) {
             existingSet.anatomyIds = [...new Set([...existingSet.anatomyIds, row.anatomyId])];
+            if (row.exposure === "direct") existingSet.directAnatomyIds = [...new Set([...existingSet.directAnatomyIds, row.anatomyId])];
+            else existingSet.indirectAnatomyIds = [...new Set([...existingSet.indirectAnatomyIds, row.anatomyId])];
             if (row.exposure === "direct") existingSet.exposure = "direct";
           }
           else contribution.sets.push(setRow);
@@ -634,8 +698,8 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
     const weekly = [...group.weeklyEvents.entries()]
       .map(([weekStart, week]) => {
         const weekGroupSets = sets.filter((set) => mondayOf(set.sessionDate) === weekStart);
-        const direct = new Set(weekGroupSets.filter((set) => set.exposure === "direct").map((set) => String(set.id)));
-        const indirect = new Set(weekGroupSets.filter((set) => set.exposure === "indirect").map((set) => String(set.id)));
+        const direct = new Set(weekGroupSets.filter((set) => set.directAnatomyIds.length > 0).map((set) => String(set.id)));
+        const indirect = new Set(weekGroupSets.filter((set) => set.indirectAnatomyIds.length > 0).map((set) => String(set.id)));
         const groupExposure = deriveBodyMapExposureV2({
           source: "canonical-analytics-contract",
           events: events.filter((event) => week.events.has(event.physicalSetId)),
@@ -698,6 +762,7 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
       partiallyMappedSetCount: partialMappingSetCount,
       unmappedSetCount,
       mapping,
+      sources: coverageSources,
       note: sessions.length === 0
         ? "No completed diary sessions were logged in this window; absence of a diary record does not prove that no workout occurred."
         : unmappedSetCount > 0 && partialMappingSetCount > 0

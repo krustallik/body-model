@@ -165,6 +165,7 @@ const breakdownContributionSchema = z.object({
     "invalid-load",
     "missing-repetitions",
     "missing-bodyweight-reference",
+    "unconfigured-bodyweight-equivalent",
     "asymmetric-side-breakdown",
   ]).nullable(),
   provenance: z.array(z.object({
@@ -259,6 +260,7 @@ const breakdownRowSchema = z.object({
       "invalid-load",
       "missing-repetitions",
       "missing-bodyweight-reference",
+      "unconfigured-bodyweight-equivalent",
       "asymmetric-side-breakdown",
     ]).nullable(),
   }).strict(),

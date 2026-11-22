@@ -6,6 +6,7 @@ import type {
   LoadAccountingOutputV1,
   LoadMetricV1,
 } from "@/modules/training/load-accounting-v1";
+import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "@/modules/training/load-accounting-v1";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import styles from "./training.module.css";
 
@@ -87,22 +88,25 @@ function MetricCard({
 }
 function bodyweightDescription(accounting: LoadAccountingOutputV1, uk: boolean): string {
   const ref = accounting.bodyweight.reference;
+  const calculationNote = uk
+    ? "Еквівалент кг × повторення використовує лише збережене правило вправи; нові віджимання від ручок без налаштованої частки рахують як підходи й повторення."
+    : "A kg × reps equivalent uses only the exercise rule saved with the record; new handle push-ups without a configured share remain sets and reps.";
   if (ref.status === "unavailable") {
-    return uk ? "Історичний референс маси недоступний; значення не замінено нулем." : "Historical bodyweight reference unavailable; no zero value was substituted.";
+    return `${uk ? "Історичний референс маси недоступний; значення не замінено нулем." : "Historical bodyweight reference unavailable; no zero value was substituted."} ${calculationNote}`;
   }
   if (ref.status === "observed") {
     return uk
-      ? `Точне вимірювання ${ref.localDate} · ${numberText(ref.valueKg, uk)} кг. Це збережений референс сесії.`
-      : `Exact observation on ${ref.localDate} · ${numberText(ref.valueKg, uk)} kg. This is the session's saved reference.`;
+      ? `Точне вимірювання ${ref.localDate} · ${numberText(ref.valueKg, uk)} кг. Це збережений референс сесії. ${calculationNote}`
+      : `Exact observation on ${ref.localDate} · ${numberText(ref.valueKg, uk)} kg. This is the session's saved reference. ${calculationNote}`;
   }
   if (ref.status === "nearest-observed") {
     return uk
-      ? `Приблизно, вимірювання ${ref.observationLocalDate} (${ref.dayOffset > 0 ? "+" : ""}${ref.dayOffset} дн.) · ${numberText(ref.valueKg, uk)} кг.`
-      : `Approximate, measured ${ref.observationLocalDate} (${ref.dayOffset > 0 ? "+" : ""}${ref.dayOffset} days) · ${numberText(ref.valueKg, uk)} kg.`;
+      ? `Приблизно, вимірювання ${ref.observationLocalDate} (${ref.dayOffset > 0 ? "+" : ""}${ref.dayOffset} дн.) · ${numberText(ref.valueKg, uk)} кг. ${calculationNote}`
+      : `Approximate, measured ${ref.observationLocalDate} (${ref.dayOffset > 0 ? "+" : ""}${ref.dayOffset} days) · ${numberText(ref.valueKg, uk)} kg. ${calculationNote}`;
   }
   return uk
-    ? `Оцінка «на дату» ${ref.localDate} · ${numberText(ref.valueKg, uk)} кг.`
-    : `As-of estimate for ${ref.localDate} · ${numberText(ref.valueKg, uk)} kg.`;
+    ? `Оцінка «на дату» ${ref.localDate} · ${numberText(ref.valueKg, uk)} кг. ${calculationNote}`
+    : `As-of estimate for ${ref.localDate} · ${numberText(ref.valueKg, uk)} kg. ${calculationNote}`;
 }
 
 function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: boolean): string {
@@ -162,6 +166,7 @@ function contributionProvenanceLabel(
   const config = row.config.effective;
   if (contribution.category === "bodyweightReferenceVolume"
       && config?.resistanceType === "bodyweight"
+      && typeof config.bodyweightFraction === "number"
       && config.bodyweightFraction < 1) {
     labels.push(uk
       ? "приблизний коефіцієнт вправи ≈" + numberText(config.bodyweightFraction * 100, uk) + "%"
@@ -186,6 +191,7 @@ function unavailableReasonLabel(
     "invalid-load": ["записана вага невалідна", "recorded load is invalid"],
     "missing-repetitions": ["повторення не записані", "repetitions were not recorded"],
     "missing-bodyweight-reference": ["референс маси недоступний", "bodyweight reference is unavailable"],
+    "unconfigured-bodyweight-equivalent": ["частку маси не налаштовано; підходи й повторення збережені", "no body-mass share is configured; sets and reps are retained"],
     "asymmetric-side-breakdown": ["для цього обліку потрібні повтори по сторонах", "side-specific reps are required for this calculation"],
   };
   return labels[reason][uk ? 0 : 1];
@@ -218,10 +224,14 @@ function compactCategoryLabel(category: LoadAccountingBreakdownContributionV1["c
 
 function mechanicsLabel(row: LoadAccountingBreakdownRowV1, uk: boolean): string | null {
   const config = row.config.effective;
-  if (config?.resistanceType === "bodyweight" && config.bodyweightFraction < 1) {
+  if (config?.resistanceType === "bodyweight") {
+    if (config.bodyweightFraction === undefined) return uk ? "Частку маси не налаштовано" : "Body-mass share not configured";
+    if (config.configVersion === CANONICAL_PUSH_UP_CONFIG_VERSION_V1) return uk
+      ? "Збережена історична оцінка · " + numberText(config.bodyweightFraction * 100, uk) + "%"
+      : "Saved historical estimate · " + numberText(config.bodyweightFraction * 100, uk) + "%";
     return uk
-      ? "Приблизна частка маси · " + numberText(config.bodyweightFraction * 100, uk) + "%"
-      : "Approximate bodyweight share · " + numberText(config.bodyweightFraction * 100, uk) + "%";
+      ? "Налаштована оцінка частки маси · " + numberText(config.bodyweightFraction * 100, uk) + "%"
+      : "Configured body-mass share estimate · " + numberText(config.bodyweightFraction * 100, uk) + "%";
   }
   if (config?.resistanceType === "external"
       && config.accountingKind === "external-per-implement-per-movement"

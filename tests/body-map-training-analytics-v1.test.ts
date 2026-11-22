@@ -92,8 +92,42 @@ describe("Body Map training analytics v1", () => {
       restBeforeSeconds: 90,
     });
     expect(result.coverage).toMatchObject({ completedSessionCount: 2, recordedSetCount: 2, mappedSetCount: 2, partiallyMappedSetCount: 2, unmappedSetCount: 0, mapping: "partial" });
+    expect(result.coverage.sources.find(({ setId }) => setId === 200)).toMatchObject({
+      setId: 200,
+      sessionId: 2,
+      exerciseName: "Incline dumbbell press",
+      setNumber: 1,
+      reps: 8,
+      weightKg: 10,
+      rir: 2,
+      mappingCoverage: "partial",
+      projectedToBodyMap: true,
+      anatomyIds: expect.arrayContaining(["pectoralis_major"]),
+    });
     expect(chest.mappingCoverage).toBe("partial");
     expect(deltoids.mappingCoverage).toBe("complete-for-input");
+  });
+
+  it("traces a mixed direct and indirect physical set to the correct biceps anatomy and week metrics", () => {
+    const curl = session({ id: 21, date: "2026-09-01", weightKg: 12 });
+    curl.exercises[0]!.snapshotExerciseName = "One-arm concentration curl";
+    curl.exercises[0]!.muscleMappingSnapshot = trainingExerciseMappingSnapshotJsonV1("one_arm_concentration_curl");
+    curl.exercises[0]!.sourceExerciseCatalog = { stableKey: "one_arm_concentration_curl" };
+
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 4,
+      now: new Date("2026-09-10T00:00:00.000Z"),
+      sessions: [curl],
+    });
+    const biceps = result.groups.find(({ groupId }) => groupId === "biceps")!;
+    const brachialis = biceps.anatomy.find(({ anatomyId }) => anatomyId === "brachialis")!;
+    const curlSet = biceps.exercises.find(({ stableKey }) => stableKey === "one_arm_concentration_curl")!.sets[0]!;
+
+    expect(biceps).toMatchObject({ directUniqueSetCount: 1, indirectUniqueSetCount: 1, totalUniqueSetCount: 1 });
+    expect(brachialis).toMatchObject({ directUniqueSetCount: 0, indirectUniqueSetCount: 1, totalUniqueSetCount: 1 });
+    expect(biceps.weekly[0]).toMatchObject({ directUniqueSetCount: 1, indirectUniqueSetCount: 1, totalUniqueSetCount: 1 });
+    expect(curlSet.directAnatomyIds).toContain("biceps_brachii");
+    expect(curlSet.indirectAnatomyIds).toContain("brachialis");
   });
 
   it("does not turn missing mapping snapshots into zero exposure", () => {
@@ -101,6 +135,7 @@ describe("Body Map training analytics v1", () => {
     unmapped.exercises[0]!.muscleMappingSnapshot = null;
     const result = buildBodyMapTrainingAnalyticsV1({ weeks: 4, now: new Date("2026-09-10T00:00:00Z"), sessions: [unmapped] });
     expect(result.coverage).toMatchObject({ recordedSetCount: 1, mappedSetCount: 0, unmappedSetCount: 1, mapping: "partial" });
+    expect(result.coverage.sources[0]).toMatchObject({ mappingCoverage: "unavailable", projectedToBodyMap: false, anatomyIds: [] });
     expect(result.groups.find(({ groupId }) => groupId === "chest")).toMatchObject({ status: "partial-mapping", directUniqueSetCount: 0, mappingCoverage: "partial" });
   });
 

@@ -1823,7 +1823,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     }
   });
 
-  it("persists and applies the versioned approximate push-up bodyweight share", async () => {
+  it("counts new handle push-ups without an automatic body-mass share", async () => {
     const db = prisma!;
     let programId: number | null = null;
     let sessionId: number | null = null;
@@ -1831,7 +1831,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     try {
       const { TrainingService } = await import("../../src/modules/training/training.service");
       const { instantToLocalDateTime, localDateTimeToInstant } = await import("../../src/model/time-zone");
-      const { CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1, CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } =
+      const { BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1 } =
         await import("../../src/modules/training/load-accounting-v1");
       const service = new TrainingService(db);
       const catalog = await db.exerciseCatalog.findUniqueOrThrow({
@@ -1852,9 +1852,10 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         select: { loadAccountingConfigSnapshot: true },
       });
       expect(programExercise.loadAccountingConfigSnapshot).toMatchObject({
-        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
-        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+        configVersion: BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
+        resistanceType: "bodyweight",
       });
+      expect(programExercise.loadAccountingConfigSnapshot).not.toHaveProperty("bodyweightFraction");
 
       const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
       sessionId = session.id;
@@ -1872,18 +1873,20 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       sourceId = sample.id;
       const exercise = session.exercises[0]!;
       expect(exercise.loadAccountingConfigSnapshot).toMatchObject({
-        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
-        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+        configVersion: BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
+        resistanceType: "bodyweight",
       });
+      expect(exercise.loadAccountingConfigSnapshot).not.toHaveProperty("bodyweightFraction");
       const set = await service.createSet(session.id, exercise.id, { reps: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const materialized = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       expect(materialized.loadAccountingV1?.bodyweight.reference).toMatchObject({
         status: "observed", valueKg: 80, source: "apple-health-shortcut",
       });
       expect(materialized.loadAccountingV1?.bodyweight.referenceVolume).toMatchObject({
-        value: 560,
+        value: null,
         unit: "bodyweight-reference-kg-repetitions",
-        availability: "available",
+        availability: "unavailable",
+        coverage: { omittedReasons: { "unconfigured-bodyweight-equivalent": 1 } },
       });
 
       const persistedSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
@@ -1897,25 +1900,20 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       if (!row) throw new Error("push-up approximation snapshot is missing its persisted set row");
       expect(row).toMatchObject({ stableKey: "pushup_handles", scalarReps: 10, effectiveReps: 10 });
       expect(row.config.resolved).toMatchObject({
-        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
-        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+        configVersion: BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
       });
       expect(row.config.effective).toMatchObject({
-        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
-        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+        configVersion: BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
       });
-      expect(row.mechanics?.effectiveMultiplier).toBe(CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1);
+      expect(row.config.resolved).not.toHaveProperty("bodyweightFraction");
+      expect(row.mechanics?.effectiveMultiplier).toBe(1);
       expect(row.contributions).toContainEqual(expect.objectContaining({
         category: "bodyweightReferenceVolume",
         basis: "bodyweight-reference",
-        value: 560,
-        effectiveMultiplier: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
-        availability: "available",
-        provenance: expect.arrayContaining([expect.objectContaining({
-          kind: "bodyweight-observation",
-          sourceId: String(sample.id),
-          localDate,
-        })]),
+        value: null,
+        effectiveMultiplier: 1,
+        availability: "unavailable",
+        unavailableReason: "unconfigured-bodyweight-equivalent",
       }));
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: session.id } })).toBe(1);
     } finally {

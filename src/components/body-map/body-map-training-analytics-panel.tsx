@@ -174,7 +174,7 @@ function ExerciseDisclosure({ exercise, locale, uk }: { exercise: BodyMapExercis
         ? uk ? "Порівняння використовує повторення; зовнішня вага у записах не вказана." : "This comparison uses reps; external load is not recorded."
         : exercise.resistanceType === "RESISTANCE_BAND"
           ? uk ? "Порівнюються повторення за тієї самої позначки резинки; її номінал не є прямим виміром сили." : "Reps are compared at the same band setting; its nominal rating is not a direct strength measurement."
-          : uk ? "Підсумок описує записані робочі результати, а не вимір росту м’яза." : "This summarizes logged working performance; it does not measure muscle growth.";
+          : uk ? "Це підсумок записаних підходів цієї вправи." : "This summarizes the recorded set results for this exercise.";
   return <details className={styles.exercise} data-testid="body-map-exercise-progress">
     <summary>
       <span className={styles.exerciseHeading}>
@@ -271,8 +271,8 @@ export function BodyMapTrainingAnalyticsPanel({
         {statusCaveats(assessment, uk).map((note) => <p className={styles.caveat} key={note}>{note}</p>)}
         {energyLine && <p className={styles.energyContext}>{energyLine}</p>}
         <small className={styles.measurementNote}>{uk
-          ? "Це тенденція записаних результатів у вправах, а не вимір росту чи втрати м’язової тканини."
-          : "This is a trend in recorded exercise performance, not a measurement of muscle growth or loss."}</small>
+          ? "Тенденція записаних підходів; розминка окремо не позначається. Це не вимір росту м’язів."
+          : "Logged-set trend; warm-ups are not marked separately. This does not measure muscle growth."}</small>
       </article>
       <section className={styles.exerciseSection} aria-label={uk ? "Вправи, що враховані у висновку" : "Exercises included in the summary"}>
         <div className={styles.sectionHeading}>

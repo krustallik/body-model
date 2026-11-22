@@ -354,7 +354,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
       data: { sessionExerciseId: exercise.id, setNumber: 1, reps: 5, weightKg: 30 },
       select: { id: true },
     });
-    await prisma.strengthSet.delete({ where: { id: set.id } });
+    await prisma.strengthSet.delete({ where: { id: set.id }, select: { id: true } });
 
     const group = [
       { sourceKey: String(sessionId), fromDate: "2025-01-11", revision: 2,
@@ -450,7 +450,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
     const secondSet = await prisma.strengthSet.create({ data: {
       sessionExerciseId: exercise.id, setNumber: 2, reps: 4, weightKg: 20,
     }, select: { id: true } });
-    await prisma.strengthSet.delete({ where: { id: secondSet.id } });
+    await prisma.strengthSet.delete({ where: { id: secondSet.id }, select: { id: true } });
     const secondChildKey = `training-delete-set:${sessionId}:${secondSet.id}`;
     childKeys.push(secondChildKey);
     await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {

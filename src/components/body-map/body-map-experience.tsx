@@ -256,7 +256,6 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       return;
     }
     const controller = new AbortController();
-    setAnalyticsLoad({ weeks: analyticsWeeks, status: "loading" });
     fetch(`/api/v1/training/body-map/analytics?weeks=${analyticsWeeks}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (response.status === 401) return { kind: "unauthorized" as const };
@@ -276,6 +275,11 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       });
     return () => controller.abort();
   }, [analyticsWeeks, analyticsRevision, delivery]);
+
+  function refreshAnalytics() {
+    setAnalyticsLoad({ weeks: analyticsWeeks, status: "loading" });
+    setAnalyticsRevision((revision) => revision + 1);
+  }
 
   const selectedGroup = useMemo(() => manifest?.bodyMapGroups.find(({ groupId }) =>
     groupId === navState.groupId,
@@ -665,7 +669,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
           {navState.level === "OVERVIEW" && <>
             <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ОГЛЯД" : "OVERVIEW"}</p><h2>{uk ? "Групи м’язів" : "Muscle groups"}</h2></div>
             <p className={styles.muted}>{uk ? "Оберни тіло та вибери групу або натисни її у списку." : "Rotate the body, then choose a group or select it from the list."}</p>
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key="overview" level="OVERVIEW" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} onRefresh={() => setAnalyticsRevision((revision) => revision + 1)} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key="overview" level="OVERVIEW" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} onRefresh={refreshAnalytics} />}
             <GroupList groups={manifest.bodyMapGroups} exposureStates={exposureStates} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} locale={locale} />
           </>}
 
@@ -675,7 +679,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
 
           {navState.level === "GROUP_DETAIL" && selectedGroup && focusReady && <>
             <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ГРУПА М’ЯЗІВ" : "MUSCLE GROUP"}</p><h2>{selectedGroupLabel}</h2></div>
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`group:${selectedGroup.groupId}`} level="GROUP_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} onRefresh={() => setAnalyticsRevision((revision) => revision + 1)} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`group:${selectedGroup.groupId}`} level="GROUP_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} onRefresh={refreshAnalytics} />}
             {delivery === "development" && <div className={styles.metricCard} data-testid="group-report"><span>{uk ? "Демонстраційна експозиція" : "Demo exposure"}</span><strong>{exposureLabel(activeExposure, uk)}</strong><small>{uk ? "Фіктивні демодані; це не історія тренувань." : "Fixture data only; this is not training history."}</small></div>}
             <h3>{uk ? "М’язи та частини" : "Muscles and regions"}</h3>
             <SubregionList group={selectedGroup} manifest={manifest} locale={locale} onSelect={selectSubregion} />
@@ -694,7 +698,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
               ? <p className={styles.coverageNotice} data-testid="deep-context-status">{uk ? "Показано вибрану глибоку структуру. Поверхневі м’язи цієї групи тимчасово приглушені; решта тіла залишається видимою." : "The selected deep structure is shown in place. Superficial muscles in this group are temporarily muted; the rest of the body remains visible."}</p>
               : null}
             {selectedAnatomyCoverage?.visualAvailability === "unavailable" ? <p className={styles.coverageNotice} data-testid="source-geometry-unavailable">{uk ? "У BodyParts3D немає відповідної геометрії для цієї структури. Штучну модель не показуємо." : "No matching BodyParts3D geometry is available for this structure. No synthetic mesh is shown."}</p> : null}{selectedAnatomyCoverage?.visualAvailability === "partial" ? <p className={styles.coverageNotice} data-testid="source-geometry-partial">{uk ? "Геометрія цієї структури в BodyParts3D неповна." : "This structure has partial geometry in BodyParts3D."}</p> : null}
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`subregion:${selectedGroup.groupId}:${selectedSubregion.anatomyId}`} level="SUBREGION_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} onRefresh={() => setAnalyticsRevision((revision) => revision + 1)} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`subregion:${selectedGroup.groupId}:${selectedSubregion.anatomyId}`} level="SUBREGION_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} onRefresh={refreshAnalytics} />}
             {delivery === "development" && <div className={styles.metricCard}><span>{uk ? "Дані про цю частину" : "Subregion exposure"}</span><strong>{uk ? "Недоступно в деморежимі" : "Unavailable in demo mode"}</strong><small>{uk ? "Демодані не підміняють ваш журнал." : "Demo fixtures never replace your diary."}</small></div>}
             {selectedAnatomy?.mappingCoverage === "partial" && <p className={styles.coverageNotice}>{uk ? "Підрахунок частковий: мапінг вправи не охоплює всі відповідні анатомічні дані." : "The count is partial because exercise mappings do not cover all relevant anatomy."}</p>}
           </>}

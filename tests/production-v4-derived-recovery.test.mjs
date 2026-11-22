@@ -161,8 +161,8 @@ describe("owner-gated legacy V4 recovery runner contracts", () => {
 
   it("binds immutable migration files without treating them as applied ledger rows", () => {
     const migrationFiles = currentMigrationRows.map(({ name, checksum }) => ({ name, checksum }));
-    expect(allMigrationRows).toHaveLength(78);
-    expect(allMigrationRows.at(-1)?.name).toBe("20261121130000_training_plan_intent");
+    expect(allMigrationRows).toHaveLength(79);
+    expect(allMigrationRows.at(-1)?.name).toBe("20261122140000_session_load_assessment");
     expect(() => migrationFilesDigest(allMigrationRows.map(({ name, checksum }) => ({ name, checksum })), 74)).toThrow();
     expect(migrationFilesDigest(migrationFiles.slice(0, 65), 65)).toBe(LEGACY_V4_RECOVERY.ledgerDigest);
     expect(migrationFilesDigest(migrationFiles, 74)).toBe(migrationLedgerDigest(currentMigrationRows, 74));

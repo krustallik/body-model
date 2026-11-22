@@ -60,10 +60,10 @@ describe("fresh empty-install migration verification", () => {
     })).toThrow(/unexpected user profile/);
   });
 
-  it("hashes the complete 78-migration tree and agrees with the repository snapshot", async () => {
+  it("hashes the complete 79-migration tree and agrees with the repository snapshot", async () => {
     const tree = await readMigrationTree(resolve("prisma/migrations"));
-    expect(tree.migrations).toHaveLength(78);
-    expect(tree.migrations.at(-1)?.name).toBe("20261121130000_training_plan_intent");
+    expect(tree.migrations).toHaveLength(79);
+    expect(tree.migrations.at(-1)?.name).toBe("20261122140000_session_load_assessment");
     const expected = createHash("sha256");
     for (const item of tree.migrations) {
       const sql = await readFile(resolve("prisma/migrations", item.name, "migration.sql"));

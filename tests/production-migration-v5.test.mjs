@@ -735,7 +735,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     );
     expect(releaseTree.ready).toBe(false);
     expect(releaseTree.expectedDirectories).toHaveLength(77);
-    expect(releaseTree.actualDirectories).toHaveLength(78);
+    expect(releaseTree.actualDirectories).toHaveLength(79);
     expect(releaseTree.blockers).toContain("Reviewed predecessor and pending sets do not cover the complete release migration tree exactly.");
 
     for (const migration of AUTH_MULTIUSER_MANIFEST.migrations) {

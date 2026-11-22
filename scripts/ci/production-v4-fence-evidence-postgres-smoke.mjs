@@ -324,6 +324,9 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
         accountingTimeZone: trainingTimeZone, accountingTimeZoneProvenance: trainingTimeZoneProvenance,
         createdAt: new Date("2025-01-11T12:00:00.000Z"), updatedAt: new Date("2025-01-11T14:30:00.000Z"),
       },
+      // This smoke runs against the pinned 65-migration schema; keep the
+      // current generated Prisma client from RETURNING columns added later.
+      select: { id: true },
     });
     await prisma.strengthSessionAccountingSnapshot.create({
       data: {
@@ -337,6 +340,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
         payloadVersion: payload.schemaVersion, payload,
         createdAt: new Date("2025-01-11T13:00:00.000Z"),
       },
+      select: { sessionId: true, snapshotRevision: true },
     });
     // This pinned 65-migration schema predates StrengthSessionExercise.profileId;
     // use its legacy columns instead of the current post-migration Prisma model.
@@ -348,6 +352,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
     `;
     const set = await prisma.strengthSet.create({
       data: { sessionExerciseId: exercise.id, setNumber: 1, reps: 5, weightKg: 30 },
+      select: { id: true },
     });
     await prisma.strengthSet.delete({ where: { id: set.id } });
 
@@ -397,6 +402,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
     await prisma.strengthSessionAccountingSnapshot.update({
       where: { sessionId_snapshotRevision: { sessionId, snapshotRevision: session.snapshotRevision } },
       data: { payloadVersion: "bodycast-persisted-load-accounting-v0" },
+      select: { sessionId: true, snapshotRevision: true },
     });
     const tamperedPayloadVersionEvidence = await readEvidence();
     let rejectedPayloadVersionMismatch = false;
@@ -410,6 +416,7 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
     await prisma.strengthSessionAccountingSnapshot.update({
       where: { sessionId_snapshotRevision: { sessionId, snapshotRevision: session.snapshotRevision } },
       data: { payloadVersion: payload.schemaVersion },
+      select: { sessionId: true, snapshotRevision: true },
     });
 
     const orphanBlocks = evidence.blocks.filter((block) => block.sourceKey !== `training-delete-session:${deletedSessionId}`);
@@ -435,26 +442,26 @@ async function validateTrainingDeletionEvidenceOnExactImage() {
       massResolutionIdentity: refreshedPayload.massResolutionIdentity,
       payloadVersion: refreshedPayload.schemaVersion, payload: refreshedPayload,
       createdAt: new Date("2025-01-11T15:00:00.000Z"),
-    } });
+    }, select: { sessionId: true, snapshotRevision: true } });
     await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
       accountingInputRevision: 42, currentSnapshotRevision: 91,
       updatedAt: new Date("2025-01-11T15:00:00.000Z"),
-    } });
+    }, select: { id: true } });
     const secondSet = await prisma.strengthSet.create({ data: {
       sessionExerciseId: exercise.id, setNumber: 2, reps: 4, weightKg: 20,
-    } });
+    }, select: { id: true } });
     await prisma.strengthSet.delete({ where: { id: secondSet.id } });
     const secondChildKey = `training-delete-set:${sessionId}:${secondSet.id}`;
     childKeys.push(secondChildKey);
     await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
       accountingInputRevision: 43, currentSnapshotRevision: null,
       updatedAt: new Date("2025-01-11T16:00:00.000Z"),
-    } });
+    }, select: { id: true } });
     await insertTrainingFence({ sourceKey: secondChildKey, fromDate: "2025-01-11", revision: 43,
       createdAt: new Date("2025-01-11T16:00:00.000Z"), updatedAt: new Date("2025-01-11T16:00:00.000Z") });
     await prisma.strengthDiarySession.update({ where: { id: sessionId }, data: {
       accountingInputRevision: 44, updatedAt: new Date("2025-01-11T16:15:00.000Z"),
-    } });
+    }, select: { id: true } });
     await prisma.$executeRawUnsafe(
       `UPDATE public."UnifiedPublicationBlock" SET revision = revision + 1, "updatedAt" = $1
        WHERE "profileId" = 1 AND source = 'training' AND "sourceKey" = $2`,

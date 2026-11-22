@@ -19,7 +19,7 @@ import type { UpdateSetInput } from "@/modules/training/training.schema";
 import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
-import { formatLoadKg, formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso, trainingSessionTitle } from "./training-labels";
+import { formatLoadKg, formatSetCompletionClock, resistanceInputLabel, resistanceLabel, resistanceLoadValueLabel, resistanceRequiredMessage, setCompletionTimestampIso, trainingSessionTitle } from "./training-labels";
 import type { SetDraft } from "./training-exercise-workspace";
 import styles from "./training.module.css";
 
@@ -44,7 +44,7 @@ function setLoadLabel(
     exercise.resistanceType === RESISTANCE.RESISTANCE_BAND
     && set.bandNominalResistanceKg !== null
   ) {
-    return `${set.bandNominalResistanceKg} ${uk ? "кг номінального опору" : "kg nominal resistance"}`;
+    return resistanceLoadValueLabel(set.bandNominalResistanceKg, uk, exercise.stableKey, exercise.snapshotExerciseName);
   }
   const bodyweightLabel = uk ? "власна вага" : "bodyweight";
   const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
@@ -59,6 +59,8 @@ function setLoadLabel(
 
 function historyLoadLabel(
   resistanceType: string,
+  stableKey: string | null,
+  exerciseName: string,
   set: ExerciseHistoryEntryDto["sets"][number],
   uk: boolean,
 ): string {
@@ -66,7 +68,7 @@ function historyLoadLabel(
     return `${set.weightKg} ${uk ? "кг" : "kg"}`;
   }
   if (resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null) {
-    return `${set.bandNominalResistanceKg} ${uk ? "кг номінального опору" : "kg nominal resistance"}`;
+    return resistanceLoadValueLabel(set.bandNominalResistanceKg, uk, stableKey, exerciseName);
   }
   const bodyweightLabel = uk ? "власна вага" : "bodyweight";
   const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
@@ -175,6 +177,8 @@ function historicalSetDraft(set: ExerciseHistorySetDto): HistoricalSetDraft {
 function HistoricalSetRow({
   entry,
   set,
+  stableKey,
+  exerciseName,
   uk,
   interactive,
   actionsOpen,
@@ -187,6 +191,8 @@ function HistoricalSetRow({
 }: {
   entry: ExerciseHistoryEntryDto;
   set: ExerciseHistorySetDto;
+  stableKey: string | null;
+  exerciseName: string;
   uk: boolean;
   interactive: boolean;
   actionsOpen: boolean;
@@ -318,7 +324,7 @@ function HistoricalSetRow({
     } else if (entry.resistanceType === RESISTANCE.RESISTANCE_BAND) {
       const bandNominalResistanceKg = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(bandNominalResistanceKg) || bandNominalResistanceKg <= 0) {
-        setError(uk ? "Вкажіть номінальний опір." : "Enter nominal resistance.");
+        setError(resistanceRequiredMessage(uk, stableKey, exerciseName));
         return;
       }
       payload.bandNominalResistanceKg = bandNominalResistanceKg;
@@ -495,7 +501,7 @@ function HistoricalSetRow({
             onClick={() => onCopy(set)}
           >
             <span>#{set.setNumber}</span>
-            <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
+            <span>{historyLoadLabel(entry.resistanceType, stableKey, exerciseName, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
             <time dateTime={set.completedAt ?? undefined}>
               {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
                 ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
@@ -505,7 +511,7 @@ function HistoricalSetRow({
         ) : (
           <div className={styles.workoutHistorySetBtn}>
             <span>#{set.setNumber}</span>
-            <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
+            <span>{historyLoadLabel(entry.resistanceType, stableKey, exerciseName, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
             <time dateTime={set.completedAt ?? undefined}>
               {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
                 ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
@@ -522,7 +528,7 @@ function HistoricalSetRow({
           </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy || mutationBlocked} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => { setAdditionalLoadDirty(true); setDraft((current) => ({ ...current, additionalLoadKg: event.target.value })); }} /></label>}
-          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{resistanceInputLabel(uk, stableKey, exerciseName)}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
           {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
           <label><span>RIR</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
           <label><span>{uk ? "Відпочинок перед підходом, с" : "Rest before set, s"}</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.restBeforeSeconds} onChange={(event) => setDraft((current) => ({ ...current, restBeforeSeconds: event.target.value }))} /></label>
@@ -705,7 +711,7 @@ function LiveLoggedSetRow({
           <section className={`${styles.liveEntry} ${styles.liveSetInlineEditor}`} aria-label={uk ? `Редагування підходу ${set.setNumber}` : `Edit set ${set.setNumber}`}>
             <div className={styles.liveFields}>
               {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label className={styles.liveField}><span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.weightKg} onChange={(event) => onDraftChange({ ...draft, weightKg: event.target.value })} /></label>}
-              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
+              {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && <label className={styles.liveField}><span>{resistanceInputLabel(uk, exercise.stableKey, exercise.snapshotExerciseName)}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" value={draft.bandNominalResistanceKg} onChange={(event) => onDraftChange({ ...draft, bandNominalResistanceKg: event.target.value })} /></label>}
               {exercise.resistanceType === RESISTANCE.BODYWEIGHT && <label className={styles.liveField}><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy || saveBlocked} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => onDraftChange({ ...draft, additionalLoadKg: event.target.value })} /></label>}
               {asymmetricReps ? <>
                 <label className={styles.liveField}><span>{uk ? "Повтори зліва" : "Left reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" value={draft.leftReps} onChange={(event) => onDraftChange({ ...draft, leftReps: event.target.value })} /></label>
@@ -811,7 +817,7 @@ export function ExercisePane(props: ExercisePaneProps) {
           {exercise.snapshotExerciseName}
         </h1>
         <div className={styles.workoutStatusRow}>
-          <span className={styles.liveBadge}>{resistanceLabel(exercise.resistanceType, uk)}</span>
+          <span className={styles.liveBadge}>{resistanceLabel(exercise.resistanceType, uk, exercise.stableKey, exercise.snapshotExerciseName)}</span>
           <span
             className={
               completedSets >= plannedSets && plannedSets > 0
@@ -915,7 +921,7 @@ export function ExercisePane(props: ExercisePaneProps) {
             )}
             {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && (
               <label className={styles.liveField}>
-                <span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span>
+                <span>{resistanceInputLabel(uk, exercise.stableKey, exercise.snapshotExerciseName)}</span>
                 <input
                   inputMode="decimal"
                   autoComplete="off"
@@ -1112,6 +1118,8 @@ export function ExercisePane(props: ExercisePaneProps) {
                         key={`${entry.sessionId}-${set.id}`}
                         entry={entry}
                         set={set}
+                        stableKey={exercise.stableKey}
+                        exerciseName={exercise.snapshotExerciseName}
                         uk={uk}
                         interactive={interactive}
                         actionsOpen={openSetActionsKey === `history:${entry.sessionId}:${set.id}`}

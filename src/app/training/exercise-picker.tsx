@@ -9,6 +9,8 @@ import {
 } from "@/modules/training/training.constants";
 import type { ExerciseCatalogDto } from "@/modules/training/training.types";
 import { resolveExerciseImageSrc } from "./exercise-images";
+import { resistanceLabel, usesCableResistanceEquipment } from "./training-labels";
+import trainingStyles from "./training.module.css";
 import { EXERCISE_PICKER_URL_PARAMS, ensureExercisePickerUrlDefaults, updateExercisePickerUrl } from "./exercise-picker-url-state";
 import {
   EXERCISE_PICKER_CATEGORIES,
@@ -48,7 +50,9 @@ function resistanceDescription(exercise: ExerciseCatalogDto, uk: boolean): strin
   }
   if (resistance === RESISTANCE.BODYWEIGHT) return uk ? "Вага тіла" : "Bodyweight";
   if (resistance === RESISTANCE.RESISTANCE_BAND) {
-    return uk ? "Номінальний опір блока" : "Nominal cable resistance";
+    return usesCableResistanceEquipment(exercise.stableKey, exercise.name)
+      ? (uk ? "Опір блока" : "Cable resistance")
+      : resistanceLabel(resistance, uk, exercise.stableKey, exercise.name);
   }
   if ([
     "lying_two_hand_dumbbell_triceps_extension_flat",
@@ -259,7 +263,7 @@ export function ExercisePicker({
   const showResults = query.length > 0 || category !== null;
 
   return createPortal(
-    <div className={styles.backdrop} onKeyDown={handleKeyDown} onMouseDown={(event) => {
+    <div className={`${styles.backdrop} ${trainingStyles.exercisePickerPortalScope}`} onKeyDown={handleKeyDown} onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
       <section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={headingId} aria-describedby={descriptionId} tabIndex={-1}>

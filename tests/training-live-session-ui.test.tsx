@@ -471,7 +471,7 @@ describe("Live training session mobile UI", () => {
         name: "Розведення гантелей на горизонтальній лаві",
       })).toBeTruthy();
       expect(screen.getByText("2 / 3 вправ")).toBeTruthy();
-      expect(activePane().getByText("Номінальний опір, кг")).toBeTruthy();
+      expect(activePane().getByText("Резинки, кг")).toBeTruthy();
     });
 
     await user.click(screen.getAllByRole("button", { name: /Наступна вправа/i })[0]!);
@@ -479,7 +479,7 @@ describe("Live training session mobile UI", () => {
       expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
       expect(activePane().getByText("Власна вага")).toBeTruthy();
       expect(activePane().queryByText("Вага, кг")).toBeNull();
-      expect(activePane().queryByText("Номінальний опір, кг")).toBeNull();
+      expect(activePane().queryByText("Резинки, кг")).toBeNull();
       expect(within(activePane().getByLabelText("Новий підхід")).getByText("Повтори")).toBeTruthy();
     });
 

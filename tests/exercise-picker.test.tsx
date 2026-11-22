@@ -6,6 +6,8 @@ import { useState, type ComponentProps } from "react";
 import { ExercisePicker } from "@/app/training/exercise-picker";
 import { resolveExercisePickerMovement, useExercisePickerOpenFromUrl } from "@/app/training/exercise-picker-url-state";
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import { resistanceLabel } from "@/app/training/training-labels";
+import { RESISTANCE } from "@/modules/training/training.constants";
 import type { ExerciseCatalogDto } from "@/modules/training/training.types";
 
 vi.mock("next/image", () => ({
@@ -59,6 +61,38 @@ describe("ExercisePicker", () => {
     vi.restoreAllMocks();
     document.body.style.overflow = "";
     window.history.replaceState(window.history.state, "", "/");
+  });
+
+  it("uses equipment-specific resistance labels without changing the stored resistance type", () => {
+    expect(resistanceLabel(RESISTANCE.RESISTANCE_BAND, true, "cable_leg_curl")).toBe("Блок");
+    expect(resistanceLabel(RESISTANCE.RESISTANCE_BAND, false, "cable_leg_curl")).toBe("Cable");
+    expect(resistanceLabel(RESISTANCE.RESISTANCE_BAND, true, null, "Згинання ніг із нижнім блоком")).toBe("Блок");
+    expect(resistanceLabel(RESISTANCE.RESISTANCE_BAND, true, "flat_dumbbell_fly")).toBe("Резинки");
+    expect(resistanceLabel(RESISTANCE.RESISTANCE_BAND, false, null)).toBe("Resistance bands");
+    expect(RESISTANCE.RESISTANCE_BAND).toBe("RESISTANCE_BAND");
+  });
+
+  it("shows cable-stack exercises as Блок in the picker resistance hint", async () => {
+    const user = userEvent.setup();
+    const { trigger } = renderPicker();
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /^Ноги/ }));
+    await user.click(screen.getByRole("button", { name: "Блок" }));
+    const cableCurl = screen.getByRole("button", { name: /Згинання ніг із нижнім блоком/ });
+    expect(cableCurl.textContent).toContain("Блок");
+    expect(cableCurl.textContent).not.toContain("Резинки");
+  });
+
+  it("keeps cable resistance distinct from bands in the English picker", async () => {
+    const user = userEvent.setup();
+    const { trigger } = renderPicker({ uk: false });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /^Legs/ }));
+    await user.click(screen.getByRole("button", { name: "Cable" }));
+    const cableCurl = screen.getByRole("button", { name: /Згинання ніг із нижнім блоком/ });
+    expect(cableCurl.textContent).toContain("Cable");
+    expect(cableCurl.textContent).toContain("Cable resistance");
+    expect(cableCurl.textContent).not.toContain("Resistance bands");
   });
 
   it("opens with muscle groups, drills into arms and triceps, then confirms a selection", async () => {

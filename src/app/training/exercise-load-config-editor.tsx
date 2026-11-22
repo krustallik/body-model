@@ -9,7 +9,7 @@ import {
 } from "@/modules/training/load-accounting-v1";
 import { RESISTANCE, type ResistanceType } from "@/modules/training/training.constants";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
-import { readApiError } from "./training-labels";
+import { readApiError, resistanceEquipmentLabel } from "./training-labels";
 import styles from "./training.module.css";
 
 type ConfigMode =
@@ -184,6 +184,7 @@ export function ExerciseLoadConfigEditor({
   configuration,
   resistanceType,
   stableKey,
+  exerciseName,
   uk,
   onSaved,
 }: {
@@ -191,6 +192,7 @@ export function ExerciseLoadConfigEditor({
   configuration: unknown | null | undefined;
   resistanceType: ResistanceType;
   stableKey?: string | null;
+  exerciseName?: string | null;
   uk: boolean;
   onSaved: (configuration: LoadConfigV1 | null) => void;
 }) {
@@ -260,6 +262,7 @@ export function ExerciseLoadConfigEditor({
 
   const previewConfig = selectedConfig("training-ui-example");
   const preview = previewConfig ? exampleResult(previewConfig) : null;
+  const resistanceEquipment = resistanceEquipmentLabel(uk, stableKey, exerciseName);
   const previewBodyweightFraction = previewConfig?.resistanceType === "bodyweight" && typeof previewConfig.bodyweightFraction === "number"
     ? previewConfig.bodyweightFraction : 1;
   const number = (value: number | null) => value === null ? null : formatNumber(value, uk);
@@ -285,9 +288,9 @@ export function ExerciseLoadConfigEditor({
             : "20 kg per implement × 12 reps → " + number(preview.value) + " kg·reps"
           : `20 kg combined load × 12 reps → ${number(preview.value)} kg·reps`
       : preview.kind === "band"
-        ? uk ? `20 кг номінального опору × 12 повторів → ${number(preview.value)} номінальних кг·повторів` : `20 kg nominal resistance × 12 reps → ${number(preview.value)} nominal kg·reps`
+        ? uk ? `${resistanceEquipment}: 20 кг × 12 повторів → ${number(preview.value)} кг·повторів` : `${resistanceEquipment}: 20 kg × 12 reps → ${number(preview.value)} kg·reps`
         : preview.kind === "band-sides"
-          ? uk ? `20 кг опору на кожну сторону × 12 повторів → ${number((preview.left ?? 0) + (preview.right ?? 0))} номінальних кг·повторів сумарно (по ${number(preview.left)} на сторону)` : `20 kg resistance on each side × 12 reps → ${number((preview.left ?? 0) + (preview.right ?? 0))} nominal kg·reps total (${number(preview.left)} per side)`
+          ? uk ? `${resistanceEquipment}: 20 кг на кожну сторону × 12 повторів → ${number((preview.left ?? 0) + (preview.right ?? 0))} кг·повторів сумарно (по ${number(preview.left)} на сторону)` : `${resistanceEquipment}: 20 kg per side × 12 reps → ${number((preview.left ?? 0) + (preview.right ?? 0))} kg·reps total (${number(preview.left)} per side)`
           : uk
             ? `Умовний приклад: 80 кг × ${formatNumber(previewBodyweightFraction * 100, true)}% маси × 12${mode === "bodyweight-per-side" ? ` однакових повторів × ${loadedSides} стор.` : " рухів"} → ${number(preview.value)} референсних кг·повторів`
             : `Example: 80 kg × ${formatNumber(previewBodyweightFraction * 100, false)}% body mass × 12${mode === "bodyweight-per-side" ? ` equal reps × ${loadedSides} sides` : " movements"} → ${number(preview.value)} reference kg·reps`
@@ -310,7 +313,7 @@ export function ExerciseLoadConfigEditor({
           ? "Enter the weight of one implement from a pair. Both implements are counted automatically; enter reps once for the whole set."
           : "Enter the weight of one implement. Enter reps once for the whole set; the exercise rule accounts for its setup."
       : mode === "band-logged-side"
-        ? uk ? "Номінальний опір блока або резинки обліковується окремо від зовнішньої ваги: значення для підходу × записані повтори." : "Nominal cable or band resistance is accounted separately from external load: the set value × entered repetitions."
+        ? uk ? "Значення для блока або резинок обліковується окремо від зовнішньої ваги: введене значення × записані повтори." : "Cable and resistance-band values are accounted separately from external load: the entered value × logged reps."
         : mode === "band-each-side"
           ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує сумарний внесок обох сторін." : "The entered rep count applies equally to the left and right; the example shows their combined contribution."
           : mode === "bodyweight-per-side"

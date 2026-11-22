@@ -356,7 +356,7 @@ export function ProgramEditorClient({
                           }}
                         >
                           <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                          <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                          <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, catalogExercise?.stableKey, catalogExercise?.name ?? exercise.catalogName)}</option>
                           <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
                         </select>
                       </label>
@@ -393,6 +393,7 @@ export function ProgramEditorClient({
                       catalogId={exercise.catalogId}
                       configuration={catalogExercise?.loadAccountingConfig}
                       stableKey={catalogExercise?.stableKey}
+                      exerciseName={catalogExercise?.name ?? exercise.catalogName}
                       resistanceType={exercise.resistanceType}
                       uk={uk}
                       onSaved={(configuration) => {
@@ -449,7 +450,7 @@ export function ProgramEditorClient({
                 <span>{uk ? "Тип опору" : "Resistance type"}</span>
                 <select value={addResistance} onChange={(event) => setAddResistance(event.target.value as ResistanceType)}>
                   <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, catalog.find((item) => item.id === Number(addCatalogId))?.stableKey, catalog.find((item) => item.id === Number(addCatalogId))?.name)}</option>
                   <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
                 </select>
               </label>

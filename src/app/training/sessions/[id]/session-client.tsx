@@ -43,7 +43,9 @@ import {
   matchStatusLabel,
   planCompletionPillClass,
   readApiError,
+  resistanceLoadValueLabel,
   resistanceLabel,
+  resistanceRequiredMessage,
   setCompletionTimestampIso,
   trainingSessionTitle,
 } from "../../training-labels";
@@ -791,7 +793,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     } else if (current.resistanceType === RESISTANCE.RESISTANCE_BAND) {
       const band = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(band) || band <= 0) {
-        setError(uk ? "Вкажіть номінальний опір (кг)." : "Enter nominal resistance (kg).");
+        setError(resistanceRequiredMessage(uk, current.stableKey, current.snapshotExerciseName));
         return;
       }
       payload.bandNominalResistanceKg = band;
@@ -1456,7 +1458,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                 <span>{uk ? "Тип опору" : "Resistance type"}</span>
                 <select value={newExerciseResistance} onChange={(event) => setNewExerciseResistance(event.target.value as ResistanceType)}>
                   <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, exerciseCatalog.find((item) => item.id === catalogExerciseId)?.stableKey, exerciseCatalog.find((item) => item.id === catalogExerciseId)?.name)}</option>
                   <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
                 </select>
               </label>
@@ -1596,7 +1598,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                   <span>{uk ? "Тип опору" : "Resistance type"}</span>
                   <select value={newExerciseResistance} onChange={(event) => setNewExerciseResistance(event.target.value as ResistanceType)}>
                     <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                    <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                    <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, exerciseCatalog.find((item) => item.id === catalogExerciseId)?.stableKey, exerciseCatalog.find((item) => item.id === catalogExerciseId)?.name)}</option>
                     <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
                   </select>
                 </label>
@@ -1871,7 +1873,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                     <div>
                       <strong>{exercise.snapshotExerciseName}</strong>
                       <p className={styles.cardMeta}>
-                        {resistanceLabel(exercise.resistanceType, uk)}
+                        {resistanceLabel(exercise.resistanceType, uk, exercise.stableKey, exercise.snapshotExerciseName)}
                         {" · "}
                         {uk ? `план ${exercise.plannedSets}` : `planned ${exercise.plannedSets}`}
                         {" · "}
@@ -1892,7 +1894,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                           const load = exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null
                             ? `${set.weightKg}kg`
                             : exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null
-                              ? `${set.bandNominalResistanceKg}kg nominal resistance`
+                              ? resistanceLoadValueLabel(set.bandNominalResistanceKg, uk, exercise.stableKey, exercise.snapshotExerciseName)
                               : exercise.resistanceType === RESISTANCE.BODYWEIGHT
                                 ? additionalLoadKg !== undefined && additionalLoadKg > 0
                                   ? `${uk ? "власна вага" : "bodyweight"} +${formatLoadKg(additionalLoadKg, intlLocale)} ${uk ? "кг" : "kg"}`

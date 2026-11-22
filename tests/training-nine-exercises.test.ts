@@ -41,7 +41,7 @@ describe("nine new Training exercises", () => {
     }
   });
 
-  it("keeps cable-stack nominal resistance distinct from external loads", () => {
+  it("keeps cable-block load distinct from external loads", () => {
     for (const item of expected) {
       const config = LEGACY_LOAD_CONFIGS_V1[item.key]!;
       expect(loadConfigV1Schema.safeParse(config).success).toBe(true);

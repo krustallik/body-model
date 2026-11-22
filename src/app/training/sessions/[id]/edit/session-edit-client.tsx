@@ -27,7 +27,7 @@ import {
   parseExerciseSearchParam,
   resolveFocusedExerciseId,
 } from "../../../exercise-pager";
-import { readApiError, resistanceLabel, trainingSessionTitle } from "../../../training-labels";
+import { readApiError, resistanceLabel, resistanceRequiredMessage, trainingSessionTitle } from "../../../training-labels";
 import {
   emptySetDraft,
   TrainingExerciseWorkspace,
@@ -1135,7 +1135,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     if (current.resistanceType === RESISTANCE.RESISTANCE_BAND) {
       const band = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(band) || band <= 0) {
-        setError(uk ? "Вкажіть номінальний опір." : "Enter nominal resistance.");
+        setError(resistanceRequiredMessage(uk, current.stableKey, current.snapshotExerciseName));
         return;
       }
       payload.bandNominalResistanceKg = band;
@@ -1345,7 +1345,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
                 <span>{uk ? "Тип опору" : "Resistance type"}</span>
                 <select value={addResistance} onChange={(event) => setAddResistance(event.target.value as ResistanceType)}>
                   <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, catalog.find((item) => item.id === addCatalogId)?.stableKey, catalog.find((item) => item.id === addCatalogId)?.name)}</option>
                   <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
                 </select>
               </label>
@@ -1471,7 +1471,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
               onChange={(event) => setAddResistance(event.target.value as ResistanceType)}
             >
               <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-              <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+              <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, catalog.find((item) => item.id === addCatalogId)?.stableKey, catalog.find((item) => item.id === addCatalogId)?.name)}</option>
               <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
             </select>
           </label>
@@ -1504,7 +1504,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
               onChange={(event) => setEditResistance(event.target.value as ResistanceType)}
             >
               <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
-              <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+              <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk, current.stableKey, current.snapshotExerciseName)}</option>
               <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
             </select>
           </label>

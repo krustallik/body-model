@@ -1362,7 +1362,7 @@ describe("Session edit exercise pager", () => {
     expect(screen.getAllByText("1 / 3 sets").length).toBeGreaterThan(0);
     expect(screen.queryByText(/UI Review/i)).toBeNull();
     expect(activePane().getByLabelText(/Weight, kg/i)).toBeTruthy();
-    expect(activePane().queryByLabelText(/Nominal resistance/i)).toBeNull();
+    expect(activePane().queryByLabelText(/Resistance bands|Cable, kg/i)).toBeNull();
     expect((screen.getByRole("img", {
       name: "Жим гантелей на похилій лаві вгору (30°)",
     }) as HTMLImageElement).getAttribute("src")).toBe(
@@ -1378,7 +1378,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("2 / 3 exercises")).toBeTruthy();
     });
     expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
-    expect(activePane().getByLabelText(/Nominal resistance/i)).toBeTruthy();
+    expect(activePane().getByLabelText(/Cable, kg/i)).toBeTruthy();
     expect(activePane().queryByLabelText(/Weight, kg/i)).toBeNull();
     expect((screen.getByRole("img", {
       name: "Розгинання однієї руки в блоці",
@@ -1392,7 +1392,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("3 / 3 exercises")).toBeTruthy();
     });
     expect(activePane().queryByLabelText(/Weight, kg/i)).toBeNull();
-    expect(activePane().queryByLabelText(/Nominal resistance/i)).toBeNull();
+    expect(activePane().queryByLabelText(/Resistance bands|Cable, kg/i)).toBeNull();
     expect(activePane().getByLabelText(/Reps/i)).toBeTruthy();
     expect((screen.getAllByRole("button", { name: /Next exercise/i })[0] as HTMLButtonElement).disabled).toBe(true);
 

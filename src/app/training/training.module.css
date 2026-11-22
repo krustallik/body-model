@@ -6,7 +6,8 @@
 .page,
 .liveShell,
 .workoutShell,
-.editShell {
+.editShell,
+.exercisePickerPortalScope {
   color-scheme: dark;
 
   --training-ease: var(--ease);
@@ -666,7 +667,22 @@
     box-shadow var(--training-ease);
 }
 
-.field select { cursor: pointer; }
+.field select {
+  cursor: pointer;
+  color-scheme: dark;
+  accent-color: var(--training-primary);
+}
+
+.field select option {
+  color: var(--training-text);
+  background: var(--training-surface);
+}
+
+.field select option:checked,
+.liveField select option:checked {
+  color: var(--training-primary-ink);
+  background: var(--training-primary-strong);
+}
 
 .field input::placeholder,
 .field select::placeholder {
@@ -682,7 +698,8 @@
 
 .field input:focus-visible,
 .field select:focus-visible {
-  outline: none;
+  outline: 2px solid var(--training-primary);
+  outline-offset: 2px;
   border-color: var(--training-primary);
   box-shadow: var(--training-focus-ring);
 }
@@ -964,6 +981,52 @@
     border-color var(--training-ease),
     background var(--training-ease),
     box-shadow var(--training-ease);
+}
+
+.liveField select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 3rem;
+  padding: 0.72rem 0.8rem;
+  color: var(--training-text);
+  color-scheme: dark;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  border-radius: 0.65rem;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  accent-color: var(--training-primary);
+  cursor: pointer;
+  transition:
+    border-color var(--training-ease),
+    background var(--training-ease),
+    box-shadow var(--training-ease);
+}
+
+.liveField select option {
+  color: var(--training-text);
+  background: var(--training-surface);
+}
+
+.liveField select:hover:not(:disabled):not(:focus-visible) {
+  border-color: color-mix(in srgb, var(--training-text-muted) 28%, var(--field-border));
+  background: color-mix(in srgb, var(--field-bg) 88%, var(--training-surface-2));
+}
+
+.liveField select:focus-visible {
+  outline: 2px solid var(--training-primary);
+  outline-offset: 2px;
+  border-color: var(--training-primary);
+  box-shadow: var(--training-focus-ring);
+}
+
+.liveField select:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  background: var(--training-surface);
+  color: var(--training-text-muted);
 }
 
 .liveField input:hover:not(:disabled):not(:focus-visible) {

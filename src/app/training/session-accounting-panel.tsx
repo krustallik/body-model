@@ -8,6 +8,7 @@ import type {
 } from "@/modules/training/load-accounting-v1";
 import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "@/modules/training/load-accounting-v1";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
+import { resistanceEquipmentLabel, resistanceLoadValueLabel, usesCableResistanceEquipment } from "./training-labels";
 import styles from "./training.module.css";
 
 type Props = {
@@ -52,6 +53,16 @@ function combinedBandMetric(accounting: LoadAccountingOutputV1): SummaryMetric {
     availability: accountedRows === 0 ? "unavailable" : omittedRows > 0 ? "partial" : "available",
     coverage: { eligibleRows, accountedRows, omittedRows, omittedReasons: {} },
   };
+}
+
+function bandMetricLabel(rows: readonly LoadAccountingBreakdownRowV1[] | undefined, uk: boolean): string {
+  const bandRows = rows?.filter((row) => row.enteredLoad.bandNominalKg !== null
+    || row.contributions.some((item) => item.category.startsWith("bandNominal"))) ?? [];
+  if (bandRows.length === 0) return uk ? "Блок / резинки" : "Cable / resistance bands";
+  const hasCable = bandRows.some((row) => usesCableResistanceEquipment(row.stableKey, row.exerciseName));
+  const hasBands = bandRows.some((row) => !usesCableResistanceEquipment(row.stableKey, row.exerciseName));
+  if (hasCable && hasBands) return uk ? "Блок / резинки" : "Cable / resistance bands";
+  return resistanceEquipmentLabel(uk, bandRows[0]?.stableKey, bandRows[0]?.exerciseName);
 }
 
 function MetricCard({
@@ -109,18 +120,20 @@ function bodyweightDescription(accounting: LoadAccountingOutputV1, uk: boolean):
     : `As-of estimate for ${ref.localDate} · ${numberText(ref.valueKg, uk)} kg. ${calculationNote}`;
 }
 
-function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: boolean): string {
+function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: boolean, stableKey: string | null, exerciseName: string): string {
   const labels: Record<LoadAccountingBreakdownContributionV1["basis"], [string, string]> = {
     "per-implement-kg": ["кг на снаряд", "kg per implement"],
     "complete-setup-kg": ["кг на всю систему", "kg for complete setup"],
-    "nominal-kg-per-logged-side": ["номінальний опір", "nominal resistance"],
+    "nominal-kg-per-logged-side": ["Резинки", "Resistance bands"],
     "bodyweight-reference": ["референс маси тіла", "bodyweight reference"],
     sets: ["підходи", "sets"],
     repetitions: ["повторення", "repetitions"],
     "additional-load-kg": ["додаткова вага, кг", "added load, kg"],
     "assistance-load-kg": ["допоміжна вага, кг", "assistance load, kg"],
   };
-  return labels[basis][uk ? 0 : 1];
+  return basis === "nominal-kg-per-logged-side"
+    ? resistanceEquipmentLabel(uk, stableKey, exerciseName)
+    : labels[basis][uk ? 0 : 1];
 }
 
 function provenanceKindLabel(
@@ -200,26 +213,28 @@ function unavailableReasonLabel(
 function contributionValue(contribution: DisplayContribution, uk: boolean): string {
   if (contribution.value === null) return uk ? "Недоступно" : "Unavailable";
   const unit = contribution.unit === "kg-repetitions" ? "kg × reps"
-    : contribution.unit === "nominal-kg-repetitions-per-logged-side" ? (uk ? "ном. кг × повтори" : "nominal kg × reps")
-      : contribution.unit === "nominal-kg-repetitions-per-side" ? (uk ? "ном. кг × повтори" : "nominal kg × reps")
+    : contribution.unit === "nominal-kg-repetitions-per-logged-side" ? (uk ? "кг × повтори" : "kg × reps")
+      : contribution.unit === "nominal-kg-repetitions-per-side" ? (uk ? "кг × повтори" : "kg × reps")
         : contribution.unit === "bodyweight-reference-kg-repetitions" ? (uk ? "кг × повтори" : "kg × reps")
           : contribution.unit;
   return `${numberText(contribution.value, uk)} ${unit}`;
 }
 
-function compactCategoryLabel(category: LoadAccountingBreakdownContributionV1["category"], uk: boolean): string {
+function compactCategoryLabel(category: LoadAccountingBreakdownContributionV1["category"], uk: boolean, stableKey: string | null, exerciseName: string): string {
   const labels: Record<LoadAccountingBreakdownContributionV1["category"], [string, string]> = {
     externalLoadVolume: ["Зовнішнє", "External"],
-    bandNominalPerLoggedSide: ["Номінальний опір", "Nominal resistance"],
-    bandNominalLeftSide: ["Номінальний опір", "Nominal resistance"],
-    bandNominalRightSide: ["Номінальний опір", "Nominal resistance"],
+    bandNominalPerLoggedSide: ["Резинки", "Resistance bands"],
+    bandNominalLeftSide: ["Резинки", "Resistance bands"],
+    bandNominalRightSide: ["Резинки", "Resistance bands"],
     bodyweightSets: ["Власна вага", "Bodyweight"],
     bodyweightRepetitions: ["Власна вага", "Bodyweight"],
     bodyweightReferenceVolume: ["Власна вага", "Bodyweight"],
     additionalLoad: ["Додаткове", "Added"],
     assistanceLoad: ["Допоміжне", "Assistance"],
   };
-  return labels[category][uk ? 0 : 1];
+  return category.startsWith("bandNominal")
+    ? resistanceEquipmentLabel(uk, stableKey, exerciseName)
+    : labels[category][uk ? 0 : 1];
 }
 
 function mechanicsLabel(row: LoadAccountingBreakdownRowV1, uk: boolean): string | null {
@@ -260,7 +275,7 @@ function BreakdownRow({
     : null;
   const loadParts = [
     row.enteredLoad.externalKg !== null ? numberText(row.enteredLoad.externalKg, uk) + (uk ? " кг" : " kg") : null,
-    row.enteredLoad.bandNominalKg !== null ? numberText(row.enteredLoad.bandNominalKg, uk) + (uk ? " кг номінального опору" : " kg nominal resistance") : null,
+    row.enteredLoad.bandNominalKg !== null ? resistanceLoadValueLabel(row.enteredLoad.bandNominalKg, uk, row.stableKey, row.exerciseName) : null,
     bodyweightConfig
       ? reference.status === "unavailable"
         ? (uk ? "референс маси недоступний" : "bodyweight reference unavailable")
@@ -311,7 +326,7 @@ function BreakdownRow({
         {contributions.map((contribution, index) => (
           <li className={styles.accountingBreakdownContribution} key={contribution.category + "-" + index}>
             <div className={styles.accountingBreakdownContributionLine}>
-              <strong>{compactCategoryLabel(contribution.category, uk)}</strong>
+              <strong>{compactCategoryLabel(contribution.category, uk, row.stableKey, row.exerciseName)}</strong>
               <span className={styles.accountingContributionValue}>
                 {contribution.value === null ? "—" : contributionValue(contribution, uk)}
               </span>
@@ -327,7 +342,7 @@ function BreakdownRow({
             <details className={styles.accountingBreakdownMeta}>
               <summary>{uk ? "База й походження" : "Basis and source"}</summary>
               <div>
-                <span>{basisLabel(contribution.basis, uk)}</span>
+                <span>{basisLabel(contribution.basis, uk, row.stableKey, row.exerciseName)}</span>
                 {mechanicsText && <span>{mechanicsText}</span>}
                 <span>{(uk ? "Джерело внеску: " : "Contribution source: ") + contributionProvenanceLabel(contribution, uk, row)}</span>
               </div>
@@ -400,9 +415,9 @@ export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, 
                 uk={uk}
               />
               <MetricCard
-                label={uk ? "Номінальний опір" : "Nominal resistance"}
+                label={bandMetricLabel(breakdown?.rows, uk)}
                 metric={combinedBandMetric(accounting)}
-                unit={uk ? "ном. кг × повтори" : "nominal kg × reps"}
+                unit={uk ? "кг × повтори" : "kg × reps"}
                 tone="bands"
                 uk={uk}
               />

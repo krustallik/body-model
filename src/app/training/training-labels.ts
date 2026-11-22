@@ -1,18 +1,60 @@
 import type { MatchStatus, ResistanceType } from "@/modules/training/training.constants";
 import { DIARY_COMPLETENESS, MATCH_STATUS, RESISTANCE } from "@/modules/training/training.constants";
+import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import {
   workoutEnergyProvenanceChip,
   type WorkoutEnergyProvenanceKind,
 } from "@/modules/provenance/provenance-presentation";
+import { EXERCISE_PICKER_METADATA_BY_STABLE_KEY } from "./exercise-picker-catalog";
 
 export function trainingSessionTitle(programName: string | null, uk: boolean): string {
   return programName ?? (uk ? "Вільне тренування" : "Free workout");
 }
 
-export function resistanceLabel(type: ResistanceType, uk: boolean): string {
+export function usesCableResistanceEquipment(
+  stableKey: string | null | undefined,
+  exerciseName?: string | null,
+): boolean {
+  if (stableKey) {
+    const metadata = EXERCISE_PICKER_METADATA_BY_STABLE_KEY[stableKey];
+    if (metadata) return metadata.equipment.includes("cable");
+    if (/(?:^|_)(?:cable|pulley)(?:_|$)/i.test(stableKey)) return true;
+  }
+  if (!exerciseName) return false;
+  const normalizedName = exerciseName.trim().toLocaleLowerCase("uk-UA");
+  const identity = CANONICAL_EXERCISE_IDENTITIES.find((item) =>
+    item.displayName.toLocaleLowerCase("uk-UA") === normalizedName);
+  if (identity) return usesCableResistanceEquipment(identity.stableKey);
+  return /cable|pulley|блок|блоц/i.test(normalizedName);
+}
+
+export function resistanceEquipmentLabel(uk: boolean, stableKey?: string | null, exerciseName?: string | null): string {
+  return usesCableResistanceEquipment(stableKey, exerciseName)
+    ? (uk ? "Блок" : "Cable")
+    : (uk ? "Резинки" : "Resistance bands");
+}
+
+export function resistanceInputLabel(uk: boolean, stableKey?: string | null, exerciseName?: string | null): string {
+  return `${resistanceEquipmentLabel(uk, stableKey, exerciseName)}, ${uk ? "кг" : "kg"}`;
+}
+
+export function resistanceLoadValueLabel(value: number, uk: boolean, stableKey?: string | null, exerciseName?: string | null): string {
+  return `${resistanceEquipmentLabel(uk, stableKey, exerciseName)} · ${value} ${uk ? "кг" : "kg"}`;
+}
+
+export function resistanceRequiredMessage(uk: boolean, stableKey?: string | null, exerciseName?: string | null): string {
+  if (uk) return usesCableResistanceEquipment(stableKey, exerciseName)
+    ? "Вкажіть опір блока (кг)."
+    : "Вкажіть значення резинок (кг).";
+  return usesCableResistanceEquipment(stableKey, exerciseName)
+    ? "Enter cable resistance (kg)."
+    : "Enter resistance band value (kg).";
+}
+
+export function resistanceLabel(type: ResistanceType, uk: boolean, stableKey?: string | null, exerciseName?: string | null): string {
   if (type === RESISTANCE.EXTERNAL_WEIGHT) return uk ? "Зовнішня вага" : "External weight";
-  if (type === RESISTANCE.RESISTANCE_BAND) return uk ? "Номінальний опір" : "Nominal resistance";
+  if (type === RESISTANCE.RESISTANCE_BAND) return resistanceEquipmentLabel(uk, stableKey, exerciseName);
   return uk ? "Власна вага" : "Bodyweight";
 }
 

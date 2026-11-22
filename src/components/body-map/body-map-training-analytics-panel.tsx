@@ -10,6 +10,7 @@ import type {
   BodyMapTrainingAnalyticsResponseV1,
 } from "@/modules/training/body-map-training-analytics-v1";
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import { resistanceEquipmentLabel } from "@/app/training/training-labels";
 import { bodyMapAnatomyLabel } from "./body-map-localization";
 import styles from "./body-map-training-analytics-panel.module.css";
 
@@ -342,7 +343,7 @@ export function BodyMapTrainingAnalyticsPanel({
                         {[...sessionSets].sort((a, b) => a.setNumber - b.setNumber).map((set) => <div className={styles.setRow} key={set.id}>
                           <span>{uk ? "Підхід" : "Set"} {set.setNumber}</span>
                           <span>{set.reps} {uk ? "повт." : "reps"}</span>
-                          <span>{set.resistanceType === "RESISTANCE_BAND" ? `${time(set.bandNominalResistanceKg, uk)} ${uk ? "опору гумки" : "band"}` : set.resistanceType === "BODYWEIGHT" ? (uk ? "власна вага" : "bodyweight") : time(set.weightKg, uk)}</span>
+                          <span>{set.resistanceType === "RESISTANCE_BAND" ? `${resistanceEquipmentLabel(uk, set.exerciseStableKey, set.exerciseName)} · ${time(set.bandNominalResistanceKg, uk)}` : set.resistanceType === "BODYWEIGHT" ? (uk ? "власна вага" : "bodyweight") : time(set.weightKg, uk)}</span>
                           <span>RIR {set.rir === null ? (uk ? "не вказано" : "—") : set.rir}</span>
                           <span
                             aria-label={set.restBeforeSeconds === null
@@ -598,7 +599,7 @@ function CoverageSourceRecords({
   const setDescription = (source: BodyMapAnalyticsCoverageSourceV1) => {
     const reps = `${source.reps} ${uk ? "повт." : "reps"}`;
     const externalLoad = source.weightKg === null ? null : `${source.weightKg.toLocaleString(locale)} kg`;
-    const bandLoad = source.bandNominalResistanceKg === null ? null : `${source.bandNominalResistanceKg.toLocaleString(locale)} kg ${uk ? "номінал стрічки" : "band nominal"}`;
+    const bandLoad = source.bandNominalResistanceKg === null ? null : `${resistanceEquipmentLabel(uk, source.exerciseStableKey, source.exerciseName)} · ${source.bandNominalResistanceKg.toLocaleString(locale)} ${uk ? "кг" : "kg"}`;
     const load = externalLoad ?? bandLoad;
     const rir = source.rir === null ? (uk ? "RIR не вказано" : "RIR not reported") : `RIR ${source.rir}`;
     const anatomy = source.anatomyIds.length > 0

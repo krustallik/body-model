@@ -202,7 +202,7 @@ describe("persisted session accounting UI", () => {
     expect(screen.getByText("4 667")).toBeTruthy();
     expect(screen.getByText(/2\s770,2/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Зовнішнє навантаження" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Номінальний опір" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Блок / резинки" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Власна вага" })).toBeTruthy();
     expect(screen.queryByText(/ліва сторона|права сторона|left side|right side|logged side/i)).toBeNull();
     expect(screen.queryByText(/Підходи з власною вагою|Повторення з власною вагою|Bodyweight sets|Bodyweight repetitions/i)).toBeNull();
@@ -242,7 +242,7 @@ describe("persisted session accounting UI", () => {
         },
       },
     })} uk />);
-    const bands = screen.getByRole("heading", { name: "Номінальний опір" }).closest("article");
+    const bands = screen.getByRole("heading", { name: "Блок / резинки" }).closest("article");
     expect(bands?.textContent).toContain("480");
   });
   it("shows bodyweight contribution provenance for exact, nearest, as-of, and unavailable values", async () => {
@@ -559,9 +559,9 @@ describe("persisted session accounting UI", () => {
     }));
     const { unmount } = render(<ExerciseLoadConfigEditor catalogId={19} configuration={null} resistanceType={RESISTANCE.RESISTANCE_BAND} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    expect(screen.getByText("20 кг номінального опору × 12 повторів → 240 номінальних кг·повторів")).toBeTruthy();
+    expect(screen.getByText("Резинки: 20 кг × 12 повторів → 240 кг·повторів")).toBeTruthy();
     await user.selectOptions(screen.getByLabelText("Що означає введена вага?"), "band-each-side");
-    expect(screen.getByText("20 кг опору на кожну сторону × 12 повторів → 480 номінальних кг·повторів сумарно (по 240 на сторону)")).toBeTruthy();
+    expect(screen.getByText("Резинки: 20 кг на кожну сторону × 12 повторів → 480 кг·повторів сумарно (по 240 на сторону)")).toBeTruthy();
     expect(screen.getByText("Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує сумарний внесок обох сторін.")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     expect(JSON.parse(requests[0]!).loadAccountingConfig).toMatchObject({

@@ -96,6 +96,21 @@ function assessment(sessions: BodyMapAnalyticsSessionInputV1[]) {
 }
 
 describe("Body Map robust performance assessment", () => {
+  it.each([
+    { label: "steady step-up", values: [20, 20, 22, 22, 24, 24], expected: "progress" },
+    { label: "steady decline", values: [30, 28, 26, 24, 22, 20], expected: "regression" },
+    { label: "unchanged plateau", values: [20, 20, 20, 20, 20, 20], expected: "stable" },
+    { label: "gradual improvement with session noise", values: [20, 22, 21, 23, 22, 24], expected: "progress" },
+    { label: "single unusually high middle session", values: [20, 20, 40, 20, 20, 20], expected: "ambiguous" },
+    { label: "single unusually low middle session", values: [20, 20, 5, 20, 20, 20], expected: "ambiguous" },
+    { label: "alternating good and poor sessions", values: [20, 24, 20, 24, 20, 24], expected: "ambiguous" },
+    { label: "small repeated fluctuations without a direction", values: [20, 21, 20, 21, 20, 21], expected: "ambiguous" },
+  ])("assigns $label to $expected", ({ values, expected }) => {
+    const result = assessment(values.map((weight, index) => pressSession(index + 1, weight)));
+    expect(result.status, JSON.stringify(result.exercises[0])).toBe(expected);
+    expect(result.exercises[0]?.status).toBe(expected);
+  });
+
   it("detects repeated progress from per-session medians and whole-window agreement", () => {
     const result = assessment([20, 20, 22, 22, 24, 24].map((weight, index) => pressSession(index + 1, weight)));
     expect(result.status).toBe("progress");
@@ -195,11 +210,62 @@ describe("Body Map robust performance assessment", () => {
     expect(result.exercises[0]?.hasRestMismatch).toBe(true);
   });
 
+  it("keeps rising load with consistently lower RIR from becoming a progress claim", () => {
+    const sessions = dates.map((date, index) => pressSession(index + 1, 20 + index * 2, {
+      date,
+      rir: index < 3 ? 4 : 0,
+    }));
+    const result = assessment(sessions);
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.exercises[0]?.hasEffortMismatch).toBe(true);
+  });
+
+  it("recognizes more repetitions at bodyweight when set context stays comparable", () => {
+    const sessions = dates.map((date, index) => session({
+      id: index + 1,
+      date,
+      exercises: [{
+        stableKey: "pushup_handles", name: "Push-up", sortOrder: 1,
+        resistanceType: "BODYWEIGHT", reps: 8 + index,
+      }],
+    }));
+    const result = assessment(sessions);
+
+    expect(result.status).toBe("progress");
+    expect(result.exercises[0]).toMatchObject({ status: "progress", resistanceType: "BODYWEIGHT" });
+  });
+
+  it("does not compare changed band ratings as if they were measured load", () => {
+    const sessions = dates.map((date, index) => session({
+      id: index + 1,
+      date,
+      exercises: [{
+        stableKey: "pushup_handles", name: "Band chest press", sortOrder: 1,
+        resistanceType: "RESISTANCE_BAND", weightKg: null,
+        // The nominal label changed between blocks; it is not a force measurement.
+        bandKg: index < 3 ? 10 : 15,
+      }],
+    }));
+    const result = assessment(sessions);
+
+    expect(result.status).toBe("ambiguous");
+  });
+
   it("does not treat a long break as an ordinary continuous trend", () => {
     const gapDates = ["2026-06-20", "2026-06-25", "2026-07-01", "2026-08-25", "2026-09-01", "2026-09-05"];
     const result = assessment(gapDates.map((date, index) => pressSession(index + 1, index < 3 ? 20 : 30, { date })));
     expect(result.status).toBe("ambiguous");
     expect(result.exercises[0]?.hasLongGap).toBe(true);
+  });
+
+  it("does not bridge an over-six-week gap just because both separate blocks improved", () => {
+    const gapDates = ["2026-06-20", "2026-06-25", "2026-07-01", "2026-08-25", "2026-09-01", "2026-09-05"];
+    const result = assessment(gapDates.map((date, index) =>
+      pressSession(index + 1, index < 3 ? 18 + index : 28 + (index - 3), { date })));
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.exercises[0]).toMatchObject({ status: "ambiguous", hasLongGap: true });
   });
 
   it("excludes workouts with unresolved load context from the directional estimate", () => {
@@ -212,6 +278,16 @@ describe("Body Map robust performance assessment", () => {
     ]);
     expect(result.status).toBe("progress");
     expect(result.exercises[0]).toMatchObject({ usableSessionCount: 5, hasUncertainSessionLoad: true });
+  });
+
+  it("keeps a missed workout from deciding the trend when the remaining history is continuous", () => {
+    const missedWorkoutDates = ["2026-08-01", "2026-08-08", "2026-08-22", "2026-08-29", "2026-09-05"];
+    const sessions = [20, 22, 26, 28, 30].map((weight, index) =>
+      pressSession(index + 1, weight, { date: missedWorkoutDates[index]! }));
+    const result = assessment(sessions);
+
+    expect(result.status).toBe("progress");
+    expect(result.exercises[0]).toMatchObject({ status: "progress", usableSessionCount: 5, hasLongGap: false });
   });
 
   it("reports mixed results when different exercises move in opposite directions", () => {

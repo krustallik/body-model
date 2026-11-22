@@ -18,16 +18,17 @@
 }
 
 .panelHeader { align-items: flex-start; }
-.panelHeader h2 { margin: 3px 0 0; font-size: clamp(18px, 2.8vw, 22px); line-height: 1.18; letter-spacing: -.025em; }
-.kicker { margin: 0; color: var(--primary-strong); font-size: 9px; font-weight: 750; letter-spacing: .12em; }
-.periodField { display: grid; gap: 5px; flex: 0 0 auto; color: var(--text-secondary); font-size: 10px; font-weight: 650; }
-.periodField select { min-height: 44px; min-width: 126px; padding: 7px 30px 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-2); color-scheme: dark; font: inherit; font-weight: 650; }
+.panelHeader h2 { margin: 3px 0 0; font-size: clamp(21px, 2.8vw, 25px); line-height: 1.2; letter-spacing: -.025em; }
+.kicker { margin: 0; color: var(--primary-strong); font-size: 12px; font-weight: 750; letter-spacing: .1em; }
+.periodField { display: grid; gap: 6px; flex: 0 0 auto; color: var(--text-secondary); font-size: 14px; font-weight: 650; }
+.periodField select { min-height: 46px; min-width: 136px; padding: 7px 30px 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-2); color-scheme: dark; font: inherit; font-weight: 650; }
 .periodField select:hover { border-color: var(--primary-strong); }
 .periodField select:focus-visible { outline: 2px solid var(--primary-strong); outline-offset: 2px; }
-.dateRange { margin: -5px 0 0; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-.overviewPrompt { margin: 0; padding: 12px; border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 12px; line-height: 1.5; }
+.dateRange { margin: -5px 0 0; color: var(--text-secondary); font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+.overviewPrompt { margin: 0; padding: 12px; border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 14px; line-height: 1.55; }
 .notice,
-.emptyState { margin: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 11px; line-height: 1.5; }
+.emptyState { margin: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 14px; line-height: 1.55; }
+.notice { margin: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 14px; line-height: 1.55; }
 
 .resultCard {
   display: grid;
@@ -43,23 +44,28 @@
 .resultCard[data-status="mixed"],
 .resultCard[data-status="ambiguous"] { border-color: color-mix(in srgb, var(--warning-strong) 52%, var(--border)); }
 .resultHeading { display: flex; align-items: center; gap: 10px; min-height: 30px; }
-.resultHeading strong { font-size: clamp(16px, 2.4vw, 20px); line-height: 1.2; letter-spacing: -.02em; }
+.resultHeading strong { font-size: clamp(21px, 2.4vw, 25px); line-height: 1.25; letter-spacing: -.02em; }
 .statusGlyph { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 50%; color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 12%, transparent); font-size: 16px; font-weight: 750; }
 .resultCard[data-status="progress"] .statusGlyph { color: var(--success-strong); background: var(--success-soft); }
 .resultCard[data-status="regression"] .statusGlyph { color: var(--danger-strong); background: var(--danger-soft); }
 .resultCard[data-status="stable"] .statusGlyph { color: var(--primary-strong); background: var(--primary-soft); }
 .resultCard[data-status="mixed"] .statusGlyph,
 .resultCard[data-status="ambiguous"] .statusGlyph { color: var(--warning-strong); background: var(--warning-soft); }
-.explanation { margin: 0; color: var(--text); font-size: 12px; line-height: 1.5; }
-.scopeLine { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; font-variant-numeric: tabular-nums; }
-.caveat { margin: 0; padding-left: 9px; border-left: 2px solid var(--warning-strong); color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
-.energyContext { margin: 0; padding: 8px 9px; border-radius: 8px; color: var(--text-secondary); background: color-mix(in srgb, var(--primary-soft) 45%, var(--surface-1)); font-size: 10px; line-height: 1.5; font-variant-numeric: tabular-nums; }
-.measurementNote { color: var(--text-muted); font-size: 9px; line-height: 1.4; }
+.explanation { margin: 0; color: var(--text); font-size: 16px; line-height: 1.55; }
+.scopeLine { margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.caveat { margin: 0; padding-left: 10px; border-left: 2px solid var(--warning-strong); color: var(--text-secondary); font-size: 14px; line-height: 1.55; }
+.energyContext { margin: 0; padding: 9px 10px; border-radius: 8px; color: var(--text-secondary); background: color-mix(in srgb, var(--primary-soft) 45%, var(--surface-1)); font-size: 14px; line-height: 1.55; font-variant-numeric: tabular-nums; }
+.measurementNote { color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
 
 .exerciseSection { display: grid; gap: 8px; }
-.sectionHeading { min-height: 28px; }
-.sectionHeading h3 { margin: 0; font-size: 12px; }
-.sectionHeading span { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.exerciseSection > summary { list-style: none; cursor: pointer; }
+.exerciseSection > summary::-webkit-details-marker { display: none; }
+.exerciseSection > summary::after { content: "+"; color: var(--primary-strong); font-size: 19px; line-height: 1; }
+.exerciseSection[open] > summary::after { content: "−"; }
+.sectionHeading { min-height: 44px; padding: 6px 2px; border-radius: 6px; }
+.sectionHeading:focus-visible { outline: 2px solid var(--primary-strong); outline-offset: 2px; }
+.sectionHeading h3 { margin: 0; font-size: 15px; }
+.sectionHeading span { color: var(--text-secondary); font-size: 14px; font-variant-numeric: tabular-nums; }
 .exerciseList { display: grid; gap: 7px; }
 .exercise { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); transition: border-color 160ms ease, background-color 160ms ease; }
 .exercise:hover { border-color: var(--border-strong); }
@@ -69,10 +75,10 @@
 .exercise > summary::after { content: "+"; color: var(--primary-strong); font-size: 18px; line-height: 1; }
 .exercise[open] > summary::after { content: "−"; }
 .exerciseHeading { display: grid; gap: 4px; min-width: 0; }
-.exerciseHeading strong { overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; }
-.exerciseHeading > span { color: var(--text-secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.exerciseHeading strong { overflow: hidden; color: var(--text); font-size: 15px; line-height: 1.4; text-overflow: ellipsis; }
+.exerciseHeading > span { color: var(--text-secondary); font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums; }
 .exerciseHeading i { color: var(--primary-strong); font-style: normal; }
-.exerciseStatus { max-width: 34%; color: var(--text-secondary); font-size: 9px; line-height: 1.3; text-align: right; }
+.exerciseStatus { max-width: 35%; color: var(--text-secondary); font-size: 14px; line-height: 1.35; text-align: right; }
 .exerciseStatus[data-status="progress"] { color: var(--success-strong); }
 .exerciseStatus[data-status="regression"] { color: var(--danger-strong); }
 .exerciseStatus[data-status="stable"] { color: var(--primary-strong); }
@@ -80,10 +86,10 @@
 .exerciseStatus[data-status="ambiguous"] { color: var(--warning-strong); }
 .exerciseBody { display: grid; gap: 7px; padding: 0 10px 10px; }
 .exerciseBody p,
-.exerciseBody small { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
+.exerciseBody small { margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
 .charts { display: grid; gap: 5px; }
 .sparklineRow { display: grid; grid-template-columns: minmax(80px, .7fr) 1fr; align-items: center; gap: 9px; min-height: 30px; }
-.sparklineRow > span { color: var(--text-muted); font-size: 9px; }
+.sparklineRow > span { color: var(--text-secondary); font-size: 13px; }
 .sparkline { width: 100%; height: 30px; overflow: visible; }
 .sparkline polyline { fill: none; stroke: var(--primary-strong); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .sparkline[data-kind="load"] polyline { stroke: var(--success-strong); }
@@ -96,8 +102,8 @@
   .periodField select { width: 100%; }
   .resultCard { padding: 11px; }
   .exercise > summary { align-items: flex-start; }
-  .exerciseStatus { max-width: 30%; padding-top: 2px; }
-  .exerciseHeading strong { white-space: normal; }
+  .exerciseStatus { max-width: 35%; padding-top: 2px; }
+  .exerciseHeading strong { overflow: visible; white-space: normal; }
 }
 
 @media (prefers-reduced-motion: reduce) {

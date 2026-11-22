@@ -431,9 +431,9 @@ function assessExercise(input: {
   let status: BodyMapMuscleProgressStatusV1 = "insufficient-data";
   if (input.stableKey === null) status = "insufficient-data";
   else if (!enoughHistory) status = "insufficient-data";
+  else if (hasLongGap) status = "ambiguous";
   else if (comparablePairCount < MIN_COMPARABLE_PAIRS) status = "ambiguous";
   else if (boundaryDirection === "ambiguous") status = "ambiguous";
-  else if (up > 0 && down > 0) status = "mixed";
   else if (up / directionCount >= MIN_DIRECTIONAL_CONSENSUS && boundaryDirection === "up") status = "progress";
   else if (down / directionCount >= MIN_DIRECTIONAL_CONSENSUS && boundaryDirection === "down") status = "regression";
   else if (steady / directionCount >= MIN_DIRECTIONAL_CONSENSUS && boundaryDirection === "steady") status = "stable";

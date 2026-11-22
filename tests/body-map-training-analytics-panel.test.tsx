@@ -91,6 +91,9 @@ describe("Body Map training analytics panel", () => {
     expect(screen.getByText(/1 of 1 exercises show higher typical results/)).toBeTruthy();
     expect(screen.getByText(/Typical load and reps are summarized separately/)).toBeTruthy();
     expect(screen.getByText(/does not measure muscle growth/)).toBeTruthy();
+    const exerciseList = screen.getByTestId("body-map-exercise-list") as HTMLDetailsElement;
+    expect(exerciseList.open).toBe(false);
+    expect(exerciseList.querySelector("summary")?.textContent).toMatch(/Exercises in this period\s*1/);
     const details = screen.getByTestId("body-map-exercise-progress");
     expect(details.querySelector("summary")?.textContent).toMatch(/Load 20 kg · reps 8\s*→\s*Load 24 kg · reps 8/);
     expect((details as HTMLDetailsElement).open).toBe(false);
@@ -114,6 +117,10 @@ describe("Body Map training analytics panel", () => {
     renderMuscle(analytics(sessions));
 
     expect(screen.getByText("2")).toBeTruthy();
+    const exerciseList = screen.getByTestId("body-map-exercise-list") as HTMLDetailsElement;
+    expect(exerciseList.open).toBe(false);
+    await user.click(exerciseList.querySelector("summary")!);
+    expect(exerciseList.open).toBe(true);
     const exercise = screen.getByText("Dumbbell fly").closest("details") as HTMLDetailsElement;
     expect(exercise.open).toBe(false);
     await user.click(exercise.querySelector("summary")!);

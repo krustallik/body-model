@@ -1,84 +1,106 @@
 .page { min-height: 100vh; padding: 22px clamp(14px, 3vw, 40px) 18px; color: var(--text); background: var(--bg); font-family: inherit; }
 .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; max-width: 1520px; margin: 0 auto 12px; }
 .header h1 { margin: 3px 0 0; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.03em; }
-.kicker { margin: 0; color: var(--text-secondary); font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.kicker { margin: 0; color: var(--text-secondary); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .badges { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.demoBadge, .unsupportedBadge { padding: 7px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; }
+.demoBadge, .unsupportedBadge { padding: 7px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; }
 .demoBadge { color: var(--warning-strong); border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); background: var(--warning-soft); }
 .unsupportedBadge { color: var(--info-strong); border-color: color-mix(in srgb, var(--info) 50%, var(--border)); background: var(--info-soft); }
-.breadcrumbs { display: flex; align-items: center; gap: 9px; max-width: 1520px; margin: 0 auto 14px; color: var(--text-muted); font-size: 12px; }
+.breadcrumbs { display: flex; align-items: center; gap: 9px; max-width: 1520px; margin: 0 auto 14px; color: var(--text-muted); font-size: 13px; }
 .breadcrumbs button { min-height: 44px; padding: 0; border: 0; color: var(--text-secondary); background: none; cursor: pointer; }
 .breadcrumbs button[aria-current="page"] { color: var(--primary-strong); }
-.layout { display: grid; min-width: 0; grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr); gap: 14px; max-width: 1520px; min-height: min(79vh, 840px); margin: 0 auto; }
+.layout { display: grid; min-width: 0; grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr); gap: 14px; max-width: 1520px; min-height: min(79vh, 840px); margin: 0 auto; transition: grid-template-columns 180ms ease; }
+.layoutFocused { min-height: 0; align-items: start; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
+.layoutViewerExpanded { grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr); }
 .viewerColumn { display: flex; min-width: 0; min-height: 620px; flex-direction: column; }
 .viewer { position: relative; flex: 1; overflow: hidden; min-height: 560px; border: 1px solid var(--border); border-radius: 12px; background: radial-gradient(ellipse at 50% 42%, color-mix(in srgb, var(--primary) 8%, var(--surface-1)), var(--bg) 66%); }
+.layoutFocused .viewerColumn, .layoutViewerExpanded .viewerColumn { align-self: start; height: fit-content; min-height: 0; }
+.layoutFocused .viewer { flex: 0 0 clamp(360px, 48vh, 420px); min-height: 0; max-height: 420px; }
+.layoutViewerExpanded .viewer { flex: 0 0 min(79vh, 560px); min-height: 480px; max-height: 560px; }
 .viewer canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .viewerInteractive canvas { cursor: pointer; }
 .viewerControls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.viewerControls button { min-height: 44px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-secondary); background: var(--surface-2); font-size: 11px; cursor: pointer; transition: border-color var(--ease), background-color var(--ease), color var(--ease); }
+.viewerControls button { min-height: 44px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-secondary); background: var(--surface-2); font-size: 13px; cursor: pointer; transition: border-color var(--ease), background-color var(--ease), color var(--ease); }
 .viewerControls button[aria-pressed="true"] { border-color: var(--primary-strong); color: var(--text); background: var(--selected); }
+.viewerControls .viewerSizeToggle { border-color: color-mix(in srgb, var(--primary-strong) 58%, var(--border)); color: var(--primary-strong); background: var(--primary-soft); font-weight: 650; }
+.viewerControls .viewerSizeToggle:hover { border-color: var(--primary-strong); background: var(--selected); }
 .controlDivider { width: 1px; margin: 0 3px; background: var(--border); }
-.viewerMessage { position: absolute; z-index: 2; left: 12px; bottom: 12px; max-width: calc(100% - 24px); padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 92%, transparent); font-size: 11px; pointer-events: none; }
-.viewerModeNotice { position: absolute; z-index: 1; top: 12px; left: 12px; display: grid; gap: 3px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: color-mix(in srgb, var(--surface-1) 92%, transparent); font-size: 10px; pointer-events: none; }
+.viewerMessage { position: absolute; z-index: 2; left: 12px; bottom: 12px; max-width: calc(100% - 24px); padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-secondary); background: color-mix(in srgb, var(--surface-1) 92%, transparent); font-size: 13px; pointer-events: none; }
+.viewerModeNotice { position: absolute; z-index: 1; top: 12px; left: 12px; display: grid; gap: 3px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: color-mix(in srgb, var(--surface-1) 92%, transparent); font-size: 13px; pointer-events: none; }
 .viewerModeNotice span { color: var(--text-secondary); }
-.assetError, .viewerError { position: absolute; z-index: 3; inset: 30% 8% auto; padding: 12px; border: 1px solid var(--danger); border-radius: 8px; color: var(--danger-strong); background: var(--danger-soft); font-size: 12px; }
+.assetError, .viewerError { position: absolute; z-index: 3; inset: 30% 8% auto; padding: 12px; border: 1px solid var(--danger); border-radius: 8px; color: var(--danger-strong); background: var(--danger-soft); font-size: 13px; }
 .viewerError { position: static; max-width: 700px; margin: 16px auto; }
-.performance { min-height: 16px; margin: 8px 2px 0; color: var(--text-muted); font-size: 9px; overflow-wrap: anywhere; }
+.performance { min-height: 16px; margin: 8px 2px 0; color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .performance[hidden] { display: none !important; }
-.qualityControl { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: var(--text-secondary); font-size: 11px; }
+.qualityControl { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: var(--text-secondary); font-size: 13px; }
 .qualityControl select { min-height: 44px; padding: 7px 28px 7px 10px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--surface-2); }
-.hint { margin: 5px 2px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
+.hint { margin: 5px 2px 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
 .panel { display: flex; min-width: 0; min-height: 620px; max-height: min(79vh, 840px); flex-direction: column; overflow: auto; padding: clamp(16px, 2vw, 24px); border: 1px solid var(--border); border-radius: 12px; background: var(--surface-1); }
+.layoutFocused .panel { min-height: 0; max-height: min(79vh, 840px); }
 .panelHeading { margin-bottom: 10px; }
-.panelHeading h2 { margin: 5px 0 0; font-size: 23px; letter-spacing: -.02em; }
-.panel h3 { margin: 17px 0 8px; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-.muted { color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.panelHeading h2 { margin: 5px 0 0; font-size: clamp(23px, 2vw, 27px); letter-spacing: -.02em; }
+.panel h3 { margin: 17px 0 8px; color: var(--text-secondary); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+.muted { color: var(--text-secondary); font-size: 14px; line-height: 1.55; }
 .groupList, .subregionList { display: grid; gap: 7px; margin-top: 10px; }
 .exposureSection { display: grid; gap: 7px; }
-.exposureSection h3 { margin: 7px 0 0; color: var(--text-secondary); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.exposureSection h3 { margin: 7px 0 0; color: var(--text-secondary); font-size: 13px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
 .groupListCompact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .groupButton, .subregionList button { position: relative; display: grid; min-height: 52px; gap: 4px; width: 100%; padding: 10px 34px 10px 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface-2); text-align: left; cursor: pointer; transition: border-color var(--ease), background-color var(--ease), opacity var(--ease); }
 .groupButtonUnrecorded { opacity: .64; }
 .groupButtonUnrecorded:hover, .groupButtonUnrecorded:focus-visible { opacity: 1; }
 .groupButton:hover, .groupButtonHovered, .subregionList button:hover { border-color: var(--primary); background: var(--selected); }
-.groupButton small, .subregionList small { color: var(--text-muted); font-size: 10px; }
+.groupButton small, .subregionList small { color: var(--text-muted); font-size: 13px; }
 .groupButton b { position: absolute; top: 50%; right: 14px; color: var(--primary-strong); font-size: 21px; transform: translateY(-50%); }
-.subregionList code, .identityCard code { color: var(--primary-strong); font-size: 10px; }
+.subregionList code, .identityCard code { color: var(--primary-strong); font-size: 12px; }
 .metricCard { display: grid; gap: 5px; margin: 11px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
-.metricCard span { color: var(--text-secondary); font-size: 11px; }
-.metricCard strong { color: var(--text); font-size: 20px; }
-.metricCard small { color: var(--text-muted); font-size: 10px; line-height: 1.45; }
+.metricCard span { color: var(--text-secondary); font-size: 13px; }
+.metricCard strong { color: var(--text); font-size: 22px; }
+.metricCard small { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
 .metricRow, .detailFacts { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 6px 0; }
-.metricRow span, .detailFacts span { display: grid; gap: 4px; padding: 8px; border-radius: 6px; color: var(--text-secondary); background: var(--surface-2); font-size: 10px; }
-.metricRow b, .detailFacts b { color: var(--text); font-size: 10px; font-weight: 600; overflow-wrap: anywhere; }
-.identityCard { display: grid; gap: 7px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary); background: var(--surface-2); font-size: 11px; }
-.coverageNotice { margin-top: 12px; padding: 10px; border-left: 2px solid var(--warning); color: var(--warning-strong); background: var(--warning-soft); font-size: 11px; line-height: 1.5; }
+.metricRow span, .detailFacts span { display: grid; gap: 4px; padding: 8px; border-radius: 6px; color: var(--text-secondary); background: var(--surface-2); font-size: 13px; }
+.metricRow b, .detailFacts b { color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.identityCard { display: grid; gap: 7px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary); background: var(--surface-2); font-size: 13px; }
+.coverageNotice { margin-top: 12px; padding: 10px; border-left: 2px solid var(--warning); color: var(--warning-strong); background: var(--warning-soft); font-size: 13px; line-height: 1.5; }
 .transitionCard { display: grid; gap: 8px; margin: 4px 0 12px; padding: 16px; border: 1px solid color-mix(in srgb, var(--primary) 48%, var(--border)); border-radius: 9px; color: var(--text); background: var(--primary-soft); }
 .transitionCard strong { font-size: 18px; }
 .transitionCard small { color: var(--text-secondary); }
-.otherGroups { margin-top: 13px; color: var(--text-secondary); font-size: 11px; }
+.otherGroups { margin-top: 13px; color: var(--text-secondary); font-size: 13px; }
 .otherGroups summary { cursor: pointer; }
 .backButton { padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--surface-2); cursor: pointer; }
-.textButton { border: 0; color: var(--primary-strong); background: none; cursor: pointer; font-size: 11px; }
+.textButton { border: 0; color: var(--primary-strong); background: none; cursor: pointer; font-size: 13px; }
 .footer { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: auto; padding-top: 16px; }
-.footer small { width: 100%; color: var(--text-muted); font-size: 9px; }
-.footnote { max-width: 1520px; margin: 13px auto 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+.footer small { width: 100%; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
+.footnote { max-width: 1520px; margin: 13px auto 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
 .footnote summary { cursor: pointer; color: var(--text-secondary); }
 .footnote p { max-width: 880px; margin: 7px 0 0; }
 .footnote a { color: var(--primary-strong); }
 .loading { color: var(--text-secondary); }
 .fallback2d { position: absolute; inset: 0; z-index: 4; display: grid; grid-template-rows: auto 1fr auto; min-height: 100%; padding: 16px; background: radial-gradient(ellipse at 50% 38%, color-mix(in srgb, var(--primary) 8%, var(--surface-1)), var(--bg) 70%); }
-.fallbackHeading { display: grid; gap: 4px; color: var(--text); font-size: 12px; }
-.fallbackHeading strong { font-size: 17px; }
-.fallbackHeading span, .fallbackNote { color: var(--text-secondary); font-size: 10px; }
+.fallbackHeading { display: grid; gap: 4px; color: var(--text); font-size: 14px; }
+.fallbackHeading strong { font-size: 19px; }
+.fallbackHeading span, .fallbackNote { color: var(--text-secondary); font-size: 13px; }
 .fallbackBody { position: relative; width: min(100%, 410px); height: 100%; min-height: 440px; margin: 4px auto; }
 .bodySilhouette { position: absolute; inset: 2% 17% 1%; width: 66%; height: 97%; fill: var(--elevated); stroke: var(--text-muted); stroke-width: 3; stroke-linejoin: round; }
 .fallbackHotspot { position: absolute; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 2px solid var(--primary-strong); border-radius: 50%; color: var(--primary-ink); background: var(--primary); box-shadow: 0 0 0 4px var(--primary-soft); transform: translate(-50%, -50%); cursor: pointer; }
-.fallbackHotspot span { position: absolute; left: 19px; width: max-content; max-width: 120px; color: var(--text); font-size: 9px; text-shadow: 0 1px 2px var(--bg); text-align: left; }
+.fallbackHotspot span { position: absolute; left: 19px; width: max-content; max-width: 120px; color: var(--text); font-size: 13px; text-shadow: 0 1px 2px var(--bg); text-align: left; }
 .fallbackGroupList { display: none; }
-.fallbackGroupOption { min-height: 44px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text); background: var(--surface-2); text-align: left; font-size: 11px; cursor: pointer; }
+.fallbackGroupOption { min-height: 44px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text); background: var(--surface-2); text-align: left; font-size: 13px; cursor: pointer; }
 .fallbackNote { align-self: end; margin: 2px 0 0; line-height: 1.45; }
 .page :is(button, select, summary, a):focus-visible { outline: none; box-shadow: var(--focus-ring); }
-@media (prefers-reduced-motion: reduce) { .viewerControls button, .groupButton, .subregionList button { transition: none; } }
-@media (max-width: 930px) { .layout { grid-template-columns: minmax(0, 1fr); } .viewerColumn { min-height: 540px; } .viewer { min-height: 470px; } .panel { min-height: 440px; max-height: none; } .header { align-items: flex-start; flex-direction: column; } .badges { justify-content: flex-start; } }
-@media (max-width: 520px) { .page { padding: 15px 9px; } .viewerColumn { min-height: 470px; } .viewer { min-height: 410px; } .viewer:has(.fallback2d) { flex: 0 0 auto; min-height: 0; overflow: visible; } .viewerModeNotice { right: 12px; left: auto; max-width: 112px; } .panel { padding: 14px; } .metricRow, .detailFacts { grid-template-columns: 1fr; } .groupListCompact { grid-template-columns: 1fr; } .fallback2d { position: relative; inset: auto; grid-template-rows: auto auto auto auto; gap: 8px; min-height: 0; } .fallbackBody { width: min(100%, 300px); height: 280px; min-height: 280px; margin: 0 auto; } .fallbackHotspot { display: none; } .fallbackGroupList { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; } .fallbackGroupOption { min-width: 0; overflow-wrap: anywhere; } }
+@media (prefers-reduced-motion: reduce) { .layout, .viewer, .viewerControls button, .groupButton, .subregionList button { transition: none; } }
+@media (max-width: 930px) { .layout, .layoutFocused, .layoutViewerExpanded { grid-template-columns: minmax(0, 1fr); } .viewerColumn { min-height: 540px; } .viewer { min-height: 470px; } .layoutFocused .viewerColumn, .layoutViewerExpanded .viewerColumn { min-height: 0; } .layoutFocused .viewer { flex: 0 0 250px; min-height: 0; max-height: 250px; transition: height 180ms ease, flex-basis 180ms ease, min-height 180ms ease; } .layoutViewerExpanded .viewer { flex-basis: 470px; min-height: 0; max-height: 470px; } .panel { min-height: 440px; max-height: none; } .layoutFocused .panel { max-height: none; } .header { align-items: flex-start; flex-direction: column; } .badges { justify-content: flex-start; } }
+@media (max-width: 930px) {
+  .layoutFocused .viewer:has(.fallback2d) { flex: 0 0 250px; min-height: 0; max-height: 250px; overflow: hidden; }
+  .layoutViewerExpanded .viewer:has(.fallback2d) { flex: 0 0 470px; min-height: 0; max-height: 470px; overflow: hidden; }
+  .layoutFocused .viewer:has(.fallback2d) .fallback2d,
+  .layoutViewerExpanded .viewer:has(.fallback2d) .fallback2d { position: absolute; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 4px; min-height: 0; padding: 10px; }
+  .layoutFocused .viewer:has(.fallback2d) .fallbackHeading span,
+  .layoutViewerExpanded .viewer:has(.fallback2d) .fallbackHeading span,
+  .layoutFocused .viewer:has(.fallback2d) .fallbackGroupList,
+  .layoutViewerExpanded .viewer:has(.fallback2d) .fallbackGroupList,
+  .layoutFocused .viewer:has(.fallback2d) .fallbackNote,
+  .layoutViewerExpanded .viewer:has(.fallback2d) .fallbackNote { display: none; }
+  .layoutFocused .viewer:has(.fallback2d) .fallbackBody,
+  .layoutViewerExpanded .viewer:has(.fallback2d) .fallbackBody { width: min(100%, 300px); height: 100%; min-height: 0; margin: 0 auto; }
+}
+@media (max-width: 520px) { .page { padding: 15px 9px; } .viewerColumn { min-height: 470px; } .viewer { min-height: 410px; } .layoutFocused .viewer { flex-basis: 210px; max-height: 210px; } .layoutViewerExpanded .viewer { flex-basis: 410px; max-height: 410px; } .layoutFocused .viewer:has(.fallback2d) { flex-basis: 210px; max-height: 210px; } .layoutViewerExpanded .viewer:has(.fallback2d) { flex-basis: 410px; max-height: 410px; } .viewer:has(.fallback2d) { flex: 0 0 auto; min-height: 0; max-height: none; overflow: visible; } .viewerModeNotice { right: 12px; left: auto; max-width: 112px; } .panel { padding: 14px; } .metricRow, .detailFacts { grid-template-columns: 1fr; } .groupListCompact { grid-template-columns: 1fr; } .fallback2d { position: relative; inset: auto; grid-template-rows: auto auto auto auto; gap: 8px; min-height: 0; } .fallbackBody { width: min(100%, 300px); height: 280px; min-height: 280px; margin: 0 auto; } .fallbackHotspot { display: none; } .fallbackGroupList { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; } .fallbackGroupOption { min-width: 0; overflow-wrap: anywhere; } }

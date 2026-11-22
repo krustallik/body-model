@@ -279,17 +279,17 @@ export function BodyMapTrainingAnalyticsPanel({
           ? "Типова вага й повторення узагальнені окремо за записами; розминка окремо не позначається. Це не вимір росту м’язів."
           : "Typical load and reps are summarized separately from logged sets; warm-ups are not marked separately. This does not measure muscle growth."}</small>
       </article>
-      <section className={styles.exerciseSection} aria-label={uk ? "Вправи, що враховані у висновку" : "Exercises included in the summary"}>
-        <div className={styles.sectionHeading}>
+      <details className={styles.exerciseSection} data-testid="body-map-exercise-list">
+        <summary className={styles.sectionHeading}>
           <h3>{uk ? "Вправи за період" : "Exercises in this period"}</h3>
           <span>{assessment.exercises.length}</span>
-        </div>
+        </summary>
         {assessment.exercises.length > 0
           ? <div className={styles.exerciseList}>
             {assessment.exercises.map((exercise) => <ExerciseDisclosure key={exercise.key} exercise={exercise} locale={intlLocale} uk={uk} />)}
           </div>
           : <p className={styles.emptyState}>{uk ? "Для цього м’яза у вибраному періоді немає вправ із завершеними підходами." : "No exercises with completed sets were found for this muscle in the selected period."}</p>}
-      </section>
+      </details>
     </>}
   </section>;
 }

@@ -204,11 +204,13 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   const pageStateRef = useRef(pageState);
   const manifestRef = useRef<PrototypeManifest | null>(null);
   const navState = pageState.navigation;
+  const hasMuscleSelection = navState.level !== "OVERVIEW";
   const [hoveredGroupId, setHoveredGroupId] = useState<BodyMapGroupIdV2 | null>(null);
   const showSurfaceSupport = pageState.mode === "fascia" || pageState.mode === "both-context";
   const showSkeletalContext = pageState.mode === "skeleton" || pageState.mode === "both-context";
   const [focusRequest, setFocusRequest] = useState<FocusRequest>({ id: 0, kind: "overview", preset: "front" });
   const [focusReady, setFocusReady] = useState(false);
+  const [viewerExpanded, setViewerExpanded] = useState(false);
   const [pickedMessage, setPickedMessage] = useState(uk ? "Завантаження анатомії…" : "Loading anatomy…");
   const [sceneRootUuid, setSceneRootUuid] = useState<string | null>(null);
   const [loadedMeshCount, setLoadedMeshCount] = useState(0);
@@ -343,6 +345,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       const next = pageStateFromUrlState(parsed);
       pageStateRef.current = next;
       setPageState(next);
+      setViewerExpanded(false);
       setHoveredGroupId(null);
       setFocusReady(false);
       setPickedMessage(next.navigation.groupId ? uk ? "Відновлення вигляду анатомії…" : "Restoring anatomy view…" : "");
@@ -377,6 +380,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   }, []);
   const setOverview = useCallback(() => {
     const next = commitPageState(pageStateFromUrlState(BODY_MAP_URL_OVERVIEW_V1));
+    setViewerExpanded(false);
     setHoveredGroupId(null);
     setPickedMessage(uk ? "Повернення до вигляду всього тіла…" : "Returning to the full-body view…");
     requestFocus(focusInputForPageState(next));
@@ -392,6 +396,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
     const next = commitPageState({
       ...current, navigation, view: defaultBodyMapGroupViewV1(groupId), mode: "muscle", deep: false,
     });
+    setViewerExpanded(false);
     setHoveredGroupId(null);
     const label = manifest.bodyMapGroups.find((group) => group.groupId === groupId)?.label ?? (uk ? "групи м’язів" : "muscle group");
     setPickedMessage(uk ? `Перехід до ${bodyMapGroupLabel(groupId, label, locale)}…` : `Moving to ${label}…`);
@@ -412,6 +417,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
         ? defaultBodyMapSubregionViewV1(selectedGroup.groupId)
         : current.view;
       const next = commitPageState({ ...current, navigation, view: regionView, deep });
+      setViewerExpanded(false);
       const label = subregion ? bodyMapAnatomyLabel(subregion.anatomyId, subregion.label, locale) : uk ? "м’яза" : "muscle";
       setPickedMessage(uk ? `Перехід до ${label}…` : `Moving to ${label}…`);
       requestFocus(focusInputForPageState(next));
@@ -426,6 +432,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
     const next = commitPageState({
       ...current, navigation, view: navigation.groupId ? defaultBodyMapGroupViewV1(navigation.groupId) : "front", mode: "muscle", deep: false,
     });
+    setViewerExpanded(false);
     setHoveredGroupId(null);
     if (next.navigation.level === "OVERVIEW") {
       setPickedMessage(uk ? "Повернення до вигляду всього тіла…" : "Returning to the full-body view…");
@@ -556,10 +563,11 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
         {selectedSubregion && <><span>›</span><span aria-current="page">{selectedSubregionLabel}</span></>}
       </nav>
 
-      <section className={styles.layout}>
+      <section data-testid="body-map-layout" className={`${styles.layout}${hasMuscleSelection ? ` ${styles.layoutFocused}` : ""}${viewerExpanded ? ` ${styles.layoutViewerExpanded}` : ""}`}>
         <div className={styles.viewerColumn}>
           <div
             className={`${styles.viewer} ${hoveredGroupId ? styles.viewerInteractive : ""}`}
+            id="body-map-scene"
             data-testid="glb-viewport"
             data-scene-root-uuid={sceneRootUuid ?? "loading"}
             data-scene-mesh-count={loadedMeshCount}
@@ -633,6 +641,14 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
             {assetError && <div role="alert" className={styles.assetError}>{uk ? "3D-модель недоступна або не пройшла перевірку. Показано спрощену карту." : "The 3D model is unavailable or failed validation. A simplified map is shown."}</div>}
           </div>
           <div className={styles.viewerControls}>
+            {hasMuscleSelection && <button
+              className={styles.viewerSizeToggle}
+              type="button"
+              aria-controls="body-map-scene"
+              aria-pressed={viewerExpanded}
+              data-testid="viewer-size-toggle"
+              onClick={() => setViewerExpanded((expanded) => !expanded)}
+            >{uk ? (viewerExpanded ? "Зменшити карту" : "Збільшити карту") : (viewerExpanded ? "Reduce map" : "Expand map")}</button>}
             <button data-testid="view-front" onClick={() => selectCameraPreset("front")}>{uk ? "Спереду" : "Front"}</button>
             <button data-testid="view-back" onClick={() => selectCameraPreset("back")}>{uk ? "Ззаду" : "Back"}</button>
             <button data-testid="view-left" onClick={() => selectCameraPreset("left")}>{uk ? "Ліворуч" : "Left"}</button>

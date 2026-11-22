@@ -31,6 +31,7 @@ const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936
 const TRAINING_MIGRATION_SHA = "73f0e49aa2fbb4595f7acfc00d16f76bfa2e2da1";
 const AUTH_MULTIUSER_MIGRATION_APP_SHA = "18e67d53856af1f4742bbe9626abbd005b70e8bf";
 const AUTH_PREVIOUS_DEPLOY_SHA = "c616eba0f874c8c481cb889fade149b68f9ba590";
+const REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA = "28479c9dc928d3efb3b7339cb0aa535330313e2d";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -38,8 +39,8 @@ function allowedDeployBlobs(binding) {
   return Array.isArray(binding?.deployBlob) ? binding.deployBlob : [binding?.deployBlob];
 }
 
-function candidateDeployBlob(filePath) {
-  return execFileSync("git", ["rev-parse", `:${filePath}`], { encoding: "utf8" }).trim();
+function candidateDeployBlob(filePath, sourceSha = "HEAD") {
+  return execFileSync("git", ["rev-parse", `${sourceSha}:${filePath}`], { encoding: "utf8" }).trim();
 }
 
 function ensureHandoffHistory() {
@@ -354,18 +355,26 @@ describe("schema deploy compatibility handoff", () => {
       expect(allowedDeployBlobs(binding)).toContain(workingBlob);
     }
   });
-  it("pins exact candidate blobs for URL-backed exercise picker runtime changes", () => {
-    for (const [filePath, migrationOriginBlob] of [
-      ["src/app/training/exercise-picker.tsx", null],
-      ["src/app/training/program-editor.tsx", "fb7ba4532f32a7ac9448f42e56f5daaecdc1a5e3"],
-      ["src/app/training/sessions/[id]/session-client.tsx", "d085fb60abcd1911efa49ee2061429a553992b8b"],
-      ["src/app/training/training.module.css", "583c713bc4aa9c16f1e3434b45808d9b9b98f7b4"],
-      ["src/app/training/exercise-picker-url-state.ts", null],
+  it("keeps the new Training analytics schema and runtime blobs outside migration-free Auth deployment", () => {
+    const currentSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    for (const filePath of [
+      "prisma/schema.prisma",
+      "prisma/migrations/20261121130000_training_plan_intent/migration.sql",
+      "src/app/api/v1/training/body-map/analytics/route.ts",
+      "src/app/training/program-editor.tsx",
+      "src/app/training/sessions/[id]/session-client.tsx",
+      "src/app/training/training-client.tsx",
+      "src/components/body-map/body-map-experience.tsx",
+      "src/i18n/i18n-provider.tsx",
+      "src/modules/training/body-map-training-analytics-v1.ts",
+      "src/modules/training/training.repository.ts",
+      "src/modules/training/training.schema.ts",
+      "src/modules/training/training.service.ts",
     ]) {
+      const blob = execFileSync("git", ["rev-parse", `${currentSha}:${filePath}`], { encoding: "utf8" }).trim();
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[filePath];
-      const workingBlob = execFileSync("git", ["hash-object", filePath], { encoding: "utf8" }).trim();
-      expect(binding?.migrationOriginBlob).toBe(migrationOriginBlob);
-      expect(allowedDeployBlobs(binding)).toContain(workingBlob);
+      if (binding) expect(allowedDeployBlobs(binding)).not.toContain(blob);
+      else expect(Object.hasOwn(AUTH_MULTIUSER_CONTENT_BOUND_PATHS, filePath)).toBe(false);
     }
   });
   it("pins the candidate public-asset permission fix by exact deploy-script blob", () => {
@@ -396,7 +405,7 @@ describe("schema deploy compatibility handoff", () => {
       ...previousCompatibility,
     }).action).toBe("replay");
 
-    const currentDeploySha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const currentDeploySha = REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA;
     const currentCompatibility = readGitCompatibility(process.cwd(), currentDeploySha,
       AUTH_MULTIUSER_MIGRATION_APP_SHA, AUTH_MULTIUSER_MANIFEST.id);
     expect(currentCompatibility.changedPaths).toContain("README.md");
@@ -463,7 +472,7 @@ describe("schema deploy compatibility handoff", () => {
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[exerciseReleasePath];
       const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${exerciseReleasePath}`], { encoding: "utf8" }).trim();
       expect(allowedDeployBlobs(binding)).toContain(actualDeployBlob);
-      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(exerciseReleasePath));
+      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(exerciseReleasePath, currentDeploySha));
     }
     for (const releasePath of [
       "src/app/api/registration/password-setup/route.ts",
@@ -479,7 +488,7 @@ describe("schema deploy compatibility handoff", () => {
       const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS[releasePath];
       const actualDeployBlob = execFileSync("git", ["rev-parse", `${currentDeploySha}:${releasePath}`], { encoding: "utf8" }).trim();
       expect(allowedDeployBlobs(binding)).toContain(actualDeployBlob);
-      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(releasePath));
+      expect(allowedDeployBlobs(binding)).toContain(candidateDeployBlob(releasePath, currentDeploySha));
       expect(currentCompatibility.changedPathObjects[releasePath]).toEqual({
         migrationOriginBlob: binding?.migrationOriginBlob,
         deployBlob: actualDeployBlob,
@@ -494,7 +503,7 @@ describe("schema deploy compatibility handoff", () => {
       "src/app/settings/profile/profile.module.css",
     ]) {
       expect(allowedDeployBlobs(AUTH_MULTIUSER_CONTENT_BOUND_PATHS[candidatePath]))
-        .toContain(candidateDeployBlob(candidatePath));
+        .toContain(candidateDeployBlob(candidatePath, currentDeploySha));
     }
     expect(currentCompatibility.changedPathObjects["src/model/weight-observation-filter.ts"]).toMatchObject({
       migrationOriginBlob: "bc0c0951cff1f52a073f01c9ec8ea0238772ee6b",
@@ -593,6 +602,7 @@ describe("schema deploy compatibility handoff", () => {
     directories.push(directory);
     const repository = path.join(directory, "repo");
     execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+    execFileSync("git", ["-C", repository, "checkout", "--quiet", "--detach", REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA]);
     const runtimePath = path.join(repository, "src/modules/profile/profile.repository.ts");
     await writeFile(runtimePath, `${await readFile(runtimePath, "utf8")}\n// incompatible auth runtime fixture\n`);
     execFileSync("git", ["-C", repository, "add", "src/modules/profile/profile.repository.ts"]);

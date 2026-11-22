@@ -713,7 +713,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(runbook).toContain("The Training manifest has `cutbackSupported: false`");
   });
 
-  it("keeps the Training manifest intact and rehearses the complete Auth release from its pinned 74-migration baseline", async () => {
+  it("keeps the pinned Auth release intact and blocks its exact tree while an additional migration is outside the manifest", async () => {
     const [migrationWorkflow, preflightWorkflow, safetyWorkflow, fingerprintScript] = await Promise.all([
       readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8"),
@@ -733,8 +733,10 @@ describe("V5 closed migration manifest and full pending set", () => {
       migrationDirectories.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
       AUTH_MULTIUSER_MANIFEST.id,
     );
-    expect(releaseTree.ready).toBe(true);
-    expect(releaseTree.actualDirectories).toHaveLength(77);
+    expect(releaseTree.ready).toBe(false);
+    expect(releaseTree.expectedDirectories).toHaveLength(77);
+    expect(releaseTree.actualDirectories).toHaveLength(78);
+    expect(releaseTree.blockers).toContain("Reviewed predecessor and pending sets do not cover the complete release migration tree exactly.");
 
     for (const migration of AUTH_MULTIUSER_MANIFEST.migrations) {
       const sql = await readFile(new URL(`../prisma/migrations/${migration.name}/migration.sql`, import.meta.url), "utf8");

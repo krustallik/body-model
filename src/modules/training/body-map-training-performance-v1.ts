@@ -46,6 +46,8 @@ export type BodyMapExerciseProgressV1 = {
   hasOrderShift: boolean;
   hasDuplicateOccurrences: boolean;
   hasProgramChange: boolean;
+  hasSetCountChange: boolean;
+  hasRestMismatch: boolean;
   hasLongGap: boolean;
   hasUnreportedRir: boolean;
   hasUncertainSessionLoad: boolean;
@@ -68,6 +70,8 @@ export type BodyMapMuscleProgressAssessmentV1 = {
 type GroupReport = BodyMapTrainingAnalyticsResponseV1["groups"][number];
 type Direction = "up" | "down" | "steady" | "ambiguous";
 type Slice = { loadKg: number | null; reps: number; rir: number | null };
+type SetObservation = Slice & { setNumber: number; restBeforeSeconds: number | null };
+type ExerciseSession = { point: BodyMapExerciseProgressPointV1; sets: SetObservation[] };
 
 const MIN_SESSIONS = 4;
 const MIN_SPAN_DAYS = 28;
@@ -126,6 +130,19 @@ function pointFromSession(
     lighter: first.sessionLoadStatus === "lighter" || sessionIntent === "easy-deload",
     uncertainSessionLoad: first.sessionLoadStatus === "uncertain",
   };
+}
+
+function setObservations(rows: readonly BodyMapAnalyticsSetV1[]): SetObservation[] {
+  return rows.flatMap((set) => {
+    if (!Number.isInteger(set.setNumber) || set.setNumber < 1 || !Number.isFinite(set.reps) || set.reps <= 0) return [];
+    return [{
+      setNumber: set.setNumber,
+      loadKg: setLoad(set),
+      reps: set.reps,
+      rir: set.rir !== null && Number.isFinite(set.rir) ? set.rir : null,
+      restBeforeSeconds: set.restBeforeSeconds,
+    }];
+  });
 }
 
 function sessionSlice(points: readonly BodyMapExerciseProgressPointV1[]): Slice | null {
@@ -193,7 +210,7 @@ function compareSlices(
   previous: Slice,
   current: Slice,
   resistanceType: string,
-): Direction | null {
+): Direction {
   const hasPrevLoad = previous.loadKg !== null;
   const hasCurrentLoad = current.loadKg !== null;
   if (resistanceType !== "BODYWEIGHT" && hasPrevLoad !== hasCurrentLoad) return "ambiguous";
@@ -219,6 +236,102 @@ function compareSlices(
   return outputDirection > 0 ? "up" : outputDirection < 0 ? "down" : "steady";
 }
 
+function consensusDirection(directions: readonly Direction[]): Direction {
+  if (directions.length === 0) return "ambiguous";
+  const counts = {
+    up: directions.filter((direction) => direction === "up").length,
+    down: directions.filter((direction) => direction === "down").length,
+    steady: directions.filter((direction) => direction === "steady").length,
+  };
+  if (counts.up / directions.length >= MIN_DIRECTIONAL_CONSENSUS) return "up";
+  if (counts.down / directions.length >= MIN_DIRECTIONAL_CONSENSUS) return "down";
+  if (counts.steady / directions.length >= MIN_DIRECTIONAL_CONSENSUS) return "steady";
+  return "ambiguous";
+}
+
+function compareSetObservations(previous: SetObservation, current: SetObservation, resistanceType: string): Direction {
+  if (previous.restBeforeSeconds === null || current.restBeforeSeconds === null
+    || previous.restBeforeSeconds !== current.restBeforeSeconds) return "ambiguous";
+  return compareSlices(previous, current, resistanceType);
+}
+
+function compareSetPositions(
+  previous: readonly SetObservation[],
+  current: readonly SetObservation[],
+  resistanceType: string,
+): { direction: Direction; hasEffortMismatch: boolean; hasConflictingLoadAndReps: boolean; setCountChanged: boolean; hasRestMismatch: boolean } {
+  const previousByNumber = new Map(previous.map((set) => [set.setNumber, set]));
+  const currentByNumber = new Map(current.map((set) => [set.setNumber, set]));
+  const commonNumbers = [...previousByNumber.keys()].filter((setNumber) => currentByNumber.has(setNumber));
+  const maximumSetCount = Math.max(previous.length, current.length);
+  const coverageIsSufficient = commonNumbers.length > 0 && commonNumbers.length / maximumSetCount >= 0.6;
+  const directions = commonNumbers.map((setNumber) =>
+    compareSetObservations(previousByNumber.get(setNumber)!, currentByNumber.get(setNumber)!, resistanceType));
+  const hasEffortMismatch = commonNumbers.some((setNumber) => {
+    const previousRir = previousByNumber.get(setNumber)!.rir;
+    const currentRir = currentByNumber.get(setNumber)!.rir;
+    return (previousRir === null) !== (currentRir === null)
+      || (previousRir !== null && currentRir !== null && previousRir !== currentRir);
+  });
+  const hasConflictingLoadAndReps = commonNumbers.some((setNumber) => {
+    const previousSet = previousByNumber.get(setNumber)!;
+    const currentSet = currentByNumber.get(setNumber)!;
+    return previousSet.loadKg !== null && currentSet.loadKg !== null
+      && Math.sign(currentSet.loadKg - previousSet.loadKg) * Math.sign(currentSet.reps - previousSet.reps) < 0;
+  });
+  const hasRestMismatch = commonNumbers.some((setNumber) => {
+    const previousRest = previousByNumber.get(setNumber)!.restBeforeSeconds;
+    const currentRest = currentByNumber.get(setNumber)!.restBeforeSeconds;
+    return previousRest === null || currentRest === null || previousRest !== currentRest;
+  });
+  return {
+    direction: coverageIsSufficient ? consensusDirection(directions) : "ambiguous",
+    hasEffortMismatch,
+    hasConflictingLoadAndReps,
+    setCountChanged: previous.length !== current.length,
+    hasRestMismatch,
+  };
+}
+
+function medianPositionProfile(points: readonly ExerciseSession[]): Map<number, SetObservation> {
+  const positions = new Map<number, SetObservation[]>();
+  for (const point of points) {
+    for (const set of point.sets) positions.set(set.setNumber, [...(positions.get(set.setNumber) ?? []), set]);
+  }
+  const minimumOccurrences = Math.ceil(points.length * 0.6);
+  const profile = new Map<number, SetObservation>();
+  for (const [setNumber, observations] of positions) {
+    if (observations.length < minimumOccurrences) continue;
+    const loads = observations.flatMap(({ loadKg }) => loadKg === null ? [] : [loadKg]);
+    const rirs = observations.flatMap(({ rir }) => rir === null ? [] : [rir]);
+    const rests = observations.flatMap(({ restBeforeSeconds }) => restBeforeSeconds === null ? [] : [restBeforeSeconds]);
+    const reps = median(observations.map(({ reps }) => reps));
+    if (reps === null) continue;
+    profile.set(setNumber, {
+      setNumber,
+      loadKg: loads.length >= minimumOccurrences ? median(loads) : null,
+      reps,
+      rir: rirs.length >= minimumOccurrences ? median(rirs) : null,
+      restBeforeSeconds: rests.length >= minimumOccurrences ? median(rests) : null,
+    });
+  }
+  return profile;
+}
+
+function compareBoundaryProfiles(
+  early: readonly ExerciseSession[],
+  late: readonly ExerciseSession[],
+  resistanceType: string,
+): Direction {
+  const earlyProfile = medianPositionProfile(early);
+  const lateProfile = medianPositionProfile(late);
+  const commonNumbers = [...earlyProfile.keys()].filter((setNumber) => lateProfile.has(setNumber));
+  const maximumPositionCount = Math.max(earlyProfile.size, lateProfile.size);
+  if (commonNumbers.length === 0 || commonNumbers.length / maximumPositionCount < 0.6) return "ambiguous";
+  return consensusDirection(commonNumbers.map((setNumber) =>
+    compareSetObservations(earlyProfile.get(setNumber)!, lateProfile.get(setNumber)!, resistanceType)));
+}
+
 function assessExercise(input: {
   key: string;
   stableKey: string | null;
@@ -231,7 +344,7 @@ function assessExercise(input: {
   const groupedBySession = new Map<number, BodyMapAnalyticsSetV1[]>();
   for (const set of input.sets) groupedBySession.set(set.sessionId, [...(groupedBySession.get(set.sessionId) ?? []), set]);
   let hasDuplicateOccurrences = false;
-  const allPoints = [...groupedBySession.values()]
+  const observations = [...groupedBySession.values()]
     .flatMap((sessionSets) => {
       const occurrences = new Map<number, BodyMapAnalyticsSetV1[]>();
       for (const set of sessionSets) occurrences.set(set.exerciseIndex, [...(occurrences.get(set.exerciseIndex) ?? []), set]);
@@ -244,58 +357,59 @@ function assessExercise(input: {
       }
       const onlyOccurrence = occurrences.values().next().value as BodyMapAnalyticsSetV1[] | undefined;
       const point = onlyOccurrence ? pointFromSession(onlyOccurrence, input.groupId) : null;
-      return point ? [point] : [];
+      const sets = onlyOccurrence ? setObservations(onlyOccurrence) : [];
+      return point && sets.length > 0 ? [{ point, sets }] : [];
     })
-    .sort((left, right) => left.date.localeCompare(right.date) || left.sessionId - right.sessionId);
+    .sort((left, right) => left.point.date.localeCompare(right.point.date) || left.point.sessionId - right.point.sessionId);
+  const allPoints = observations.map(({ point }) => point);
   // Exclude both known lighter sessions and sessions whose load context could
   // not be classified. The source points remain available for provenance/UI.
-  const standardPoints = allPoints.filter((point) => !point.lighter && !point.uncertainSessionLoad);
+  const standardObservations = observations.filter(({ point }) => !point.lighter && !point.uncertainSessionLoad);
   const lighterSessionCount = allPoints.filter((point) => point.lighter).length;
-  const usable = input.stableKey === null ? [] : standardPoints;
+  const usable = input.stableKey === null ? [] : standardObservations;
   const boundarySize = usable.length >= 6
     ? Math.max(3, Math.ceil(usable.length / 3))
     : Math.max(2, Math.ceil(usable.length / 3));
-  const earlyPoints = usable.length >= 4 ? usable.slice(0, boundarySize) : usable;
-  const latePoints = usable.length >= 4 ? usable.slice(-boundarySize) : usable;
-  const early = sliceFor(earlyPoints);
-  const late = sliceFor(latePoints);
+  const earlyObservations = usable.length >= 4 ? usable.slice(0, boundarySize) : usable;
+  const lateObservations = usable.length >= 4 ? usable.slice(-boundarySize) : usable;
+  const early = sliceFor(earlyObservations.map(({ point }) => point));
+  const late = sliceFor(lateObservations.map(({ point }) => point));
   let comparablePairCount = 0;
+  let ambiguousPairCount = 0;
   let up = 0;
   let down = 0;
   let steady = 0;
   let hasEffortMismatch = false;
   let hasConflictingLoadAndReps = false;
-  const hasUnreportedRir = usable.some((point) => point.rir === null);
+  let hasRestMismatch = false;
+  const hasUnreportedRir = usable.some(({ sets }) => sets.some((set) => set.rir === null));
   let hasOrderShift = false;
   let hasProgramChange = false;
-  const hasLongGap = usable.some((point, index) => index > 0
-    && (Date.parse(`${point.date}T00:00:00Z`) - Date.parse(`${usable[index - 1]!.date}T00:00:00Z`)) / 86_400_000 > MAX_UNBRIDGED_GAP_DAYS);
+  let hasSetCountChange = new Set(usable.map(({ sets }) => sets.length)).size > 1;
+  const hasLongGap = usable.some((observation, index) => index > 0
+    && (Date.parse(`${observation.point.date}T00:00:00Z`) - Date.parse(`${usable[index - 1]!.point.date}T00:00:00Z`)) / 86_400_000 > MAX_UNBRIDGED_GAP_DAYS);
   const hasUncertainSessionLoad = allPoints.some((point) => point.uncertainSessionLoad);
 
   for (let leftIndex = 0; leftIndex < usable.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < usable.length; rightIndex += 1) {
       const previous = usable[leftIndex]!;
       const current = usable[rightIndex]!;
-      if (previous.date === current.date) continue;
-      if (orderContextChanged(previous, current)) {
+      if (previous.point.date === current.point.date) continue;
+      if (orderContextChanged(previous.point, current.point)) {
         hasOrderShift = true;
         continue;
       }
-      const gap = (Date.parse(`${current.date}T00:00:00Z`) - Date.parse(`${previous.date}T00:00:00Z`)) / 86_400_000;
+      const gap = (Date.parse(`${current.point.date}T00:00:00Z`) - Date.parse(`${previous.point.date}T00:00:00Z`)) / 86_400_000;
       if (gap > MAX_UNBRIDGED_GAP_DAYS) continue;
-      if (programContextChanged(previous, current)) hasProgramChange = true;
-      if ((previous.rir === null) !== (current.rir === null)
-        || (previous.rir !== null && current.rir !== null && previous.rir !== current.rir)) hasEffortMismatch = true;
-      const previousSlice = sessionSlice([previous]);
-      const currentSlice = sessionSlice([current]);
-      if (!previousSlice || !currentSlice) continue;
-      const direction = compareSlices(previousSlice, currentSlice, input.resistanceType);
-      if (direction === null) continue;
+      if (programContextChanged(previous.point, current.point)) hasProgramChange = true;
+      const pair = compareSetPositions(previous.sets, current.sets, input.resistanceType);
+      hasSetCountChange ||= pair.setCountChanged;
+      hasEffortMismatch ||= pair.hasEffortMismatch;
+      hasConflictingLoadAndReps ||= pair.hasConflictingLoadAndReps;
+      hasRestMismatch ||= pair.hasRestMismatch;
+      const direction = pair.direction;
       if (direction === "ambiguous") {
-        if (previous.loadKg !== null && current.loadKg !== null
-          && Math.sign(current.loadKg - previous.loadKg) * Math.sign(current.reps - previous.reps) < 0) {
-          hasConflictingLoadAndReps = true;
-        }
+        ambiguousPairCount += 1;
         continue;
       }
       comparablePairCount += 1;
@@ -305,15 +419,15 @@ function assessExercise(input: {
     }
   }
 
-  const earlyOrderContext = modalOrderContext(earlyPoints);
-  const lateOrderContext = modalOrderContext(latePoints);
+  const earlyOrderContext = modalOrderContext(earlyObservations.map(({ point }) => point));
+  const lateOrderContext = modalOrderContext(lateObservations.map(({ point }) => point));
   const boundaryContextStable = earlyOrderContext !== null && earlyOrderContext === lateOrderContext;
   const boundaryDirection = early && late && boundaryContextStable
-    ? compareSlices(early, late, input.resistanceType)
+    ? compareBoundaryProfiles(earlyObservations, lateObservations, input.resistanceType)
     : "ambiguous";
-  const directionCount = up + down + steady;
-  const uniqueTrainingDates = new Set(usable.map(({ date }) => date)).size;
-  const enoughHistory = uniqueTrainingDates >= MIN_SESSIONS && daySpan(usable) >= MIN_SPAN_DAYS;
+  const directionCount = up + down + steady + ambiguousPairCount;
+  const uniqueTrainingDates = new Set(usable.map(({ point }) => point.date)).size;
+  const enoughHistory = uniqueTrainingDates >= MIN_SESSIONS && daySpan(usable.map(({ point }) => point)) >= MIN_SPAN_DAYS;
   let status: BodyMapMuscleProgressStatusV1 = "insufficient-data";
   if (input.stableKey === null) status = "insufficient-data";
   else if (!enoughHistory) status = "insufficient-data";
@@ -341,6 +455,8 @@ function assessExercise(input: {
     hasOrderShift,
     hasDuplicateOccurrences,
     hasProgramChange,
+    hasSetCountChange,
+    hasRestMismatch,
     hasLongGap,
     hasUnreportedRir,
     hasUncertainSessionLoad,

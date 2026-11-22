@@ -48,9 +48,12 @@ function formatValue(value: number, locale: string): string {
 
 function resultLine(exercise: BodyMapExerciseProgressV1, slice: BodyMapExerciseProgressV1["early"], locale: string, uk: boolean): string {
   if (!slice) return uk ? "Ще немає зіставних результатів" : "Not enough comparable results yet";
-  const reps = `${formatValue(slice.reps, locale)} ${uk ? "повт." : "reps"}`;
-  if (exercise.resistanceType !== "EXTERNAL_WEIGHT" || slice.loadKg === null) return reps;
-  return `${formatValue(slice.loadKg, locale)} ${uk ? "кг" : "kg"} × ${reps}`;
+  const reps = formatValue(slice.reps, locale);
+  if (exercise.resistanceType !== "EXTERNAL_WEIGHT" || slice.loadKg === null) {
+    return `${uk ? "Повторення" : "Reps"} ${reps}`;
+  }
+  const load = formatValue(slice.loadKg, locale);
+  return uk ? `Вага ${load} кг · повт. ${reps}` : `Load ${load} kg · reps ${reps}`;
 }
 
 function localizedExerciseName(exercise: BodyMapExerciseProgressV1, uk: boolean): string {
@@ -106,21 +109,21 @@ function statusCaveats(
   uk: boolean,
 ): string[] {
   const exercises = assessment.exercises;
-  const comparabilityChanged = exercises.some(({ hasOrderShift, hasDuplicateOccurrences, hasProgramChange, hasLongGap }) =>
-    hasOrderShift || hasDuplicateOccurrences || hasProgramChange || hasLongGap);
+  const comparabilityChanged = exercises.some(({ hasOrderShift, hasDuplicateOccurrences, hasProgramChange, hasSetCountChange, hasLongGap }) =>
+    hasOrderShift || hasDuplicateOccurrences || hasProgramChange || hasSetCountChange || hasLongGap);
   const recordsIncomplete = assessment.mappingIncomplete
-    || exercises.some(({ hasUnreportedRir, hasEffortMismatch, hasUncertainSessionLoad, lighterSessionCount, hasConflictingLoadAndReps }) =>
-      hasUnreportedRir || hasEffortMismatch || hasUncertainSessionLoad || lighterSessionCount > 0 || hasConflictingLoadAndReps);
+    || exercises.some(({ hasUnreportedRir, hasEffortMismatch, hasUncertainSessionLoad, hasRestMismatch, lighterSessionCount, hasConflictingLoadAndReps }) =>
+      hasUnreportedRir || hasEffortMismatch || hasUncertainSessionLoad || hasRestMismatch || lighterSessionCount > 0 || hasConflictingLoadAndReps);
   return [
     assessment.mappingIncomplete ? (uk
       ? "Висновок охоплює лише вправи, які вдалося зіставити з цим м’язом."
       : "The result includes only exercises that could be matched to this muscle.") : null,
     comparabilityChanged ? (uk
-      ? "Порядок або програма місцями змінювалися; повторні появи тієї самої вправи в одному тренуванні не порівнювалися."
-      : "Exercise order or program changed; repeated appearances of one exercise in a workout were excluded from comparison.") : null,
+      ? "Порядок, програма або кількість підходів місцями змінювалися; зіставляли лише подібні записи."
+      : "Exercise order, program, or set count changed; only comparable records were used.") : null,
     recordsIncomplete && !assessment.mappingIncomplete ? (uk
-      ? "Частина записів мала неповний або незвичний контекст зусилля чи навантаження."
-      : "Some records had incomplete or unusual effort or load context.") : null,
+      ? "Частині записів бракує зіставного контексту відпочинку, зусилля або навантаження."
+      : "Some records lack comparable rest, effort, or load context.") : null,
   ].filter((note): note is string => note !== null).slice(0, 2);
 }
 
@@ -187,6 +190,8 @@ function ExerciseDisclosure({ exercise, locale, uk }: { exercise: BodyMapExercis
       <p>{note}</p>
       {exercise.role === "assisting" && <small>{uk ? "Вправа навантажує цей м’яз як допоміжний." : "This exercise involves the muscle as an assisting mover."}</small>}
       {exercise.hasOrderShift && <small>{uk ? "Позиція вправи змінилася; її результати порівнюються обережно." : "Exercise position changed; its results are compared cautiously."}</small>}
+      {exercise.hasSetCountChange && <small>{uk ? "Кількість записаних підходів змінювалася; порівнювали спільні позиції." : "The number of logged sets varied; only shared set positions were compared."}</small>}
+      {exercise.hasRestMismatch && <small>{uk ? "Відпочинок між частиною підходів відрізнявся або не був записаний." : "Rest differed or was not recorded for some matched sets."}</small>}
       {exercise.hasDuplicateOccurrences && <small>{uk ? "Повторні появи цієї вправи в одному тренуванні виключено, щоб не змішувати різні позиції." : "Repeated appearances in one workout were excluded so different exercise positions are not combined."}</small>}
       {exercise.hasProgramChange && <small>{uk ? "У періоді змінювалися програма або цілі цієї вправи." : "The program or targets for this exercise changed during the period."}</small>}
       {exercise.hasLongGap && <small>{uk ? "Між записами є тривала перерва." : "There is a long gap between records."}</small>}
@@ -271,8 +276,8 @@ export function BodyMapTrainingAnalyticsPanel({
         {statusCaveats(assessment, uk).map((note) => <p className={styles.caveat} key={note}>{note}</p>)}
         {energyLine && <p className={styles.energyContext}>{energyLine}</p>}
         <small className={styles.measurementNote}>{uk
-          ? "Тенденція записаних підходів; розминка окремо не позначається. Це не вимір росту м’язів."
-          : "Logged-set trend; warm-ups are not marked separately. This does not measure muscle growth."}</small>
+          ? "Типова вага й повторення узагальнені окремо за записами; розминка окремо не позначається. Це не вимір росту м’язів."
+          : "Typical load and reps are summarized separately from logged sets; warm-ups are not marked separately. This does not measure muscle growth."}</small>
       </article>
       <section className={styles.exerciseSection} aria-label={uk ? "Вправи, що враховані у висновку" : "Exercises included in the summary"}>
         <div className={styles.sectionHeading}>

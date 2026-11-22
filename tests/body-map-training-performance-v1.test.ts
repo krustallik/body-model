@@ -13,6 +13,7 @@ type ExerciseFixture = {
   reps?: number;
   rir?: number | null;
   setCount?: number;
+  setValues?: Array<{ setNumber?: number; reps?: number; weightKg?: number | null; bandKg?: number; rir?: number | null; restBeforeSeconds?: number | null }>;
 };
 
 function session(input: {
@@ -46,23 +47,30 @@ function session(input: {
       resistanceType: exercise.resistanceType ?? "EXTERNAL_WEIGHT",
       muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.stableKey),
       sourceExerciseCatalog: { stableKey: exercise.stableKey },
-      sets: Array.from({ length: exercise.setCount ?? 3 }, (_, index) => ({
-        id: input.id * 100 + exercise.sortOrder * 10 + index,
-        setNumber: index + 1,
-        reps: exercise.reps ?? 8,
-        weightKg: exercise.resistanceType === "BODYWEIGHT" || exercise.weightKg === null ? null : exercise.weightKg ?? 20,
-        bandNominalResistanceKg: exercise.resistanceType === "RESISTANCE_BAND" ? exercise.bandKg ?? 10 : null,
-        rir: exercise.rir === undefined ? 2 : exercise.rir,
-        restBeforeSeconds: 90,
-        completedAt: at,
-      })),
+      sets: (exercise.setValues ?? Array.from(
+        { length: exercise.setCount ?? 3 },
+        () => ({} as NonNullable<ExerciseFixture["setValues"]>[number]),
+      )).map((set, index) => {
+        const weightKg = set.weightKg === undefined ? exercise.weightKg : set.weightKg;
+        const rir = set.rir === undefined ? exercise.rir : set.rir;
+        return {
+          id: input.id * 100 + exercise.sortOrder * 10 + index,
+          setNumber: set.setNumber ?? index + 1,
+          reps: set.reps ?? exercise.reps ?? 8,
+          weightKg: exercise.resistanceType === "BODYWEIGHT" || weightKg === null ? null : weightKg ?? 20,
+          bandNominalResistanceKg: exercise.resistanceType === "RESISTANCE_BAND" ? set.bandKg ?? exercise.bandKg ?? 10 : null,
+          rir: rir === undefined ? 2 : rir,
+          restBeforeSeconds: set.restBeforeSeconds === undefined ? 90 : set.restBeforeSeconds,
+          completedAt: at,
+        };
+      }),
     })),
   };
 }
 
 const dates = ["2026-06-20", "2026-07-05", "2026-07-20", "2026-08-05", "2026-08-20", "2026-09-05"];
 
-function pressSession(id: number, weightKg: number, options: { reps?: number; rir?: number | null; block?: string | null; lighter?: boolean; uncertain?: boolean; date?: string } = {}) {
+function pressSession(id: number, weightKg: number, options: { reps?: number; rir?: number | null; block?: string | null; lighter?: boolean; uncertain?: boolean; date?: string; setValues?: ExerciseFixture["setValues"] } = {}) {
   return session({
     id,
     date: options.date ?? dates[id - 1]!,
@@ -75,6 +83,7 @@ function pressSession(id: number, weightKg: number, options: { reps?: number; ri
       weightKg,
       reps: options.reps,
       rir: options.rir,
+      setValues: options.setValues,
     }],
     block: options.block,
   });
@@ -119,6 +128,71 @@ describe("Body Map robust performance assessment", () => {
   it("does not let one unusually poor session create a regression trend", () => {
     const result = assessment([20, 20, 20, 20, 20, 5].map((weight, index) => pressSession(index + 1, weight)));
     expect(result.status).toBe("stable");
+  });
+
+  it("does not turn opposite changes at different set positions into a synthetic improvement", () => {
+    const early = [
+      { setNumber: 1, weightKg: 50, reps: 12, rir: 2 },
+      { setNumber: 2, weightKg: 60, reps: 8, rir: 2 },
+    ];
+    const late = [
+      { setNumber: 1, weightKg: 50, reps: 8, rir: 2 },
+      { setNumber: 2, weightKg: 70, reps: 12, rir: 2 },
+    ];
+    const result = assessment(dates.map((date, index) =>
+      pressSession(index + 1, 50, { date, setValues: index < 3 ? early : late })));
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.exercises[0]?.status).toBe("ambiguous");
+  });
+
+  it("lowers confidence when logged set positions do not sufficiently overlap", () => {
+    const sessions = dates.map((date, index) => pressSession(index + 1, index < 3 ? 20 : 25, {
+      date,
+      setValues: Array.from({ length: index < 3 ? 3 : 1 }, (_, setIndex) => ({
+        setNumber: setIndex + 1,
+        weightKg: index < 3 ? 20 : 25,
+        reps: 8,
+        rir: 2,
+      })),
+    }));
+    const result = assessment(sessions);
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.exercises[0]?.hasSetCountChange).toBe(true);
+  });
+
+  it("keeps conflicting set-level RIR changes from disappearing inside a median", () => {
+    const early = [
+      { setNumber: 1, weightKg: 20, reps: 8, rir: 0 },
+      { setNumber: 2, weightKg: 20, reps: 8, rir: 4 },
+    ];
+    const late = [
+      { setNumber: 1, weightKg: 20, reps: 8, rir: 4 },
+      { setNumber: 2, weightKg: 20, reps: 8, rir: 0 },
+    ];
+    const result = assessment(dates.map((date, index) =>
+      pressSession(index + 1, 20, { date, setValues: index < 3 ? early : late })));
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.exercises[0]?.hasEffortMismatch).toBe(true);
+  });
+
+  it("does not call higher output progress when matched sets used different rest periods", () => {
+    const sessions = dates.map((date, index) => pressSession(index + 1, index < 3 ? 20 : 24, {
+      date,
+      setValues: Array.from({ length: 3 }, (_, setIndex) => ({
+        setNumber: setIndex + 1,
+        weightKg: index < 3 ? 20 : 24,
+        reps: 8,
+        rir: 2,
+        restBeforeSeconds: index < 3 ? 90 : 180,
+      })),
+    }));
+    const result = assessment(sessions);
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.exercises[0]?.hasRestMismatch).toBe(true);
   });
 
   it("does not treat a long break as an ordinary continuous trend", () => {

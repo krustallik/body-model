@@ -89,10 +89,10 @@ describe("Body Map training analytics panel", () => {
     expect(screen.getByRole("heading", { name: "Chest" })).toBeTruthy();
     expect(screen.getAllByText("Recorded performance is improving")).toHaveLength(2);
     expect(screen.getByText(/1 of 1 exercises show higher typical results/)).toBeTruthy();
-    expect(screen.getByText(/Logged-set trend; warm-ups are not marked separately/)).toBeTruthy();
+    expect(screen.getByText(/Typical load and reps are summarized separately/)).toBeTruthy();
     expect(screen.getByText(/does not measure muscle growth/)).toBeTruthy();
     const details = screen.getByTestId("body-map-exercise-progress");
-    expect(details.querySelector("summary")?.textContent).toMatch(/20 kg × 8 reps\s*→\s*24 kg × 8 reps/);
+    expect(details.querySelector("summary")?.textContent).toMatch(/Load 20 kg · reps 8\s*→\s*Load 24 kg · reps 8/);
     expect((details as HTMLDetailsElement).open).toBe(false);
     expect(screen.queryByText(/RIR\s*[:=]/i)).toBeNull();
     expect(screen.queryByText(/matched set pairs|unmapped sets|mapping coverage/i)).toBeNull();

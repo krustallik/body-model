@@ -62,7 +62,7 @@ describe("Training hub UI", () => {
     expect(screen.queryByText(/model publication|energy|glycogen|unified recalculation/i)).toBeNull();
   });
 
-  it("starts a free workout without requiring a program", async () => {
+  it("starts a free workout without asking for manual session or cycle context", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
@@ -79,9 +79,6 @@ describe("Training hub UI", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<TrainingClient />);
-    await user.selectOptions(await screen.findByLabelText("Session intent"), "easy-deload");
-    await user.type(screen.getByLabelText("Block name (optional)"), "Accumulation");
-    await user.type(screen.getByLabelText("Block week (optional)"), "3");
     const start = await screen.findByRole("button", { name: "Start without a program" });
     await user.click(start);
 
@@ -90,11 +87,13 @@ describe("Training hub UI", () => {
       expect.objectContaining({ method: "POST" }),
     ));
     const startRequest = fetchMock.mock.calls.find(([input, init]) => String(input) === "/api/v1/training/sessions/start-dynamic" && init?.method === "POST");
-    expect(JSON.parse(String(startRequest?.[1]?.body))).toMatchObject({
-      sessionIntent: "easy-deload",
-      trainingBlockLabel: "Accumulation",
-      trainingWeekNumber: 3,
-    });
+    const body = JSON.parse(String(startRequest?.[1]?.body)) as Record<string, unknown>;
+    expect(body).toHaveProperty("timeZone", expect.any(String));
+    expect(body).not.toHaveProperty("sessionIntent");
+    expect(body).not.toHaveProperty("trainingBlockLabel");
+    expect(body).not.toHaveProperty("trainingWeekNumber");
+    expect(screen.queryByText("Session plan context")).toBeNull();
+    expect(screen.queryByLabelText("Session intent")).toBeNull();
   });
 
   it("styles Archive as a destructive control and confirms before archive", async () => {
@@ -279,7 +278,7 @@ describe("Training hub UI", () => {
     const sections = Array.from(container.querySelectorAll("section"));
     const attentionIndex = sections.findIndex((node) => node.getAttribute("aria-label") === "Match attention");
     const recentIndex = sections.findIndex((node) => node.getAttribute("aria-label") === "Recent strength sessions");
-    expect(sections.some((node) => node.getAttribute("aria-label") === "Training plan context")).toBe(true);
+    expect(sections.some((node) => node.getAttribute("aria-label") === "Training plan context")).toBe(false);
     expect(attentionIndex).toBeGreaterThanOrEqual(0);
     expect(recentIndex).toBeGreaterThan(attentionIndex);
   });

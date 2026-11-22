@@ -29,6 +29,65 @@ function time(value: number | null, uk: boolean): string {
   return `${new Intl.NumberFormat(uk ? "uk-UA" : "en-US", { maximumFractionDigits: 1 }).format(value)} ${uk ? "кг" : "kg"}`;
 }
 
+type GroupProgressStatus = "improving" | "declining" | "steady" | "mixed" | "insufficient-data";
+type GroupProgressEvidence = GroupReport["exercises"][number]["performanceTrend"]["evidence"][number] & {
+  stableKey: string | null;
+  exerciseName: string;
+};
+
+function summarizeGroupProgress(group: GroupReport, latestPhaseNumber: number | null): {
+  status: GroupProgressStatus;
+  comparableExerciseCount: number;
+  comparableSessionCount: number;
+  comparedSetPairs: number;
+  evidence: GroupProgressEvidence[];
+  latestSharedPhase: number | null;
+  hasEarlierPhases: boolean;
+  latestPhaseHasData: boolean;
+} {
+  const latestSharedPhase = latestPhaseNumber;
+  const phaseExercises = latestSharedPhase === null ? [] : group.exercises.flatMap((exercise) => {
+    const phase = exercise.performanceTrend.segments.find((segment) => segment.phaseNumber === latestSharedPhase);
+    return phase ? [{
+      exercise,
+      phase,
+      directInPhase: exercise.sets.some((set) => set.sessionPhaseNumber === latestSharedPhase && set.directAnatomyIds.length > 0),
+    }] : [];
+  });
+  const directPhaseExercises = phaseExercises.filter(({ directInPhase }) => directInPhase);
+  const trendExercises = (directPhaseExercises.length > 0 ? directPhaseExercises : phaseExercises)
+    .filter(({ phase }) => phase.status !== "insufficient-data");
+  const statuses = new Set(trendExercises.map(({ phase }) => phase.status));
+  const status: GroupProgressStatus = trendExercises.length === 0 ? "insufficient-data"
+    : statuses.size === 1 ? trendExercises[0]!.phase.status
+      : "mixed";
+  const evidenceCandidates = trendExercises.flatMap(({ exercise, phase }) => phase.evidence.map((row) => ({
+    ...row,
+    stableKey: exercise.stableKey,
+    exerciseName: exercise.exerciseName,
+  }))).sort((left, right) => left.currentDate.localeCompare(right.currentDate)
+    || left.previousDate.localeCompare(right.previousDate)
+    || (left.stableKey ?? left.exerciseName).localeCompare(right.stableKey ?? right.exerciseName)
+    || left.setNumber - right.setNumber);
+  const seenTransitions = new Set<string>();
+  const evidence = evidenceCandidates.filter((row) => {
+    const key = `${row.stableKey ?? row.exerciseName}:${row.previousSessionId}:${row.currentSessionId}`;
+    if (seenTransitions.has(key)) return false;
+    seenTransitions.add(key);
+    return true;
+  }).slice(-3);
+  return {
+    status,
+    comparableExerciseCount: trendExercises.length,
+    comparableSessionCount: Math.max(0, ...trendExercises.map(({ phase }) => phase.comparableSessionCount)),
+    comparedSetPairs: trendExercises.reduce((total, { phase }) => total + phase.comparedSetPairs, 0),
+    evidence,
+    latestSharedPhase,
+    hasEarlierPhases: latestSharedPhase !== null && latestSharedPhase > 1,
+    latestPhaseHasData: phaseExercises.length > 0,
+  };
+}
+
 export function BodyMapTrainingAnalyticsPanel({
   level,
   weeks,
@@ -39,6 +98,7 @@ export function BodyMapTrainingAnalyticsPanel({
   anatomyId,
   anatomyLabel,
   groupReport,
+  onRefresh,
 }: {
   level: ViewLevel;
   weeks: BodyMapAnalyticsWeeksV1;
@@ -49,13 +109,21 @@ export function BodyMapTrainingAnalyticsPanel({
   anatomyId: AnatomyIdV2 | null;
   anatomyLabel: string | null;
   groupReport: GroupReport | null;
+  onRefresh: () => void;
 }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const [sourceFilter, setSourceFilter] = useState<SourceFilter | null>(null);
+  const [assessmentBusy, setAssessmentBusy] = useState(false);
+  const [assessmentSkippedFor, setAssessmentSkippedFor] = useState<number | null>(null);
+  const [assessmentNotice, setAssessmentNotice] = useState<string | null>(null);
   const sourceRecordsRef = useRef<HTMLElement | null>(null);
   const contexts = useMemo(() => new Map((analytics?.sessionContexts ?? []).map((context) => [context.sessionId, context])), [analytics]);
   const maxWeeklySets = Math.max(1, ...(groupReport?.weekly ?? []).map(({ totalUniqueSetCount }) => totalUniqueSetCount));
+  const latestPhaseNumber = analytics?.sessions.at(-1)?.phaseNumber ?? null;
+  const groupProgress = groupReport ? summarizeGroupProgress(groupReport, latestPhaseNumber) : null;
+  const groupSessionIds = new Set(groupReport?.exercises.flatMap((exercise) => exercise.sets.map((set) => set.sessionId)) ?? []);
+  const latestGroupSession = analytics?.sessions.filter((session) => groupSessionIds.has(session.id)).at(-1) ?? null;
   const sourceSets = useMemo(() => {
     if (!groupReport || !sourceFilter) return [];
     return groupReport.exercises.flatMap((exercise) => exercise.sets.map((set) => ({ exercise, set })))
@@ -170,6 +238,110 @@ export function BodyMapTrainingAnalyticsPanel({
     </div>;
   }
 
+  async function saveLoadAssessment(sessionId: number, status: "lighter" | "not-lighter") {
+    setAssessmentBusy(true);
+    setAssessmentNotice(null);
+    try {
+      const response = await fetch("/api/v1/training/sessions/" + sessionId + "/load-assessment", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!response.ok) throw new Error("assessment_save_failed");
+      const result = await response.json() as { saved: boolean };
+      setAssessmentSkippedFor(sessionId);
+      setAssessmentNotice(result.saved
+        ? (uk ? "Відповідь збережено в контексті цієї завершеної сесії." : "Your answer was saved for this completed session.")
+        : (uk ? "Контекст уже оновлено в іншій вкладці; завантажую актуальні дані." : "This session was updated in another tab; refreshing its data."));
+      onRefresh();
+    } catch {
+      setAssessmentNotice(uk ? "Не вдалося зберегти відповідь. Спробуй ще раз." : "Could not save your answer. Try again.");
+    } finally {
+      setAssessmentBusy(false);
+    }
+  }
+
+  function loadAssessmentLabel(assessment: NonNullable<typeof latestGroupSession>["loadAssessment"]): string {
+    if (assessment.source === "manual") return uk ? "За твоєю відповіддю" : "Based on your answer";
+    if (assessment.status === "lighter") return uk ? "Полегшене тренування за журналом" : "Lighter session pattern in diary";
+    if (assessment.status === "not-lighter") return uk ? "Ознак полегшення не виявлено" : "No lighter pattern found";
+    return uk ? "Не вдалося визначити" : "Could not determine";
+  }
+
+  function loadAssessmentReason(assessment: NonNullable<typeof latestGroupSession>["loadAssessment"]): string {
+    const typicalSets = assessment.typicalSetCount === null ? null
+      : new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(assessment.typicalSetCount);
+    const currentRir = assessment.medianRir === null ? null
+      : new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(assessment.medianRir);
+    const usualRir = assessment.typicalMedianRir === null ? null
+      : new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(assessment.typicalMedianRir);
+    if (assessment.source === "manual") return uk ? "Це ручне уточнення для випадку, коли записів було недостатньо." : "You clarified this because the diary alone did not provide enough evidence.";
+    if (assessment.reason === "reduced-volume") return typicalSets
+      ? (uk ? "У зіставних вправах записано " + count(assessment.comparableActualSetCount ?? assessment.actualSetCount, uk) + " підх. проти звичних приблизно " + typicalSets + "." : count(assessment.comparableActualSetCount ?? assessment.actualSetCount, uk) + " sets were logged across comparable exercises, versus about " + typicalSets + " typically.")
+      : (uk ? "Записаний обсяг підходів помітно нижчий за особисту базу." : "Logged set volume is clearly below your recent baseline.");
+    if (assessment.reason === "higher-reported-rir") return currentRir !== null && usualRir !== null
+      ? (uk ? "Медіанний RIR " + currentRir + " проти звичних " + usualRir + ": у журналі залишалося більше повторень у запасі." : "Median reported RIR was " + currentRir + ", versus your usual " + usualRir + ": more reps were left in reserve.")
+      : (uk ? "Медіанний записаний RIR — " + (currentRir ?? "—") + "; це самооцінка запасу повторень." : "Median reported RIR was " + (currentRir ?? "—") + "; this is your estimate of reps in reserve.");
+    if (assessment.reason === "usual-pattern") return currentRir !== null && Number(currentRir.replace(",", ".")) <= 2
+      ? (uk ? "Медіанний RIR " + currentRir + " вказує на підходи близько до відмови." : "Median reported RIR " + currentRir + " indicates sets near failure.")
+      : (uk ? "За зіставним обсягом і записаним RIR ознак полегшеного тренування немає." : "Comparable set volume and reported RIR do not indicate a lighter session.");
+    if (assessment.reason === "mixed-signals") return uk
+      ? "Обсяг підходів і RIR дають суперечливі сигнали; автоматичний висновок не робиться."
+      : "Set volume and reported RIR point in different directions, so no automatic conclusion is made.";
+    return uk
+      ? "Для надійного висновку бракує повторюваних записів вправ або RIR."
+      : "There are not enough repeated exercise or RIR records for a reliable assessment.";
+  }
+
+  function progressHeadline(status: GroupProgressStatus): string {
+    if (uk) return status === "improving" ? "Записані показники зростають"
+      : status === "declining" ? "Записані показники знижуються"
+        : status === "steady" ? "Без виразних змін"
+          : status === "mixed" ? "Змішані результати"
+            : "Недостатньо даних";
+    return status === "improving" ? "Recorded performance is trending up"
+      : status === "declining" ? "Recorded performance is trending down"
+        : status === "steady" ? "No clear change"
+          : status === "mixed" ? "Mixed results"
+            : "Not enough data";
+  }
+
+  function progressExplanation(summary: NonNullable<typeof groupProgress>): string {
+    const phaseNote = summary.hasEarlierPhases
+      ? (uk ? " Підсумок враховує лише останню фазу; попередні фази не змішуються." : " The summary uses only the latest phase; earlier phases are kept separate.")
+      : "";
+    if (summary.status === "insufficient-data" && !summary.latestPhaseHasData && summary.hasEarlierPhases) return uk
+      ? "У найновішій фазі немає записів для цієї групи; попередні фази не подаються як поточний тренд."
+      : "There are no records for this muscle group in the latest phase; earlier phases are not shown as the current trend.";
+    if (summary.status === "insufficient-data") return (uk
+      ? "Щоб оцінити напрямок, потрібні щонайменше три зіставні тренування протягом чотирьох тижнів."
+      : "At least three comparable sessions across four weeks are needed to assess a direction.") + phaseNote;
+    if (summary.status === "mixed") return (uk
+      ? "Зіставні вправи змінилися в різних напрямах, тому спільний висновок для групи буде передчасним."
+      : "Comparable exercises changed in different directions, so a single group-level conclusion would be premature.") + phaseNote;
+    const exerciseCount = new Intl.NumberFormat(intlLocale).format(summary.comparableExerciseCount);
+    const sessionCount = new Intl.NumberFormat(intlLocale).format(summary.comparableSessionCount);
+    const pairCount = new Intl.NumberFormat(intlLocale).format(summary.comparedSetPairs);
+    if (summary.status === "improving") return uk
+      ? "Висновок спирається на " + exerciseCount + " зіставні вправи, " + sessionCount + " сесії та " + pairCount + " пар підходів з однаковим RIR, порядком і відпочинком." + phaseNote
+      : "Based on " + exerciseCount + " comparable exercises, " + sessionCount + " sessions, and " + pairCount + " set pairs with matching RIR, order, and rest." + phaseNote;
+    if (summary.status === "declining") return uk
+      ? "У " + exerciseCount + " зіставних вправах записані вага або повторення знизилися за порівнюваних RIR, порядку й відпочинку." + phaseNote
+      : "Logged load or reps decreased in " + exerciseCount + " comparable exercises with matching RIR, order, and rest." + phaseNote;
+    return uk
+      ? "У зіставних підходах вага й повторення не змінилися; порівняння охоплює " + sessionCount + " сесії." + phaseNote
+      : "Load and reps were unchanged in comparable sets across " + sessionCount + " sessions." + phaseNote;
+  }
+
+  function evidenceLoad(row: GroupProgressEvidence, previous: boolean): string {
+    const kg = row.resistanceType === "RESISTANCE_BAND"
+      ? (previous ? row.previousBandNominalResistanceKg : row.currentBandNominalResistanceKg)
+      : (previous ? row.previousWeightKg : row.currentWeightKg);
+    return row.resistanceType === "RESISTANCE_BAND"
+      ? resistanceEquipmentLabel(uk, row.stableKey, row.exerciseName) + " " + time(kg, uk)
+      : time(kg, uk);
+  }
+
   function requestNotice() {
     if (requestState === "loading") return <p className={styles.notice} role="status">{uk ? "Завантажую записи тренувань…" : "Loading training records…"}</p>;
     if (requestState === "unauthorized") return <p className={styles.notice} role="status">{uk ? "Увійдіть, щоб переглянути власний журнал. Публічні демодані не підміняють ваші записи." : "Sign in to view your diary. Public demo data is never shown as your records."}</p>;
@@ -234,6 +406,49 @@ export function BodyMapTrainingAnalyticsPanel({
           </div>
           <span className={styles.coverageTag} data-coverage={groupReport.mappingCoverage}>{groupReport.mappingCoverage === "complete-for-input" ? (uk ? "Повний мапінг записів" : "Mapped logged entries") : groupReport.mappingCoverage === "partial" ? (uk ? "Частковий мапінг" : "Partial mapping") : (uk ? "Недоступно" : "Unavailable")}</span>
         </div>
+        {groupProgress && <section className={styles.progressCard} data-progress={groupProgress.status} aria-label={uk ? "Підсумок прогресу за журналом" : "Diary progress summary"}>
+          <div className={styles.progressCardHeading}>
+            <div>
+              <p className={styles.kicker}>{uk ? "ПОРІВНЯННЯ ЗАПИСІВ" : "DIARY COMPARISON"}</p>
+              <strong>{progressHeadline(groupProgress.status)}</strong>
+            </div>
+            <span className={styles.progressMark} aria-hidden="true" />
+          </div>
+          <p>{progressExplanation(groupProgress)}</p>
+          {groupProgress.evidence.length > 0 && <ul className={styles.progressEvidence}>
+            {groupProgress.evidence.map((row, index) => <li key={row.previousSessionId + ":" + row.currentSessionId + ":" + row.setNumber + ":" + index}>
+              <span>{exerciseLabel(row.stableKey, row.exerciseName)} · {uk ? "підхід" : "set"} {row.setNumber}</span>
+              <strong>
+                {evidenceLoad(row, true)} × {row.previousReps}
+                <span aria-hidden="true"> → </span>
+                {evidenceLoad(row, false)} × {row.currentReps}
+                {" · RIR " + row.rir}
+              </strong>
+            </li>)}
+          </ul>}
+          <small>{uk ? "Це зміни в журналі навантаження й повторень, а не вимір росту чи втрати м’язів." : "These are changes in logged load and reps, not a measurement of muscle growth or loss."}</small>
+        </section>}
+        {latestGroupSession && <section className={styles.loadAssessment} data-assessment={latestGroupSession.loadAssessment.status} aria-label={uk ? "Оцінка останнього тренування" : "Latest session assessment"}>
+          <div className={styles.loadAssessmentHeading}>
+            <strong>{uk ? "Останнє тренування" : "Latest session"}</strong>
+            <span>{loadAssessmentLabel(latestGroupSession.loadAssessment)}</span>
+          </div>
+          <p>{loadAssessmentReason(latestGroupSession.loadAssessment)}</p>
+          {latestGroupSession.loadAssessment.status === "uncertain"
+            && latestGroupSession.loadAssessment.canAskForManualAssessment
+            && assessmentSkippedFor !== latestGroupSession.id
+            && <div className={styles.assessmentPrompt}>
+              <p>{uk ? "Записів поки недостатньо. Це тренування було легшим за звичне?" : "There are not enough diary records yet. Was this session easier than usual?"}</p>
+              <div className={styles.assessmentActions}>
+                <button type="button" disabled={assessmentBusy} onClick={() => void saveLoadAssessment(latestGroupSession.id, "lighter")}>{uk ? "Так, було легше" : "Yes, it was easier"}</button>
+                <button type="button" disabled={assessmentBusy} onClick={() => void saveLoadAssessment(latestGroupSession.id, "not-lighter")}>{uk ? "Ні, звичне або важче" : "No, usual or harder"}</button>
+                <button type="button" className={styles.assessmentSkip} disabled={assessmentBusy} onClick={() => setAssessmentSkippedFor(latestGroupSession.id)}>{uk ? "Не зараз" : "Not now"}</button>
+              </div>
+            </div>}
+          {assessmentNotice && <small role="status">{assessmentNotice}</small>}
+        </section>}
+        <details className={styles.fullDiaryDetails}>
+          <summary>{uk ? "Детальні записи та джерела" : "Detailed diary records and sources"}</summary>
         <div className={styles.summaryMetrics}>
               <Metric label={uk ? "Прямі підходи" : "Direct sets"} value={count(groupReport.directUniqueSetCount, uk)} sourceFilter="direct" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
               <Metric label={uk ? "Допоміжні підходи" : "Indirect sets"} value={count(groupReport.indirectUniqueSetCount, uk)} sourceFilter="indirect" activeFilter={sourceFilter} onShowSources={showSources} uk={uk} />
@@ -325,7 +540,9 @@ export function BodyMapTrainingAnalyticsPanel({
                         <span>{first.exerciseIndex}/{first.exercisesInSession} {uk ? "вправ" : "exercises"}</span>
                       </div>
                       <p className={styles.sessionPlan}>
-                        {first.sessionIntent ? sessionIntentLabel(first.sessionIntent, uk) : (uk ? "Намір не вказано" : "Intent not recorded")}
+                        {first.sessionIntent
+                          ? `${uk ? "Плановий намір" : "Pre-session intent"}: ${sessionIntentLabel(first.sessionIntent, uk)}`
+                          : (uk ? "Намір до сесії не записано" : "Pre-session intent not recorded")}
                         {first.trainingBlockLabel ? ` · ${first.trainingBlockLabel}` : ""}
                         {first.trainingWeekNumber ? ` · ${uk ? "тиждень" : "week"} ${first.trainingWeekNumber}` : ""}
                       </p>
@@ -379,6 +596,7 @@ export function BodyMapTrainingAnalyticsPanel({
               </details>;
             })}</div>}
         </section>
+        </details>
       </>}
 
       {level === "SUBREGION_DETAIL" && groupReport && anatomyId && <>
@@ -421,8 +639,8 @@ export function BodyMapTrainingAnalyticsPanel({
       <details className={styles.method}>
         <summary>{uk ? "Як читати ці дані та їхні межі" : "How to interpret these records"}</summary>
         <p>{uk
-          ? "Це журнал вправ і зіставлення рухів з анатомічними групами, а не вимір активації чи росту. RIR є суб’єктивним звітом. Намір легкого дня зберігається явно; порядок вправ показаний як контекст без штрафу в балах. Сон і харчування показані поруч із сесією, але система не приписує їм причину зміни результату."
-          : "This is a training diary mapped to anatomy groups, not a measurement of activation or growth. RIR is self-reported. Easy-day intent is explicit; exercise order is shown as context without a fatigue penalty score. Sleep and nutrition are shown alongside a session without claiming they caused a performance change."}</p>
+          ? "Це зіставлення журналу з анатомічними групами, а не вимір активації чи росту м’язів. Полегшений формат визначається лише за записаним обсягом підходів і суб’єктивним RIR відносно повторюваних вправ; за неоднозначності система питає після сесії. Порядок вправ використовується лише для зіставлення результатів; сон і харчування не трактуються як причина змін."
+          : "This maps diary records to anatomy groups; it does not measure activation or muscle growth. A lighter session pattern is inferred only from logged set volume and self-reported RIR across repeated exercises; when the record is ambiguous, the app asks after the session. Exercise order is used only to compare like with like, and sleep or nutrition are not treated as causes of performance changes."}</p>
         <ul>
           <li><a href="https://pubmed.ncbi.nlm.nih.gov/38970765/" target="_blank" rel="noreferrer">{uk ? "RIR і тренувальні результати: метарегресії з обережними висновками" : "RIR and training outcomes: exploratory meta-regressions"}</a></li>
           <li><a href="https://pubmed.ncbi.nlm.nih.gov/32077380/" target="_blank" rel="noreferrer">{uk ? "Систематичний огляд порядку вправ і результатів тренування" : "Exercise order and training outcomes systematic review"}</a></li>

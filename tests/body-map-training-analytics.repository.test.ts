@@ -39,6 +39,7 @@ describe("Body Map analytics repository", () => {
       createdAt: new Date(`${sessionDate}T12:00:00.000Z`),
       accountingTimeZone: "UTC",
       sessionIntent: null,
+      sessionLoadAssessment: null,
       trainingBlockLabel: null,
       trainingWeekNumber: null,
       exercises: [],
@@ -60,6 +61,26 @@ describe("Body Map analytics repository", () => {
       source: null,
       updatedAt: null,
     });
+  });
+
+  it("reads a post-session assessment independently from the legacy training intent", async () => {
+    mocks.sessions.mockResolvedValue([{
+      id: 42,
+      effectiveAccountingAt: new Date(`${sessionDate}T12:00:00.000Z`),
+      matchedWorkout: null,
+      webStartedAt: new Date(`${sessionDate}T12:00:00.000Z`),
+      createdAt: new Date(`${sessionDate}T12:00:00.000Z`),
+      accountingTimeZone: "UTC",
+      sessionIntent: "easy-deload",
+      sessionLoadAssessment: "LIGHTER",
+      trainingBlockLabel: null,
+      trainingWeekNumber: null,
+      exercises: [],
+    }]);
+
+    const result = await readBodyMapTrainingAnalyticsV1(41, 4, new Date("2026-09-10T00:00:00.000Z"));
+
+    expect(result.sessions[0]?.loadAssessment).toMatchObject({ status: "lighter", source: "manual", reason: "manual-response" });
   });
 
   it("preserves source and update time when at least one nutrition value is recorded", async () => {

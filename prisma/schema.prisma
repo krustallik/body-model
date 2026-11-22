@@ -636,6 +636,8 @@ model StrengthDiarySession {
   status                                   String                                    @db.VarChar(20)
   /** Explicit user-entered training intent; null means the intent is unknown. */
   sessionIntent                           String?                                   @db.VarChar(32)
+  /** Post-session manual lightness answer; independent from pre-session intent. */
+  sessionLoadAssessment                   String?                                   @db.VarChar(16)
   trainingBlockLabel                       String?                                   @db.VarChar(80)
   trainingWeekNumber                       Int?
   /**

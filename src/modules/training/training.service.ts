@@ -904,6 +904,14 @@ export class TrainingService {
     return session;
   }
 
+  async recordCompletedSessionLoadAssessment(
+    sessionId: number,
+    profileId: number,
+    assessment: "LIGHTER" | "NOT_LIGHTER",
+  ) {
+    return this.repo.recordCompletedSessionLoadAssessment({ sessionId, profileId, assessment });
+  }
+
   /** Existing lazy expiry behavior, now finalized with its persisted accounting result. */
   private async finalizeInactiveSessions(profileId: number, now = new Date()): Promise<void> {
     if (typeof this.repo.finishInactiveSessions !== "function") return;

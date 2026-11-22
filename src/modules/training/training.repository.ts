@@ -1421,6 +1421,35 @@ export class TrainingRepository {
     return hideSessionDerivedResultsWhileTrainingRefreshIsPending(this.db, profileId, trainingFence, session);
   }
 
+  /** Save a post-session answer separately from legacy pre-session intent. */
+  async recordCompletedSessionLoadAssessment(input: {
+    sessionId: number;
+    profileId: number;
+    assessment: "LIGHTER" | "NOT_LIGHTER";
+  }): Promise<{ saved: boolean; assessment: "LIGHTER" | "NOT_LIGHTER" | null } | null> {
+    const profileId = requireProfileId(input.profileId);
+    const updated = await this.db.strengthDiarySession.updateMany({
+      where: {
+        id: input.sessionId,
+        profileId,
+        status: SESSION_STATUS.COMPLETED,
+        sessionLoadAssessment: null,
+      },
+      data: { sessionLoadAssessment: input.assessment },
+    });
+    if (updated.count === 1) return { saved: true, assessment: input.assessment };
+
+    const current = await this.db.strengthDiarySession.findFirst({
+      where: { id: input.sessionId, profileId },
+      select: { status: true, sessionLoadAssessment: true },
+    });
+    if (!current || current.status !== SESSION_STATUS.COMPLETED) return null;
+    return {
+      saved: false,
+      assessment: (current.sessionLoadAssessment as "LIGHTER" | "NOT_LIGHTER" | null) ?? null,
+    };
+  }
+
   /** Complete, non-paginated source set for transient-water reconstruction. */
   async listCompletedTransientWaterSourcesV2(profileId: number): Promise<Array<{
     session: StrengthSessionDto;

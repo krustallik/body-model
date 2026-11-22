@@ -110,6 +110,10 @@ export const UpdateSessionAccountingContextSchema = z.object({
   message: "provide effectiveAccountingAt or timeZone",
 });
 
+export const UpdateSessionLoadAssessmentSchema = z.object({
+  status: z.enum(["lighter", "not-lighter"]),
+}).strict();
+
 const nullableLoad = z.preprocess(
   parseNullableNumericInput,
   z.number().positive().max(TRAINING_LIMITS.maxLoadKg).nullable().optional(),

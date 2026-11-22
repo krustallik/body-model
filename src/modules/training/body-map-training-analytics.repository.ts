@@ -33,6 +33,7 @@ export async function readBodyMapTrainingAnalyticsV1(
       createdAt: true,
       accountingTimeZone: true,
       sessionIntent: true,
+      sessionLoadAssessment: true,
       trainingBlockLabel: true,
       trainingWeekNumber: true,
       exercises: {
@@ -77,6 +78,7 @@ export async function readBodyMapTrainingAnalyticsV1(
       createdAt: row.createdAt,
       accountingTimeZone: row.accountingTimeZone,
       sessionIntent: (row.sessionIntent as BodyMapAnalyticsSessionIntentV1 | null) ?? null,
+      sessionLoadAssessment: row.sessionLoadAssessment as "LIGHTER" | "NOT_LIGHTER" | null,
       trainingBlockLabel: row.trainingBlockLabel,
       trainingWeekNumber: row.trainingWeekNumber,
       exercises: row.exercises.map((exercise) => ({

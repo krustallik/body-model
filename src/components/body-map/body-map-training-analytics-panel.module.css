@@ -29,6 +29,49 @@
 .coverageTag[data-coverage="partial"] { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); color: var(--warning); }
 .coverageTag[data-coverage="unknown"], .coverageTag[data-coverage="unsupported"] { color: var(--text-muted); }
 .provenance { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.progressCard, .loadAssessment {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--surface-2), color-mix(in srgb, var(--primary-soft) 55%, var(--surface-2)));
+}
+.progressCard[data-progress="improving"] { border-color: color-mix(in srgb, var(--success) 58%, var(--border)); }
+.progressCard[data-progress="declining"] { border-color: color-mix(in srgb, var(--danger) 58%, var(--border)); }
+.progressCard[data-progress="steady"] { border-color: color-mix(in srgb, var(--primary) 52%, var(--border)); }
+.progressCard[data-progress="mixed"] { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
+.progressCardHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.progressCardHeading > div { display: grid; gap: 4px; }
+.progressCardHeading strong { font-size: clamp(18px, 2.5vw, 23px); line-height: 1.16; letter-spacing: -.025em; }
+.progressMark { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 999px; background: var(--text-muted); box-shadow: 0 0 0 5px color-mix(in srgb, var(--text-muted) 12%, transparent); }
+.progressCard[data-progress="improving"] .progressMark { background: var(--success-strong); box-shadow: 0 0 0 5px var(--success-soft); }
+.progressCard[data-progress="declining"] .progressMark { background: var(--danger-strong); box-shadow: 0 0 0 5px var(--danger-soft); }
+.progressCard[data-progress="steady"] .progressMark { background: var(--primary-strong); box-shadow: 0 0 0 5px var(--primary-soft); }
+.progressCard[data-progress="mixed"] .progressMark { background: var(--warning-strong); box-shadow: 0 0 0 5px var(--warning-soft); }
+.progressCard > p, .loadAssessment > p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.progressCard > small, .loadAssessment > small { color: var(--text-muted); font-size: 10px; line-height: 1.45; }
+.progressEvidence { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.progressEvidence li { display: grid; gap: 3px; padding: 8px 9px; border-radius: 8px; background: color-mix(in srgb, var(--bg) 75%, transparent); }
+.progressEvidence li > span { color: var(--text-secondary); font-size: 10px; }
+.progressEvidence li > strong { color: var(--text); font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.progressEvidence li > strong span { color: var(--primary-strong); }
+.loadAssessment { gap: 7px; padding: 11px 13px; background: var(--surface-2); }
+.loadAssessment[data-assessment="lighter"] { border-color: color-mix(in srgb, var(--success) 48%, var(--border)); }
+.loadAssessment[data-assessment="uncertain"] { border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); }
+.loadAssessmentHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.loadAssessmentHeading strong { color: var(--text); font-size: 11px; }
+.loadAssessmentHeading span { color: var(--text-secondary); font-size: 10px; line-height: 1.4; text-align: right; }
+.assessmentPrompt { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.assessmentPrompt p { margin: 0; color: var(--text); font-size: 11px; font-weight: 650; line-height: 1.4; }
+.assessmentActions { display: flex; flex-wrap: wrap; gap: 7px; }
+.assessmentActions button { min-height: 44px; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-1); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease; }
+.assessmentActions button:hover:not(:disabled) { border-color: var(--primary-strong); background: var(--primary-soft); transform: translateY(-1px); }
+.assessmentActions button:disabled { cursor: wait; opacity: .65; }
+.assessmentActions .assessmentSkip { color: var(--text-secondary); }
+.fullDiaryDetails { border-top: 1px solid var(--border); padding-top: 10px; }
+.fullDiaryDetails > summary { min-height: 44px; display: flex; align-items: center; color: var(--text-secondary); font-size: 11px; font-weight: 650; cursor: pointer; list-style-position: inside; }
+.fullDiaryDetails[open] > summary { margin-bottom: 10px; color: var(--text); }
 .summaryMetrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .metric { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
 .metric span { color: var(--text-secondary); font-size: 10px; line-height: 1.35; }
@@ -115,4 +158,15 @@
   .setRow { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; font-size: 8px; }
   .weekMeta { align-items: flex-start; }
   .weekMeta span:last-child { max-width: 45%; }
+  .progressCard, .loadAssessment { padding: 11px; }
+  .progressEvidence li > strong { font-size: 10px; }
+  .loadAssessmentHeading { display: grid; }
+  .loadAssessmentHeading span { text-align: left; }
+  .assessmentActions { display: grid; grid-template-columns: 1fr 1fr; }
+  .assessmentActions button { width: 100%; }
+  .assessmentActions .assessmentSkip { grid-column: 1 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assessmentActions button { transition: none; }
 }

@@ -12,9 +12,11 @@ function session(input: {
   restBeforeSeconds?: number | null;
   restBeforeSecondsBySet?: Array<number | null>;
   setCount?: number;
+  reps?: number;
   exerciseIndex?: number;
   rir?: number | null;
   sessionIntent?: BodyMapAnalyticsSessionInputV1["sessionIntent"];
+  sessionLoadAssessment?: BodyMapAnalyticsSessionInputV1["sessionLoadAssessment"];
   trainingBlockLabel?: string | null;
   trainingWeekNumber?: number | null;
 }): BodyMapAnalyticsSessionInputV1 {
@@ -26,7 +28,8 @@ function session(input: {
     webStartedAt: at,
     createdAt: at,
     accountingTimeZone: "UTC",
-    sessionIntent: input.sessionIntent === undefined ? "regular" : input.sessionIntent,
+    sessionIntent: input.sessionIntent === undefined ? null : input.sessionIntent,
+    sessionLoadAssessment: input.sessionLoadAssessment === undefined ? "NOT_LIGHTER" : input.sessionLoadAssessment,
     trainingBlockLabel: input.trainingBlockLabel === undefined ? "Base" : input.trainingBlockLabel,
     trainingWeekNumber: input.trainingWeekNumber === undefined ? input.id : input.trainingWeekNumber,
     exercises: [{
@@ -43,7 +46,7 @@ function session(input: {
       sets: Array.from({ length: input.setCount ?? input.restBeforeSecondsBySet?.length ?? 1 }, (_, index) => ({
         id: input.id * 100 + index,
         setNumber: index + 1,
-        reps: 8,
+        reps: input.reps ?? 8,
         weightKg: input.weightKg,
         bandNominalResistanceKg: null,
         rir: input.rir === undefined ? 2 : input.rir,
@@ -57,6 +60,59 @@ function session(input: {
 }
 
 describe("Body Map training analytics v1", () => {
+  it("infers lighter sessions from personal set-volume and reported-RIR patterns", () => {
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 12,
+      now: new Date("2026-09-10T00:00:00Z"),
+      sessions: [
+        session({ id: 1, date: "2026-07-01", weightKg: 10, setCount: 5, rir: 1, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 2, date: "2026-07-15", weightKg: 10, setCount: 5, rir: 1, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 3, date: "2026-08-01", weightKg: 10, setCount: 4, rir: 1, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 4, date: "2026-08-15", weightKg: 10, setCount: 5, rir: 5, reps: 15, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 5, date: "2026-08-30", weightKg: 10, setCount: 5, rir: null, sessionIntent: null, sessionLoadAssessment: null }),
+      ],
+    });
+
+    expect(result.sessions.find(({ id }) => id === 3)?.loadAssessment).toMatchObject({
+      status: "lighter",
+      source: "automatic",
+      reason: "reduced-volume",
+      actualSetCount: 4,
+      comparableActualSetCount: 4,
+      typicalSetCount: 5,
+    });
+    expect(result.sessions.find(({ id }) => id === 4)?.loadAssessment).toMatchObject({
+      status: "lighter",
+      source: "automatic",
+      reason: "higher-reported-rir",
+      medianRir: 5,
+      typicalMedianRir: 1,
+    });
+    expect(result.sessions.find(({ id }) => id === 5)?.loadAssessment).toMatchObject({
+      status: "uncertain",
+      source: "unavailable",
+      canAskForManualAssessment: true,
+    });
+  });
+
+  it("does not call high-rep sets near failure a lighter session", () => {
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 8,
+      now: new Date("2026-09-10T00:00:00Z"),
+      sessions: [
+        session({ id: 1, date: "2026-07-01", weightKg: 10, setCount: 3, reps: 8, rir: 1, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 2, date: "2026-07-15", weightKg: 10, setCount: 3, reps: 8, rir: 1, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 3, date: "2026-08-01", weightKg: 10, setCount: 3, reps: 15, rir: 1, sessionIntent: null, sessionLoadAssessment: null }),
+      ],
+    });
+    expect(result.sessions.find(({ id }) => id === 3)?.loadAssessment).toMatchObject({
+      status: "not-lighter",
+      source: "automatic",
+      reason: "usual-pattern",
+      medianRir: 1,
+    });
+  });
+
   it("counts unique direct and indirect logged sets and keeps week and session context traceable", () => {
     const result = buildBodyMapTrainingAnalyticsV1({
       weeks: 4,
@@ -195,13 +251,50 @@ describe("Body Map training analytics v1", () => {
       sessions: [
         session({ id: 1, date: "2026-07-20", weightKg: 10 }),
         session({ id: 2, date: "2026-08-10", weightKg: 12 }),
-        session({ id: 3, date: "2026-08-31", weightKg: 6, sessionIntent: "easy-deload" }),
+        session({ id: 3, date: "2026-08-31", weightKg: 6, sessionIntent: "easy-deload", sessionLoadAssessment: "LIGHTER" }),
       ],
     });
     expect(easyDayChange.groups.find(({ groupId }) => groupId === "chest")!.exercises[0]!.performanceTrend.status).toBe("insufficient-data");
   });
 
-  it("fails closed when RIR, plan, block, or preceding exercise sequence differs", () => {
+  it("does not treat a pre-session training intent as the post-session load assessment", () => {
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 8,
+      now: new Date("2026-09-10T00:00:00Z"),
+      sessions: [
+        session({ id: 1, date: "2026-07-01", weightKg: 10, setCount: 3, rir: 2, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 2, date: "2026-07-15", weightKg: 10, setCount: 3, rir: 2, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 3, date: "2026-08-01", weightKg: 10, setCount: 3, rir: 2, sessionIntent: "easy-deload", sessionLoadAssessment: null }),
+      ],
+    });
+
+    expect(result.sessions.find(({ id }) => id === 3)?.loadAssessment).toMatchObject({
+      status: "not-lighter",
+      source: "automatic",
+      reason: "usual-pattern",
+    });
+  });
+
+  it("uses a separate saved post-session answer only when automatic evidence is uncertain", () => {
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 8,
+      now: new Date("2026-09-10T00:00:00Z"),
+      sessions: [
+        session({ id: 1, date: "2026-08-01", weightKg: 10, setCount: 3, rir: null, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 2, date: "2026-08-15", weightKg: 10, setCount: 3, rir: null, sessionIntent: null, sessionLoadAssessment: null }),
+        session({ id: 3, date: "2026-08-30", weightKg: 10, setCount: 3, rir: null, sessionIntent: "easy-deload", sessionLoadAssessment: "LIGHTER" }),
+      ],
+    });
+
+    expect(result.sessions.find(({ id }) => id === 3)?.loadAssessment).toMatchObject({
+      status: "lighter",
+      source: "manual",
+      reason: "manual-response",
+    });
+    expect(result.sessions.find(({ id }) => id === 3)?.sessionIntent).toBe("easy-deload");
+  });
+
+  it("fails closed when RIR, plan, or preceding exercise sequence differs but ignores manual block labels", () => {
     const noRir = buildBodyMapTrainingAnalyticsV1({
       weeks: 12,
       now: new Date("2026-09-10T00:00:00Z"),
@@ -216,8 +309,6 @@ describe("Body Map training analytics v1", () => {
 
     const changedPlan = session({ id: 3, date: "2026-08-31", weightKg: 14 });
     changedPlan.exercises[0]!.plannedSets = 4;
-    const changedBlock = session({ id: 3, date: "2026-08-31", weightKg: 14 });
-    changedBlock.trainingBlockLabel = "Deload";
     const withPrecedingExercise = (id: number, date: string, weightKg: number, precedingKey: string, precedingSetCount = 1) => {
       const current = session({ id, date, weightKg });
       current.exercises[0]!.sortOrder = 20;
@@ -265,7 +356,6 @@ describe("Body Map training analytics v1", () => {
 
     for (const input of [
       [session({ id: 1, date: "2026-07-20", weightKg: 10 }), session({ id: 2, date: "2026-08-10", weightKg: 12 }), changedPlan],
-      [session({ id: 1, date: "2026-07-20", weightKg: 10 }), session({ id: 2, date: "2026-08-10", weightKg: 12 }), changedBlock],
       [session({ id: 1, date: "2026-07-20", weightKg: 10, restBeforeSeconds: 120 }), session({ id: 2, date: "2026-08-10", weightKg: 12, restBeforeSeconds: 180 }), session({ id: 3, date: "2026-09-01", weightKg: 14, restBeforeSeconds: 120 })],
     ]) {
       const result = buildBodyMapTrainingAnalyticsV1({ weeks: 12, now: new Date("2026-09-10T00:00:00Z"), sessions: input });
@@ -276,7 +366,7 @@ describe("Body Map training analytics v1", () => {
       .find(({ stableKey }) => stableKey === "incline_dumbbell_press_30deg")!.performanceTrend.status).toBe("insufficient-data");
   });
 
-  it("requires rest to match for each compared set and reports trends separately by phase", () => {
+  it("requires rest to match and keeps historic phase boundaries for trend comparisons", () => {
     const changedSecondSetRest = buildBodyMapTrainingAnalyticsV1({
       weeks: 12,
       now: new Date("2026-09-10T00:00:00Z"),
@@ -308,7 +398,6 @@ describe("Body Map training analytics v1", () => {
       ["Base", "improving"],
       ["Deload", "declining"],
     ]);
-    expect(trend.note).toMatch(/latest training phase/i);
 
     const sameTrainingWeek = buildBodyMapTrainingAnalyticsV1({
       weeks: 12,

@@ -60,6 +60,7 @@ export type BodyMapAnalyticsSessionInputV1 = {
   createdAt: Date;
   accountingTimeZone: string | null;
   sessionIntent: BodyMapAnalyticsSessionIntentV1 | null;
+  sessionLoadAssessment?: "LIGHTER" | "NOT_LIGHTER" | null;
   trainingBlockLabel: string | null;
   trainingWeekNumber: number | null;
   exercises: readonly BodyMapAnalyticsExerciseInputV1[];
@@ -81,6 +82,8 @@ export type BodyMapAnalyticsSetV1 = {
   completedAt: string | null;
   sessionDate: string;
   sessionIntent: BodyMapAnalyticsSessionIntentV1 | null;
+  sessionPhaseNumber: number;
+  sessionLoadStatus: BodyMapSessionLoadAssessmentV1["status"];
   trainingBlockLabel: string | null;
   trainingWeekNumber: number | null;
   plannedSets: number;
@@ -159,6 +162,21 @@ type BodyMapAnalyticsTrendSummaryV1 = {
   comparableSessionCount: number;
   comparedSetPairs: number;
   note: string;
+  evidence: Array<{
+    previousSessionId: number;
+    currentSessionId: number;
+    previousDate: string;
+    currentDate: string;
+    setNumber: number;
+    resistanceType: string;
+    previousWeightKg: number | null;
+    currentWeightKg: number | null;
+    previousBandNominalResistanceKg: number | null;
+    currentBandNominalResistanceKg: number | null;
+    previousReps: number;
+    currentReps: number;
+    rir: number;
+  }>;
 };
 
 export type BodyMapAnalyticsTrendSegmentV1 = BodyMapAnalyticsTrendSummaryV1 & {
@@ -169,8 +187,22 @@ export type BodyMapAnalyticsTrendSegmentV1 = BodyMapAnalyticsTrendSummaryV1 & {
   toDate: string;
 };
 
+export type BodyMapSessionLoadAssessmentV1 = {
+  status: "lighter" | "not-lighter" | "uncertain";
+  source: "automatic" | "manual" | "unavailable";
+  reason: "reduced-volume" | "higher-reported-rir" | "usual-pattern" | "mixed-signals" | "insufficient-history" | "manual-response" | "other-session-context";
+  actualSetCount: number;
+  comparableActualSetCount: number | null;
+  typicalSetCount: number | null;
+  reportedRirSetCount: number;
+  medianRir: number | null;
+  typicalMedianRir: number | null;
+  comparableExerciseCount: number;
+  canAskForManualAssessment: boolean;
+};
+
 export type BodyMapAnalyticsTrendV1 = BodyMapAnalyticsTrendSummaryV1 & {
-  /** Every contiguous block/intent phase is reported separately. The summary is the latest phase only. */
+  /** Retained for API compatibility; automatic comparison currently uses one evidence-based series. */
   segments: BodyMapAnalyticsTrendSegmentV1[];
 };
 
@@ -191,9 +223,11 @@ export type BodyMapTrainingAnalyticsV1 = {
   sessions: Array<{
     id: number;
     sessionDate: string;
+    phaseNumber: number;
     sessionIntent: BodyMapAnalyticsSessionIntentV1 | null;
     trainingBlockLabel: string | null;
     trainingWeekNumber: number | null;
+    loadAssessment: BodyMapSessionLoadAssessmentV1;
     exerciseCount: number;
     recordedSetCount: number;
   }>;
@@ -298,6 +332,150 @@ function eventInstant(session: BodyMapAnalyticsSessionInputV1): Date {
     ?? session.createdAt;
 }
 
+type ExerciseLoadObservation = { setCount: number; rirs: number[] };
+type LoadSignals = { volume: "lower" | "usual" | "higher" | "unknown"; effort: "lighter" | "usual" | "unknown"; typicalSetCount: number | null; typicalMedianRir: number | null; comparableExerciseCount: number };
+
+function median(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!;
+}
+
+function loadObservations(session: BodyMapAnalyticsSessionInputV1): Map<string, ExerciseLoadObservation> {
+  const occurrences = new Map<string, number>();
+  const observations = new Map<string, ExerciseLoadObservation>();
+  for (const exercise of [...session.exercises].sort((left, right) => left.sortOrder - right.sortOrder || left.id - right.id)) {
+    const stableKey = exercise.sourceExerciseCatalog?.stableKey
+      ?? mappingFromSnapshot(exercise.muscleMappingSnapshot)?.stableKey
+      ?? null;
+    if (!stableKey) continue;
+    const baseKey = `${stableKey}:${exercise.resistanceType}`;
+    const occurrence = occurrences.get(baseKey) ?? 0;
+    occurrences.set(baseKey, occurrence + 1);
+    observations.set(`${baseKey}:${occurrence}`, {
+      setCount: exercise.sets.length,
+      rirs: exercise.sets.flatMap(({ rir }) => rir === null ? [] : [rir]),
+    });
+  }
+  return observations;
+}
+
+function inferSessionLoadAssessment(
+  session: BodyMapAnalyticsSessionInputV1,
+  earlierSessions: readonly BodyMapAnalyticsSessionInputV1[],
+  earlierAssessments: ReadonlyMap<number, BodyMapSessionLoadAssessmentV1>,
+): BodyMapSessionLoadAssessmentV1 {
+  const observations = loadObservations(session);
+  const actualSetCount = session.exercises.reduce((total, exercise) => total + exercise.sets.length, 0);
+  const allRirs = session.exercises.flatMap((exercise) => exercise.sets.flatMap(({ rir }) => rir === null ? [] : [rir]));
+  const medianRir = median(allRirs);
+  const normalHistory = earlierSessions.filter((earlier) => {
+    return earlierAssessments.get(earlier.id)?.status === "not-lighter";
+  });
+  const volumeComparisons: Array<{ actual: number; typical: number }> = [];
+  const rirComparisons: Array<{ actual: number; typical: number }> = [];
+
+  for (const [key, current] of observations) {
+    const prior = normalHistory.flatMap((pastSession) => {
+      const value = loadObservations(pastSession).get(key);
+      return value ? [value] : [];
+    }).slice(-4);
+    if (prior.length >= 2) {
+      const typical = median(prior.map(({ setCount }) => setCount));
+      if (typical !== null) volumeComparisons.push({ actual: current.setCount, typical });
+    }
+    const priorRirs = prior.flatMap(({ rirs }) => rirs.length >= 2 ? [median(rirs)!] : []);
+    const currentRir = current.rirs.length >= 2 ? median(current.rirs) : null;
+    if (priorRirs.length >= 2 && currentRir !== null) {
+      const typical = median(priorRirs);
+      if (typical !== null) rirComparisons.push({ actual: currentRir, typical });
+    }
+  }
+
+  const enoughVolumeCoverage = observations.size > 0
+    && volumeComparisons.length >= (observations.size === 1 ? 1 : Math.max(2, Math.ceil(observations.size * 0.6)));
+  // Conservative diary heuristics only: a 20% volume shift needs two prior
+  // exercise occurrences; RIR remains a self-report and is never an effort score.
+  const typicalSetCount = enoughVolumeCoverage
+    ? volumeComparisons.reduce((total, value) => total + value.typical, 0)
+    : null;
+  const comparableActualSetCount = enoughVolumeCoverage
+    ? volumeComparisons.reduce((total, value) => total + value.actual, 0)
+    : null;
+  const setChange = typicalSetCount !== null && comparableActualSetCount !== null
+    ? comparableActualSetCount - typicalSetCount
+    : null;
+  const reductionRatio = typicalSetCount && setChange !== null ? -setChange / typicalSetCount : 0;
+  const volume: LoadSignals["volume"] = !enoughVolumeCoverage || typicalSetCount === null || comparableActualSetCount === null
+    ? "unknown"
+    : setChange! <= -1 && reductionRatio >= 0.2 ? "lower"
+      : setChange! >= 1 && setChange! / typicalSetCount >= 0.2 ? "higher"
+        : reductionRatio >= -0.1 ? "usual" : "unknown";
+
+  const typicalMedianRir = rirComparisons.length > 0
+    ? median(rirComparisons.map(({ typical }) => typical))
+    : null;
+  const currentComparableMedianRir = rirComparisons.length > 0
+    ? median(rirComparisons.map(({ actual }) => actual))
+    : null;
+  const rirDelta = currentComparableMedianRir !== null && typicalMedianRir !== null
+    ? currentComparableMedianRir - typicalMedianRir
+    : null;
+  const reportsRirForMostSets = allRirs.length >= 2 && allRirs.length / Math.max(1, actualSetCount) >= 0.6;
+  const clearlyHighReportedRir = reportsRirForMostSets && medianRir !== null && medianRir >= 4;
+  const clearlyNearFailure = reportsRirForMostSets && medianRir !== null && medianRir <= 2;
+  const effort: LoadSignals["effort"] = clearlyHighReportedRir
+    || (rirDelta !== null && rirDelta >= 2 && currentComparableMedianRir !== null && currentComparableMedianRir >= 3)
+    ? "lighter"
+    : clearlyNearFailure || (rirDelta !== null && rirDelta < 2) ? "usual" : "unknown";
+
+  const loadSignals: LoadSignals = {
+    volume,
+    effort,
+    typicalSetCount,
+    typicalMedianRir,
+    comparableExerciseCount: volumeComparisons.length,
+  };
+  const automatic: BodyMapSessionLoadAssessmentV1 = {
+    status: volume === "lower" || (effort === "lighter" && volume !== "higher")
+      ? "lighter"
+      : volume === "higher" && effort === "lighter" ? "uncertain"
+        : (effort === "usual" && (volume === "usual" || volume === "higher" || clearlyNearFailure)) ? "not-lighter"
+            : "uncertain",
+    source: "automatic",
+    reason: volume === "lower" ? "reduced-volume"
+      : effort === "lighter" && volume !== "higher" ? "higher-reported-rir"
+        : volume === "higher" && effort === "lighter" ? "mixed-signals"
+            : (effort === "usual" && (volume === "usual" || volume === "higher" || clearlyNearFailure)) ? "usual-pattern"
+            : "insufficient-history",
+    actualSetCount,
+    comparableActualSetCount,
+    typicalSetCount: loadSignals.typicalSetCount,
+    reportedRirSetCount: allRirs.length,
+    medianRir,
+    typicalMedianRir: loadSignals.typicalMedianRir,
+    comparableExerciseCount: loadSignals.comparableExerciseCount,
+    canAskForManualAssessment: false,
+  };
+
+  if (session.sessionLoadAssessment === "LIGHTER" || session.sessionLoadAssessment === "NOT_LIGHTER") {
+    return {
+      ...automatic,
+      status: session.sessionLoadAssessment === "LIGHTER" ? "lighter" : "not-lighter",
+      source: "manual",
+      reason: "manual-response",
+    };
+  }
+  if (automatic.status !== "uncertain") return automatic;
+  return {
+    ...automatic,
+    source: "unavailable",
+    canAskForManualAssessment: true,
+    reason: "insufficient-history",
+  };
+}
+
 type MutableGroup = {
   sets: Map<string, BodyMapAnalyticsSetV1>;
   direct: Set<string>;
@@ -346,6 +524,7 @@ function trendForPhase(sets: BodyMapAnalyticsSetV1[]): BodyMapAnalyticsTrendSumm
   );
   const bySessionPosition = new Map<string, BodyMapAnalyticsSetV1[]>();
   for (const set of sets) {
+    if (set.sessionLoadStatus !== "not-lighter") continue;
     const key = `${set.sessionId}:${set.exerciseIndex}`;
     bySessionPosition.set(key, [...(bySessionPosition.get(key) ?? []), set]);
   }
@@ -355,6 +534,7 @@ function trendForPhase(sets: BodyMapAnalyticsSetV1[]): BodyMapAnalyticsTrendSumm
   const sessionIds = new Set<number>();
   const comparableSessionDates = new Map<number, string>();
   const directions: Array<-1 | 0 | 1> = [];
+  const evidence: BodyMapAnalyticsTrendSummaryV1["evidence"] = [];
   for (let index = 1; index < sessions.length; index += 1) {
     const previous = sessions[index - 1]!;
     const current = sessions[index]!;
@@ -366,8 +546,6 @@ function trendForPhase(sets: BodyMapAnalyticsSetV1[]): BodyMapAnalyticsTrendSumm
       || left.exerciseIndex !== right.exerciseIndex
       || left.precedingExercises.length !== right.precedingExercises.length
       || precedingSequence(left) !== precedingSequence(right)
-      || left.sessionIntent !== right.sessionIntent
-      || left.trainingBlockLabel !== right.trainingBlockLabel
       || left.plannedSets !== right.plannedSets
       || left.plannedRepsMin !== right.plannedRepsMin
       || left.plannedRepsMax !== right.plannedRepsMax
@@ -377,7 +555,23 @@ function trendForPhase(sets: BodyMapAnalyticsSetV1[]): BodyMapAnalyticsTrendSumm
       const prior = priorByNumber.get(set.setNumber);
       if (!prior || prior.rir === null || set.rir === null || prior.rir !== set.rir) return [];
       const direction = compareSetPair(prior, set);
-      return direction === null ? [] : [direction];
+      if (direction === null) return [];
+      evidence.push({
+        previousSessionId: prior.sessionId,
+        currentSessionId: set.sessionId,
+        previousDate: prior.sessionDate,
+        currentDate: set.sessionDate,
+        setNumber: set.setNumber,
+        resistanceType: set.resistanceType,
+        previousWeightKg: prior.weightKg,
+        currentWeightKg: set.weightKg,
+        previousBandNominalResistanceKg: prior.bandNominalResistanceKg,
+        currentBandNominalResistanceKg: set.bandNominalResistanceKg,
+        previousReps: prior.reps,
+        currentReps: set.reps,
+        rir: set.rir,
+      });
+      return [direction];
     });
     if (pairDirections.length === 0) continue;
     sessionIds.add(left.sessionId);
@@ -395,32 +589,37 @@ function trendForPhase(sets: BodyMapAnalyticsSetV1[]): BodyMapAnalyticsTrendSumm
       status: "insufficient-data",
       comparableSessionCount: sessionIds.size,
       comparedSetPairs: directions.length,
-      note: "At least three comparable logged sessions across four weeks are required; values remain available in the set log.",
+      note: "At least three comparable non-light sessions across four weeks are required; values remain traceable to the set log.",
+      evidence: evidence.slice(-5),
     };
   }
   if (directions.every((direction) => direction > 0)) return {
     status: "improving",
     comparableSessionCount: sessionIds.size,
     comparedSetPairs: directions.length,
-    note: "Recorded load or repetitions increased with the same preceding exercise sequence, order, plan, block, intent, recorded rest before each compared set, and reported RIR.",
+    note: "Recorded load or repetitions increased with the same exercise order, plan, preceding sequence, rest, and reported RIR; lighter or uncertain sessions are excluded.",
+    evidence: evidence.slice(-5),
   };
   if (directions.every((direction) => direction < 0)) return {
     status: "declining",
     comparableSessionCount: sessionIds.size,
     comparedSetPairs: directions.length,
-    note: "Recorded load or repetitions decreased with the same preceding exercise sequence, order, plan, block, intent, recorded rest before each compared set, and reported RIR.",
+    note: "Recorded load or repetitions decreased with the same exercise order, plan, preceding sequence, rest, and reported RIR; lighter or uncertain sessions are excluded.",
+    evidence: evidence.slice(-5),
   };
   if (directions.every((direction) => direction === 0)) return {
     status: "steady",
     comparableSessionCount: sessionIds.size,
     comparedSetPairs: directions.length,
     note: "Recorded load and repetitions were unchanged in the compared sets.",
+    evidence: evidence.slice(-5),
   };
   return {
     status: "mixed",
     comparableSessionCount: sessionIds.size,
     comparedSetPairs: directions.length,
-    note: "Comparable set records changed in more than one direction; review the raw exercise history.",
+    note: "Comparable set records changed in more than one direction.",
+    evidence: evidence.slice(-5),
   };
 }
 
@@ -450,7 +649,8 @@ function trendForExercise(
     status: "insufficient-data",
     comparableSessionCount: 0,
     comparedSetPairs: 0,
-    note: "At least three comparable logged sessions across four weeks are required; values remain available in the set log.",
+    note: "At least three comparable non-light sessions across four weeks are required; values remain traceable to the set log.",
+    evidence: [],
   };
   if (!latest) return { ...fallback, segments };
   return {
@@ -458,8 +658,9 @@ function trendForExercise(
     comparableSessionCount: latest.comparableSessionCount,
     comparedSetPairs: latest.comparedSetPairs,
     note: segments.length > 1
-      ? "The summary reflects the latest training phase; earlier block and return-from-break phases are shown separately."
+      ? "The summary reflects the latest stored training phase; older phases remain separate. Easier or uncertain sessions are still excluded from trend comparisons."
       : latest.note,
+    evidence: latest.evidence,
     segments,
   };
 }
@@ -498,12 +699,18 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
 }): BodyMapTrainingAnalyticsV1 {
   const to = input.now;
   const from = new Date(to.getTime() - input.weeks * 7 * 86_400_000);
-  const sessions = input.sessions
+  const assessmentLookback = new Date(to.getTime() - 12 * 7 * 86_400_000);
+  const sourceSessions = input.sessions
     .filter((session) => {
       const occurredAt = eventInstant(session);
-      return occurredAt >= from && occurredAt <= to;
+      return occurredAt >= assessmentLookback && occurredAt <= to;
     })
     .sort((left, right) => eventInstant(left).getTime() - eventInstant(right).getTime() || left.id - right.id);
+  const loadAssessmentBySession = new Map<number, BodyMapSessionLoadAssessmentV1>();
+  for (const [index, session] of sourceSessions.entries()) {
+    loadAssessmentBySession.set(session.id, inferSessionLoadAssessment(session, sourceSessions.slice(0, index), loadAssessmentBySession));
+  }
+  const sessions = sourceSessions.filter((session) => eventInstant(session) >= from);
   const { phaseBySession, phaseContext } = trainingPhases(sessions);
   const events: Parameters<typeof deriveBodyMapExposureV2>[0]["events"][number][] = [];
   const groups = new Map<BodyMapGroupIdV2, MutableGroup>();
@@ -612,6 +819,8 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
             completedAt: set.completedAt?.toISOString() ?? null,
             sessionDate,
             sessionIntent: session.sessionIntent,
+            sessionPhaseNumber: (phaseBySession.get(session.id) ?? 0) + 1,
+            sessionLoadStatus: loadAssessmentBySession.get(session.id)?.status ?? "uncertain",
             trainingBlockLabel: session.trainingBlockLabel,
             trainingWeekNumber: session.trainingWeekNumber,
             plannedSets: exercise.plannedSets,
@@ -776,9 +985,23 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
     sessions: sessions.map((session) => ({
       id: session.id,
       sessionDate: bodyMapLocalDateV1(eventInstant(session), session.accountingTimeZone),
+      phaseNumber: (phaseBySession.get(session.id) ?? 0) + 1,
       sessionIntent: session.sessionIntent,
       trainingBlockLabel: session.trainingBlockLabel,
       trainingWeekNumber: session.trainingWeekNumber,
+      loadAssessment: loadAssessmentBySession.get(session.id) ?? {
+        status: "uncertain",
+        source: "unavailable",
+        reason: "insufficient-history",
+        actualSetCount: 0,
+        comparableActualSetCount: null,
+        typicalSetCount: null,
+        reportedRirSetCount: 0,
+        medianRir: null,
+        typicalMedianRir: null,
+        comparableExerciseCount: 0,
+        canAskForManualAssessment: false,
+      },
       exerciseCount: session.exercises.length,
       recordedSetCount: session.exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0),
     })),

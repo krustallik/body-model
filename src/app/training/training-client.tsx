@@ -6,7 +6,6 @@ import { useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import { useI18n } from "@/i18n/i18n-provider";
-import { SESSION_INTENT, type SessionIntent } from "@/modules/training/training.constants";
 import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
 import type { StrengthSessionDto, TrainingProgramSummaryDto } from "@/modules/training/training.types";
 import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperList } from "./training-paginated-sections";
@@ -95,9 +94,6 @@ export function TrainingClient() {
   const router = useRouter();
   const [active, setActive] = useState<StrengthSessionDto | null>(null);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [sessionIntent, setSessionIntent] = useState<SessionIntent | "">("");
-  const [trainingBlockLabel, setTrainingBlockLabel] = useState("");
-  const [trainingWeekNumber, setTrainingWeekNumber] = useState("");
   const [listsRevision, setListsRevision] = useState(0);
   const [stepperFormOpen, setStepperFormOpen] = useState(false);
   const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
@@ -530,8 +526,6 @@ export function TrainingClient() {
   }, [load, programsRefresh, programsRefreshReady]);
 
   async function startProgram(programId: number) {
-    const context = sessionContextPayload();
-    if (!context) return;
     setBusyId(programId);
     setError(null);
     try {
@@ -541,7 +535,6 @@ export function TrainingClient() {
         body: JSON.stringify({
           programId,
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIME_ZONE,
-          ...context,
         }),
       });
       if (response.status === 409) {
@@ -565,15 +558,13 @@ export function TrainingClient() {
   }
 
   async function startDynamicSession() {
-    const context = sessionContextPayload();
-    if (!context) return;
     setBusyId(-1);
     setError(null);
     try {
       const response = await fetch("/api/v1/training/sessions/start-dynamic", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIME_ZONE, ...context }),
+        body: JSON.stringify({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIME_ZONE }),
       });
       if (response.status === 409) {
         const body = await response.json() as { activeSessionId?: number };
@@ -593,24 +584,6 @@ export function TrainingClient() {
     } finally {
       setBusyId(null);
     }
-  }
-
-  function sessionContextPayload(): {
-    sessionIntent: SessionIntent | null;
-    trainingBlockLabel: string | null;
-    trainingWeekNumber: number | null;
-  } | null {
-    const weekText = trainingWeekNumber.trim();
-    const week = weekText === "" ? null : Number(weekText);
-    if (week !== null && (!Number.isInteger(week) || week < 1 || week > 52)) {
-      setError(uk ? "Номер тижня має бути від 1 до 52." : "Week number must be between 1 and 52.");
-      return null;
-    }
-    return {
-      sessionIntent: sessionIntent || null,
-      trainingBlockLabel: trainingBlockLabel.trim() || null,
-      trainingWeekNumber: week,
-    };
   }
 
   async function archiveProgram(programId: number) {
@@ -737,37 +710,6 @@ export function TrainingClient() {
       {notice && <p className={styles.emptyCompact} role="status">{notice}</p>}
 
       <div className={styles.stack}>
-        {!active && <section className={styles.panel} aria-label={uk ? "Контекст плану тренування" : "Training plan context"}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{uk ? "Намір і цикл" : "Session plan context"}</h2>
-              <p>{uk ? "Задай контекст до старту; він не виводиться з ваги чи повторень." : "Set the context before starting; it is never inferred from load or reps."}</p>
-            </div>
-          </div>
-          <div className={`${styles.panelBody} ${styles.formGrid}`}>
-            <div className={styles.exerciseFields}>
-              <label className={styles.field}>
-                <span>{uk ? "Намір сесії" : "Session intent"}</span>
-                <select value={sessionIntent} onChange={(event) => setSessionIntent(event.target.value as SessionIntent | "")}>
-                  <option value="">{uk ? "Не вказано" : "Not specified"}</option>
-                  <option value={SESSION_INTENT.REGULAR}>{uk ? "Звичайне тренування" : "Regular session"}</option>
-                  <option value={SESSION_INTENT.EASY_DELOAD}>{uk ? "Легкий / розвантажувальний день" : "Easy / deload day"}</option>
-                  <option value={SESSION_INTENT.STRENGTH}>{uk ? "Силовий акцент" : "Strength focus"}</option>
-                  <option value={SESSION_INTENT.TEST}>{uk ? "Тестування" : "Test"}</option>
-                  <option value={SESSION_INTENT.RETURN_FROM_BREAK}>{uk ? "Повернення після перерви" : "Return after a break"}</option>
-                </select>
-              </label>
-              <label className={styles.field}>
-                <span>{uk ? "Назва блоку (необов’язково)" : "Block name (optional)"}</span>
-                <input maxLength={80} value={trainingBlockLabel} onChange={(event) => setTrainingBlockLabel(event.target.value)} />
-              </label>
-              <label className={styles.field}>
-                <span>{uk ? "Тиждень блоку (необов’язково)" : "Block week (optional)"}</span>
-                <input type="number" min={1} max={52} value={trainingWeekNumber} onChange={(event) => setTrainingWeekNumber(event.target.value)} />
-              </label>
-            </div>
-          </div>
-        </section>}
         <TrainingAttentionPanel uk={uk} intlLocale={intlLocale} refreshVersion={listsRevision} />
         <div className={`${styles.trainingHubGrid} ${styles.trainingPrimaryGrid}`}>
         {active ? <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>

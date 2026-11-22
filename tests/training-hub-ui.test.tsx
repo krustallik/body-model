@@ -79,6 +79,9 @@ describe("Training hub UI", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<TrainingClient />);
+    await user.selectOptions(await screen.findByLabelText("Session intent"), "easy-deload");
+    await user.type(screen.getByLabelText("Block name (optional)"), "Accumulation");
+    await user.type(screen.getByLabelText("Block week (optional)"), "3");
     const start = await screen.findByRole("button", { name: "Start without a program" });
     await user.click(start);
 
@@ -86,6 +89,12 @@ describe("Training hub UI", () => {
       "/api/v1/training/sessions/start-dynamic",
       expect.objectContaining({ method: "POST" }),
     ));
+    const startRequest = fetchMock.mock.calls.find(([input, init]) => String(input) === "/api/v1/training/sessions/start-dynamic" && init?.method === "POST");
+    expect(JSON.parse(String(startRequest?.[1]?.body))).toMatchObject({
+      sessionIntent: "easy-deload",
+      trainingBlockLabel: "Accumulation",
+      trainingWeekNumber: 3,
+    });
   });
 
   it("styles Archive as a destructive control and confirms before archive", async () => {
@@ -236,7 +245,7 @@ describe("Training hub UI", () => {
     expect(screen.getByRole("button", { name: "Start without a program" })).toBeTruthy();
   });
 
-  it("surfaces match-attention above active session when items exist", async () => {
+  it("surfaces match-attention before recent history when items exist", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
       const url = String(input);
       if (url.includes("/sessions/active")) return Response.json({ session: null });
@@ -268,6 +277,10 @@ describe("Training hub UI", () => {
       expect(screen.getByText("Ambiguous")).toBeTruthy();
     });
     const sections = Array.from(container.querySelectorAll("section"));
-    expect(sections[0]?.getAttribute("aria-label")).toBe("Match attention");
+    const attentionIndex = sections.findIndex((node) => node.getAttribute("aria-label") === "Match attention");
+    const recentIndex = sections.findIndex((node) => node.getAttribute("aria-label") === "Recent strength sessions");
+    expect(sections.some((node) => node.getAttribute("aria-label") === "Training plan context")).toBe(true);
+    expect(attentionIndex).toBeGreaterThanOrEqual(0);
+    expect(recentIndex).toBeGreaterThan(attentionIndex);
   });
 });

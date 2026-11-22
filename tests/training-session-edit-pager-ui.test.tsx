@@ -1732,7 +1732,7 @@ describe("Session edit exercise pager", () => {
       "/api/v1/training/sessions/40/sets/71",
       expect.objectContaining({
         method: "PATCH",
-        body: JSON.stringify({ reps: 11, rir: 2, comment: null, weightKg: 30 }),
+        body: JSON.stringify({ reps: 11, rir: 2, restBeforeSeconds: null, comment: null, weightKg: 30 }),
       }),
     );
     const patch = vi.mocked(fetch).mock.calls.find(([input, init]) => (

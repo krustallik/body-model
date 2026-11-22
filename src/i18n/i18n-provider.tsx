@@ -46,7 +46,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       ? window.setTimeout(() => applyLocale(storedLocale), 0)
       : null;
 
-    if (pathname.startsWith("/body-map") || pathname === "/password-setup") {
+    if (pathname === "/password-setup") {
       return () => { if (storedLocaleTimer !== null) window.clearTimeout(storedLocaleTimer); };
     }
     let active = true;

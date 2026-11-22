@@ -78,6 +78,7 @@ function setMatchesMutation(
     if (set.bandNominalResistanceKg !== expected) return false;
   }
   if (payload.rir !== undefined && set.rir !== payload.rir) return false;
+  if (payload.restBeforeSeconds !== undefined && (set.restBeforeSeconds ?? null) !== payload.restBeforeSeconds) return false;
   if (payload.comment !== undefined && set.comment !== payload.comment) return false;
   if (payload.loadAccountingOverride !== undefined
       && stableJson(set.loadAccountingOverride ?? null) !== stableJson(payload.loadAccountingOverride)) return false;
@@ -93,7 +94,7 @@ export async function setCreatePayloadDigest(input: {
 }): Promise<string> {
   const payload = input.payload;
   const canonical = {
-    version: 1,
+    version: payload.restBeforeSeconds === undefined ? 1 : 2,
     sessionId: input.sessionId,
     exerciseId: input.exerciseId,
     requestedSetNumber: payload.setNumber ?? null,
@@ -101,6 +102,7 @@ export async function setCreatePayloadDigest(input: {
     weightKg: payload.weightKg ?? null,
     bandNominalResistanceKg: payload.bandNominalResistanceKg ?? null,
     rir: payload.rir ?? null,
+    ...(payload.restBeforeSeconds === undefined ? {} : { restBeforeSeconds: payload.restBeforeSeconds ?? null }),
     comment: typeof payload.comment === "string" ? payload.comment.trim() || null : null,
     completedAt: payload.completedAt ?? null,
     loadAccountingOverride: payload.loadAccountingOverride ?? null,
@@ -1022,11 +1024,19 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       setError(uk ? "Вкажіть повторення." : "Enter reps.");
       return;
     }
+    const restText = draft.restBeforeSeconds.trim();
+    const restBeforeSeconds = restText === "" ? null : Number(restText);
+    if (restBeforeSeconds !== null
+        && (!Number.isInteger(restBeforeSeconds) || restBeforeSeconds < 0 || restBeforeSeconds > TRAINING_LIMITS.maxRestBeforeSeconds)) {
+      setError(uk ? "Відпочинок має бути цілим числом секунд від 0 до 86 400." : "Rest must be a whole number of seconds from 0 to 86,400.");
+      return;
+    }
     const payload: Record<string, unknown> = {
       reps,
       comment: draft.comment.trim() ? draft.comment.trim() : null,
       rir: draft.rir.trim() === "" ? null : Number(draft.rir),
     };
+    if (editingSet !== null || restBeforeSeconds !== null) payload.restBeforeSeconds = restBeforeSeconds;
     if (draft.asymmetricRepsEnabled) {
       const left = Number(draft.leftReps);
       const right = Number(draft.rightReps);
@@ -1643,6 +1653,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
             ? ""
             : String(set.bandNominalResistanceKg),
           rir: set.rir == null ? "" : String(set.rir),
+          restBeforeSeconds: set.restBeforeSeconds == null ? "" : String(set.restBeforeSeconds),
           comment: set.comment ?? "",
         });
       }}

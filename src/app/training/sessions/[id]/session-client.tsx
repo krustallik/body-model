@@ -88,7 +88,7 @@ export async function setCreatePayloadDigest(
 ): Promise<string> {
   const payload = operation.payload;
   const canonical = {
-    version: 1,
+    version: payload.restBeforeSeconds === undefined ? 1 : 2,
     sessionId: operation.sessionId,
     exerciseId: operation.exerciseId,
     requestedSetNumber: payload.setNumber ?? null,
@@ -96,6 +96,7 @@ export async function setCreatePayloadDigest(
     weightKg: payload.weightKg ?? null,
     bandNominalResistanceKg: payload.bandNominalResistanceKg ?? null,
     rir: payload.rir ?? null,
+    ...(payload.restBeforeSeconds === undefined ? {} : { restBeforeSeconds: payload.restBeforeSeconds ?? null }),
     comment: typeof payload.comment === "string" ? payload.comment.trim() || null : null,
     completedAt: payload.completedAt ?? null,
     loadAccountingOverride: payload.loadAccountingOverride ?? null,
@@ -678,11 +679,19 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setError(uk ? "Вкажіть кількість повторень." : "Enter reps.");
       return;
     }
+    const restText = draft.restBeforeSeconds.trim();
+    const restBeforeSeconds = restText === "" ? null : Number(restText);
+    if (restBeforeSeconds !== null
+        && (!Number.isInteger(restBeforeSeconds) || restBeforeSeconds < 0 || restBeforeSeconds > TRAINING_LIMITS.maxRestBeforeSeconds)) {
+      setError(uk ? "Відпочинок має бути цілим числом секунд від 0 до 86 400." : "Rest must be a whole number of seconds from 0 to 86,400.");
+      return;
+    }
     const payload: Record<string, unknown> = {
       reps,
       comment: draft.comment.trim() ? draft.comment.trim() : null,
       rir: draft.rir.trim() === "" ? null : Number(draft.rir),
     };
+    if (editingSetId !== null || restBeforeSeconds !== null) payload.restBeforeSeconds = restBeforeSeconds;
     if (draft.asymmetricRepsEnabled) {
       const left = Number(draft.leftReps);
       const right = Number(draft.rightReps);
@@ -1158,6 +1167,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         ? ""
         : String(set.bandNominalResistanceKg),
       rir: set.rir === null ? "" : String(set.rir),
+      restBeforeSeconds: set.restBeforeSeconds == null ? "" : String(set.restBeforeSeconds),
       comment: set.comment ?? "",
     });
   }

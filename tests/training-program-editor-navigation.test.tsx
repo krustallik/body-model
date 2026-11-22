@@ -50,11 +50,18 @@ describe("Training program editor return context", () => {
     await user.click(within(picker).getByRole("button", { name: /^All exercises/ }));
     await user.click(await within(picker).findByRole("button", { name: /Push up/ }));
     await user.click(within(picker).getByRole("button", { name: "Add exercise" }));
+    await user.type(screen.getByLabelText("Reps from"), "8");
+    await user.type(screen.getByLabelText("Reps to"), "10");
+    await user.type(screen.getByLabelText("Target RIR"), "2");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(navigation.push).toHaveBeenCalledWith(expect.stringMatching(/^\/training\?recentPage=2&programsRefresh=\d+$/)));
     expect(navigation.refresh).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/training/programs", expect.objectContaining({ method: "POST" }));
+    const saveRequest = fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/v1/training/programs" && init?.method === "POST");
+    expect(JSON.parse(String(saveRequest?.[1]?.body))).toMatchObject({
+      exercises: [{ plannedSets: 3, plannedRepsMin: 8, plannedRepsMax: 10, plannedRir: 2, order: 0 }],
+    });
   });
 
   it("returns to the same hub page and refreshes after archiving a program", async () => {

@@ -5,6 +5,7 @@ import type {
   MatchMethod,
   MatchStatus,
   ResistanceType,
+  SessionIntent,
   SessionStatus,
 } from "./training.constants";
 import type { BodyweightReferenceV1, LoadAccountingBreakdownV1, LoadAccountingOutputV1 } from "./load-accounting-v1";
@@ -27,6 +28,9 @@ export type ProgramExerciseDto = {
   catalogName: string;
   order: number;
   plannedSets: number;
+  plannedRepsMin?: number | null;
+  plannedRepsMax?: number | null;
+  plannedRir?: number | null;
   resistanceType: ResistanceType;
   loadAccountingConfigSnapshot?: unknown | null;
 };
@@ -72,6 +76,8 @@ export type StrengthSetDto = {
   bandNominalResistanceKg: number | null;
   /** Null = not reported. Null is never RIR 0. */
   rir: number | null;
+  /** Seconds of user-recorded rest before this set; absent/null means unknown. */
+  restBeforeSeconds?: number | null;
   comment: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -88,6 +94,8 @@ export type ExerciseHistorySetDto = {
   weightKg: number | null;
   bandNominalResistanceKg: number | null;
   rir: number | null;
+  /** Seconds of user-recorded rest before this set; absent/null means unknown. */
+  restBeforeSeconds?: number | null;
   comment: string | null;
   loadAccountingOverride?: unknown | null;
 };
@@ -108,6 +116,9 @@ export type StrengthSessionExerciseDto = {
   snapshotExerciseName: string;
   order: number;
   plannedSets: number;
+  plannedRepsMin?: number | null;
+  plannedRepsMax?: number | null;
+  plannedRir?: number | null;
   resistanceType: ResistanceType;
   origin: ExerciseOrigin;
   muscleMappingSnapshot: unknown | null;
@@ -145,6 +156,9 @@ export type StrengthSessionDto = {
   programName: string | null;
   programVersionId: number | null;
   programVersionNumber: number | null;
+  sessionIntent?: SessionIntent | null;
+  trainingBlockLabel?: string | null;
+  trainingWeekNumber?: number | null;
   /** Null for RETROSPECTIVE — no live web Start Workout occurred. */
   webStartedAt: string | null;
   webEndedAt: string | null;

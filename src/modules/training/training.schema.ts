@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RESISTANCE, TRAINING_LIMITS } from "./training.constants";
+import { RESISTANCE, SESSION_INTENT, TRAINING_LIMITS } from "./training.constants";
 import { parseNullableNumericInput } from "@/modules/days/day.schema";
 import { loadConfigV1Schema, setExecutionOverrideV1Schema } from "./load-accounting-v1";
 import { isValidTimeZone } from "@/model/time-zone";
@@ -24,6 +24,14 @@ export const ResistanceTypeSchema = z.enum([
   RESISTANCE.BODYWEIGHT,
 ]);
 
+export const SessionIntentSchema = z.enum([
+  SESSION_INTENT.REGULAR,
+  SESSION_INTENT.EASY_DELOAD,
+  SESSION_INTENT.STRENGTH,
+  SESSION_INTENT.TEST,
+  SESSION_INTENT.RETURN_FROM_BREAK,
+]);
+
 export const UpdateCatalogLoadAccountingConfigSchema = z.object({
   loadAccountingConfig: loadConfigV1Schema.nullable(),
 }).strict();
@@ -37,9 +45,15 @@ const positiveInt = z.number().int().positive();
 export const ProgramExerciseInputSchema = z.object({
   catalogId: positiveInt,
   plannedSets: z.number().int().positive().max(TRAINING_LIMITS.maxPlannedSets),
+  plannedRepsMin: z.number().int().positive().max(TRAINING_LIMITS.maxReps).nullable().optional(),
+  plannedRepsMax: z.number().int().positive().max(TRAINING_LIMITS.maxReps).nullable().optional(),
+  plannedRir: z.number().int().min(TRAINING_LIMITS.minRir).max(TRAINING_LIMITS.maxRir).nullable().optional(),
   resistanceType: ResistanceTypeSchema,
   order: z.number().int().nonnegative().optional(),
-}).strict();
+}).strict().refine(
+  (exercise) => exercise.plannedRepsMin == null || exercise.plannedRepsMax == null || exercise.plannedRepsMin <= exercise.plannedRepsMax,
+  { message: "plannedRepsMin must not exceed plannedRepsMax", path: ["plannedRepsMax"] },
+);
 
 export const CreateProgramSchema = z.object({
   name: z.string().trim().min(1).max(TRAINING_LIMITS.maxProgramNameLength),
@@ -76,11 +90,17 @@ export const StartSessionSchema = z.object({
   programId: positiveInt,
   /** Optional for old clients; omitted values use legacy-default provenance. */
   timeZone: z.string().optional().refine((value) => value === undefined || isValidTimeZone(value)),
+  sessionIntent: SessionIntentSchema.nullable().optional(),
+  trainingBlockLabel: z.string().trim().max(80).nullable().optional(),
+  trainingWeekNumber: z.number().int().min(1).max(52).nullable().optional(),
 }).strict();
 
 export const StartDynamicSessionSchema = z.object({
   /** Optional for older clients; omitted values use legacy-default provenance. */
   timeZone: z.string().optional().refine((value) => value === undefined || isValidTimeZone(value)),
+  sessionIntent: SessionIntentSchema.nullable().optional(),
+  trainingBlockLabel: z.string().trim().max(80).nullable().optional(),
+  trainingWeekNumber: z.number().int().min(1).max(52).nullable().optional(),
 }).strict();
 
 export const UpdateSessionAccountingContextSchema = z.object({
@@ -106,6 +126,10 @@ export const CreateSetSchema = z.object({
   weightKg: nullableLoad,
   bandNominalResistanceKg: nullableLoad,
   rir: nullableRir,
+  restBeforeSeconds: z.preprocess(
+    parseNullableNumericInput,
+    z.number().int().min(0).max(TRAINING_LIMITS.maxRestBeforeSeconds).nullable().optional(),
+  ),
   setNumber: z.preprocess(parseNullableNumericInput, z.number().int().positive().optional()),
   completedAt: z.string().datetime({ offset: true }).optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
@@ -117,6 +141,10 @@ export const UpdateSetSchema = z.object({
   weightKg: nullableLoad,
   bandNominalResistanceKg: nullableLoad,
   rir: nullableRir,
+  restBeforeSeconds: z.preprocess(
+    parseNullableNumericInput,
+    z.number().int().min(0).max(TRAINING_LIMITS.maxRestBeforeSeconds).nullable().optional(),
+  ),
   completedAt: z.string().datetime({ offset: true }).nullable().optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
   loadAccountingOverride: setExecutionOverrideWriteV1Schema.nullable().optional(),

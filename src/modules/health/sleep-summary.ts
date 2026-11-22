@@ -11,6 +11,7 @@ export type SleepSegmentInput = {
   endAt: string;
   state: SleepState;
   rawState: string;
+  source?: string;
 };
 
 export type SleepSegmentInterval = {
@@ -18,6 +19,7 @@ export type SleepSegmentInterval = {
   endAt: Date;
   state: SleepState;
   rawState: string;
+  source?: string;
   /** Minutes east of UTC for the source wall clock at startAt, when known. */
   startOffsetMinutes?: number | null;
   /** Minutes east of UTC for the source wall clock at endAt, when known. */
@@ -43,6 +45,7 @@ export type NightlySleepSummary = {
   /** Wake-end wall offset used for sleepDate / local clock display, when known. */
   wakeOffsetMinutes: number | null;
   qualityFlags: string[];
+  sources: string[];
   segments: Array<{
     startAt: string;
     endAt: string;
@@ -290,6 +293,7 @@ function summarizeSession(
     sleepDateAttribution: attribution.sleepDateAttribution,
     wakeOffsetMinutes: attribution.wakeOffsetMinutes,
     qualityFlags,
+    sources: [...new Set(session.map((segment) => segment.source).filter((source): source is string => Boolean(source)))].sort(),
     segments: session.map((segment) => ({
       startAt: segment.startAt.toISOString(),
       endAt: segment.endAt.toISOString(),
@@ -337,6 +341,7 @@ export function toSleepSegmentInterval(input: SleepSegmentInput): SleepSegmentIn
     endAt: new Date(input.endAt),
     state: input.state,
     rawState: input.rawState,
+    source: input.source,
     startOffsetMinutes: offsetMinutesFromIso(input.startAt),
     endOffsetMinutes: offsetMinutesFromIso(input.endAt),
   };

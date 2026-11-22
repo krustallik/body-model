@@ -8,6 +8,9 @@ export type ReconcileExistingExercise = {
   snapshotExerciseName: string;
   sortOrder: number;
   plannedSets: number;
+  plannedRepsMin?: number | null;
+  plannedRepsMax?: number | null;
+  plannedRir?: number | null;
   resistanceType: ResistanceType;
   origin: ExerciseOrigin;
   setCount: number;
@@ -18,6 +21,9 @@ export type ReconcileProgramExercise = {
   snapshotExerciseName: string;
   sortOrder: number;
   plannedSets: number;
+  plannedRepsMin?: number | null;
+  plannedRepsMax?: number | null;
+  plannedRir?: number | null;
   resistanceType: ResistanceType;
   muscleMappingSnapshot: unknown | null;
   loadAccountingConfigSnapshot?: Prisma.InputJsonValue | null;
@@ -27,6 +33,9 @@ export type ReconcileKeep = {
   exerciseId: number;
   sortOrder: number;
   plannedSets: number;
+  plannedRepsMin: number | null;
+  plannedRepsMax: number | null;
+  plannedRir: number | null;
   origin: ExerciseOrigin;
 };
 
@@ -35,6 +44,9 @@ export type ReconcileAdd = {
   snapshotExerciseName: string;
   sortOrder: number;
   plannedSets: number;
+  plannedRepsMin: number | null;
+  plannedRepsMax: number | null;
+  plannedRir: number | null;
   resistanceType: ResistanceType;
   origin: ExerciseOrigin;
   muscleMappingSnapshot: unknown | null;
@@ -81,6 +93,9 @@ export function planProgramExerciseReconcile(
         exerciseId: matched!.id,
         sortOrder: nextOrder,
         plannedSets: planned.plannedSets,
+        plannedRepsMin: planned.plannedRepsMin ?? null,
+        plannedRepsMax: planned.plannedRepsMax ?? null,
+        plannedRir: planned.plannedRir ?? null,
         origin: EXERCISE_ORIGIN.PLANNED,
       });
       nextOrder += 1;
@@ -92,6 +107,9 @@ export function planProgramExerciseReconcile(
       snapshotExerciseName: planned.snapshotExerciseName,
       sortOrder: nextOrder,
       plannedSets: planned.plannedSets,
+      plannedRepsMin: planned.plannedRepsMin ?? null,
+      plannedRepsMax: planned.plannedRepsMax ?? null,
+      plannedRir: planned.plannedRir ?? null,
       resistanceType: planned.resistanceType,
       origin: EXERCISE_ORIGIN.PLANNED,
       muscleMappingSnapshot: planned.muscleMappingSnapshot,
@@ -106,6 +124,9 @@ export function planProgramExerciseReconcile(
       exerciseId: orphan.id,
       sortOrder: nextOrder,
       plannedSets: orphan.plannedSets,
+      plannedRepsMin: orphan.plannedRepsMin ?? null,
+      plannedRepsMax: orphan.plannedRepsMax ?? null,
+      plannedRir: orphan.plannedRir ?? null,
       origin: EXERCISE_ORIGIN.EXTRA,
     });
     nextOrder += 1;

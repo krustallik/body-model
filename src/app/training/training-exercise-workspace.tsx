@@ -35,6 +35,7 @@ export type SetDraft = {
   additionalLoadKg: string;
   bandNominalResistanceKg: string;
   rir: string;
+  restBeforeSeconds: string;
   comment: string;
 };
 
@@ -135,6 +136,7 @@ export function emptySetDraft(): SetDraft {
     additionalLoadKg: "",
     bandNominalResistanceKg: "",
     rir: "",
+    restBeforeSeconds: "",
     comment: "",
   };
 }
@@ -476,6 +478,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
       leftReps: "",
       rightReps: "",
       rir: set.rir == null ? "" : String(set.rir),
+      restBeforeSeconds: set.restBeforeSeconds == null ? "" : String(set.restBeforeSeconds),
     });
     setCopiedHint(true);
   }
@@ -518,6 +521,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     if (payload.bandNominalResistanceKg !== undefined
         && set.bandNominalResistanceKg !== (payload.bandNominalResistanceKg === null ? null : roundLoadToDatabasePrecision(payload.bandNominalResistanceKg))) return false;
     if (payload.rir !== undefined && set.rir !== payload.rir) return false;
+    if (payload.restBeforeSeconds !== undefined && (set.restBeforeSeconds ?? null) !== payload.restBeforeSeconds) return false;
     if (payload.comment !== undefined && set.comment !== payload.comment) return false;
     if (payload.loadAccountingOverride !== undefined
         && stableJson(set.loadAccountingOverride ?? null) !== stableJson(payload.loadAccountingOverride)) return false;
@@ -532,6 +536,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
       weightKg: set.weightKg,
       bandNominalResistanceKg: set.bandNominalResistanceKg,
       rir: set.rir,
+      restBeforeSeconds: set.restBeforeSeconds ?? null,
       comment: set.comment,
       completedAt: set.completedAt,
       loadAccountingOverride: set.loadAccountingOverride ?? null,

@@ -18,7 +18,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const session = await trainingService.startDynamicSession(principal.profileId, parsed.data.timeZone);
+    const session = await trainingService.startDynamicSession(principal.profileId, parsed.data.timeZone, parsed.data);
     return Response.json({ session }, { status: 201 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

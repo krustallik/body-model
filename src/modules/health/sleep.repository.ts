@@ -26,6 +26,7 @@ export type NightlySleepDto = {
   sleepDateAttribution: NightlySleepSummary["sleepDateAttribution"];
   wakeOffsetMinutes: number | null;
   qualityFlags: string[];
+  sources: string[];
   segments: Array<{
     startAt: string;
     endAt: string;
@@ -52,6 +53,7 @@ function toDto(summary: NightlySleepSummary): NightlySleepDto {
     sleepDateAttribution: summary.sleepDateAttribution,
     wakeOffsetMinutes: summary.wakeOffsetMinutes,
     qualityFlags: summary.qualityFlags,
+    sources: summary.sources,
     segments: summary.segments,
   };
 }
@@ -63,6 +65,7 @@ function rowToInterval(row: {
   rawState: string;
   startOffsetMinutes?: number | null;
   endOffsetMinutes?: number | null;
+  source?: string;
 }): SleepSegmentInterval {
   return {
     startAt: row.startAt,
@@ -71,6 +74,7 @@ function rowToInterval(row: {
     rawState: row.rawState,
     startOffsetMinutes: row.startOffsetMinutes ?? null,
     endOffsetMinutes: row.endOffsetMinutes ?? null,
+    source: row.source ?? undefined,
   };
 }
 
@@ -94,6 +98,7 @@ export class SleepRepository {
           rawState: string;
           startOffsetMinutes: number | null;
           endOffsetMinutes: number | null;
+          source: string;
         }>>;
       };
       healthSyncSnapshot?: {
@@ -140,6 +145,7 @@ export class SleepRepository {
           rawState: true,
           startOffsetMinutes: true,
           endOffsetMinutes: true,
+          source: true,
         },
         orderBy: { startAt: "asc" },
       });
@@ -195,6 +201,7 @@ export class SleepRepository {
             rawState: true,
             startOffsetMinutes: true,
             endOffsetMinutes: true,
+            source: true,
           },
           orderBy: { startAt: "asc" },
         }),

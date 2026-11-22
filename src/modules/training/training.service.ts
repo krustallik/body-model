@@ -14,6 +14,7 @@ import {
   SESSION_STATUS,
   type ExerciseOrigin,
   type ResistanceType,
+  type SessionIntent,
 } from "./training.constants";
 import {
   ActiveSessionExistsError,
@@ -533,6 +534,9 @@ function normalizeProgramExercises(
     exerciseCatalogId: exercise.catalogId,
     sortOrder: exercise.order ?? index,
     plannedSets: exercise.plannedSets,
+    plannedRepsMin: exercise.plannedRepsMin ?? null,
+    plannedRepsMax: exercise.plannedRepsMax ?? null,
+    plannedRir: exercise.plannedRir ?? null,
     resistanceType: exercise.resistanceType,
     loadAccountingConfigSnapshot: null,
   }));
@@ -846,6 +850,7 @@ export class TrainingService {
       weightKg: set.weightKg?.toNumber() ?? null,
       bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
       rir: set.rir,
+      restBeforeSeconds: set.restBeforeSeconds,
       comment: set.comment ?? null,
       completedAt: set.completedAt?.toISOString() ?? null,
       createdAt: set.createdAt.toISOString(),
@@ -927,6 +932,7 @@ export class TrainingService {
     programId: number,
     profileId: number,
     accountingTimeZone?: string,
+    context: { sessionIntent?: SessionIntent | null; trainingBlockLabel?: string | null; trainingWeekNumber?: number | null } = {},
   ): Promise<StrengthSessionDto> {
     await this.finalizeInactiveSessions(profileId);
     const active = await this.repo.getActiveSession(profileId);
@@ -948,11 +954,17 @@ export class TrainingService {
         programVersionId: program.currentVersion.id,
         accountingTimeZone,
         accountingTimeZoneProvenance: accountingTimeZone ? "client-session" : "legacy-default",
+        sessionIntent: context.sessionIntent ?? null,
+        trainingBlockLabel: context.trainingBlockLabel ?? null,
+        trainingWeekNumber: context.trainingWeekNumber ?? null,
         exercises: program.currentVersion.exercises.map((exercise) => ({
           sourceExerciseCatalogId: exercise.exerciseCatalog.id,
           snapshotExerciseName: exercise.exerciseCatalog.name,
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
+          plannedRepsMin: exercise.plannedRepsMin,
+          plannedRepsMax: exercise.plannedRepsMax,
+          plannedRir: exercise.plannedRir,
           resistanceType: exercise.resistanceType as ResistanceType,
           muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
           loadAccountingConfigSnapshot: persistedJson(validatedProgramSnapshot(
@@ -973,6 +985,7 @@ export class TrainingService {
   async startDynamicSession(
     profileId: number,
     accountingTimeZone?: string,
+    context: { sessionIntent?: SessionIntent | null; trainingBlockLabel?: string | null; trainingWeekNumber?: number | null } = {},
   ): Promise<StrengthSessionDto> {
     await this.finalizeInactiveSessions(profileId);
     const active = await this.repo.getActiveSession(profileId);
@@ -986,6 +999,9 @@ export class TrainingService {
         entryMode: ENTRY_MODE.LIVE,
         accountingTimeZone,
         accountingTimeZoneProvenance: accountingTimeZone ? "client-session" : "legacy-default",
+        sessionIntent: context.sessionIntent ?? null,
+        trainingBlockLabel: context.trainingBlockLabel ?? null,
+        trainingWeekNumber: context.trainingWeekNumber ?? null,
         exercises: [],
       });
     } catch (error) {
@@ -1109,6 +1125,9 @@ export class TrainingService {
           snapshotExerciseName: exercise.exerciseCatalog.name,
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
+          plannedRepsMin: exercise.plannedRepsMin,
+          plannedRepsMax: exercise.plannedRepsMax,
+          plannedRir: exercise.plannedRir,
           resistanceType: exercise.resistanceType as ResistanceType,
           muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
           loadAccountingConfigSnapshot: persistedJson(validatedProgramSnapshot(
@@ -1167,6 +1186,9 @@ export class TrainingService {
         snapshotExerciseName: exercise.snapshotExerciseName,
         sortOrder: exercise.sortOrder,
         plannedSets: exercise.plannedSets,
+        plannedRepsMin: exercise.plannedRepsMin,
+        plannedRepsMax: exercise.plannedRepsMax,
+        plannedRir: exercise.plannedRir,
         resistanceType: exercise.resistanceType as ResistanceType,
         origin: exercise.origin as ExerciseOrigin,
         setCount: exercise._count.sets,
@@ -1176,6 +1198,9 @@ export class TrainingService {
         snapshotExerciseName: exercise.exerciseCatalog.name,
         sortOrder: exercise.sortOrder,
         plannedSets: exercise.plannedSets,
+        plannedRepsMin: exercise.plannedRepsMin,
+        plannedRepsMax: exercise.plannedRepsMax,
+        plannedRir: exercise.plannedRir,
         resistanceType: exercise.resistanceType as ResistanceType,
         muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
         loadAccountingConfigSnapshot: validatedProgramSnapshot(
@@ -1358,7 +1383,7 @@ export class TrainingService {
     const resolvedOperationId = operationId ?? randomUUID();
     const explicitOperationId = operationId !== undefined;
     const payloadDigest = sha256Canonical({
-      version: 1,
+      version: input.restBeforeSeconds === undefined ? 1 : 2,
       sessionId,
       exerciseId,
       requestedSetNumber: input.setNumber ?? null,
@@ -1366,6 +1391,7 @@ export class TrainingService {
       weightKg: input.weightKg ?? null,
       bandNominalResistanceKg: input.bandNominalResistanceKg ?? null,
       rir: input.rir ?? null,
+      ...(input.restBeforeSeconds === undefined ? {} : { restBeforeSeconds: input.restBeforeSeconds }),
       comment: input.comment?.trim() || null,
       completedAt: input.completedAt ?? null,
       loadAccountingOverride: input.loadAccountingOverride ?? null,
@@ -1426,6 +1452,7 @@ export class TrainingService {
         weightKg: validated.weightKg,
         bandNominalResistanceKg: validated.bandNominalResistanceKg,
         rir: validated.rir,
+        restBeforeSeconds: input.restBeforeSeconds,
         comment: input.comment === undefined ? undefined : input.comment,
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
         loadAccountingOverride: override === null ? null : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
@@ -1508,6 +1535,7 @@ export class TrainingService {
         ? {}
         : { bandNominalResistanceKg: validated.bandNominalResistanceKg }),
       ...(input.rir === undefined ? {} : { rir: validated.rir }),
+      ...(input.restBeforeSeconds === undefined ? {} : { restBeforeSeconds: input.restBeforeSeconds }),
       comment: input.comment,
       completedAt:
         input.completedAt === undefined

@@ -22,6 +22,7 @@ export async function POST(request: Request): Promise<Response> {
       parsed.data.programId,
       principal.profileId,
       parsed.data.timeZone,
+      parsed.data,
     );
     return Response.json({ session }, { status: 201 });
   } catch (error) {

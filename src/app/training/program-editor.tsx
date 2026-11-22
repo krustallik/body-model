@@ -25,6 +25,9 @@ type DraftExercise = {
   catalogId: number;
   catalogName: string;
   plannedSets: number;
+  plannedRepsMin: number | null;
+  plannedRepsMax: number | null;
+  plannedRir: number | null;
   resistanceType: ResistanceType;
 };
 
@@ -104,6 +107,9 @@ export function ProgramEditorClient({
                 catalogId: exercise.catalogId,
                 catalogName: exercise.catalogName,
                 plannedSets: exercise.plannedSets,
+                plannedRepsMin: exercise.plannedRepsMin ?? null,
+                plannedRepsMax: exercise.plannedRepsMax ?? null,
+                plannedRir: exercise.plannedRir ?? null,
                 resistanceType: exercise.resistanceType,
               })));
           }
@@ -135,6 +141,9 @@ export function ProgramEditorClient({
         catalogId: item.id,
         catalogName: item.name,
         plannedSets,
+        plannedRepsMin: null,
+        plannedRepsMax: null,
+        plannedRir: null,
         resistanceType: addResistance,
       },
     ]);
@@ -187,6 +196,12 @@ export function ProgramEditorClient({
       setError(uk ? "Додайте хоча б одну вправу." : "Add at least one exercise.");
       return;
     }
+    if (exercises.some((exercise) => exercise.plannedRepsMin !== null
+      && exercise.plannedRepsMax !== null
+      && exercise.plannedRepsMin > exercise.plannedRepsMax)) {
+      setError(uk ? "Мінімум повторень не може перевищувати максимум." : "Minimum reps cannot exceed maximum reps.");
+      return;
+    }
     setSaving(true);
     setError(null);
     const payload = {
@@ -194,6 +209,9 @@ export function ProgramEditorClient({
       exercises: exercises.map((exercise, order) => ({
         catalogId: exercise.catalogId,
         plannedSets: exercise.plannedSets,
+        plannedRepsMin: exercise.plannedRepsMin,
+        plannedRepsMax: exercise.plannedRepsMax,
+        plannedRir: exercise.plannedRir,
         resistanceType: exercise.resistanceType,
         order,
       })),
@@ -341,6 +359,33 @@ export function ProgramEditorClient({
                           <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
                           <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
                         </select>
+                      </label>
+                      <label className={styles.field}>
+                        <span>{uk ? "Повторення від" : "Reps from"}</span>
+                        <input type="number" min={1} max={10000} value={exercise.plannedRepsMin ?? ""} onChange={(event) => {
+                          const value = event.target.value === "" ? null : Number(event.target.value);
+                          setExercises((current) => current.map((item, i) => i === index
+                            ? { ...item, plannedRepsMin: value !== null && Number.isFinite(value) ? value : null }
+                            : item));
+                        }} />
+                      </label>
+                      <label className={styles.field}>
+                        <span>{uk ? "Повторення до" : "Reps to"}</span>
+                        <input type="number" min={1} max={10000} value={exercise.plannedRepsMax ?? ""} onChange={(event) => {
+                          const value = event.target.value === "" ? null : Number(event.target.value);
+                          setExercises((current) => current.map((item, i) => i === index
+                            ? { ...item, plannedRepsMax: value !== null && Number.isFinite(value) ? value : null }
+                            : item));
+                        }} />
+                      </label>
+                      <label className={styles.field}>
+                        <span>{uk ? "Цільовий RIR" : "Target RIR"}</span>
+                        <input type="number" min={0} max={10} value={exercise.plannedRir ?? ""} onChange={(event) => {
+                          const value = event.target.value === "" ? null : Number(event.target.value);
+                          setExercises((current) => current.map((item, i) => i === index
+                            ? { ...item, plannedRir: value !== null && Number.isFinite(value) ? value : null }
+                            : item));
+                        }} />
                       </label>
                     </div>
                     <ExerciseLoadConfigEditor

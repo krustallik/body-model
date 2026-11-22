@@ -662,7 +662,7 @@ describe("historical program reassignment", () => {
     expect(db.strengthSessionExercise.delete).not.toHaveBeenCalled();
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
       where: { id: 501 },
-      data: { sortOrder: 0, plannedSets: 4, origin: EXERCISE_ORIGIN.PLANNED },
+      data: { sortOrder: 0, plannedSets: 4, plannedRepsMin: null, plannedRepsMax: null, plannedRir: null, origin: EXERCISE_ORIGIN.PLANNED },
     });
     expect(db.strengthDiaryProgramChange.create).toHaveBeenCalledWith({
       data: {
@@ -694,7 +694,7 @@ describe("historical program reassignment", () => {
     expect(db.strengthSessionExercise.delete).not.toHaveBeenCalled();
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
       where: { id: 502 },
-      data: { sortOrder: 2, plannedSets: 3, origin: EXERCISE_ORIGIN.EXTRA },
+      data: { sortOrder: 2, plannedSets: 3, plannedRepsMin: null, plannedRepsMax: null, plannedRir: null, origin: EXERCISE_ORIGIN.EXTRA },
     });
     expect(db.strengthSessionExercise.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -722,7 +722,7 @@ describe("historical program reassignment", () => {
     }));
     expect(db.strengthSessionExercise.update).toHaveBeenCalledWith({
       where: { id: 501 },
-      data: { sortOrder: 1, plannedSets: 3, origin: EXERCISE_ORIGIN.EXTRA },
+      data: { sortOrder: 1, plannedSets: 3, plannedRepsMin: null, plannedRepsMax: null, plannedRir: null, origin: EXERCISE_ORIGIN.EXTRA },
     });
     expect(db.strengthSet.updateMany).not.toHaveBeenCalled();
     expect(db.strengthSet.delete).not.toHaveBeenCalled();

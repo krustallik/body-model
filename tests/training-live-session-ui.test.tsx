@@ -538,6 +538,61 @@ describe("Live training session mobile UI", () => {
     await expect(liveSetCreatePayloadDigest(operation)).resolves.toBe(expected);
   });
 
+  it("includes a user-recorded rest interval in the set create payload and idempotency digest", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession();
+    const exercise = initial.exercises[0]!;
+    const createdSet = {
+      id: 880,
+      sessionExerciseId: exercise.id,
+      setNumber: 1,
+      reps: 10,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      restBeforeSeconds: 90,
+      comment: null,
+      completedAt: "2026-10-16T06:00:00.000Z",
+      createdAt: "2026-10-16T06:00:00.000Z",
+      updatedAt: "2026-10-16T06:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      if (String(input).includes("/history")) return Response.json({ entries: [] });
+      if (String(input).endsWith(`/exercises/${exercise.id}/sets`) && init?.method === "POST") {
+        return Response.json({ set: createdSet }, { status: 201 });
+      }
+      return Response.json({ session: initial });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByText("ТИСНИ");
+    await user.type(await activePane().findByLabelText("Вага, кг"), "30");
+    await user.type(activePane().getByLabelText("Повтори"), "10");
+    await user.type(activePane().getByLabelText("Відпочинок перед підходом, с"), "90");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (
+      init?.method === "POST" && JSON.parse(String(init.body)).restBeforeSeconds === 90
+    ))).toBe(true));
+
+    const operation = { sessionId: 42, exerciseId: exercise.id, payload: { reps: 10, weightKg: 30, restBeforeSeconds: 90 } };
+    await expect(liveSetCreatePayloadDigest(operation)).resolves.toBe(sha256Canonical({
+      version: 2,
+      sessionId: 42,
+      exerciseId: exercise.id,
+      requestedSetNumber: null,
+      reps: 10,
+      weightKg: 30,
+      bandNominalResistanceKg: null,
+      rir: null,
+      restBeforeSeconds: 90,
+      comment: null,
+      completedAt: null,
+      loadAccountingOverride: null,
+    }));
+  });
+
   it("requires explicit confirmation before creating a new intent after a pre-write conflict", async () => {
     const user = userEvent.setup();
     const initial = buildSession();
@@ -2140,7 +2195,7 @@ describe("Live training session mobile UI", () => {
     await user.click(activePane().getByRole("button", { name: "Підставити дані підходу 2" }));
     expect((activePane().getByLabelText("Вага, кг") as HTMLInputElement).value).toBe("32");
     expect((activePane().getByLabelText("Повтори") as HTMLInputElement).value).toBe("10");
-    expect((activePane().getByPlaceholderText("опційно") as HTMLInputElement).value).toBe("2");
+    expect((activePane().getByLabelText("RIR") as HTMLInputElement).value).toBe("2");
     expect(activePane().getByText(/Поля підставлено/)).toBeTruthy();
   });
 

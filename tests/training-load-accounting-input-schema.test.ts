@@ -27,6 +27,16 @@ describe("Stage 02 set input compatibility", () => {
     expect(UpdateSetSchema.safeParse({ loadAccountingOverride: { reps: { kind: "asymmetric-per-side", left: -1, right: 2 } } }).success).toBe(false);
   });
 
+  it("accepts optional recorded rest intervals and leaves legacy sets unknown", () => {
+    expect(CreateSetSchema.safeParse({ reps: 8, weightKg: 20, restBeforeSeconds: 90 }).success).toBe(true);
+    expect(CreateSetSchema.safeParse({ reps: 8, weightKg: 20 }).success).toBe(true);
+    expect(UpdateSetSchema.safeParse({ restBeforeSeconds: null }).success).toBe(true);
+    for (const value of [-1, 1.5, 86_401, Number.POSITIVE_INFINITY]) {
+      expect(CreateSetSchema.safeParse({ reps: 8, weightKg: 20, restBeforeSeconds: value }).success).toBe(false);
+      expect(UpdateSetSchema.safeParse({ restBeforeSeconds: value }).success).toBe(false);
+    }
+  });
+
   it("accepts finite non-negative BODYWEIGHT additional load only through the existing override", () => {
     const create = CreateSetSchema.safeParse({
       reps: 10,

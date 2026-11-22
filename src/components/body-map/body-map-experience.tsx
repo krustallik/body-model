@@ -4,6 +4,7 @@ import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState,
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useI18n } from "@/i18n/i18n-provider";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import {
   BODY_MAP_OVERVIEW_STATE_V2,
@@ -23,6 +24,10 @@ import {
   type BodyMapUrlViewV1,
 } from "@/modules/training/body-map-url-state-v1";
 import { BODY_MAP_OVERVIEW_PADDING_FACTOR_V1, CameraTransitionControllerV1, frameBoundsV1 } from "./camera-transition-v1";
+import { BodyMapTrainingAnalyticsPanel } from "./body-map-training-analytics-panel";
+import { bodyMapAnatomyLabel, bodyMapGroupLabel, bodyMapGroupNote } from "./body-map-localization";
+import type { BodyMapAnalyticsWeeksV1, BodyMapTrainingAnalyticsResponseV1 } from "@/modules/training/body-map-training-analytics-v1";
+import type { BodyMapGroupExposureV2 } from "@/modules/training/body-map-training-exposure-v2";
 import styles from "./body-map-experience.module.css";
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -45,6 +50,10 @@ type ManifestRegion = {
   assetId: string;
   selectable: true;
 };
+
+type AnalyticsLoadState =
+  | { weeks: BodyMapAnalyticsWeeksV1; status: "loading" | "unauthorized" | "error" }
+  | { weeks: BodyMapAnalyticsWeeksV1; status: "ready"; analytics: BodyMapTrainingAnalyticsResponseV1 };
 type ManifestSubregion = {
   anatomyId: AnatomyIdV2;
   label: string;
@@ -75,16 +84,7 @@ type ManifestGroup = {
   cameraBounds: { min: number[]; max: number[] };
   camera: { preferredDirection: readonly [number, number, number]; targetPolicy: string; framingPolicy: string; desktopTransitionMs: number; mobileTransitionMs: number; reducedMotionTransitionMs: number; near: number; far: number; paddingFactor: number };
 };
-type ExposureState = {
-  groupId: BodyMapGroupIdV2;
-  source: "DEMO DATA" | "canonical-analytics-contract" | "unavailable";
-  status: "recorded-direct" | "recorded-indirect" | "no-recorded-mapped-exposure" | "partial-mapping" | "unavailable";
-  directUniqueSetCount: number | null;
-  indirectUniqueSetCount: number | null;
-  totalUniqueSetCount: number | null;
-  mappingCoverage: "complete-for-input" | "partial" | "unsupported" | "unknown";
-  note: string;
-};
+type ExposureState = BodyMapGroupExposureV2;
 type RuntimeAsset = {
   assetId: string;
   path: string;
@@ -190,10 +190,17 @@ function isEffectivelyVisible(object: THREE.Object3D) {
 
 function isMusclePickTarget(object: THREE.Object3D) { return isEffectivelyVisible(object) && object.userData.bodycastContextPresentation !== "body-silhouette-context"; }
 export default function BodyMapExperience({ delivery = "development" }: { delivery?: "development" | "public" }) {
+  const { locale } = useI18n();
+  const uk = locale === "uk";
   const [manifest, setManifest] = useState<PrototypeManifest | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [pageState, setPageState] = useState<BodyMapPageState>(() => pageStateFromUrlState(BODY_MAP_URL_OVERVIEW_V1));
+  const [analyticsWeeks, setAnalyticsWeeks] = useState<BodyMapAnalyticsWeeksV1>(4);
+  const [analyticsLoad, setAnalyticsLoad] = useState<AnalyticsLoadState>({ weeks: 4, status: "loading" });
+  const isAnalyticsCurrent = analyticsLoad.weeks === analyticsWeeks;
+  const analytics = isAnalyticsCurrent && analyticsLoad.status === "ready" ? analyticsLoad.analytics : null;
+  const analyticsRequestState = delivery === "development" ? "ready" : isAnalyticsCurrent ? analyticsLoad.status : "loading";
   const pageStateRef = useRef(pageState);
   const manifestRef = useRef<PrototypeManifest | null>(null);
   const navState = pageState.navigation;
@@ -202,7 +209,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   const showSkeletalContext = pageState.mode === "skeleton" || pageState.mode === "both-context";
   const [focusRequest, setFocusRequest] = useState<FocusRequest>({ id: 0, kind: "overview", preset: "front" });
   const [focusReady, setFocusReady] = useState(false);
-  const [pickedMessage, setPickedMessage] = useState("Loading anatomy…");
+  const [pickedMessage, setPickedMessage] = useState(uk ? "Завантаження анатомії…" : "Loading anatomy…");
   const [sceneRootUuid, setSceneRootUuid] = useState<string | null>(null);
   const [loadedMeshCount, setLoadedMeshCount] = useState(0);
   const [runtimePerformance, setRuntimePerformance] = useState<RuntimePerformance | null>(null);
@@ -243,10 +250,37 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
     return () => { cancelled = true; };
   }, [delivery]);
 
+  useEffect(() => {
+    if (delivery !== "public") {
+      return;
+    }
+    const controller = new AbortController();
+    fetch(`/api/v1/training/body-map/analytics?weeks=${analyticsWeeks}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (response.status === 401) return { kind: "unauthorized" as const };
+        if (!response.ok) throw new Error("analytics_unavailable");
+        return { kind: "ready" as const, body: await response.json() as { analytics: BodyMapTrainingAnalyticsResponseV1 } };
+      })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        if (result.kind === "unauthorized") {
+          setAnalyticsLoad({ weeks: analyticsWeeks, status: "unauthorized" });
+          return;
+        }
+        setAnalyticsLoad({ weeks: analyticsWeeks, status: "ready", analytics: result.body.analytics });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setAnalyticsLoad({ weeks: analyticsWeeks, status: "error" });
+      });
+    return () => controller.abort();
+  }, [analyticsWeeks, delivery]);
+
   const selectedGroup = useMemo(() => manifest?.bodyMapGroups.find(({ groupId }) =>
     groupId === navState.groupId,
   ) ?? null, [manifest, navState.groupId]);
+  const selectedGroupLabel = selectedGroup ? bodyMapGroupLabel(selectedGroup.groupId, selectedGroup.label, locale) : null;
   const selectedSubregion = selectedGroup?.subregions.find(({ anatomyId }) => anatomyId === navState.anatomyId) ?? null;
+  const selectedSubregionLabel = selectedSubregion ? bodyMapAnatomyLabel(selectedSubregion.anatomyId, selectedSubregion.label, locale) : null;
   const selectedDepthKinds = selectedSubregion && manifest
     ? new Set(manifest.visualIdentity.supportedRegions.filter(({ meshId }) => selectedSubregion.representedMeshIds.includes(meshId)).map(({ depthLayer }) => depthLayer))
     : new Set<string>();
@@ -311,13 +345,13 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       setPageState(next);
       setHoveredGroupId(null);
       setFocusReady(false);
-      setPickedMessage(next.navigation.groupId ? "Restoring anatomy view…" : "");
+      setPickedMessage(next.navigation.groupId ? uk ? "Відновлення вигляду анатомії…" : "Restoring anatomy view…" : "");
       requestFocus(focusInputForPageState(next));
     };
     synchronize();
     window.addEventListener("popstate", synchronize);
     return () => window.removeEventListener("popstate", synchronize);
-  }, [requestFocus]);
+  }, [requestFocus, uk]);
 
   useEffect(() => {
     if (!manifest) return;
@@ -344,13 +378,13 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   const setOverview = useCallback(() => {
     const next = commitPageState(pageStateFromUrlState(BODY_MAP_URL_OVERVIEW_V1));
     setHoveredGroupId(null);
-    setPickedMessage("Returning to the full-body view…");
+    setPickedMessage(uk ? "Повернення до вигляду всього тіла…" : "Returning to the full-body view…");
     requestFocus(focusInputForPageState(next));
     if (fallbackNavigation) { setFocusReady(true); setPickedMessage(""); }
-  }, [commitPageState, fallbackNavigation, requestFocus]);
+  }, [commitPageState, fallbackNavigation, requestFocus, uk]);
   const selectGroup = useCallback((groupId: BodyMapGroupIdV2) => {
     if (!manifest?.bodyMapGroups.some((group) => group.groupId === groupId)) {
-      setPickedMessage(`Unknown Body Map group: ${groupId}`);
+      setPickedMessage(uk ? "Не вдалося відкрити цю групу." : `Unknown Body Map group: ${groupId}`);
       return;
     }
     const current = pageStateRef.current;
@@ -359,10 +393,11 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       ...current, navigation, view: defaultBodyMapGroupViewV1(groupId), mode: "muscle", deep: false,
     });
     setHoveredGroupId(null);
-    setPickedMessage(`Moving to ${manifest.bodyMapGroups.find((group) => group.groupId === groupId)?.label ?? "muscle group"}…`);
+    const label = manifest.bodyMapGroups.find((group) => group.groupId === groupId)?.label ?? (uk ? "групи м’язів" : "muscle group");
+    setPickedMessage(uk ? `Перехід до ${bodyMapGroupLabel(groupId, label, locale)}…` : `Moving to ${label}…`);
     requestFocus(focusInputForPageState(next));
     if (fallbackNavigation) { setFocusReady(true); setPickedMessage(""); }
-  }, [commitPageState, fallbackNavigation, manifest, requestFocus]);
+  }, [commitPageState, fallbackNavigation, locale, manifest, requestFocus, uk]);
   const selectSubregion = useCallback((anatomyId: AnatomyIdV2) => {
     if (!selectedGroup) return;
     try {
@@ -377,13 +412,14 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
         ? defaultBodyMapSubregionViewV1(selectedGroup.groupId)
         : current.view;
       const next = commitPageState({ ...current, navigation, view: regionView, deep });
-      setPickedMessage(`Moving to ${subregion?.label ?? "muscle"}…`);
+      const label = subregion ? bodyMapAnatomyLabel(subregion.anatomyId, subregion.label, locale) : uk ? "м’яза" : "muscle";
+      setPickedMessage(uk ? `Перехід до ${label}…` : `Moving to ${label}…`);
       requestFocus(focusInputForPageState(next));
       if (fallbackNavigation) { setFocusReady(true); setPickedMessage(""); }
     } catch (error) {
-      setPickedMessage(error instanceof Error ? error.message : String(error));
+      setPickedMessage(uk ? "Не вдалося відкрити цю анатомічну частину." : error instanceof Error ? error.message : String(error));
     }
-  }, [commitPageState, fallbackNavigation, manifest, requestFocus, selectedGroup]);
+  }, [commitPageState, fallbackNavigation, locale, manifest, requestFocus, selectedGroup, uk]);
   const back = useCallback(() => {
     const current = pageStateRef.current;
     const navigation = transitionBodyMapNavigationV2(current.navigation, { type: "BACK" });
@@ -392,23 +428,24 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
     });
     setHoveredGroupId(null);
     if (next.navigation.level === "OVERVIEW") {
-      setPickedMessage("Returning to the full-body view…");
+      setPickedMessage(uk ? "Повернення до вигляду всього тіла…" : "Returning to the full-body view…");
       requestFocus(focusInputForPageState(next));
       if (fallbackNavigation) { setFocusReady(true); setPickedMessage(""); }
     } else if (next.navigation.groupId) {
-      setPickedMessage(`Returning to ${selectedGroup?.label ?? "muscle group"}…`);
+      const label = selectedGroup ? bodyMapGroupLabel(selectedGroup.groupId, selectedGroup.label, locale) : uk ? "групи м’язів" : "muscle group";
+      setPickedMessage(uk ? `Повернення до ${label}…` : `Returning to ${label}…`);
       requestFocus(focusInputForPageState(next));
       if (fallbackNavigation) setFocusReady(true);
     }
-  }, [commitPageState, fallbackNavigation, requestFocus, selectedGroup]);
+  }, [commitPageState, fallbackNavigation, locale, requestFocus, selectedGroup, uk]);
   const selectCameraPreset = useCallback((preset: CameraPresetV1) => {
     const current = pageStateRef.current;
     const view: BodyMapUrlViewV1 = preset === "reset" ? current.navigation.groupId ? "default" : "front" : preset;
     const next = commitPageState({ ...current, view });
-    setPickedMessage(current.navigation.groupId ? "Adjusting view…" : "Adjusting full-body view…");
+    setPickedMessage(current.navigation.groupId ? uk ? "Зміна ракурсу…" : "Adjusting view…" : uk ? "Зміна ракурсу всього тіла…" : "Adjusting full-body view…");
     requestFocus(focusInputForPageState(next));
     if (fallbackNavigation) { setFocusReady(true); setPickedMessage(""); }
-  }, [commitPageState, fallbackNavigation, requestFocus]);
+  }, [commitPageState, fallbackNavigation, requestFocus, uk]);
 
   const selectDisplayMode = useCallback((mode: BodyMapUrlModeV1) => {
     commitPageState({ ...pageStateRef.current, mode });
@@ -418,25 +455,25 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   }, [commitPageState]);
   const onOverviewMeshPicked = useCallback((region: ManifestRegion | null, hitName: string) => {
     if (!region) {
-      setPickedMessage(`${hitName} is context geometry; only validated analytics-group surfaces are selectable.`);
+      setPickedMessage(uk ? "Це допоміжна геометрія; вибирати можна лише перевірені м’язові групи." : `${hitName} is context geometry; only validated analytics-group surfaces are selectable.`);
       return;
     }
     const selectedGroupId = selectedGroup?.groupId;
     const groupId = selectedGroupId && region.bodyMapGroupIds.includes(selectedGroupId) ? selectedGroupId : region.primaryPickGroupId;
     if (!region.bodyMapGroupIds.includes(groupId)) {
-      setPickedMessage(`Mesh ${region.meshId} has no valid primary group-pick binding.`);
+      setPickedMessage(uk ? "Цю ділянку не зіставлено з групою для вибору." : `Mesh ${region.meshId} has no valid primary group-pick binding.`);
       return;
     }
     const validPair = manifest?.navigationMembership.pairs.some(({ anatomyId, groupId: memberGroupId }) =>
       memberGroupId === groupId && region.anatomyIds.includes(anatomyId),
     );
     if (!validPair) {
-      setPickedMessage(`Mesh ${region.meshId} has no taxonomy membership for ${groupId}.`);
+      setPickedMessage(uk ? "Ця ділянка не має підтвердженого анатомічного зіставлення." : `Mesh ${region.meshId} has no taxonomy membership for ${groupId}.`);
       return;
     }
-    setPickedMessage(`${region.sourceObjectName} · selected ${groupId} group`);
+    setPickedMessage(uk ? `Вибрано: ${bodyMapGroupLabel(groupId, groupId, locale)}` : `${region.sourceObjectName} · selected ${groupId} group`);
     selectGroup(groupId);
-  }, [manifest, selectGroup, selectedGroup]);
+  }, [locale, manifest, selectGroup, selectedGroup, uk]);
   const selectedVisualRegionIds = useMemo(() => {
     if (!manifest || !selectedGroup || navState.level !== "SUBREGION_DETAIL" || !navState.anatomyId) return [];
     const ids = new Set(selectedSubregionMeshIds(selectedGroup, navState.anatomyId));
@@ -444,7 +481,14 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       .filter((region) => ids.has(region.meshId))
       .map(({ visualRegionId }) => visualRegionId);
   }, [manifest, navState.anatomyId, navState.level, selectedGroup]);
-  const activeExposure = selectedGroup ? manifest?.trainingExposure.groups.find(({ groupId }) => groupId === selectedGroup.groupId) ?? null : null;
+  const analyticsGroup = selectedGroup ? analytics?.groups.find(({ groupId }) => groupId === selectedGroup.groupId) ?? null : null;
+  const exposureStates: readonly ExposureState[] = delivery === "public" && analytics
+    ? analytics.groups
+    : manifest?.trainingExposure.groups ?? [];
+  const activeExposure = selectedGroup
+    ? (delivery === "public" ? (analyticsGroup ?? exposureStates.find(({ groupId }) => groupId === selectedGroup.groupId)) : exposureStates.find(({ groupId }) => groupId === selectedGroup.groupId)) ?? null
+    : null;
+  const selectedAnatomy = analyticsGroup?.anatomy.find(({ anatomyId }) => anatomyId === selectedSubregion?.anatomyId) ?? null;
   const selectedAnatomyCoverage = selectedSubregion && manifest
     ? manifest.anatomyCoverage.find(({ anatomyId }) => anatomyId === selectedSubregion.anatomyId)
     : null;
@@ -479,12 +523,20 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
     setFocusReady(true);
   }, []);
   const onSceneMetrics = useCallback((metrics: RuntimePerformance) => setRuntimePerformance(metrics), []);
+  const dataBadge = delivery === "development"
+    ? uk ? "ДЕМОНСТРАЦІЙНІ ДАНІ" : "DEMO DATA"
+    : analyticsRequestState === "loading" ? uk ? "ЗАВАНТАЖЕННЯ ЖУРНАЛУ" : "LOADING DIARY"
+      : analyticsRequestState === "unauthorized" ? uk ? "ПОТРІБЕН ВХІД" : "SIGN IN REQUIRED"
+        : analyticsRequestState === "error" ? uk ? "АНАЛІТИКА НЕДОСТУПНА" : "ANALYTICS UNAVAILABLE"
+          : analytics?.coverage.mapping === "partial" ? uk ? "ЧАСТКОВІ ДАНІ ЖУРНАЛУ" : "PARTIAL DIARY DATA"
+            : analytics?.coverage.mapping === "complete-for-input" ? uk ? "ДАНІ З ЖУРНАЛУ" : "DIARY DATA"
+              : uk ? "ЗАПИСІВ НЕМАЄ" : "NO DIARY RECORDS";
 
   if (loadError || !manifest || !assetUrl) {
     return (
       <main className={styles.page} data-testid="body-map-prototype">
-        <header className={styles.header}><div><h1>Body Map</h1></div><span className={styles.demoBadge}>{delivery === "public" ? "TRAINING DATA NOT CONNECTED" : "DEMO DATA"}</span></header>
-        {loadError ? <p className={styles.viewerError} role="alert">Body Map is unavailable: {loadError}</p> : <p className={styles.loading}>Loading anatomy…</p>}
+        <header className={styles.header}><div><h1>{uk ? "Карта тіла" : "Body Map"}</h1></div><span className={styles.demoBadge}>{dataBadge}</span></header>
+        {loadError ? <p className={styles.viewerError} role="alert">{uk ? "Карта тіла недоступна." : "Body Map is unavailable."}</p> : <p className={styles.loading}>{uk ? "Завантаження анатомії…" : "Loading anatomy…"}</p>}
       </main>
     );
   }
@@ -492,16 +544,16 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   return (
     <main className={styles.page} data-testid="body-map-prototype">
       <header className={styles.header}>
-        <div><h1>Body Map</h1></div>
+        <div><h1>{uk ? "Карта тіла" : "Body Map"}</h1></div>
         <div className={styles.badges}>
-          <span className={styles.demoBadge}>{delivery === "public" ? manifest.dataNotice : manifest.demoData?.label}</span>
+          <span className={styles.demoBadge} data-testid="body-map-data-status">{dataBadge}</span>
         </div>
       </header>
 
-      <nav className={styles.breadcrumbs} aria-label="Body Map breadcrumb">
-        <button onClick={setOverview} aria-current={navState.level === "OVERVIEW" ? "page" : undefined}>Body Map</button>
-        {selectedGroup && <><span>›</span><button onClick={() => selectGroup(selectedGroup.groupId)} aria-current={navState.level === "GROUP_DETAIL" ? "page" : undefined}>{selectedGroup.label}</button></>}
-        {selectedSubregion && <><span>›</span><span aria-current="page">{selectedSubregion.label}</span></>}
+      <nav className={styles.breadcrumbs} aria-label={uk ? "Навігація картою тіла" : "Body Map breadcrumb"}>
+        <button onClick={setOverview} aria-current={navState.level === "OVERVIEW" ? "page" : undefined}>{uk ? "Карта тіла" : "Body Map"}</button>
+        {selectedGroup && <><span>›</span><button onClick={() => selectGroup(selectedGroup.groupId)} aria-current={navState.level === "GROUP_DETAIL" ? "page" : undefined}>{selectedGroupLabel}</button></>}
+        {selectedSubregion && <><span>›</span><span aria-current="page">{selectedSubregionLabel}</span></>}
       </nav>
 
       <section className={styles.layout}>
@@ -532,14 +584,14 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
             onPointerUpCapture={onCanvasPointerUp}
             onPointerCancelCapture={onCanvasPointerUp}
           >
-            {assetError ? <TwoDimensionalFallback groups={manifest.bodyMapGroups} onSelectGroup={selectGroup} onReady={onFallbackVisible} /> : <SceneErrorBoundary fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}>
+            {assetError ? <TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} /> : <SceneErrorBoundary fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}>
               <Canvas
                 frameloop="demand"
                 camera={{ fov: 35, near: 0.01, far: 100, position: [0, 0, 4.5] }}
                 dpr={renderDpr}
                 gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-                aria-label="BodyParts3D full-body anatomy scene. Drag to orbit, scroll to zoom, click a highlighted muscle group."
-                fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}
+                aria-label={uk ? "Анатомічна сцена всього тіла. Перетягніть для обертання, прокрутіть для масштабування, натисніть на м’язову групу." : "BodyParts3D full-body anatomy scene. Drag to orbit, scroll to zoom, click a highlighted muscle group."}
+                fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}
                 onCreated={({ gl }) => {
                   setRendererAvailable(true);
                   gl.outputColorSpace = THREE.SRGBColorSpace;
@@ -578,30 +630,30 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
               </Canvas>
             </SceneErrorBoundary>}
             {pickedMessage && <div className={styles.viewerMessage} aria-live="polite">{pickedMessage}</div>}
-            {assetError && <div role="alert" className={styles.assetError}>{assetError}</div>}
+            {assetError && <div role="alert" className={styles.assetError}>{uk ? "3D-модель недоступна або не пройшла перевірку. Показано спрощену карту." : "The 3D model is unavailable or failed validation. A simplified map is shown."}</div>}
           </div>
           <div className={styles.viewerControls}>
-            <button data-testid="view-front" onClick={() => selectCameraPreset("front")}>Front</button>
-            <button data-testid="view-back" onClick={() => selectCameraPreset("back")}>Back</button>
-            <button data-testid="view-left" onClick={() => selectCameraPreset("left")}>Left</button>
-            <button data-testid="view-right" onClick={() => selectCameraPreset("right")}>Right</button>
-            <button data-testid="view-reset" onClick={() => selectCameraPreset("reset")}>Reset camera</button>
+            <button data-testid="view-front" onClick={() => selectCameraPreset("front")}>{uk ? "Спереду" : "Front"}</button>
+            <button data-testid="view-back" onClick={() => selectCameraPreset("back")}>{uk ? "Ззаду" : "Back"}</button>
+            <button data-testid="view-left" onClick={() => selectCameraPreset("left")}>{uk ? "Ліворуч" : "Left"}</button>
+            <button data-testid="view-right" onClick={() => selectCameraPreset("right")}>{uk ? "Праворуч" : "Right"}</button>
+            <button data-testid="view-reset" onClick={() => selectCameraPreset("reset")}>{uk ? "Скинути ракурс" : "Reset camera"}</button>
             {navState.level !== "OVERVIEW" && <>
               <span className={styles.controlDivider} />
-              <button aria-pressed={pageState.mode === "muscle" && !pageState.deep} onClick={() => commitPageState({ ...pageStateRef.current, mode: "muscle", deep: false })}>Muscle view</button>
-              <button aria-pressed={showSurfaceSupport} onClick={() => selectDisplayMode(showSurfaceSupport ? showSkeletalContext ? "skeleton" : "muscle" : showSkeletalContext ? "both-context" : "fascia")}>Fascia/tendon context</button>
-              <button aria-pressed={showSkeletalContext} onClick={() => selectDisplayMode(showSkeletalContext ? showSurfaceSupport ? "fascia" : "muscle" : showSurfaceSupport ? "both-context" : "skeleton")}>Skeleton context</button>
-              <button aria-pressed={pageState.deep} onClick={toggleDeepMode}>Deep muscles</button>
-              <button onClick={() => navState.level === "SUBREGION_DETAIL" ? back() : commitPageState({ ...pageStateRef.current, mode: "muscle", deep: false })}>Restore group view</button>
+              <button aria-pressed={pageState.mode === "muscle" && !pageState.deep} onClick={() => commitPageState({ ...pageStateRef.current, mode: "muscle", deep: false })}>{uk ? "М’язи" : "Muscle view"}</button>
+              <button aria-pressed={showSurfaceSupport} onClick={() => selectDisplayMode(showSurfaceSupport ? showSkeletalContext ? "skeleton" : "muscle" : showSkeletalContext ? "both-context" : "fascia")}>{uk ? "Фасції та сухожилля" : "Fascia/tendon context"}</button>
+              <button aria-pressed={showSkeletalContext} onClick={() => selectDisplayMode(showSkeletalContext ? showSurfaceSupport ? "fascia" : "muscle" : showSurfaceSupport ? "both-context" : "skeleton")}>{uk ? "Скелет" : "Skeleton context"}</button>
+              <button aria-pressed={pageState.deep} onClick={toggleDeepMode}>{uk ? "Глибокі м’язи" : "Deep muscles"}</button>
+              <button onClick={() => navState.level === "SUBREGION_DETAIL" ? back() : commitPageState({ ...pageStateRef.current, mode: "muscle", deep: false })}>{uk ? "Повернути вигляд групи" : "Restore group view"}</button>
             </>}
           </div>
           <output className={styles.performance} data-testid="runtime-performance" hidden aria-hidden="true">
             {runtimePerformance ? JSON.stringify(runtimePerformance) : "pending"}
           </output>
           <div className={styles.viewerControls}>
-            <label className={styles.qualityControl}>Visual quality
+            <label className={styles.qualityControl}>{uk ? "Якість зображення" : "Visual quality"}
               <select data-testid="graphics-quality" value={graphicsQuality} onChange={(event) => setGraphicsQuality(event.currentTarget.value as GraphicsQuality)}>
-                <option value="auto">Auto</option><option value="high">High</option><option value="balanced">Balanced</option><option value="low">Low</option>
+                <option value="auto">{uk ? "Авто" : "Auto"}</option><option value="high">{uk ? "Висока" : "High"}</option><option value="balanced">{uk ? "Збалансована" : "Balanced"}</option><option value="low">{uk ? "Низька" : "Low"}</option>
               </select>
             </label>
           </div>
@@ -609,76 +661,77 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
 
         <aside className={styles.panel}>
           {navState.level === "OVERVIEW" && <>
-            <div className={styles.panelHeading}><p className={styles.kicker}>OVERVIEW</p><h2>Muscle groups</h2></div>
-            <p className={styles.muted}>Rotate the body, then hover a muscle to preview its group or choose a group below.</p>
-            <GroupList groups={manifest.bodyMapGroups} exposureStates={manifest.trainingExposure.groups} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} />
+            <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ОГЛЯД" : "OVERVIEW"}</p><h2>{uk ? "Групи м’язів" : "Muscle groups"}</h2></div>
+            <p className={styles.muted}>{uk ? "Оберни тіло та вибери групу або натисни її у списку." : "Rotate the body, then choose a group or select it from the list."}</p>
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel level="OVERVIEW" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} />}
+            <GroupList groups={manifest.bodyMapGroups} exposureStates={exposureStates} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} locale={locale} />
           </>}
 
           {navState.level !== "OVERVIEW" && !focusReady && selectedGroup && <div className={styles.transitionCard} data-testid="focus-transition-status" aria-live="polite">
-            <span className={styles.kicker}>CAMERA TRANSITION</span><strong>Moving to {selectedSubregion?.label ?? selectedGroup.label}</strong><small>The report opens when the camera settles.</small>
+            <span className={styles.kicker}>{uk ? "ПЕРЕХІД КАМЕРИ" : "CAMERA TRANSITION"}</span><strong>{uk ? "Перехід до" : "Moving to"} {selectedSubregionLabel ?? selectedGroupLabel}</strong><small>{uk ? "Звіт відкриється після завершення переходу." : "The report opens when the camera settles."}</small>
           </div>}
 
           {navState.level === "GROUP_DETAIL" && selectedGroup && focusReady && <>
-            <div className={styles.panelHeading}><p className={styles.kicker}>MUSCLE GROUP</p><h2>{selectedGroup.label}</h2></div>
-            <div className={styles.metricCard} data-testid="group-report"><span>Training exposure</span><strong>{exposureLabel(activeExposure)}</strong><small>{activeExposure?.totalUniqueSetCount === null || activeExposure?.totalUniqueSetCount === undefined ? "Count unavailable" : `${activeExposure.totalUniqueSetCount} unique ${activeExposure.source === "DEMO DATA" ? "demo" : "recorded"} sets`} · {activeExposure?.source ?? "unavailable"}</small><small>{activeExposure?.note}</small></div>
-            <h3>Muscles and regions</h3>
-            <SubregionList group={selectedGroup} manifest={manifest} onSelect={selectSubregion} />
-            <p className={styles.coverageNotice}>Exercise exposure stays at the recorded parent/group level. This view does not distribute sets to child regions.</p>
-            <details className={styles.otherGroups}><summary>All muscle groups</summary><GroupList groups={manifest.bodyMapGroups} exposureStates={manifest.trainingExposure.groups} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} compact /></details>
+            <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ГРУПА М’ЯЗІВ" : "MUSCLE GROUP"}</p><h2>{selectedGroupLabel}</h2></div>
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel level="GROUP_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} />}
+            {delivery === "development" && <div className={styles.metricCard} data-testid="group-report"><span>{uk ? "Демонстраційна експозиція" : "Demo exposure"}</span><strong>{exposureLabel(activeExposure, uk)}</strong><small>{uk ? "Фіктивні демодані; це не історія тренувань." : "Fixture data only; this is not training history."}</small></div>}
+            <h3>{uk ? "М’язи та частини" : "Muscles and regions"}</h3>
+            <SubregionList group={selectedGroup} manifest={manifest} locale={locale} onSelect={selectSubregion} />
+            <p className={styles.coverageNotice}>{uk ? "Підхід потрапляє до частини м’яза лише тоді, коли це підтримує збережений мапінг вправи. Дані про групу не розподіляються довільно між її частинами." : "Sets are assigned to a muscle part only when the stored exercise mapping supports it. Group totals are not arbitrarily split across child regions."}</p>
+            <details className={styles.otherGroups}><summary>{uk ? "Усі групи м’язів" : "All muscle groups"}</summary><GroupList groups={manifest.bodyMapGroups} exposureStates={exposureStates} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} compact locale={locale} /></details>
           </>}
 
           {navState.level === "SUBREGION_DETAIL" && selectedGroup && selectedSubregion && focusReady && <>
-            <div className={styles.panelHeading}><p className={styles.kicker}>SUBREGION DETAIL</p><h2>{selectedSubregion.label}</h2></div>
+            <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ЧАСТИНА М’ЯЗА" : "MUSCLE DETAIL"}</p><h2>{selectedSubregionLabel}</h2></div>
             <div className={styles.identityCard} data-testid="subregion-identity-card">
-              <span>{selectedGroup.label}</span>
+              <span>{selectedGroupLabel}</span>
             </div>
             {[...new Set(manifest.visualIdentity.supportedRegions.filter(({ meshId }) => selectedSubregion.representedMeshIds.includes(meshId)).map(({ depthLayer }) => depthLayer))].includes("deep")
               && ![...new Set(manifest.visualIdentity.supportedRegions.filter(({ meshId }) => selectedSubregion.representedMeshIds.includes(meshId)).map(({ depthLayer }) => depthLayer))].includes("superficial")
               && deepDetailAnatomyId === selectedSubregion.anatomyId
-              ? <p className={styles.coverageNotice} data-testid="deep-context-status">Selected deep anatomy is shown in place. Superficial meshes from its own analytics group are temporarily muted; the rest of the body remains visible.</p>
+              ? <p className={styles.coverageNotice} data-testid="deep-context-status">{uk ? "Показано вибрану глибоку структуру. Поверхневі м’язи цієї групи тимчасово приглушені; решта тіла залишається видимою." : "The selected deep structure is shown in place. Superficial muscles in this group are temporarily muted; the rest of the body remains visible."}</p>
               : null}
-            {selectedAnatomyCoverage?.visualAvailability === "unavailable" ? <p className={styles.coverageNotice} data-testid="source-geometry-unavailable">No matching BodyParts3D geometry is available for this anatomy. No synthetic mesh is shown.</p> : null}{selectedAnatomyCoverage?.visualAvailability === "partial" ? <p className={styles.coverageNotice} data-testid="source-geometry-partial">This anatomy view is partial in BodyParts3D 4.0. Missing structures are listed below.</p> : null}{selectedAnatomyCoverage?.limitations?.length ? <p className={styles.muted}>{selectedAnatomyCoverage.limitations.join(" ")}</p> : null}
-            <h3>Exercise association</h3>
-            <div className={styles.metricCard}><span>Child-region set metric</span><strong>Unavailable</strong><small>Recorded set exposure is shown only at its mapped group or parent anatomy. Child-region exposure is unavailable, not zero.</small></div>
-            <div className={styles.detailFacts}>
-              <span>Training exposure <b>{exposureLabel(activeExposure)}</b></span>
-              <span>Data source <b>{delivery === "public" ? "Not connected" : "DEMO DATA"}</b></span>
-            </div>
+            {selectedAnatomyCoverage?.visualAvailability === "unavailable" ? <p className={styles.coverageNotice} data-testid="source-geometry-unavailable">{uk ? "У BodyParts3D немає відповідної геометрії для цієї структури. Штучну модель не показуємо." : "No matching BodyParts3D geometry is available for this structure. No synthetic mesh is shown."}</p> : null}{selectedAnatomyCoverage?.visualAvailability === "partial" ? <p className={styles.coverageNotice} data-testid="source-geometry-partial">{uk ? "Геометрія цієї структури в BodyParts3D неповна." : "This structure has partial geometry in BodyParts3D."}</p> : null}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel level="SUBREGION_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} />}
+            {delivery === "development" && <div className={styles.metricCard}><span>{uk ? "Дані про цю частину" : "Subregion exposure"}</span><strong>{uk ? "Недоступно в деморежимі" : "Unavailable in demo mode"}</strong><small>{uk ? "Демодані не підміняють ваш журнал." : "Demo fixtures never replace your diary."}</small></div>}
+            {selectedAnatomy?.mappingCoverage === "partial" && <p className={styles.coverageNotice}>{uk ? "Підрахунок частковий: мапінг вправи не охоплює всі відповідні анатомічні дані." : "The count is partial because exercise mappings do not cover all relevant anatomy."}</p>}
           </>}
 
           <footer className={styles.footer}>
-            {navState.level !== "OVERVIEW" && <button className={styles.backButton} onClick={back}>← Back</button>}
-            {navState.level !== "OVERVIEW" && <button className={styles.textButton} onClick={setOverview}>Body Map overview</button>}
-            <small>Exercise exposure is shown at the mapped muscle group.</small>
+            {navState.level !== "OVERVIEW" && <button className={styles.backButton} onClick={back}>← {uk ? "Назад" : "Back"}</button>}
+            {navState.level !== "OVERVIEW" && <button className={styles.textButton} onClick={setOverview}>{uk ? "Огляд карти тіла" : "Body Map overview"}</button>}
+            <small>{uk ? "Підрахунок показує зіставлені підходи з журналу, а не вимір активації чи росту м’язів." : "Counts show mapped diary sets, not measured muscle activation or growth."}</small>
           </footer>
         </aside>
       </section>
-      <details className={styles.footnote}><summary>Assets &amp; licenses</summary><p>Versioned BodyParts3D 4.0 candidate. The <a href="https://dbarchive.biosciencedbc.jp/data/bodyparts3d/LATEST/README_e.html" target="_blank" rel="noreferrer">official README dated 2025-02-27</a> lists the exact Release 4.0 archives and states CC BY 4.0 with the required attribution: “BodyParts3D, © The Database Center for Life Science licensed under CC Attribution 4.0 International”. All 3,492 archived OBJ headers also carry the older CC BY-SA 2.1 Japan notice. We follow the current official database terms, preserve attribution, and disclose the header discrepancy in the bundled notice; this remains an interpretive uncertainty. Four missing muscle volumes are BodyCast-authored educational approximations and require anatomy review.</p></details>
+      <details className={styles.footnote}><summary>{uk ? "Модель та ліцензії" : "Assets & licenses"}</summary><p>{uk ? <>Версійна анатомічна модель BodyParts3D 4.0. <a href="https://dbarchive.biosciencedbc.jp/data/bodyparts3d/LATEST/README_e.html" target="_blank" rel="noreferrer">Офіційний опис</a> зазначає ліцензію CC BY 4.0 та умови атрибуції. У заголовках архівних OBJ також залишилися старіші згадки CC BY-SA 2.1 Japan; цю розбіжність описано в повідомленні до моделі. Чотири відсутні об’єми м’язів є навчальними наближеннями BodyCast і потребують анатомічної перевірки.</> : <>Versioned BodyParts3D 4.0 anatomy. The <a href="https://dbarchive.biosciencedbc.jp/data/bodyparts3d/LATEST/README_e.html" target="_blank" rel="noreferrer">official documentation</a> states CC BY 4.0 and attribution terms. Archived OBJ headers also retain older CC BY-SA 2.1 Japan notices; this discrepancy is disclosed in the bundled notice. Four missing muscle volumes are BodyCast educational approximations and need anatomy review.</>}</p></details>
     </main>
   );
 }
 
-function exposureLabel(exposure: ExposureState | null | undefined) {
-  if (!exposure) return "Unavailable";
-  if (exposure.status === "recorded-direct") return `Recorded direct exposure${exposure.mappingCoverage === "partial" ? " · partial mapping" : exposure.mappingCoverage === "unknown" ? " · coverage unknown" : ""}`;
-  if (exposure.status === "recorded-indirect") return `Recorded indirect exposure${exposure.mappingCoverage === "partial" ? " · partial mapping" : exposure.mappingCoverage === "unknown" ? " · coverage unknown" : ""}`;
-  if (exposure.status === "partial-mapping") return "Partial mapping";
-  if (exposure.status === "unavailable") return "Unavailable";
-  return "No recorded mapped exposure";
+function exposureLabel(exposure: ExposureState | null | undefined, uk: boolean) {
+  if (!exposure) return uk ? "Недоступно" : "Unavailable";
+  if (exposure.status === "recorded-direct") return `${uk ? "Прямі записані підходи" : "Recorded direct exposure"}${exposure.mappingCoverage === "partial" ? ` · ${uk ? "мапінг частковий" : "partial mapping"}` : exposure.mappingCoverage === "unknown" ? ` · ${uk ? "охоплення невідоме" : "coverage unknown"}` : ""}`;
+  if (exposure.status === "recorded-indirect") return `${uk ? "Допоміжні записані підходи" : "Recorded indirect exposure"}${exposure.mappingCoverage === "partial" ? ` · ${uk ? "мапінг частковий" : "partial mapping"}` : exposure.mappingCoverage === "unknown" ? ` · ${uk ? "охоплення невідоме" : "coverage unknown"}` : ""}`;
+  if (exposure.status === "partial-mapping") return uk ? "Частковий мапінг" : "Partial mapping";
+  if (exposure.status === "unavailable") return uk ? "Недоступно" : "Unavailable";
+  return uk ? "Немає зіставлених записів" : "No recorded mapped exposure";
 }
 
 function selectedSubregionMeshIds(group: ManifestGroup, anatomyId: AnatomyIdV2): string[] {
   return group.subregions.find((subregion) => subregion.anatomyId === anatomyId)?.representedMeshIds ?? [];
 }
 
-function GroupList({ groups, exposureStates, hoveredGroupId, onHover, onSelect, compact = false }: {
+function GroupList({ groups, exposureStates, hoveredGroupId, onHover, onSelect, locale, compact = false }: {
   groups: readonly ManifestGroup[];
   exposureStates: readonly ExposureState[];
   hoveredGroupId: BodyMapGroupIdV2 | null;
   onHover: (groupId: BodyMapGroupIdV2 | null) => void;
   onSelect: (groupId: BodyMapGroupIdV2) => void;
+  locale: "uk" | "en";
   compact?: boolean;
 }) {
+  const uk = locale === "uk";
   const stateByGroup = new Map(exposureStates.map((state) => [state.groupId, state]));
   const recorded = groups.filter((group) => ["recorded-direct", "recorded-indirect"].includes(stateByGroup.get(group.groupId)?.status ?? ""))
     .sort((left, right) => Number(stateByGroup.get(left.groupId)?.status !== "recorded-direct") - Number(stateByGroup.get(right.groupId)?.status !== "recorded-direct"));
@@ -692,33 +745,34 @@ function GroupList({ groups, exposureStates, hoveredGroupId, onHover, onSelect, 
       data-testid={`group-select-${group.groupId}`}
       data-exposure-status={exposure?.status ?? "unavailable"}
       key={group.groupId}
-      title={group.note}
+      title={bodyMapGroupNote(group.groupId, group.note, locale)}
       onMouseEnter={() => onHover(group.groupId)}
       onMouseLeave={() => onHover(null)}
       onFocus={() => onHover(group.groupId)}
       onBlur={() => onHover(null)}
       onClick={() => onSelect(group.groupId)}
     >
-      <span>{group.label}</span><small>{exposureLabel(exposure)}{count === null || count === undefined ? "" : ` · ${count} sets`}</small><b>›</b>
+      <span>{bodyMapGroupLabel(group.groupId, group.label, locale)}</span><small>{exposureLabel(exposure, uk)}{count === null || count === undefined ? "" : ` · ${count} ${uk ? "підх." : "sets"}`}</small><b>›</b>
     </button>;
   };
   return <div className={`${styles.groupList} ${compact ? styles.groupListCompact : ""}`}>
-    {recorded.length > 0 && <section className={styles.exposureSection}><h3>Recorded exposure</h3>{recorded.map((group) => renderGroup(group))}</section>}
-    {uncertain.length > 0 && <section className={styles.exposureSection}><h3>Partial or unavailable</h3>{uncertain.map((group) => renderGroup(group))}</section>}
-    {withoutRecorded.length > 0 && <section className={styles.exposureSection}><h3>No recorded mapped exposure</h3>{withoutRecorded.map((group) => renderGroup(group, true))}<p className={styles.muted}>This means the supplied input has no mapped set for these groups; it does not establish inactivity.</p></section>}
+    {recorded.length > 0 && <section className={styles.exposureSection}><h3>{uk ? "Записані підходи" : "Recorded exposure"}</h3>{recorded.map((group) => renderGroup(group))}</section>}
+    {uncertain.length > 0 && <section className={styles.exposureSection}><h3>{uk ? "Частково або недоступно" : "Partial or unavailable"}</h3>{uncertain.map((group) => renderGroup(group))}</section>}
+    {withoutRecorded.length > 0 && <section className={styles.exposureSection}><h3>{uk ? "Немає зіставлених записів" : "No recorded mapped exposure"}</h3>{withoutRecorded.map((group) => renderGroup(group, true))}<p className={styles.muted}>{uk ? "Це означає лише, що в доступному журналі немає зіставлених підходів для цих груп; це не доводить відсутність тренувань." : "The supplied diary has no mapped sets for these groups; this does not establish inactivity."}</p></section>}
     {groups.filter((group) => !stateByGroup.has(group.groupId)).map((group) => renderGroup(group, true))}
   </div>;
 }
 
-function SubregionList({ group, manifest, onSelect }: { group: ManifestGroup; manifest: PrototypeManifest; onSelect: (anatomyId: AnatomyIdV2) => void }) {
+function SubregionList({ group, manifest, locale, onSelect }: { group: ManifestGroup; manifest: PrototypeManifest; locale: "uk" | "en"; onSelect: (anatomyId: AnatomyIdV2) => void }) {
+  const uk = locale === "uk";
   return <div className={styles.subregionList}>
     {group.subregions.map((subregion) => {
       const representedMeshIds = subregion.representedMeshIds;
       const regionRows = manifest.visualIdentity.supportedRegions.filter(({ meshId }) => representedMeshIds.includes(meshId));
       const hasDeepGeometry = regionRows.some(({ depthLayer }) => depthLayer === "deep");
-      const availability = subregion.visualAvailability === "unavailable" ? "Not represented in source model" : subregion.visualAvailability === "partial" ? "Partial source coverage" : hasDeepGeometry ? "Includes deep muscle" : "Muscle detail";
+      const availability = subregion.visualAvailability === "unavailable" ? uk ? "Немає в моделі джерела" : "Not represented in source model" : subregion.visualAvailability === "partial" ? uk ? "Часткове покриття джерела" : "Partial source coverage" : hasDeepGeometry ? uk ? "Містить глибокий м’яз" : "Includes deep muscle" : uk ? "Деталізація м’яза" : "Muscle detail";
       return <button key={subregion.anatomyId} data-testid={`subregion-${subregion.anatomyId}`} onClick={() => onSelect(subregion.anatomyId)}>
-        <span>{subregion.label}</span><small>{availability}</small>
+        <span>{bodyMapAnatomyLabel(subregion.anatomyId, subregion.label, locale)}</span><small>{availability}</small>
       </button>;
     })}
   </div>;
@@ -789,15 +843,16 @@ function FullBodyScene({
       const identity = identityNode.userData;
       const region = regionByMeshId.get(meshId);
       const isDefaultHiddenContext = defaultHiddenContextMeshIds.includes(meshId);
-      object.visible = !isDefaultHiddenContext;
-      object.userData.bodycastDefaultHiddenContext = isDefaultHiddenContext;
+      const isBodySilhouette = identity.bodycastContextPresentation === "body-silhouette-context";
+      object.visible = !isDefaultHiddenContext && !isBodySilhouette;
+      object.userData.bodycastDefaultHiddenContext = isDefaultHiddenContext || isBodySilhouette;
       object.userData.bodycastMeshId = meshId;
       object.userData.bodycastSelectable = identity.bodycastSelectable === true;
       object.userData.bodycastRole = identity.bodycastRole;
       object.userData.bodycastContextLayer = identity.bodycastContextLayer;
       object.userData.bodycastContextPresentation = identity.bodycastContextPresentation;
       object.userData.bodycastSourceObjectName = identity.bodycastSourceObjectName;
-      const isVisibleSupplementalMuscle = identity.bodycastContextPresentation === "supplemental-muscle"; const isBodySilhouette = identity.bodycastContextPresentation === "body-silhouette-context";
+      const isVisibleSupplementalMuscle = identity.bodycastContextPresentation === "supplemental-muscle";
       if (!region && !isVisibleSupplementalMuscle && !isBodySilhouette) return;
       if (region) object.userData.bodyMapRegion = region;
       const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
@@ -1147,7 +1202,7 @@ function FullBodyScene({
     model.traverse((object) => {
       if (!(object instanceof THREE.Mesh) || object.userData.bodyMapRegion) return;
       const presentation = object.userData.bodycastContextPresentation;
-      object.visible = object.userData.bodycastDefaultHiddenContext !== true && (presentation === "supplemental-muscle" || presentation === "body-silhouette-context"
+      object.visible = object.userData.bodycastDefaultHiddenContext !== true && presentation !== "body-silhouette-context" && (presentation === "supplemental-muscle"
         || (presentation === "support-only" && showSurfaceSupport)
         || presentation === "cranial-context"
         || (presentation === "skeletal-context" && showSkeletalContext));
@@ -1297,21 +1352,23 @@ function FullBodyScene({
 
 const frameSamples = { samples: [] as number[], lastReport: -1 };
 
-function TwoDimensionalFallback({ groups, onSelectGroup, onReady }: {
+function TwoDimensionalFallback({ groups, locale, onSelectGroup, onReady }: {
   groups: readonly ManifestGroup[];
+  locale: "uk" | "en";
   onSelectGroup: (groupId: BodyMapGroupIdV2) => void;
   onReady: () => void;
 }) {
+  const uk = locale === "uk";
   useEffect(() => { onReady(); }, [onReady]);
   return <div className={styles.fallback2d} data-testid="body-map-2d-fallback">
-    <div className={styles.fallbackHeading}><p className={styles.kicker}>2D BODY MAP FALLBACK</p><strong>Choose a group</strong><span>Shared taxonomy IDs · WebGL unavailable</span></div>
-    <div className={styles.fallbackBody} role="group" aria-label="Schematic anatomy group picker">
+    <div className={styles.fallbackHeading}><p className={styles.kicker}>{uk ? "РЕЗЕРВНА 2D КАРТА ТІЛА" : "2D BODY MAP FALLBACK"}</p><strong>{uk ? "Вибери групу" : "Choose a group"}</strong><span>{uk ? "Спільна таксономія · WebGL недоступний" : "Shared taxonomy IDs · WebGL unavailable"}</span></div>
+    <div className={styles.fallbackBody} role="group" aria-label={uk ? "Схематичний вибір групи м’язів" : "Schematic anatomy group picker"}>
       <svg viewBox="0 0 300 700" aria-hidden="true" className={styles.bodySilhouette}>
         <circle cx="150" cy="56" r="35" /><path d="M132 91h36v29h-36zM117 119q33-20 66 0l24 22-10 123q-39 25-94 0l-10-123zM114 127 76 145 50 252l20 8 45-92M186 127l38 18 26 107-20 8-45-92M104 264q46 23 92 0l17 42-31 24h-64l-31-24zM118 326h27l-9 142-25 130-23-3 10-153zM155 326h27l20 116 9 153-23 3-25-130z" />
       </svg>
-      {groups.map((group) => <button key={group.groupId} className={styles.fallbackHotspot} style={{ left: `${group.fallbackAnchor[0]}%`, top: `${group.fallbackAnchor[1]}%` } as CSSProperties} aria-label={`Select ${group.label}`} data-testid={`fallback-group-${group.groupId}`} onClick={() => onSelectGroup(group.groupId)}><span>{group.label}</span></button>)}
+      {groups.map((group) => <button key={group.groupId} className={styles.fallbackHotspot} style={{ left: `${group.fallbackAnchor[0]}%`, top: `${group.fallbackAnchor[1]}%` } as CSSProperties} aria-label={`${uk ? "Вибрати" : "Select"} ${bodyMapGroupLabel(group.groupId, group.label, locale)}`} data-testid={`fallback-group-${group.groupId}`} onClick={() => onSelectGroup(group.groupId)}><span>{bodyMapGroupLabel(group.groupId, group.label, locale)}</span></button>)}
     </div>
-    <p className={styles.fallbackNote}>Schematic regions are navigation aids, not anatomical segmentation. The group list and subregion detail use the same versioned taxonomy as the 3D scene.</p>
+    <p className={styles.fallbackNote}>{uk ? "Схематичні ділянки слугують для навігації, а не для анатомічної сегментації. Список груп і деталізація використовують ту саму версійну таксономію, що й 3D-сцена." : "Schematic regions are navigation aids, not anatomical segmentation. The group list and subregion detail use the same versioned taxonomy as the 3D scene."}</p>
   </div>;
 }
 

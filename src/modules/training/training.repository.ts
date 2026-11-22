@@ -26,6 +26,7 @@ import {
   type MatchMethod,
   type MatchStatus,
   type ResistanceType,
+  type SessionIntent,
   type SessionStatus,
 } from "./training.constants";
 import type { ProgramReconcilePlan } from "./training.program-reconcile";
@@ -280,6 +281,9 @@ const programExerciseSelect = {
   exerciseCatalogId: true,
   sortOrder: true,
   plannedSets: true,
+  plannedRepsMin: true,
+  plannedRepsMax: true,
+  plannedRir: true,
   resistanceType: true,
   loadAccountingConfigSnapshot: true,
   exerciseCatalog: { select: { id: true, name: true } },
@@ -293,6 +297,7 @@ const setSelect = {
   weightKg: true,
   bandNominalResistanceKg: true,
   rir: true,
+  restBeforeSeconds: true,
   comment: true,
   completedAt: true,
   createdAt: true,
@@ -306,6 +311,9 @@ const sessionExerciseSelect = {
   snapshotExerciseName: true,
   sortOrder: true,
   plannedSets: true,
+  plannedRepsMin: true,
+  plannedRepsMax: true,
+  plannedRir: true,
   resistanceType: true,
   origin: true,
   muscleMappingSnapshot: true,
@@ -341,6 +349,9 @@ const sessionDetailSelect = {
   currentSnapshotRevision: true,
   programId: true,
   programVersionId: true,
+  sessionIntent: true,
+  trainingBlockLabel: true,
+  trainingWeekNumber: true,
   webStartedAt: true,
   webEndedAt: true,
   matchStatus: true,
@@ -491,6 +502,9 @@ function toProgramExerciseDto(record: ProgramExerciseRecord): ProgramExerciseDto
     catalogName: record.exerciseCatalog.name,
     order: record.sortOrder,
     plannedSets: record.plannedSets,
+    plannedRepsMin: record.plannedRepsMin,
+    plannedRepsMax: record.plannedRepsMax,
+    plannedRir: record.plannedRir,
     resistanceType: record.resistanceType as ResistanceType,
     loadAccountingConfigSnapshot: record.loadAccountingConfigSnapshot ?? null,
   };
@@ -505,6 +519,7 @@ function toSetDto(record: SetRecord): StrengthSetDto {
     weightKg: decimalToNumber(record.weightKg),
     bandNominalResistanceKg: decimalToNumber(record.bandNominalResistanceKg),
     rir: record.rir,
+    restBeforeSeconds: record.restBeforeSeconds,
     comment: record.comment ?? null,
     completedAt: record.completedAt?.toISOString() ?? null,
     createdAt: record.createdAt.toISOString(),
@@ -521,6 +536,9 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
     snapshotExerciseName: record.snapshotExerciseName,
     order: record.sortOrder,
     plannedSets: record.plannedSets,
+    plannedRepsMin: record.plannedRepsMin,
+    plannedRepsMax: record.plannedRepsMax,
+    plannedRir: record.plannedRir,
     resistanceType: record.resistanceType as ResistanceType,
     origin: asExerciseOrigin(record.origin),
     muscleMappingSnapshot: record.muscleMappingSnapshot ?? null,
@@ -648,6 +666,9 @@ export function toSessionDto(
     programName: record.program?.name ?? null,
     programVersionId: record.programVersionId,
     programVersionNumber: record.programVersion?.versionNumber ?? null,
+    sessionIntent: (record.sessionIntent as SessionIntent | null) ?? null,
+    trainingBlockLabel: record.trainingBlockLabel ?? null,
+    trainingWeekNumber: record.trainingWeekNumber ?? null,
     webStartedAt: record.webStartedAt?.toISOString() ?? null,
     webEndedAt: record.webEndedAt?.toISOString() ?? null,
     effectiveAccountingAt: effectiveAccountingInstant(record).toISOString(),
@@ -921,6 +942,9 @@ export type OrderedProgramExerciseWrite = {
   exerciseCatalogId: number;
   sortOrder: number;
   plannedSets: number;
+  plannedRepsMin: number | null;
+  plannedRepsMax: number | null;
+  plannedRir: number | null;
   resistanceType: ResistanceType;
   loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
 };
@@ -1214,6 +1238,9 @@ export class TrainingRepository {
             create: input.exercises.map((exercise) => ({
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
+              plannedRepsMin: exercise.plannedRepsMin,
+              plannedRepsMax: exercise.plannedRepsMax,
+              plannedRir: exercise.plannedRir,
               resistanceType: exercise.resistanceType,
               loadAccountingConfigSnapshot: nullableJsonInput(exercise.loadAccountingConfigSnapshot),
               exerciseCatalog: {
@@ -1260,6 +1287,9 @@ export class TrainingRepository {
                   exerciseCatalogId: true,
                   sortOrder: true,
                   plannedSets: true,
+                  plannedRepsMin: true,
+                  plannedRepsMax: true,
+                  plannedRir: true,
                   resistanceType: true,
                   loadAccountingConfigSnapshot: true,
                 },
@@ -1278,6 +1308,9 @@ export class TrainingRepository {
           exerciseCatalogId: exercise.exerciseCatalogId,
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
+          plannedRepsMin: exercise.plannedRepsMin,
+          plannedRepsMax: exercise.plannedRepsMax,
+          plannedRir: exercise.plannedRir,
           resistanceType: exercise.resistanceType as ResistanceType,
           loadAccountingConfigSnapshot: exercise.loadAccountingConfigSnapshot as Prisma.InputJsonValue | null,
         }));
@@ -1292,6 +1325,9 @@ export class TrainingRepository {
             create: nextExercises.map((exercise) => ({
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
+              plannedRepsMin: exercise.plannedRepsMin,
+              plannedRepsMax: exercise.plannedRepsMax,
+              plannedRir: exercise.plannedRir,
               resistanceType: exercise.resistanceType,
               loadAccountingConfigSnapshot: nullableJsonInput(exercise.loadAccountingConfigSnapshot),
               exerciseCatalog: {
@@ -1943,6 +1979,9 @@ export class TrainingRepository {
     effectiveAccountingAt?: Date;
     accountingTimeZone?: string;
     accountingTimeZoneProvenance?: string;
+    sessionIntent?: SessionIntent | null;
+    trainingBlockLabel?: string | null;
+    trainingWeekNumber?: number | null;
     matchStatus?: MatchStatus;
     matchMethod?: MatchMethod | null;
     matchedWorkoutId?: number | null;
@@ -1953,6 +1992,9 @@ export class TrainingRepository {
       snapshotExerciseName: string;
       sortOrder: number;
       plannedSets: number;
+      plannedRepsMin?: number | null;
+      plannedRepsMax?: number | null;
+      plannedRir?: number | null;
       resistanceType: ResistanceType;
       origin?: ExerciseOrigin;
       muscleMappingSnapshot: Prisma.InputJsonValue | typeof Prisma.JsonNull;
@@ -1974,6 +2016,9 @@ export class TrainingRepository {
         programId: input.programId,
         programVersionId: input.programVersionId,
         status: input.status ?? SESSION_STATUS.ACTIVE,
+        sessionIntent: input.sessionIntent ?? null,
+        trainingBlockLabel: input.trainingBlockLabel ?? null,
+        trainingWeekNumber: input.trainingWeekNumber ?? null,
         entryMode: input.entryMode ?? ENTRY_MODE.LIVE,
         webStartedAt,
         webEndedAt: input.webEndedAt ?? null,
@@ -1991,6 +2036,9 @@ export class TrainingRepository {
             snapshotExerciseName: exercise.snapshotExerciseName,
             sortOrder: exercise.sortOrder,
             plannedSets: exercise.plannedSets,
+            plannedRepsMin: exercise.plannedRepsMin ?? null,
+            plannedRepsMax: exercise.plannedRepsMax ?? null,
+            plannedRir: exercise.plannedRir ?? null,
             resistanceType: exercise.resistanceType,
             origin: exercise.origin ?? EXERCISE_ORIGIN.PLANNED,
             muscleMappingSnapshot: exercise.muscleMappingSnapshot,
@@ -2026,6 +2074,9 @@ export class TrainingRepository {
       snapshotExerciseName: string;
       sortOrder: number;
       plannedSets: number;
+      plannedRepsMin?: number | null;
+      plannedRepsMax?: number | null;
+      plannedRir?: number | null;
       resistanceType: ResistanceType;
       muscleMappingSnapshot: Prisma.InputJsonValue | typeof Prisma.JsonNull;
       loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
@@ -2140,6 +2191,9 @@ export class TrainingRepository {
             snapshotExerciseName: true,
             sortOrder: true,
             plannedSets: true,
+            plannedRepsMin: true,
+            plannedRepsMax: true,
+            plannedRir: true,
             resistanceType: true,
             origin: true,
             _count: { select: { sets: true } },
@@ -2215,6 +2269,9 @@ export class TrainingRepository {
             snapshotExerciseName: added.snapshotExerciseName,
             sortOrder: added.sortOrder,
             plannedSets: added.plannedSets,
+            plannedRepsMin: added.plannedRepsMin,
+            plannedRepsMax: added.plannedRepsMax,
+            plannedRir: added.plannedRir,
             resistanceType: added.resistanceType,
             origin: added.origin,
             muscleMappingSnapshot: jsonInput(added.muscleMappingSnapshot),
@@ -2229,6 +2286,9 @@ export class TrainingRepository {
           data: {
             sortOrder: keep.sortOrder,
             plannedSets: keep.plannedSets,
+            plannedRepsMin: keep.plannedRepsMin,
+            plannedRepsMax: keep.plannedRepsMax,
+            plannedRir: keep.plannedRir,
             origin: keep.origin,
           },
         });
@@ -2579,6 +2639,7 @@ export class TrainingRepository {
     weightKg: number | null;
     bandNominalResistanceKg: number | null;
     rir?: number | null;
+    restBeforeSeconds?: number | null;
     comment?: string | null;
     completedAt: Date | null;
     loadAccountingOverride?: Prisma.InputJsonValue | null;
@@ -2660,6 +2721,7 @@ export class TrainingRepository {
           weightKg: input.weightKg,
           bandNominalResistanceKg: input.bandNominalResistanceKg,
           rir: input.rir === undefined ? null : input.rir,
+          restBeforeSeconds: input.restBeforeSeconds === undefined ? null : input.restBeforeSeconds,
           comment: input.comment === undefined
             ? undefined
             : (input.comment?.trim() ? input.comment.trim() : null),
@@ -2792,6 +2854,7 @@ export class TrainingRepository {
     weightKg?: number | null;
     bandNominalResistanceKg?: number | null;
     rir?: number | null;
+    restBeforeSeconds?: number | null;
     comment?: string | null;
     completedAt?: Date | null;
     loadAccountingOverride?: Prisma.InputJsonValue | null;
@@ -2817,6 +2880,7 @@ export class TrainingRepository {
           || input.bandNominalResistanceKg === existing.bandNominalResistanceKg?.toNumber()
           || input.bandNominalResistanceKg === null && existing.bandNominalResistanceKg === null)
         && (input.rir === undefined || input.rir === existing.rir)
+        && (input.restBeforeSeconds === undefined || input.restBeforeSeconds === existing.restBeforeSeconds)
         && (input.comment === undefined || nextComment === existing.comment)
         && (input.completedAt === undefined
           || (input.completedAt?.getTime() ?? null) === (existing.completedAt?.getTime() ?? null))
@@ -2841,6 +2905,7 @@ export class TrainingRepository {
             ? { bandNominalResistanceKg: input.bandNominalResistanceKg }
             : {}),
           ...(input.rir !== undefined ? { rir: input.rir } : {}),
+          ...(input.restBeforeSeconds !== undefined ? { restBeforeSeconds: input.restBeforeSeconds } : {}),
           ...(input.comment !== undefined
             ? { comment: input.comment?.trim() ? input.comment.trim() : null }
             : {}),
@@ -2937,6 +3002,7 @@ export class TrainingRepository {
             weightKg: true,
             bandNominalResistanceKg: true,
             rir: true,
+            restBeforeSeconds: true,
             comment: true,
             completedAt: true,
             loadAccountingOverride: true,
@@ -2963,6 +3029,7 @@ export class TrainingRepository {
           weightKg: decimalToNumber(set.weightKg),
           bandNominalResistanceKg: decimalToNumber(set.bandNominalResistanceKg),
           rir: set.rir,
+          restBeforeSeconds: set.restBeforeSeconds,
           comment: set.comment ?? null,
           completedAt: set.completedAt?.toISOString() ?? null,
           loadAccountingOverride: set.loadAccountingOverride,
@@ -2993,6 +3060,7 @@ export class TrainingRepository {
         weightKg: true,
         bandNominalResistanceKg: true,
         rir: true,
+        restBeforeSeconds: true,
         comment: true,
         completedAt: true,
         createdAt: true,
@@ -3669,6 +3737,9 @@ export class TrainingRepository {
             exerciseCatalogId: true,
             sortOrder: true,
             plannedSets: true,
+            plannedRepsMin: true,
+            plannedRepsMax: true,
+            plannedRir: true,
             resistanceType: true,
             loadAccountingConfigSnapshot: true,
             exerciseCatalog: { select: { id: true, name: true, stableKey: true, muscleMapping: true } },
@@ -3730,6 +3801,9 @@ export class TrainingRepository {
                 exerciseCatalogId: true,
                 sortOrder: true,
                 plannedSets: true,
+                plannedRepsMin: true,
+                plannedRepsMax: true,
+                plannedRir: true,
                 resistanceType: true,
                 loadAccountingConfigSnapshot: true,
                 exerciseCatalog: {

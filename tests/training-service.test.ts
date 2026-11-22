@@ -959,15 +959,17 @@ describe("TrainingService live session", () => {
       weightKg: decimal(40),
       bandNominalResistanceKg: null,
       rir: 1,
+      restBeforeSeconds: 90,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       createdAt: new Date("2026-09-17T16:10:00Z"),
       updatedAt: new Date("2026-09-17T16:10:00Z"),
     });
 
-    const created = await service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 1 }, 1);
+    const created = await service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 1, restBeforeSeconds: 90 }, 1);
     expect(created.rir).toBe(1);
+    expect(created.restBeforeSeconds).toBe(90);
     expect(db.strengthSet.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ rir: 1 }),
+      data: expect.objectContaining({ rir: 1, restBeforeSeconds: 90 }),
     }));
 
     await expect(
@@ -980,6 +982,7 @@ describe("TrainingService live session", () => {
       weightKg: decimal(40),
       bandNominalResistanceKg: null,
       rir: 1,
+      restBeforeSeconds: 90,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       sessionExercise: {
         id: 501,
@@ -995,13 +998,18 @@ describe("TrainingService live session", () => {
       weightKg: decimal(40),
       bandNominalResistanceKg: null,
       rir: 0,
+      restBeforeSeconds: 120,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       createdAt: new Date("2026-09-17T16:10:00Z"),
       updatedAt: new Date("2026-09-17T16:12:00Z"),
     });
 
-    const edited = await service.updateSet(50, 901, { rir: 0 }, 1);
+    const edited = await service.updateSet(50, 901, { rir: 0, restBeforeSeconds: 120 }, 1);
     expect(edited.rir).toBe(0);
+    expect(edited.restBeforeSeconds).toBe(120);
+    expect(db.strengthSet.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ rir: 0, restBeforeSeconds: 120 }),
+    }));
 
     db.strengthSet.findFirst.mockResolvedValue({
       id: 901,

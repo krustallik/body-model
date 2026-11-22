@@ -20,6 +20,9 @@ describe("planProgramExerciseReconcile", () => {
         snapshotExerciseName: "X",
         sortOrder: 0,
         plannedSets: 4,
+        plannedRepsMin: 8,
+        plannedRepsMax: 12,
+        plannedRir: 3,
         resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
         muscleMappingSnapshot: null,
       }],
@@ -28,6 +31,9 @@ describe("planProgramExerciseReconcile", () => {
       exerciseId: 1,
       sortOrder: 0,
       plannedSets: 4,
+      plannedRepsMin: 8,
+      plannedRepsMax: 12,
+      plannedRir: 3,
       origin: EXERCISE_ORIGIN.PLANNED,
     }]);
     expect(plan.add).toEqual([]);
@@ -60,6 +66,9 @@ describe("planProgramExerciseReconcile", () => {
       exerciseId: 2,
       sortOrder: 1,
       plannedSets: 3,
+      plannedRepsMin: null,
+      plannedRepsMax: null,
+      plannedRir: null,
       origin: EXERCISE_ORIGIN.EXTRA,
     }]);
   });
@@ -95,6 +104,9 @@ describe("planProgramExerciseReconcile", () => {
       exerciseId: 3,
       sortOrder: 1,
       plannedSets: 3,
+      plannedRepsMin: null,
+      plannedRepsMax: null,
+      plannedRir: null,
       origin: EXERCISE_ORIGIN.EXTRA,
     }]);
   });

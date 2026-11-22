@@ -14,12 +14,14 @@ function seg(
   endAt: string,
   state: SleepSegmentInterval["state"],
   rawState: string = state,
+  source?: string,
 ): SleepSegmentInterval {
   return {
     startAt: new Date(startAt),
     endAt: new Date(endAt),
     state,
     rawState,
+    source,
     startOffsetMinutes: offsetMinutesFromIso(startAt),
     endOffsetMinutes: offsetMinutesFromIso(endAt),
   };
@@ -35,6 +37,15 @@ describe("unionDurationMinutes", () => {
 });
 
 describe("buildNightlySleepSummaries", () => {
+  it("preserves raw source names in the nightly summary context", () => {
+    const summary = buildNightlySleepSummaries([
+      seg("2026-09-16T22:30:00+02:00", "2026-09-17T02:00:00+02:00", "core", "Core", "garmin"),
+      seg("2026-09-17T02:00:00+02:00", "2026-09-17T06:30:00+02:00", "deep", "Deep", "apple-health"),
+    ])[0]!;
+
+    expect(summary.sources).toEqual(["apple-health", "garmin"]);
+  });
+
   it("attributes midnight-spanning sleep using the wake segment offset, not a hardcoded city zone", () => {
     const summaries = buildNightlySleepSummaries([
       seg("2026-09-16T22:30:00+02:00", "2026-09-17T06:40:00+02:00", "core", "Повільний"),

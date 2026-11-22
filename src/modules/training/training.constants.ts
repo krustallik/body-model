@@ -77,6 +77,16 @@ export const EXERCISE_ORIGIN = {
   EXTRA: "EXTRA",
 } as const;
 
+export const SESSION_INTENT = {
+  REGULAR: "regular",
+  EASY_DELOAD: "easy-deload",
+  STRENGTH: "strength",
+  TEST: "test",
+  RETURN_FROM_BREAK: "return-from-break",
+} as const;
+
+export type SessionIntent = typeof SESSION_INTENT[keyof typeof SESSION_INTENT];
+
 export type ExerciseOrigin = (typeof EXERCISE_ORIGIN)[keyof typeof EXERCISE_ORIGIN];
 
 /** Backfill progress for historical strength workouts (UI only — not physiology). */
@@ -140,6 +150,8 @@ export const TRAINING_LIMITS = {
   maxReps: 10_000,
   maxLoadKg: 2_000,
   maxSetCommentLength: 280,
+  /** Engineering input bound for a recorded rest interval; null means not recorded. */
+  maxRestBeforeSeconds: 86_400,
   /**
    * Optional StrengthSet.rir domain.
    * ENGINEERING ASSUMPTION — NOT SCIENTIFIC PARAMETER:

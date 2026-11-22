@@ -167,7 +167,24 @@ describe("/api/v1/training/sessions", () => {
     const response = await START(jsonRequest(`${base}/start`, "POST", { programId: 7 }));
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ session });
-    expect(trainingService.startSession).toHaveBeenCalledWith(7, 42, undefined);
+    expect(trainingService.startSession).toHaveBeenCalledWith(7, 42, undefined, { programId: 7 });
+  });
+
+  it("passes explicit periodization context to a planned session", async () => {
+    trainingService.startSession.mockResolvedValue(session);
+    const response = await START(jsonRequest(`${base}/start`, "POST", {
+      programId: 7,
+      sessionIntent: "easy-deload",
+      trainingBlockLabel: "Accumulation",
+      trainingWeekNumber: 3,
+    }));
+    expect(response.status).toBe(201);
+    expect(trainingService.startSession).toHaveBeenCalledWith(7, 42, undefined, {
+      programId: 7,
+      sessionIntent: "easy-deload",
+      trainingBlockLabel: "Accumulation",
+      trainingWeekNumber: 3,
+    });
   });
 
   it("starts a dynamic live session without a program and preserves the supplied time zone", async () => {
@@ -183,7 +200,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await START_DYNAMIC(jsonRequest(`${base}/start-dynamic`, "POST", { timeZone: "Europe/Bratislava" }));
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ session: dynamicSession });
-    expect(trainingService.startDynamicSession).toHaveBeenCalledWith(42, "Europe/Bratislava");
+    expect(trainingService.startDynamicSession).toHaveBeenCalledWith(42, "Europe/Bratislava", { timeZone: "Europe/Bratislava" });
   });
 
   it("rejects invalid dynamic-session time zones without mutation", async () => {

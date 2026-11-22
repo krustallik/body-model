@@ -602,6 +602,9 @@ model ProgramExercise {
   exerciseCatalogId            Int
   sortOrder                    Int
   plannedSets                  Int
+  plannedRepsMin                Int?
+  plannedRepsMax                Int?
+  plannedRir                    Int?
   /**
    * EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT
    */
@@ -631,6 +634,10 @@ model StrengthDiarySession {
    * ACTIVE | COMPLETED | CANCELLED
    */
   status                                   String                                    @db.VarChar(20)
+  /** Explicit user-entered training intent; null means the intent is unknown. */
+  sessionIntent                           String?                                   @db.VarChar(32)
+  trainingBlockLabel                       String?                                   @db.VarChar(80)
+  trainingWeekNumber                       Int?
   /**
    * LIVE = started from web "Start Workout".
    * RETROSPECTIVE = created from an existing Garmin Workout (historical backfill).
@@ -769,6 +776,9 @@ model StrengthSessionExercise {
   snapshotExerciseName         String               @db.VarChar(200)
   sortOrder                    Int
   plannedSets                  Int
+  plannedRepsMin                Int?
+  plannedRepsMax                Int?
+  plannedRir                    Int?
   /**
    * EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT — copied from program at start
    */
@@ -811,6 +821,8 @@ model StrengthSet {
    * ENGINEERING input domain 0–10 — not a scientific exclusion threshold.
    */
   rir                     Int?
+  /** Optional user-recorded rest interval before this set; null means not recorded. */
+  restBeforeSeconds       Int?
   /**
    * Optional short note for this set (form feel, band used, etc.).
    */

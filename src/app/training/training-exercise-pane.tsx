@@ -149,6 +149,7 @@ type HistoricalSetDraft = {
   additionalLoadKg: string;
   bandNominalResistanceKg: string;
   rir: string;
+  restBeforeSeconds: string;
   comment: string;
 };
 
@@ -166,6 +167,7 @@ function historicalSetDraft(set: ExerciseHistorySetDto): HistoricalSetDraft {
       : "",
     bandNominalResistanceKg: set.bandNominalResistanceKg == null ? "" : String(set.bandNominalResistanceKg),
     rir: set.rir == null ? "" : String(set.rir),
+    restBeforeSeconds: set.restBeforeSeconds == null ? "" : String(set.restBeforeSeconds),
     comment: set.comment ?? "",
   };
 }
@@ -262,9 +264,16 @@ function HistoricalSetRow({
       setError(uk ? "RIR має бути цілим числом від 0 до 10." : "RIR must be a whole number from 0 to 10.");
       return;
     }
+    const restBeforeSeconds = draft.restBeforeSeconds.trim() === "" ? null : Number(draft.restBeforeSeconds);
+    if (restBeforeSeconds !== null
+        && (!Number.isInteger(restBeforeSeconds) || restBeforeSeconds < 0 || restBeforeSeconds > TRAINING_LIMITS.maxRestBeforeSeconds)) {
+      setError(uk ? "Відпочинок має бути цілим числом секунд від 0 до 86 400." : "Rest must be a whole number of seconds from 0 to 86,400.");
+      return;
+    }
     const payload: UpdateSetInput = {
       reps: draft.asymmetric ? left + right : reps,
       rir,
+      restBeforeSeconds,
       comment: draft.comment.trim() || null,
     };
     const originalOverride = override?.success ? override.data : null;
@@ -516,6 +525,7 @@ function HistoricalSetRow({
           {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Номінальний опір, кг" : "Nominal resistance, kg"}</span><input disabled={busy || mutationBlocked} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
           {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
           <label><span>RIR</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
+          <label><span>{uk ? "Відпочинок перед підходом, с" : "Rest before set, s"}</span><input disabled={busy || mutationBlocked} inputMode="numeric" value={draft.restBeforeSeconds} onChange={(event) => setDraft((current) => ({ ...current, restBeforeSeconds: event.target.value }))} /></label>
           <label className={styles.workoutHistoryComment}><span>{uk ? "Коментар" : "Comment"}</span><textarea disabled={busy || mutationBlocked} maxLength={500} value={draft.comment} onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))} /></label>
           {error && <p role="alert">{error}</p>}
             <div className={styles.workoutHistoryActions}>
@@ -702,6 +712,7 @@ function LiveLoggedSetRow({
                 <label className={styles.liveField}><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" value={draft.rightReps} onChange={(event) => onDraftChange({ ...draft, rightReps: event.target.value })} /></label>
               </> : <label className={styles.liveField}><span>{uk ? "Повтори" : "Reps"}</span><input disabled={busy || saveBlocked} inputMode="numeric" autoComplete="off" value={draft.reps} onChange={(event) => onDraftChange({ ...draft, reps: event.target.value })} /></label>}
               <label className={styles.liveField}><span>RIR</span><input disabled={busy || saveBlocked} inputMode="numeric" autoComplete="off" value={draft.rir} onChange={(event) => onDraftChange({ ...draft, rir: event.target.value })} /></label>
+              <label className={styles.liveField}><span>{uk ? "Відпочинок перед підходом, с" : "Rest before set, s"}</span><input disabled={busy || saveBlocked} inputMode="numeric" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.restBeforeSeconds} onChange={(event) => onDraftChange({ ...draft, restBeforeSeconds: event.target.value })} /></label>
               <label className={styles.liveField}><span>{uk ? "Коментар" : "Comment"}</span><input disabled={busy || saveBlocked} autoComplete="off" maxLength={280} value={draft.comment} onChange={(event) => onDraftChange({ ...draft, comment: event.target.value })} /></label>
             </div>
             {asymmetricReps && <p className={styles.workoutInfoLine}>{uk ? "Асиметричні повтори зберігаються окремо для кожної сторони." : "Asymmetric reps remain stored separately for each side."}</p>}
@@ -717,6 +728,7 @@ function LiveLoggedSetRow({
           <span className={styles.liveSetLoad}>{setLoadLabel(exercise, set, uk)}{" × "}{set.reps}</span>
           {asymmetricReps ? <span className={styles.liveSetRir}>{uk ? `Л/П ${asymmetricReps.left}/${asymmetricReps.right}` : `L/R ${asymmetricReps.left}/${asymmetricReps.right}`}</span> : null}
           <span className={styles.liveSetRir}>{set.rir != null ? `RIR ${set.rir}` : ""}</span>
+          <span className={styles.liveSetRir}>{set.restBeforeSeconds != null ? `${set.restBeforeSeconds} ${uk ? "с відпочинку" : "s rest"}` : ""}</span>
           {clockIso ? <time className={styles.liveSetClock} dateTime={clockIso}>{formatSetCompletionClock(set, uk ? "uk-UA" : "en-US")}</time> : <span className={styles.liveSetClock}>{uk ? "час недоступний" : "time unavailable"}</span>}
           {set.comment ? <p className={styles.liveSetComment}>{set.comment}</p> : null}
         </>
@@ -955,6 +967,18 @@ export function ExercisePane(props: ExercisePaneProps) {
                 placeholder={uk ? "опційно" : "optional"}
                 value={paneDraft.rir}
                 onChange={(event) => onDraftChange({ ...paneDraft, rir: event.target.value })}
+              />
+            </label>
+            <label className={styles.liveField}>
+              <span>{uk ? "Відпочинок перед підходом, с" : "Rest before set, s"}</span>
+              <input
+                inputMode="numeric"
+                autoComplete="off"
+                tabIndex={interactive ? 0 : -1}
+                readOnly={!interactive || busy || mutationUncertain}
+                placeholder={uk ? "опційно" : "optional"}
+                value={paneDraft.restBeforeSeconds}
+                onChange={(event) => onDraftChange({ ...paneDraft, restBeforeSeconds: event.target.value })}
               />
             </label>
           </div>

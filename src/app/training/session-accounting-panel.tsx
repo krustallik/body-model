@@ -415,7 +415,7 @@ export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, 
                 uk={uk}
               />
               <MetricCard
-                label={bandMetricLabel(breakdown?.rows, uk)}
+                label={bandMetricLabel(breakdown?.status === "available" ? breakdown.value.rows : undefined, uk)}
                 metric={combinedBandMetric(accounting)}
                 unit={uk ? "кг × повтори" : "kg × reps"}
                 tone="bands"

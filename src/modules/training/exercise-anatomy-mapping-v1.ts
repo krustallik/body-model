@@ -14,6 +14,11 @@ import {
   EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY,
   type ExerciseAnatomySnapshotV2,
 } from "./exercise-anatomy-mapping-v2";
+import {
+  buildExerciseAnatomySnapshotV3,
+  EXERCISE_ANATOMY_SNAPSHOT_V3_PROPERTY,
+  type ExerciseAnatomySnapshotV3,
+} from "./exercise-anatomy-mapping-v3";
 
 /** Descriptive exercise-to-anatomy mapping. This is not a physiology/dose model. */
 export const EXERCISE_ANATOMY_MAPPING_V1_VERSION =
@@ -977,6 +982,7 @@ export function aggregateExerciseAnatomyExposureV1(
 export type ExerciseMappingSnapshotWithAnatomyV1 = ExerciseMuscleMappingSnapshotV7 & {
   [EXERCISE_ANATOMY_SNAPSHOT_PROPERTY]: ExerciseAnatomySnapshotV1;
   [EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY]: ExerciseAnatomySnapshotV2 | null;
+  [EXERCISE_ANATOMY_SNAPSHOT_V3_PROPERTY]: ExerciseAnatomySnapshotV3 | null;
 };
 
 export function exerciseMappingSnapshotWithAnatomyV1(
@@ -986,5 +992,6 @@ export function exerciseMappingSnapshotWithAnatomyV1(
     ...buildExerciseMuscleMappingSnapshotV7(stableKey),
     [EXERCISE_ANATOMY_SNAPSHOT_PROPERTY]: buildExerciseAnatomySnapshotV1(stableKey),
     [EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY]: buildExerciseAnatomySnapshotV2(stableKey),
+    [EXERCISE_ANATOMY_SNAPSHOT_V3_PROPERTY]: buildExerciseAnatomySnapshotV3(stableKey),
   };
 }

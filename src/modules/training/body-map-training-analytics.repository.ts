@@ -1,8 +1,12 @@
 import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
+import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
+import { summarizeBodyMapEnergyBalanceContextV1 } from "@/modules/training/body-map-energy-balance-context-v1";
 import {
   buildBodyMapTrainingAnalyticsV1,
+  bodyMapAnalyticsWindowStartV1,
   type BodyMapAnalyticsSessionIntentV1,
+  type BodyMapAnalyticsMonthsV1,
   type BodyMapAnalyticsWeeksV1,
   type BodyMapTrainingAnalyticsResponseV1,
 } from "@/modules/training/body-map-training-analytics-v1";
@@ -12,8 +16,11 @@ export async function readBodyMapTrainingAnalyticsV1(
   profileId: number,
   weeks: BodyMapAnalyticsWeeksV1,
   now = new Date(),
+  months?: BodyMapAnalyticsMonthsV1,
 ): Promise<BodyMapTrainingAnalyticsResponseV1> {
-  const lookback = new Date(now.getTime() - 12 * 7 * 86_400_000);
+  const periodStart = bodyMapAnalyticsWindowStartV1({ now, weeks, months });
+  // Preserve the existing 12-week per-user baseline needed to classify lighter sessions.
+  const lookback = new Date(periodStart.getTime() - 12 * 7 * 86_400_000);
   const rows = await prisma.strengthDiarySession.findMany({
     where: {
       profileId,
@@ -69,6 +76,7 @@ export async function readBodyMapTrainingAnalyticsV1(
 
   const analytics = buildBodyMapTrainingAnalyticsV1({
     weeks,
+    months,
     now,
     sessions: rows.map((row) => ({
       id: row.id,
@@ -107,14 +115,13 @@ export async function readBodyMapTrainingAnalyticsV1(
   });
 
   const sessionById = new Map(rows.map((row) => [row.id, row]));
-  const dateSet = [...new Set(analytics.sessions.map(({ sessionDate }) => sessionDate))];
-  const [healthRows, sleepByDateAndZone] = await Promise.all([
-    dateSet.length > 0
-      ? prisma.dailyHealthData.findMany({
-        where: { profileId, date: { in: dateSet } },
-        select: { date: true, caloriesKcal: true, proteinG: true, updatedAt: true },
-      })
-      : Promise.resolve([]),
+  const periodFromDate = analytics.period.from.slice(0, 10);
+  const periodToDate = analytics.period.to.slice(0, 10);
+  const [healthRows, sleepByDateAndZone, energySource] = await Promise.all([
+    prisma.dailyHealthData.findMany({
+      where: { profileId, date: { gte: periodFromDate, lte: periodToDate } },
+      select: { date: true, caloriesKcal: true, proteinG: true, updatedAt: true },
+    }),
     (async () => {
       const datesByTimeZone = new Map<string, Set<string>>();
       for (const item of analytics.sessions) {
@@ -130,7 +137,30 @@ export async function readBodyMapTrainingAnalyticsV1(
       }));
       return new Map(entries.flat());
     })(),
+    (async () => {
+      try {
+        const episodes = new ModelEpisodeRepository(profileId);
+        const activeEpisode = await episodes.getActive();
+        if (!activeEpisode) return { activeEpisodeId: null, modeledDays: [], modelHistoryCurrent: false };
+        const history = await episodes.history({
+          episodeId: activeEpisode.id,
+          from: periodFromDate,
+          to: periodToDate,
+          limit: 366,
+          offset: 0,
+        });
+        return { activeEpisodeId: activeEpisode.id, modeledDays: history?.days ?? [], modelHistoryCurrent: history !== null };
+      } catch {
+        return { activeEpisodeId: null, modeledDays: [], modelHistoryCurrent: false };
+      }
+    })(),
   ]);
+  const energyBalanceContext = summarizeBodyMapEnergyBalanceContextV1({
+    periodFrom: analytics.period.from,
+    periodTo: analytics.period.to,
+    ...energySource,
+    nutritionDays: healthRows,
+  });
   const healthByDate = new Map(healthRows.map((row) => [row.date, row]));
   const sessionContexts = analytics.sessions.map((item) => {
     const session = sessionById.get(item.id);
@@ -161,5 +191,5 @@ export async function readBodyMapTrainingAnalyticsV1(
     };
   });
 
-  return { ...analytics, sessionContexts };
+  return { ...analytics, sessionContexts, energyBalanceContext };
 }

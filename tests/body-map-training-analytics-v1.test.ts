@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { trainingExerciseMappingSnapshotJsonV1 } from "@/modules/training/exercise-mapping-snapshot";
+import { buildExerciseAnatomySnapshotV1 } from "@/modules/training/exercise-anatomy-mapping-v1";
+import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import {
   buildBodyMapTrainingAnalyticsV1,
   type BodyMapAnalyticsSessionInputV1,
@@ -138,7 +140,7 @@ describe("Body Map training analytics v1", () => {
       loggedTrainingDayCount: 2,
       loggedExposureIntervals: [{ previousDate: "2026-08-20", nextDate: "2026-09-03", calendarDays: 14 }],
     });
-    expect(deltoids).toMatchObject({ status: "recorded-indirect", indirectUniqueSetCount: 2 });
+    expect(deltoids).toMatchObject({ status: "recorded-direct", directUniqueSetCount: 2 });
     expect(chest.exercises[0]?.sets[1]).toMatchObject({
       sessionId: 2,
       exerciseIndex: 1,
@@ -158,10 +160,10 @@ describe("Body Map training analytics v1", () => {
       rir: 2,
       mappingCoverage: "partial",
       projectedToBodyMap: true,
-      anatomyIds: expect.arrayContaining(["pectoralis_major"]),
+      anatomyIds: expect.arrayContaining(["pectoralis_major_clavicular_head"]),
     });
     expect(chest.mappingCoverage).toBe("partial");
-    expect(deltoids.mappingCoverage).toBe("complete-for-input");
+    expect(deltoids.mappingCoverage).toBe("partial");
   });
 
   it("traces a mixed direct and indirect physical set to the correct biceps anatomy and week metrics", () => {
@@ -186,9 +188,55 @@ describe("Body Map training analytics v1", () => {
     expect(curlSet.indirectAnatomyIds).toContain("brachialis");
   });
 
-  it("does not turn missing mapping snapshots into zero exposure", () => {
+  it("projects old hyperextension records with a role-unspecified v1 snapshot through the current Body Map mapping", () => {
+    const historic = session({ id: 31, date: "2026-09-01", weightKg: 0 });
+    historic.exercises[0]!.snapshotExerciseName = "Гіперекстензія";
+    historic.exercises[0]!.sourceExerciseCatalog = { stableKey: "hyperextension" };
+    historic.exercises[0]!.muscleMappingSnapshot = {
+      ...buildExerciseMuscleMappingSnapshotV7("hyperextension"),
+      anatomyMappingSnapshotV1: buildExerciseAnatomySnapshotV1("hyperextension"),
+    };
+    const before = structuredClone(historic.exercises[0]!.muscleMappingSnapshot);
+
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 4,
+      now: new Date("2026-09-10T00:00:00Z"),
+      sessions: [historic],
+    });
+
+    expect(result.coverage).toMatchObject({ recordedSetCount: 1, mappedSetCount: 1, unmappedSetCount: 0 });
+    expect(result.coverage.sources[0]).toMatchObject({
+      projectedToBodyMap: true,
+      anatomyIds: expect.arrayContaining(["erector_spinae", "gluteus_maximus", "hamstrings"]),
+    });
+    expect(result.groups.find(({ groupId }) => groupId === "spinal_extensors")).toMatchObject({
+      status: "recorded-direct",
+      directUniqueSetCount: 1,
+    });
+    expect(historic.exercises[0]!.muscleMappingSnapshot).toEqual(before);
+  });
+
+  it("uses a known canonical catalog identity when a legacy set has no saved mapping snapshot", () => {
+    const legacy = session({ id: 32, date: "2026-09-01", weightKg: 10 });
+    legacy.exercises[0]!.muscleMappingSnapshot = null;
+    const result = buildBodyMapTrainingAnalyticsV1({
+      weeks: 4,
+      now: new Date("2026-09-10T00:00:00Z"),
+      sessions: [legacy],
+    });
+
+    expect(result.coverage).toMatchObject({ recordedSetCount: 1, mappedSetCount: 1, unmappedSetCount: 0 });
+    expect(result.coverage.sources[0]).toMatchObject({
+      exerciseStableKey: "incline_dumbbell_press_30deg",
+      projectedToBodyMap: true,
+      anatomyIds: expect.arrayContaining(["pectoralis_major_clavicular_head"]),
+    });
+  });
+
+  it("keeps records without an exercise identity unavailable instead of turning them into zero exposure", () => {
     const unmapped = session({ id: 1, date: "2026-09-01", weightKg: 10 });
     unmapped.exercises[0]!.muscleMappingSnapshot = null;
+    unmapped.exercises[0]!.sourceExerciseCatalog = { stableKey: null };
     const result = buildBodyMapTrainingAnalyticsV1({ weeks: 4, now: new Date("2026-09-10T00:00:00Z"), sessions: [unmapped] });
     expect(result.coverage).toMatchObject({ recordedSetCount: 1, mappedSetCount: 0, unmappedSetCount: 1, mapping: "partial" });
     expect(result.coverage.sources[0]).toMatchObject({ mappingCoverage: "unavailable", projectedToBodyMap: false, anatomyIds: [] });

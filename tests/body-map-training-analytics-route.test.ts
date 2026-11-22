@@ -31,7 +31,17 @@ describe("GET /api/v1/training/body-map/analytics", () => {
     expect(response.headers.get("cache-control")).toContain("private");
     expect(response.headers.get("cache-control")).toContain("no-store");
     await expect(response.json()).resolves.toEqual({ analytics });
-    expect(analyticsRepository.readBodyMapTrainingAnalyticsV1).toHaveBeenCalledWith(41, 12);
+    expect(analyticsRepository.readBodyMapTrainingAnalyticsV1).toHaveBeenCalledWith(41, 12, expect.any(Date), undefined);
+  });
+
+  it("maps calendar month windows onto the backwards-compatible weeks argument", async () => {
+    authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 41, userId: "u41", method: "session" });
+    analyticsRepository.readBodyMapTrainingAnalyticsV1.mockResolvedValue({ contract: "bodycast-body-map-training-analytics-v1" });
+
+    const response = await GET(new Request(`${base}?months=6`));
+
+    expect(response.status).toBe(200);
+    expect(analyticsRepository.readBodyMapTrainingAnalyticsV1).toHaveBeenCalledWith(41, 24, expect.any(Date), 6);
   });
 
   it("rejects unsupported windows without querying the diary", async () => {

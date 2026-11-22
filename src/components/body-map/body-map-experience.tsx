@@ -26,7 +26,7 @@ import {
 import { BODY_MAP_OVERVIEW_PADDING_FACTOR_V1, CameraTransitionControllerV1, frameBoundsV1 } from "./camera-transition-v1";
 import { BodyMapTrainingAnalyticsPanel } from "./body-map-training-analytics-panel";
 import { bodyMapAnatomyLabel, bodyMapGroupLabel, bodyMapGroupNote } from "./body-map-localization";
-import type { BodyMapAnalyticsWeeksV1, BodyMapTrainingAnalyticsResponseV1 } from "@/modules/training/body-map-training-analytics-v1";
+import type { BodyMapAnalyticsMonthsV1, BodyMapTrainingAnalyticsResponseV1 } from "@/modules/training/body-map-training-analytics-v1";
 import type { BodyMapGroupExposureV2 } from "@/modules/training/body-map-training-exposure-v2";
 import styles from "./body-map-experience.module.css";
 
@@ -52,8 +52,8 @@ type ManifestRegion = {
 };
 
 type AnalyticsLoadState =
-  | { weeks: BodyMapAnalyticsWeeksV1; status: "loading" | "unauthorized" | "error" }
-  | { weeks: BodyMapAnalyticsWeeksV1; status: "ready"; analytics: BodyMapTrainingAnalyticsResponseV1 };
+  | { months: BodyMapAnalyticsMonthsV1; status: "loading" | "unauthorized" | "error" }
+  | { months: BodyMapAnalyticsMonthsV1; status: "ready"; analytics: BodyMapTrainingAnalyticsResponseV1 };
 type ManifestSubregion = {
   anatomyId: AnatomyIdV2;
   label: string;
@@ -150,9 +150,9 @@ function urlStateFromPageState(state: BodyMapPageState): BodyMapUrlStateV1 {
   };
 }
 
-const GROUP_HOVER_COLOR = new THREE.Color(0x08b8d8);
-const GROUP_SELECTED_COLOR = new THREE.Color(0x0875f5);
-const SUBREGION_SELECTED_COLOR = new THREE.Color(0xff6238);
+const GROUP_HOVER_COLOR = new THREE.Color(0x63c7a2);
+const GROUP_SELECTED_COLOR = new THREE.Color(0x4db890);
+const SUBREGION_SELECTED_COLOR = new THREE.Color(0x7ad2b2);
 
 function directionForView(view: BodyMapUrlViewV1) {
   if (view === "back") return new THREE.Vector3(0, 0, -1);
@@ -196,10 +196,9 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
   const [loadError, setLoadError] = useState<string | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [pageState, setPageState] = useState<BodyMapPageState>(() => pageStateFromUrlState(BODY_MAP_URL_OVERVIEW_V1));
-  const [analyticsWeeks, setAnalyticsWeeks] = useState<BodyMapAnalyticsWeeksV1>(4);
-  const [analyticsRevision, setAnalyticsRevision] = useState(0);
-  const [analyticsLoad, setAnalyticsLoad] = useState<AnalyticsLoadState>({ weeks: 4, status: "loading" });
-  const isAnalyticsCurrent = analyticsLoad.weeks === analyticsWeeks;
+  const [analyticsMonths, setAnalyticsMonths] = useState<BodyMapAnalyticsMonthsV1>(1);
+  const [analyticsLoad, setAnalyticsLoad] = useState<AnalyticsLoadState>({ months: 1, status: "loading" });
+  const isAnalyticsCurrent = analyticsLoad.months === analyticsMonths;
   const analytics = isAnalyticsCurrent && analyticsLoad.status === "ready" ? analyticsLoad.analytics : null;
   const analyticsRequestState = delivery === "development" ? "ready" : isAnalyticsCurrent ? analyticsLoad.status : "loading";
   const pageStateRef = useRef(pageState);
@@ -256,7 +255,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       return;
     }
     const controller = new AbortController();
-    fetch(`/api/v1/training/body-map/analytics?weeks=${analyticsWeeks}`, { cache: "no-store", signal: controller.signal })
+    fetch(`/api/v1/training/body-map/analytics?months=${analyticsMonths}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (response.status === 401) return { kind: "unauthorized" as const };
         if (!response.ok) throw new Error("analytics_unavailable");
@@ -265,21 +264,16 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
       .then((result) => {
         if (controller.signal.aborted) return;
         if (result.kind === "unauthorized") {
-          setAnalyticsLoad({ weeks: analyticsWeeks, status: "unauthorized" });
+          setAnalyticsLoad({ months: analyticsMonths, status: "unauthorized" });
           return;
         }
-        setAnalyticsLoad({ weeks: analyticsWeeks, status: "ready", analytics: result.body.analytics });
+        setAnalyticsLoad({ months: analyticsMonths, status: "ready", analytics: result.body.analytics });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setAnalyticsLoad({ weeks: analyticsWeeks, status: "error" });
+        if (!controller.signal.aborted) setAnalyticsLoad({ months: analyticsMonths, status: "error" });
       });
     return () => controller.abort();
-  }, [analyticsWeeks, analyticsRevision, delivery]);
-
-  function refreshAnalytics() {
-    setAnalyticsLoad({ weeks: analyticsWeeks, status: "loading" });
-    setAnalyticsRevision((revision) => revision + 1);
-  }
+  }, [analyticsMonths, delivery]);
 
   const selectedGroup = useMemo(() => manifest?.bodyMapGroups.find(({ groupId }) =>
     groupId === navState.groupId,
@@ -606,10 +600,10 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
                   setAutomaticQuality(preferredGraphicsQuality(gl, window.devicePixelRatio || 1));
                 }}
               >
-                <color attach="background" args={["#0d141e"]} />
-                <hemisphereLight args={[0xffffff, 0x414d5f, 2.1]} />
+                <color attach="background" args={["#07090a"]} />
+                <hemisphereLight args={[0xffffff, 0x384640, 2.1]} />
                 <directionalLight color={0xfff2df} intensity={2.2} position={[-2.5, 3.5, 4]} />
-                <directionalLight color={0xd9e7ff} intensity={effectiveQuality === "low" ? 0 : 1.3} position={[3, 1.3, -3]} />
+                <directionalLight color={0xe7f2ec} intensity={effectiveQuality === "low" ? 0 : 1.3} position={[3, 1.3, -3]} />
                 <OrbitControls enableDamping dampingFactor={0.08} enablePan={false} minDistance={0.2} maxDistance={12} minPolarAngle={0.04} maxPolarAngle={Math.PI - 0.04} makeDefault />
                 <Suspense fallback={null}>
                   <FullBodyScene
@@ -669,7 +663,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
           {navState.level === "OVERVIEW" && <>
             <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ОГЛЯД" : "OVERVIEW"}</p><h2>{uk ? "Групи м’язів" : "Muscle groups"}</h2></div>
             <p className={styles.muted}>{uk ? "Оберни тіло та вибери групу або натисни її у списку." : "Rotate the body, then choose a group or select it from the list."}</p>
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key="overview" level="OVERVIEW" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} onRefresh={refreshAnalytics} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key="overview" level="OVERVIEW" months={analyticsMonths} onMonthsChange={setAnalyticsMonths} analytics={analytics} requestState={analyticsRequestState} groupLabel={null} anatomyId={null} anatomyLabel={null} groupReport={null} />}
             <GroupList groups={manifest.bodyMapGroups} exposureStates={exposureStates} hoveredGroupId={hoveredGroupId} onHover={setHoveredGroupId} onSelect={selectGroup} locale={locale} />
           </>}
 
@@ -679,7 +673,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
 
           {navState.level === "GROUP_DETAIL" && selectedGroup && focusReady && <>
             <div className={styles.panelHeading}><p className={styles.kicker}>{uk ? "ГРУПА М’ЯЗІВ" : "MUSCLE GROUP"}</p><h2>{selectedGroupLabel}</h2></div>
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`group:${selectedGroup.groupId}`} level="GROUP_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} onRefresh={refreshAnalytics} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`group:${selectedGroup.groupId}`} level="GROUP_DETAIL" months={analyticsMonths} onMonthsChange={setAnalyticsMonths} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={null} anatomyLabel={null} groupReport={analyticsGroup} />}
             {delivery === "development" && <div className={styles.metricCard} data-testid="group-report"><span>{uk ? "Демонстраційна експозиція" : "Demo exposure"}</span><strong>{exposureLabel(activeExposure, uk)}</strong><small>{uk ? "Фіктивні демодані; це не історія тренувань." : "Fixture data only; this is not training history."}</small></div>}
             <h3>{uk ? "М’язи та частини" : "Muscles and regions"}</h3>
             <SubregionList group={selectedGroup} manifest={manifest} locale={locale} onSelect={selectSubregion} />
@@ -698,7 +692,7 @@ export default function BodyMapExperience({ delivery = "development" }: { delive
               ? <p className={styles.coverageNotice} data-testid="deep-context-status">{uk ? "Показано вибрану глибоку структуру. Поверхневі м’язи цієї групи тимчасово приглушені; решта тіла залишається видимою." : "The selected deep structure is shown in place. Superficial muscles in this group are temporarily muted; the rest of the body remains visible."}</p>
               : null}
             {selectedAnatomyCoverage?.visualAvailability === "unavailable" ? <p className={styles.coverageNotice} data-testid="source-geometry-unavailable">{uk ? "У BodyParts3D немає відповідної геометрії для цієї структури. Штучну модель не показуємо." : "No matching BodyParts3D geometry is available for this structure. No synthetic mesh is shown."}</p> : null}{selectedAnatomyCoverage?.visualAvailability === "partial" ? <p className={styles.coverageNotice} data-testid="source-geometry-partial">{uk ? "Геометрія цієї структури в BodyParts3D неповна." : "This structure has partial geometry in BodyParts3D."}</p> : null}
-            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`subregion:${selectedGroup.groupId}:${selectedSubregion.anatomyId}`} level="SUBREGION_DETAIL" weeks={analyticsWeeks} onWeeksChange={setAnalyticsWeeks} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} onRefresh={refreshAnalytics} />}
+            {delivery === "public" && <BodyMapTrainingAnalyticsPanel key={`subregion:${selectedGroup.groupId}:${selectedSubregion.anatomyId}`} level="SUBREGION_DETAIL" months={analyticsMonths} onMonthsChange={setAnalyticsMonths} analytics={analytics} requestState={analyticsRequestState} groupLabel={selectedGroupLabel} anatomyId={selectedSubregion.anatomyId} anatomyLabel={selectedSubregionLabel} groupReport={analyticsGroup} />}
             {delivery === "development" && <div className={styles.metricCard}><span>{uk ? "Дані про цю частину" : "Subregion exposure"}</span><strong>{uk ? "Недоступно в деморежимі" : "Unavailable in demo mode"}</strong><small>{uk ? "Демодані не підміняють ваш журнал." : "Demo fixtures never replace your diary."}</small></div>}
             {selectedAnatomy?.mappingCoverage === "partial" && <p className={styles.coverageNotice}>{uk ? "Підрахунок частковий: мапінг вправи не охоплює всі відповідні анатомічні дані." : "The count is partial because exercise mappings do not cover all relevant anatomy."}</p>}
           </>}
@@ -1189,19 +1183,19 @@ function FullBodyScene({
         const groupSelected = selectedGroupId !== null && region.bodyMapGroupIds.includes(selectedGroupId);
         if (groupHovered && !groupSelected) {
           material.color.lerp(GROUP_HOVER_COLOR, 0.74);
-          material.emissive.set(0x006b83);
+          material.emissive.set(0x1b7354);
           material.emissiveIntensity = 0.34;
         }
         if (groupSelected) {
           material.color.lerp(GROUP_SELECTED_COLOR, 0.8);
-          material.emissive.set(0x0646b2);
+          material.emissive.set(0x16583f);
           material.emissiveIntensity = 0.48;
         }
         if (selectedChild) {
           material.color.copy(baseColor instanceof THREE.Color ? baseColor : material.color);
           material.color.lerp(SUBREGION_SELECTED_COLOR, 0.9);
-          material.emissive.set(0xb52f12);
-          material.emissiveIntensity = 0.92;
+          material.emissive.set(0x23694d);
+          material.emissiveIntensity = 0.72;
         }
       });
     }

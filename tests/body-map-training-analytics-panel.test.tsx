@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/i18n/i18n-provider", () => ({
@@ -9,19 +9,16 @@ vi.mock("@/i18n/i18n-provider", () => ({
 
 import { BodyMapTrainingAnalyticsPanel } from "@/components/body-map/body-map-training-analytics-panel";
 import { trainingExerciseMappingSnapshotJsonV1 } from "@/modules/training/exercise-mapping-snapshot";
-import { buildBodyMapTrainingAnalyticsV1, type BodyMapAnalyticsSessionInputV1, type BodyMapTrainingAnalyticsResponseV1 } from "@/modules/training/body-map-training-analytics-v1";
+import {
+  buildBodyMapTrainingAnalyticsV1,
+  type BodyMapAnalyticsSessionInputV1,
+  type BodyMapAnalyticsMonthsV1,
+  type BodyMapTrainingAnalyticsResponseV1,
+} from "@/modules/training/body-map-training-analytics-v1";
 
-function session(input: {
-  id: number;
-  date: string;
-  weightKg: number;
-  rir: number | null;
-  stableKey?: string;
-  exerciseName?: string;
-  trainingBlockLabel?: string | null;
-}): BodyMapAnalyticsSessionInputV1 {
-  const at = new Date(input.date + "T17:00:00.000Z");
-  const stableKey = input.stableKey ?? "incline_dumbbell_press_30deg";
+function session(input: { id: number; date: string; weightKg: number; rir?: number | null; stableKey?: string; name?: string }): BodyMapAnalyticsSessionInputV1 {
+  const at = new Date(`${input.date}T17:00:00.000Z`);
+  const stableKey = input.stableKey ?? "flat_dumbbell_bench_press";
   return {
     id: input.id,
     effectiveAccountingAt: at,
@@ -29,12 +26,13 @@ function session(input: {
     webStartedAt: at,
     createdAt: at,
     accountingTimeZone: "UTC",
-    sessionIntent: null,
-    trainingBlockLabel: input.trainingBlockLabel ?? null,
+    sessionIntent: "regular",
+    sessionLoadAssessment: "NOT_LIGHTER",
+    trainingBlockLabel: null,
     trainingWeekNumber: null,
     exercises: [{
       id: input.id * 10,
-      snapshotExerciseName: input.exerciseName ?? "Incline dumbbell press",
+      snapshotExerciseName: input.name ?? "Dumbbell bench press",
       sortOrder: 1,
       plannedSets: 3,
       plannedRepsMin: 8,
@@ -43,19 +41,21 @@ function session(input: {
       resistanceType: "EXTERNAL_WEIGHT",
       muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(stableKey),
       sourceExerciseCatalog: { stableKey },
-      sets: Array.from({ length: 2 }, (_, index) => ({
+      sets: Array.from({ length: 3 }, (_, index) => ({
         id: input.id * 100 + index,
         setNumber: index + 1,
         reps: 8,
         weightKg: input.weightKg,
         bandNominalResistanceKg: null,
-        rir: input.rir,
+        rir: input.rir === undefined ? 2 : input.rir,
         restBeforeSeconds: 90,
         completedAt: at,
       })),
     }],
   };
 }
+
+const dates = ["2026-06-20", "2026-07-05", "2026-07-20", "2026-08-05", "2026-08-20", "2026-09-05"];
 
 function analytics(sessions: BodyMapAnalyticsSessionInputV1[]): BodyMapTrainingAnalyticsResponseV1 {
   return {
@@ -64,102 +64,71 @@ function analytics(sessions: BodyMapAnalyticsSessionInputV1[]): BodyMapTrainingA
   };
 }
 
-function renderGroup(data: BodyMapTrainingAnalyticsResponseV1, onRefresh = vi.fn()) {
+function renderMuscle(data: BodyMapTrainingAnalyticsResponseV1, onMonthsChange = vi.fn()) {
   const groupReport = data.groups.find(({ groupId }) => groupId === "chest")!;
   return render(<BodyMapTrainingAnalyticsPanel
     level="GROUP_DETAIL"
-    weeks={12}
-    onWeeksChange={vi.fn()}
+    months={3}
+    onMonthsChange={onMonthsChange}
     analytics={data}
     requestState="ready"
     groupLabel="Chest"
     anatomyId={null}
     anatomyLabel={null}
     groupReport={groupReport}
-    onRefresh={onRefresh}
   />);
 }
 
-describe("Body Map analytics panel", () => {
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
+describe("Body Map training analytics panel", () => {
+  afterEach(() => cleanup());
+
+  it("shows one muscle-level result and keeps all exercise evidence compact and collapsed", () => {
+    const data = analytics([20, 20, 22, 22, 24, 24].map((weightKg, index) => session({ id: index + 1, date: dates[index]!, weightKg })));
+    renderMuscle(data);
+
+    expect(screen.getByRole("heading", { name: "Chest" })).toBeTruthy();
+    expect(screen.getAllByText("Recorded performance is improving")).toHaveLength(2);
+    expect(screen.getByText(/1 of 1 exercises show higher typical results/)).toBeTruthy();
+    expect(screen.getByText(/not a measurement of muscle growth or loss/)).toBeTruthy();
+    const details = screen.getByTestId("body-map-exercise-progress");
+    expect(details.querySelector("summary")?.textContent).toMatch(/20 kg × 8 reps\s*→\s*24 kg × 8 reps/);
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(screen.queryByText(/RIR\s*[:=]/i)).toBeNull();
+    expect(screen.queryByText(/matched set pairs|unmapped sets|mapping coverage/i)).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Analysis period" })).toBeTruthy();
   });
 
-  it("shows a compact muscle result and evidence while keeping the diary collapsed", () => {
-    const data = analytics([
-      session({ id: 1, date: "2026-07-01", weightKg: 20, rir: 2 }),
-      session({ id: 2, date: "2026-07-20", weightKg: 22, rir: 2 }),
-      session({ id: 3, date: "2026-08-10", weightKg: 24, rir: 2 }),
-    ]);
-    renderGroup(data);
-
-    expect(screen.getAllByText("Recorded performance is trending up").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/20 kg × 8/)).toBeTruthy();
-    expect(screen.getAllByText(/22 kg × 8/).length).toBeGreaterThanOrEqual(1);
-    const progressCard = screen.getByRole("region", { name: "Diary progress summary" });
-    expect(progressCard.querySelector("ul")?.children).toHaveLength(2);
-    const detailedRecords = screen.getByText("Detailed diary records and sources").closest("details");
-    expect(detailedRecords?.open).toBe(false);
-  });
-
-  it("asks for a manual assessment only when the latest mapped session is uncertain", async () => {
+  it("lists every analyzed exercise and reveals only a short summary when expanded", async () => {
     const user = userEvent.setup();
-    const onRefresh = vi.fn();
-    const fetchMock = vi.fn(async () => Response.json({ saved: true, assessment: "LIGHTER" }));
-    vi.stubGlobal("fetch", fetchMock);
-    const data = analytics([session({ id: 8, date: "2026-08-30", weightKg: 20, rir: null })]);
+    const sessions = dates.map((date, index) => ({
+      ...session({ id: index + 1, date, weightKg: 20 + index * 2 }),
+      exercises: [
+        session({ id: index + 1, date, weightKg: 20 + index * 2 }).exercises[0]!,
+        {
+          ...session({ id: index + 1, date, weightKg: 12 + index * 2, stableKey: "flat_dumbbell_fly", name: "Dumbbell fly" }).exercises[0]!,
+          sortOrder: 2,
+        },
+      ],
+    }));
+    renderMuscle(analytics(sessions));
 
-    renderGroup(data, onRefresh);
-    expect(screen.getByText("There are not enough diary records yet. Was this session easier than usual?")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Yes, it was easier" }));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/training/sessions/8/load-assessment",
-      expect.objectContaining({ method: "PUT", body: JSON.stringify({ status: "lighter" }) }),
-    ));
-    expect(onRefresh).toHaveBeenCalled();
+    expect(screen.getByText("2")).toBeTruthy();
+    const exercise = screen.getByText("Dumbbell fly").closest("details") as HTMLDetailsElement;
+    expect(exercise.open).toBe(false);
+    await user.click(exercise.querySelector("summary")!);
+    expect(exercise.open).toBe(true);
+    expect(within(exercise).getByText(/summarizes logged working performance/)).toBeTruthy();
+    expect(within(exercise).getByRole("img", { name: "Logged load trend" })).toBeTruthy();
   });
 
-  it("builds a group summary only from the latest shared training phase", () => {
-    const data = analytics([
-      session({ id: 1, date: "2026-07-01", weightKg: 20, rir: 2, trainingBlockLabel: "Base" }),
-      session({ id: 2, date: "2026-07-15", weightKg: 22, rir: 2, trainingBlockLabel: "Base" }),
-      session({ id: 3, date: "2026-07-31", weightKg: 24, rir: 2, trainingBlockLabel: "Base" }),
-      session({ id: 4, date: "2026-08-10", weightKg: 30, rir: 2, stableKey: "flat_dumbbell_fly", exerciseName: "Flat dumbbell fly", trainingBlockLabel: "Deload" }),
-      session({ id: 5, date: "2026-08-25", weightKg: 28, rir: 2, stableKey: "flat_dumbbell_fly", exerciseName: "Flat dumbbell fly", trainingBlockLabel: "Deload" }),
-      session({ id: 6, date: "2026-09-09", weightKg: 26, rir: 2, stableKey: "flat_dumbbell_fly", exerciseName: "Flat dumbbell fly", trainingBlockLabel: "Deload" }),
+  it("offers the four requested calendar periods", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderMuscle(analytics([]), onChange);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Analysis period" }), "6");
+    expect(onChange).toHaveBeenCalledWith(6 satisfies BodyMapAnalyticsMonthsV1);
+    expect(within(screen.getByRole("combobox")).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "1 month", "2 months", "3 months", "6 months",
     ]);
-    const { unmount: unmountInitial } = renderGroup(data);
-
-    const progressCard = screen.getByRole("region", { name: "Diary progress summary" });
-    expect(progressCard.getAttribute("data-progress")).toBe("declining");
-    expect(progressCard.textContent).toContain("Flat dumbbell fly");
-    expect(progressCard.textContent).toMatch(/30 kg × 8 → 28 kg × 8/);
-    expect(progressCard.textContent).not.toMatch(/20 kg × 8/);
-    expect(progressCard.textContent).toContain("The summary uses only the latest phase; earlier phases are kept separate.");
-    unmountInitial();
-
-    const latestSessions = data.sessions.slice(-2);
-    expect(latestSessions.map(({ phaseNumber }) => phaseNumber)).toEqual([2, 2]);
-
-    const withLaterUnmappedMusclePhase = analytics([
-      session({ id: 1, date: "2026-07-01", weightKg: 20, rir: 2, trainingBlockLabel: "Base" }),
-      session({ id: 2, date: "2026-07-15", weightKg: 22, rir: 2, trainingBlockLabel: "Base" }),
-      session({ id: 3, date: "2026-07-31", weightKg: 24, rir: 2, trainingBlockLabel: "Base" }),
-      session({ id: 4, date: "2026-08-10", weightKg: 30, rir: 2, stableKey: "flat_dumbbell_fly", exerciseName: "Flat dumbbell fly", trainingBlockLabel: "Deload" }),
-      session({ id: 5, date: "2026-08-25", weightKg: 28, rir: 2, stableKey: "flat_dumbbell_fly", exerciseName: "Flat dumbbell fly", trainingBlockLabel: "Deload" }),
-      session({ id: 6, date: "2026-09-09", weightKg: 26, rir: 2, stableKey: "flat_dumbbell_fly", exerciseName: "Flat dumbbell fly", trainingBlockLabel: "Deload" }),
-      session({ id: 7, date: "2026-09-09", weightKg: 40, rir: 2, stableKey: "one_arm_seated_cable_row", exerciseName: "One-arm seated cable row", trainingBlockLabel: "Accumulation" }),
-    ]);
-    expect(withLaterUnmappedMusclePhase.sessions.at(-1)?.phaseNumber).toBe(3);
-    const onRefresh = vi.fn();
-    const { unmount } = renderGroup(withLaterUnmappedMusclePhase, onRefresh);
-
-    const staleTrendCard = screen.getByRole("region", { name: "Diary progress summary" });
-    expect(staleTrendCard.getAttribute("data-progress")).toBe("insufficient-data");
-    expect(staleTrendCard.textContent).toContain("There are no records for this muscle group in the latest phase; earlier phases are not shown as the current trend.");
-    expect(staleTrendCard.textContent).not.toMatch(/30 kg × 8/);
-    unmount();
   });
 });

@@ -21,6 +21,13 @@ vi.mock("@/modules/health/sleep.repository", () => ({
   },
 }));
 
+vi.mock("@/modules/model-episodes/model-episode.repository", () => ({
+  ModelEpisodeRepository: class {
+    async getActive() { return null; }
+    async history() { return null; }
+  },
+}));
+
 import { readBodyMapTrainingAnalyticsV1 } from "@/modules/training/body-map-training-analytics.repository";
 
 const sessionDate = "2026-09-03";

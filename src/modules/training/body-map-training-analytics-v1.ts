@@ -4,22 +4,19 @@ import {
   type AnatomyIdV2,
   type BodyMapGroupIdV2,
 } from "@/modules/training/body-map-catalog-v2";
-import {
-  resolveStoredExerciseAnatomySnapshotV1,
-} from "@/modules/training/exercise-anatomy-mapping-v1";
-import {
-  EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY,
-  parseExerciseAnatomySnapshotV2,
-} from "@/modules/training/exercise-anatomy-mapping-v2";
+import { resolveBodyMapExerciseMappingV3 } from "@/modules/training/resolve-body-map-exercise-mapping-v3";
 import {
   deriveBodyMapExposureV2,
   projectExerciseAnatomyToBodyMapV2,
   type ExerciseAnatomyProjectionInputV2,
   type BodyMapGroupExposureV2,
 } from "@/modules/training/body-map-training-exposure-v2";
+import type { BodyMapEnergyBalanceContextV1 } from "@/modules/training/body-map-energy-balance-context-v1";
 
 export const BODY_MAP_TRAINING_ANALYTICS_CONTRACT_V1 = "bodycast-body-map-training-analytics-v1" as const;
-export type BodyMapAnalyticsWeeksV1 = 4 | 8 | 12;
+/** Legacy weeks selector remains supported for existing API callers. */
+export type BodyMapAnalyticsWeeksV1 = 4 | 8 | 12 | 24;
+export type BodyMapAnalyticsMonthsV1 = 1 | 2 | 3 | 6;
 export type BodyMapAnalyticsSessionIntentV1 =
   | "regular"
   | "easy-deload"
@@ -267,28 +264,14 @@ export type BodyMapTrainingSessionContextV1 = {
 
 export type BodyMapTrainingAnalyticsResponseV1 = BodyMapTrainingAnalyticsV1 & {
   sessionContexts: BodyMapTrainingSessionContextV1[];
+  /** Additive optional context; absent/unavailable never means a measured zero balance. */
+  energyBalanceContext?: BodyMapEnergyBalanceContextV1;
 };
 
 type MappingSnapshot = ExerciseAnatomyProjectionInputV2;
 
-function mappingFromSnapshot(value: unknown): MappingSnapshot | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(record, EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY)
-    && record[EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY] !== null) {
-    const snapshot = parseExerciseAnatomySnapshotV2(record[EXERCISE_ANATOMY_SNAPSHOT_V2_PROPERTY]);
-    return snapshot ? {
-      stableKey: snapshot.stableKey,
-      mappingVersion: snapshot.mappingVersion,
-      targets: snapshot.targets,
-    } : null;
-  }
-  const snapshot = resolveStoredExerciseAnatomySnapshotV1(value);
-  return snapshot.availability === "available" ? {
-    stableKey: snapshot.stableKey,
-    mappingVersion: snapshot.mappingVersion,
-    targets: snapshot.targets,
-  } : null;
+function mappingFromSnapshot(value: unknown, sourceCatalogStableKey?: string | null): MappingSnapshot | null {
+  return resolveBodyMapExerciseMappingV3(value, sourceCatalogStableKey);
 }
 
 export function bodyMapLocalDateV1(instant: Date, timeZone: string | null): string {
@@ -330,6 +313,25 @@ function eventInstant(session: BodyMapAnalyticsSessionInputV1): Date {
     ?? session.matchedWorkout?.startAt
     ?? session.webStartedAt
     ?? session.createdAt;
+}
+
+export function bodyMapAnalyticsWeeksForMonthsV1(months: BodyMapAnalyticsMonthsV1): BodyMapAnalyticsWeeksV1 {
+  return months === 1 ? 4 : months === 2 ? 8 : months === 3 ? 12 : 24;
+}
+
+export function bodyMapAnalyticsWindowStartV1(input: {
+  now: Date;
+  weeks: BodyMapAnalyticsWeeksV1;
+  months?: BodyMapAnalyticsMonthsV1;
+}): Date {
+  if (input.months === undefined) return new Date(input.now.getTime() - input.weeks * 7 * 86_400_000);
+  const result = new Date(input.now);
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() - input.months);
+  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return result;
 }
 
 type ExerciseLoadObservation = { setCount: number; rirs: number[] };
@@ -695,11 +697,12 @@ function trainingPhases(sessions: readonly BodyMapAnalyticsSessionInputV1[]): {
 export function buildBodyMapTrainingAnalyticsV1(input: {
   sessions: readonly BodyMapAnalyticsSessionInputV1[];
   weeks: BodyMapAnalyticsWeeksV1;
+  months?: BodyMapAnalyticsMonthsV1;
   now: Date;
 }): BodyMapTrainingAnalyticsV1 {
   const to = input.now;
-  const from = new Date(to.getTime() - input.weeks * 7 * 86_400_000);
-  const assessmentLookback = new Date(to.getTime() - 12 * 7 * 86_400_000);
+  const from = bodyMapAnalyticsWindowStartV1(input);
+  const assessmentLookback = new Date(from.getTime() - 12 * 7 * 86_400_000);
   const sourceSessions = input.sessions
     .filter((session) => {
       const occurredAt = eventInstant(session);
@@ -732,7 +735,7 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
     const weekStart = mondayOf(sessionDate);
     const orderedExercises = [...session.exercises].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
     for (const [exercisePosition, exercise] of orderedExercises.entries()) {
-      const mapping = mappingFromSnapshot(exercise.muscleMappingSnapshot);
+      const mapping = mappingFromSnapshot(exercise.muscleMappingSnapshot, exercise.sourceExerciseCatalog?.stableKey);
       const stableKey = mapping?.stableKey ?? exercise.sourceExerciseCatalog?.stableKey ?? null;
       for (const set of exercise.sets) {
         recordedSetCount += 1;
@@ -832,7 +835,7 @@ export function buildBodyMapTrainingAnalyticsV1(input: {
             exercisesInSession: orderedExercises.length,
             precedingExercises: orderedExercises.slice(0, exercisePosition)
               .map((candidate) => {
-                const previousMapping = mappingFromSnapshot(candidate.muscleMappingSnapshot);
+                const previousMapping = mappingFromSnapshot(candidate.muscleMappingSnapshot, candidate.sourceExerciseCatalog?.stableKey);
                 const previousGroupIds = previousMapping
                   ? [...new Set(projectExerciseAnatomyToBodyMapV2("context", previousMapping).map((target) => target.groupId))]
                   : [];

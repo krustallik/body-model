@@ -1,172 +1,105 @@
 .panel {
   display: grid;
-  gap: 14px;
-  padding: 15px;
+  gap: 13px;
+  min-width: 0;
+  padding: 14px;
   border: 1px solid var(--border);
   border-radius: 14px;
   color: var(--text);
   background: var(--surface-1);
 }
 
-.periodRow,
-.summaryHeader,
-.weekMeta,
-.sessionHeading {
+.panelHeader,
+.sectionHeading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.periodRow { flex-wrap: wrap; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-.periodField { display: grid; gap: 5px; color: var(--text-secondary); font-size: 11px; font-weight: 650; }
-.periodField select { min-height: 44px; padding: 7px 30px 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-2); }
-.periodRow small { color: var(--text-muted); font-size: 11px; }
-.summaryHeader { align-items: flex-start; }
-.summaryHeader h2 { margin: 2px 0 0; font-size: 19px; line-height: 1.2; letter-spacing: -0.02em; }
-.kicker { margin: 0; color: var(--primary-strong); font-size: 9px; font-weight: 750; letter-spacing: .11em; }
-.coverageTag { max-width: 46%; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-secondary); font-size: 9px; line-height: 1.2; text-align: center; }
-.coverageTag[data-coverage="partial"] { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); color: var(--warning); }
-.coverageTag[data-coverage="unknown"], .coverageTag[data-coverage="unsupported"] { color: var(--text-muted); }
-.provenance { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
-.progressCard, .loadAssessment {
+.panelHeader { align-items: flex-start; }
+.panelHeader h2 { margin: 3px 0 0; font-size: clamp(18px, 2.8vw, 22px); line-height: 1.18; letter-spacing: -.025em; }
+.kicker { margin: 0; color: var(--primary-strong); font-size: 9px; font-weight: 750; letter-spacing: .12em; }
+.periodField { display: grid; gap: 5px; flex: 0 0 auto; color: var(--text-secondary); font-size: 10px; font-weight: 650; }
+.periodField select { min-height: 44px; min-width: 126px; padding: 7px 30px 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-2); color-scheme: dark; font: inherit; font-weight: 650; }
+.periodField select:hover { border-color: var(--primary-strong); }
+.periodField select:focus-visible { outline: 2px solid var(--primary-strong); outline-offset: 2px; }
+.dateRange { margin: -5px 0 0; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.overviewPrompt { margin: 0; padding: 12px; border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 12px; line-height: 1.5; }
+.notice,
+.emptyState { margin: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 11px; line-height: 1.5; }
+
+.resultCard {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   padding: 14px;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--surface-2), color-mix(in srgb, var(--primary-soft) 55%, var(--surface-2)));
+  background: linear-gradient(135deg, var(--surface-2), color-mix(in srgb, var(--primary-soft) 48%, var(--surface-2)));
 }
-.progressCard[data-progress="improving"] { border-color: color-mix(in srgb, var(--success) 58%, var(--border)); }
-.progressCard[data-progress="declining"] { border-color: color-mix(in srgb, var(--danger) 58%, var(--border)); }
-.progressCard[data-progress="steady"] { border-color: color-mix(in srgb, var(--primary) 52%, var(--border)); }
-.progressCard[data-progress="mixed"] { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
-.progressCardHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.progressCardHeading > div { display: grid; gap: 4px; }
-.progressCardHeading strong { font-size: clamp(18px, 2.5vw, 23px); line-height: 1.16; letter-spacing: -.025em; }
-.progressMark { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 999px; background: var(--text-muted); box-shadow: 0 0 0 5px color-mix(in srgb, var(--text-muted) 12%, transparent); }
-.progressCard[data-progress="improving"] .progressMark { background: var(--success-strong); box-shadow: 0 0 0 5px var(--success-soft); }
-.progressCard[data-progress="declining"] .progressMark { background: var(--danger-strong); box-shadow: 0 0 0 5px var(--danger-soft); }
-.progressCard[data-progress="steady"] .progressMark { background: var(--primary-strong); box-shadow: 0 0 0 5px var(--primary-soft); }
-.progressCard[data-progress="mixed"] .progressMark { background: var(--warning-strong); box-shadow: 0 0 0 5px var(--warning-soft); }
-.progressCard > p, .loadAssessment > p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
-.progressCard > small, .loadAssessment > small { color: var(--text-muted); font-size: 10px; line-height: 1.45; }
-.progressEvidence { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.progressEvidence li { display: grid; gap: 3px; padding: 8px 9px; border-radius: 8px; background: color-mix(in srgb, var(--bg) 75%, transparent); }
-.progressEvidence li > span { color: var(--text-secondary); font-size: 10px; }
-.progressEvidence li > strong { color: var(--text); font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.progressEvidence li > strong span { color: var(--primary-strong); }
-.loadAssessment { gap: 7px; padding: 11px 13px; background: var(--surface-2); }
-.loadAssessment[data-assessment="lighter"] { border-color: color-mix(in srgb, var(--success) 48%, var(--border)); }
-.loadAssessment[data-assessment="uncertain"] { border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); }
-.loadAssessmentHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.loadAssessmentHeading strong { color: var(--text); font-size: 11px; }
-.loadAssessmentHeading span { color: var(--text-secondary); font-size: 10px; line-height: 1.4; text-align: right; }
-.assessmentPrompt { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-.assessmentPrompt p { margin: 0; color: var(--text); font-size: 11px; font-weight: 650; line-height: 1.4; }
-.assessmentActions { display: flex; flex-wrap: wrap; gap: 7px; }
-.assessmentActions button { min-height: 44px; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--text); background: var(--surface-1); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease; }
-.assessmentActions button:hover:not(:disabled) { border-color: var(--primary-strong); background: var(--primary-soft); transform: translateY(-1px); }
-.assessmentActions button:disabled { cursor: wait; opacity: .65; }
-.assessmentActions .assessmentSkip { color: var(--text-secondary); }
-.fullDiaryDetails { border-top: 1px solid var(--border); padding-top: 10px; }
-.fullDiaryDetails > summary { min-height: 44px; display: flex; align-items: center; color: var(--text-secondary); font-size: 11px; font-weight: 650; cursor: pointer; list-style-position: inside; }
-.fullDiaryDetails[open] > summary { margin-bottom: 10px; color: var(--text); }
-.summaryMetrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.metric { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
-.metric span { color: var(--text-secondary); font-size: 10px; line-height: 1.35; }
-.metric strong { font-size: 19px; line-height: 1; font-variant-numeric: tabular-nums; }
-.metricSourceButton { justify-self: start; min-width: 44px; min-height: 44px; padding: 4px; border: 0; border-radius: 7px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
-.metricSourceButton:hover, .weekSourceButton:hover { color: var(--primary-strong); text-decoration: underline; text-underline-offset: 3px; }
-.weekSourceButton { min-height: 44px; padding: 4px 4px; border: 0; color: var(--text); background: transparent; font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
-.notice, .emptyState { margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); background: var(--surface-2); font-size: 11px; line-height: 1.5; }
-.emptyState strong { display: block; color: var(--text); }
-.emptyState p { margin: 5px 0 0; }
-.subsection { display: grid; gap: 9px; padding-top: 12px; border-top: 1px solid var(--border); }
-.subsection h3 { margin: 0; font-size: 13px; }
-.weekList, .exerciseList { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.weekList li { display: grid; gap: 6px; padding: 9px 10px; border-radius: 9px; background: var(--surface-2); }
-.weekMeta { color: var(--text-secondary); font-size: 10px; }
-.weekMeta span:last-child { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
-.barTrack { height: 5px; overflow: hidden; border-radius: 8px; background: var(--elevated); }
-.barTrack span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--primary); }
-.weekList small, .rirList span { color: var(--text-muted); font-size: 10px; }
-.rirList { display: flex; flex-wrap: wrap; gap: 7px; }
-.rirList button { min-height: 44px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary); background: var(--surface-2); cursor: pointer; }
-.rirList b { color: var(--text); font-variant-numeric: tabular-nums; }
-.exercise { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
-.exercise summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; cursor: pointer; list-style: none; }
-.exercise summary::-webkit-details-marker { display: none; }
-.exercise summary::after { content: "+"; color: var(--primary-strong); font-size: 17px; }
-.exercise[open] summary::after { content: "−"; }
-.exercise summary > span:first-child { display: grid; gap: 3px; min-width: 0; }
-.exercise summary strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; }
-.exercise summary small { color: var(--text-secondary); font-size: 10px; }
-.trendPill { max-width: 43%; color: var(--text-secondary); font-size: 9px; line-height: 1.3; text-align: right; }
-.trendPill[data-trend="improving"] { color: var(--primary-strong); }
-.trendPill[data-trend="declining"] { color: var(--warning); }
-.exerciseBody { display: grid; gap: 10px; padding: 0 10px 10px; }
-.trendSegments { display: grid; gap: 6px; }
-.trendSegment { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); }
-.trendSegment > div { display: grid; gap: 2px; }
-.trendSegment strong { font-size: 11px; }
-.trendSegment small { color: var(--text-secondary); font-size: 9px; line-height: 1.4; }
-.trendSegment > small { grid-column: 1 / -1; }
-.session { display: grid; gap: 6px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); }
-.sessionHeading { color: var(--text); font-size: 11px; }
-.sessionHeading span { color: var(--text-secondary); font-size: 10px; }
-.sessionPlan, .preceding { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
-.preceding { padding: 7px; border-left: 2px solid var(--primary); background: var(--surface-1); }
-.planAdherence { display: grid; gap: 4px; margin: 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-1); }
-.planAdherence strong { color: var(--text); font-size: 10px; line-height: 1.4; }
-.planAdherence small { color: var(--text-secondary); font-size: 9px; line-height: 1.4; }
-.planAdherence[data-status="met"] { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
-.planAdherence[data-status="different"] { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
-.sourceRecords { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-1); scroll-margin: 12px; }
-.sourceRecordsHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.sourceRecordsHeading h3 { margin: 0; font-size: 12px; }
-.sourceRecordsHeading p { margin: 4px 0 0; color: var(--text-secondary); font-size: 10px; line-height: 1.4; }
-.sourceClose { min-height: 44px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-2); cursor: pointer; }
-.sourceList { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.sourceList li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px; border-radius: 8px; background: var(--surface-2); }
-.sourceList li > div { display: grid; gap: 3px; min-width: 0; }
-.sourceList strong { font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
-.sourceList small { color: var(--text-secondary); font-size: 9px; line-height: 1.4; }
-.sourceList a { flex: 0 0 auto; min-height: 44px; display: inline-flex; align-items: center; padding: 5px 8px; border-radius: 7px; color: var(--primary-strong); font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }
-.setList { display: grid; gap: 4px; }
-.setRow { display: grid; grid-template-columns: .55fr .55fr .8fr .55fr 1.35fr; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 9px; font-variant-numeric: tabular-nums; }
-.setRow span { min-width: 0; overflow-wrap: anywhere; }
-.setRow span:first-child { color: var(--text); }
-.contextGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.contextGrid > div { display: grid; align-content: start; gap: 4px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-1); }
-.contextGrid b { font-size: 9px; line-height: 1.35; }
-.contextGrid small { color: var(--text-secondary); font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
-.method { padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
-.method summary { color: var(--text); cursor: pointer; font-weight: 650; }
-.method p { margin: 8px 0; }
-.method ul { display: grid; gap: 5px; margin: 0; padding-left: 17px; }
-.method a { color: var(--primary-strong); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.resultCard[data-status="progress"] { border-color: color-mix(in srgb, var(--success-strong) 55%, var(--border)); }
+.resultCard[data-status="regression"] { border-color: color-mix(in srgb, var(--danger-strong) 55%, var(--border)); }
+.resultCard[data-status="stable"] { border-color: color-mix(in srgb, var(--primary-strong) 58%, var(--border)); }
+.resultCard[data-status="mixed"],
+.resultCard[data-status="ambiguous"] { border-color: color-mix(in srgb, var(--warning-strong) 52%, var(--border)); }
+.resultHeading { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+.resultHeading strong { font-size: clamp(16px, 2.4vw, 20px); line-height: 1.2; letter-spacing: -.02em; }
+.statusGlyph { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 50%; color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 12%, transparent); font-size: 16px; font-weight: 750; }
+.resultCard[data-status="progress"] .statusGlyph { color: var(--success-strong); background: var(--success-soft); }
+.resultCard[data-status="regression"] .statusGlyph { color: var(--danger-strong); background: var(--danger-soft); }
+.resultCard[data-status="stable"] .statusGlyph { color: var(--primary-strong); background: var(--primary-soft); }
+.resultCard[data-status="mixed"] .statusGlyph,
+.resultCard[data-status="ambiguous"] .statusGlyph { color: var(--warning-strong); background: var(--warning-soft); }
+.explanation { margin: 0; color: var(--text); font-size: 12px; line-height: 1.5; }
+.scopeLine { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+.caveat { margin: 0; padding-left: 9px; border-left: 2px solid var(--warning-strong); color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
+.energyContext { margin: 0; padding: 8px 9px; border-radius: 8px; color: var(--text-secondary); background: color-mix(in srgb, var(--primary-soft) 45%, var(--surface-1)); font-size: 10px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.measurementNote { color: var(--text-muted); font-size: 9px; line-height: 1.4; }
+
+.exerciseSection { display: grid; gap: 8px; }
+.sectionHeading { min-height: 28px; }
+.sectionHeading h3 { margin: 0; font-size: 12px; }
+.sectionHeading span { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.exerciseList { display: grid; gap: 7px; }
+.exercise { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); transition: border-color 160ms ease, background-color 160ms ease; }
+.exercise:hover { border-color: var(--border-strong); }
+.exercise[open] { border-color: color-mix(in srgb, var(--primary-strong) 45%, var(--border)); background: color-mix(in srgb, var(--surface-2) 75%, var(--primary-soft)); }
+.exercise > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 58px; padding: 9px 10px; cursor: pointer; list-style: none; }
+.exercise > summary::-webkit-details-marker { display: none; }
+.exercise > summary::after { content: "+"; color: var(--primary-strong); font-size: 18px; line-height: 1; }
+.exercise[open] > summary::after { content: "−"; }
+.exerciseHeading { display: grid; gap: 4px; min-width: 0; }
+.exerciseHeading strong { overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; }
+.exerciseHeading > span { color: var(--text-secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.exerciseHeading i { color: var(--primary-strong); font-style: normal; }
+.exerciseStatus { max-width: 34%; color: var(--text-secondary); font-size: 9px; line-height: 1.3; text-align: right; }
+.exerciseStatus[data-status="progress"] { color: var(--success-strong); }
+.exerciseStatus[data-status="regression"] { color: var(--danger-strong); }
+.exerciseStatus[data-status="stable"] { color: var(--primary-strong); }
+.exerciseStatus[data-status="mixed"],
+.exerciseStatus[data-status="ambiguous"] { color: var(--warning-strong); }
+.exerciseBody { display: grid; gap: 7px; padding: 0 10px 10px; }
+.exerciseBody p,
+.exerciseBody small { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
+.charts { display: grid; gap: 5px; }
+.sparklineRow { display: grid; grid-template-columns: minmax(80px, .7fr) 1fr; align-items: center; gap: 9px; min-height: 30px; }
+.sparklineRow > span { color: var(--text-muted); font-size: 9px; }
+.sparkline { width: 100%; height: 30px; overflow: visible; }
+.sparkline polyline { fill: none; stroke: var(--primary-strong); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.sparkline[data-kind="load"] polyline { stroke: var(--success-strong); }
 .panel :focus-visible { outline: 2px solid var(--primary-strong); outline-offset: 2px; }
 
-@media (max-width: 520px) {
-  .panel { gap: 11px; padding: 12px; }
-  .summaryMetrics { gap: 6px; }
-  .metric { padding: 8px; }
-  .metric strong { font-size: 17px; }
-  .coverageTag { max-width: 43%; }
-  .contextGrid { grid-template-columns: 1fr; }
-  .setRow { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; font-size: 8px; }
-  .weekMeta { align-items: flex-start; }
-  .weekMeta span:last-child { max-width: 45%; }
-  .progressCard, .loadAssessment { padding: 11px; }
-  .progressEvidence li > strong { font-size: 10px; }
-  .loadAssessmentHeading { display: grid; }
-  .loadAssessmentHeading span { text-align: left; }
-  .assessmentActions { display: grid; grid-template-columns: 1fr 1fr; }
-  .assessmentActions button { width: 100%; }
-  .assessmentActions .assessmentSkip { grid-column: 1 / -1; }
+@media (max-width: 540px) {
+  .panel { gap: 11px; padding: 11px; }
+  .panelHeader { align-items: flex-start; flex-direction: column; }
+  .periodField { width: 100%; }
+  .periodField select { width: 100%; }
+  .resultCard { padding: 11px; }
+  .exercise > summary { align-items: flex-start; }
+  .exerciseStatus { max-width: 30%; padding-top: 2px; }
+  .exerciseHeading strong { white-space: normal; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .assessmentActions button { transition: none; }
+  .exercise { transition: none; }
 }

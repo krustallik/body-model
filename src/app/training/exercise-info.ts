@@ -45,8 +45,10 @@ const EXERCISE_INFO_BY_CATALOG_NAME: Record<string, ExerciseInfoCopy> = {
     ],
   },
   "Віджимання від ручок": {
-    primaryMusclesUk: "груди, трицепси, передні дельти",
-    primaryMusclesEn: "chest, triceps, front delts",
+    primaryMusclesUk: "груди, трицепси",
+    primaryMusclesEn: "chest, triceps",
+    secondaryMusclesUk: "передні дельти",
+    secondaryMusclesEn: "front delts",
     cuesUk: [
       "тримайте корпус рівною лінією",
       "опускайте груди між ручками",

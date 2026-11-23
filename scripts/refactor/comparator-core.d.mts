@@ -38,4 +38,15 @@ export function validateComparatorDatabaseUrl(
 export function canonicalizeJson(value: unknown): unknown;
 export function stableJson(value: unknown): string;
 export function diffJson(before: unknown, after: unknown, currentPath?: string): JsonDifference[];
+export interface ComparatorCaseRun {
+  suiteId: string;
+  cases: Array<{ file: string; name: string; status: string }>;
+}
+export interface ComparatorCaseCoverage {
+  file: string;
+  name: string;
+  executedIn: string[];
+  filteredIn: string[];
+}
+export function aggregateSuiteCases(suiteRuns: ComparatorCaseRun[]): ComparatorCaseCoverage[];
 export function sha256(data: string | Uint8Array): string;

@@ -2,6 +2,10 @@
   "schemaVersion": 1,
   "bootstrapBaseSha": "53d3a43014e2395256134723c17c107029772149",
   "fixtureTree": "tests/fixtures",
+  "determinism": {
+    "clock": "2026-11-23T12:00:00.000Z",
+    "randomSeed": "bodycast-refactor-comparator-v1"
+  },
   "postgres": {
     "image": "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
     "legacyMigrationBaselineSha": "0f93f37dd6a4208cfc74331a0fb4c063c542c6bd",

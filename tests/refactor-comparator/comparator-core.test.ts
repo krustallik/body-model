@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
 import {
+  aggregateSuiteCases,
   canonicalizeJson,
   diffJson,
   parseComparatorArgs,
@@ -61,6 +62,14 @@ describe("refactor comparator core", () => {
     const wrongImage = structuredClone(manifest);
     wrongImage.postgres.image = "postgres:latest";
     expect(() => validateManifest(wrongImage)).toThrow(/image digest/);
+
+    const invalidClock = structuredClone(manifest);
+    invalidClock.determinism.clock = "2026-11-23T12:00:00Z";
+    expect(() => validateManifest(invalidClock)).toThrow(/deterministic clock/);
+
+    const invalidSeed = structuredClone(manifest);
+    invalidSeed.determinism.randomSeed = "not a safe seed!";
+    expect(() => validateManifest(invalidSeed)).toThrow(/random seed/);
 
     const wrongEndpoint = structuredClone(manifest);
     wrongEndpoint.postgres.before.port = 5432;
@@ -168,5 +177,27 @@ describe("refactor comparator core", () => {
 
   it("hashes deterministic UTF-8 evidence bytes", () => {
     expect(sha256("bodycast")).toBe("657591502281d028e9a9fa42440683414a98190f50ad7d4e52a3e674ddc53456");
+  });
+
+  it("requires each intentionally filtered shard case to pass in another required suite", () => {
+    expect(aggregateSuiteCases([
+      { suiteId: "shard-1", cases: [
+        { file: "tests/a.test.ts", name: "keeps invariant", status: "passed" },
+        { file: "tests/a.test.ts", name: "runs focused case", status: "skipped" },
+      ] },
+      { suiteId: "shard-2", cases: [
+        { file: "tests/a.test.ts", name: "keeps invariant", status: "skipped" },
+        { file: "tests/a.test.ts", name: "runs focused case", status: "passed" },
+      ] },
+    ])).toEqual([
+      { file: "tests/a.test.ts", name: "keeps invariant", executedIn: ["shard-1"], filteredIn: ["shard-2"] },
+      { file: "tests/a.test.ts", name: "runs focused case", executedIn: ["shard-2"], filteredIn: ["shard-1"] },
+    ]);
+    expect(() => aggregateSuiteCases([
+      { suiteId: "all", cases: [{ file: "tests/a.test.ts", name: "skipped sentinel", status: "skipped" }] },
+    ])).toThrow(/did not pass/);
+    expect(() => aggregateSuiteCases([
+      { suiteId: "all", cases: [{ file: "tests/a.test.ts", name: "todo sentinel", status: "todo" }] },
+    ])).toThrow(/failure, todo, or unknown status/);
   });
 });

@@ -91,6 +91,17 @@ export function validateManifest(value) {
   if (value.schemaVersion !== 1) throw new Error("Unsupported comparator manifest schema.");
   if (!SHA_PATTERN.test(value.bootstrapBaseSha ?? "")) throw new Error("Manifest bootstrap base SHA is invalid.");
   validateRelativePath(value.fixtureTree, "Manifest fixtureTree");
+  requireObject(value.determinism, "Manifest determinism");
+  if (typeof value.determinism.clock !== "string"
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.determinism.clock)
+    || !Number.isFinite(Date.parse(value.determinism.clock))
+    || new Date(value.determinism.clock).toISOString() !== value.determinism.clock) {
+    throw new Error("Manifest deterministic clock must be a canonical UTC ISO timestamp.");
+  }
+  if (typeof value.determinism.randomSeed !== "string" || value.determinism.randomSeed.length < 8
+    || value.determinism.randomSeed.length > 128 || !/^[A-Za-z0-9._-]+$/.test(value.determinism.randomSeed)) {
+    throw new Error("Manifest deterministic random seed is invalid.");
+  }
 
   requireObject(value.postgres, "Manifest postgres");
   const database = value.postgres;
@@ -295,6 +306,39 @@ export function diffJson(before, after, currentPath = "$") {
   }
   return differences;
 }
+
+export function aggregateSuiteCases(suiteRuns) {
+  if (!Array.isArray(suiteRuns) || suiteRuns.length === 0) throw new Error("Comparator test-case coverage requires suite reports.");
+  const cases = new Map();
+  for (const run of suiteRuns) {
+    if (!run || typeof run.suiteId !== "string" || !run.suiteId || !Array.isArray(run.cases)) {
+      throw new Error("Comparator test-case suite report is malformed.");
+    }
+    for (const testCase of run.cases) {
+      if (!testCase || typeof testCase.file !== "string" || !testCase.file
+        || typeof testCase.name !== "string" || !testCase.name
+        || !["passed", "skipped"].includes(testCase.status)) {
+        throw new Error("Comparator test-case report contains a failure, todo, or unknown status.");
+      }
+      const key = `${testCase.file}\0${testCase.name}`;
+      const current = cases.get(key) ?? { file: testCase.file, name: testCase.name, executedIn: [], filteredIn: [] };
+      const destination = testCase.status === "passed" ? current.executedIn : current.filteredIn;
+      if (destination.includes(run.suiteId)) throw new Error("Comparator test-case suite report contains a duplicate case.");
+      destination.push(run.suiteId);
+      cases.set(key, current);
+    }
+  }
+  const result = [...cases.values()].sort((left, right) => `${left.file}\0${left.name}`.localeCompare(`${right.file}\0${right.name}`));
+  if (result.length === 0 || result.some(({ executedIn }) => executedIn.length === 0)) {
+    throw new Error("Comparator has a skipped test case that did not pass in any required suite.");
+  }
+  for (const testCase of result) {
+    testCase.executedIn.sort();
+    testCase.filteredIn.sort();
+  }
+  return result;
+}
+
 export function sha256(data) {
   return createHash("sha256").update(data).digest("hex");
 }

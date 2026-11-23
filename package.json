@@ -11,6 +11,7 @@
     "test": "npm run test:unit",
     "test:unit": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "refactor:compare": "node scripts/refactor/run-behavior-comparator.mjs",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "qa:fullsite-preview": "tsx scripts/qa/fullsite-preview-seed.ts",

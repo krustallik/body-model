@@ -4,6 +4,13 @@ import { describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
 
 describe("frozen refactor comparator manifest", () => {
+  it("pins one exact deterministic clock and random seed", () => {
+    expect(manifest.determinism).toEqual({
+      clock: "2026-11-23T12:00:00.000Z",
+      randomSeed: "bodycast-refactor-comparator-v1",
+    });
+  });
+
   it("contains unique suites, paths, tables, and observation IDs", () => {
     const suiteIds = [
       ...manifest.unitSuites.map(({ id }) => id),

@@ -207,8 +207,14 @@ export function validateManifest(value) {
     if (suite.authEnvironment === true && suite.databaseProfile !== "auth") {
       throw new Error("Manifest integrationSuites[" + index + "] Auth suite must use the auth database profile.");
     }
+    if (suite.clockMode !== undefined && !["frozen", "native"].includes(suite.clockMode)) {
+      throw new Error("Manifest integrationSuites[" + index + "] clockMode must be frozen or native.");
+    }
     if (suite.databaseProfile === "auth" && suite.authEnvironment !== true) {
       throw new Error("Manifest integrationSuites[" + index + "] auth profile requires the Auth test environment.");
+    }
+    if (suite.databaseProfile === "auth" && suite.clockMode !== "frozen") {
+      throw new Error("Manifest Auth integration suite must use the deterministic application clock.");
     }
     suiteIds.push(suite.id);
   }

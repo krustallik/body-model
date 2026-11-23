@@ -176,7 +176,8 @@
       "id": "postgres-auth-multiuser",
       "args": ["tests/integration/auth-multiuser.integration.test.ts"],
       "databaseProfile": "auth",
-      "authEnvironment": true
+      "authEnvironment": true,
+      "clockMode": "frozen"
     }
   ]
 }

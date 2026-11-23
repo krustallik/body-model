@@ -105,6 +105,14 @@ describe("refactor comparator core", () => {
     const invalidObservation = structuredClone(manifest);
     invalidObservation.observations[0].path = "tests/not-in-a-suite.test.ts";
     expect(() => validateManifest(invalidObservation)).toThrow(/not covered by a unit suite/);
+
+    const invalidClockMode = structuredClone(manifest);
+    (invalidClockMode.integrationSuites[0] as unknown as { clockMode: string }).clockMode = "warp";
+    expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen or native/);
+
+    const nativeAuthClock = structuredClone(manifest);
+    (nativeAuthClock.integrationSuites.at(-1) as unknown as { clockMode: string }).clockMode = "native";
+    expect(() => validateManifest(nativeAuthClock)).toThrow(/deterministic application clock/);
   });
 
   it("accepts only the exact isolated before and after PostgreSQL identities", () => {

@@ -50,7 +50,10 @@ export async function waitForPostgresConnection(check, {
     throw new Error("Comparator PostgreSQL identity readiness requires an exact loopback endpoint and bounded retry policy.");
   }
 
-  const expected = `Can't reach database server at \`${host}:${port}\``;
+  const transientReadinessErrors = [
+    `Can't reach database server at \`${host}:${port}\``,
+    "FATAL: the database system is starting up",
+  ];
   const deadline = Date.now() + timeoutMs;
   let lastError;
   do {
@@ -58,7 +61,7 @@ export async function waitForPostgresConnection(check, {
       return await check();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes(expected)) throw error;
+      if (!transientReadinessErrors.some((expected) => message.includes(expected))) throw error;
       lastError = error;
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;

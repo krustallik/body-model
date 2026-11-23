@@ -42,6 +42,15 @@ describe("comparator PostgreSQL TCP readiness", () => {
     expect(attempts).toBe(3);
 
     attempts = 0;
+    const startingUp = await waitForPostgresConnection(async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("Prisma query failed: FATAL: the database system is starting up");
+      return "ready";
+    }, { host: "127.0.0.1", port: 55_436, timeoutMs: 1_000, retryDelayMs: 1 });
+    expect(startingUp).toBe("ready");
+    expect(attempts).toBe(3);
+
+    attempts = 0;
     await expect(waitForPostgresConnection(async () => {
       attempts += 1;
       throw new Error("Comparator PostgreSQL identity attestation failed");

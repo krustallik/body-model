@@ -26,24 +26,24 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
     const rows = await client.$queryRawUnsafe(`
       SELECT current_database() AS database,
              current_user AS role,
-             inet_server_addr()::text AS serverAddress,
-             inet_server_port() AS serverPort,
-             current_setting('server_version') AS serverVersion,
+             host(inet_server_addr()) AS server_address,
+             inet_server_port() AS server_port,
+             current_setting('server_version') AS server_version,
              current_setting('TimeZone') AS timezone,
-             pg_is_in_recovery() AS inRecovery
+             pg_is_in_recovery() AS in_recovery
     `);
     const row = rows[0];
     if (!row || row.database !== configured.database || row.role !== configured.role
-      || Number(row.serverPort) !== 5432 || row.inRecovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)) {
+      || Number(row.server_port) !== 5432 || row.in_recovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)) {
       throw new Error(`Comparator PostgreSQL identity attestation failed: ${JSON.stringify({
         expected: { database: configured.database, role: configured.role, serverPort: 5432, timezone: "UTC", inRecovery: false },
         actual: row ? toPlain(row) : null,
       })}`);
     }
-    if (!dockerIdentity || dockerIdentity.networkAddress !== row.serverAddress
+    if (!dockerIdentity || dockerIdentity.networkAddress !== row.server_address
       || dockerIdentity.containerId.length !== 64 || !/^[a-f0-9]{64}$/.test(dockerIdentity.containerId)) {
       throw new Error(`Comparator PostgreSQL server does not match the inspected isolated Docker container: ${JSON.stringify({
-        databaseServerAddress: row.serverAddress,
+        databaseServerAddress: row.server_address,
         inspectedContainerAddress: dockerIdentity?.networkAddress ?? null,
         containerId: dockerIdentity?.containerId ?? null,
       })}`);
@@ -53,11 +53,11 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
       port: configured.port,
       database: row.database,
       role: row.role,
-      serverAddress: row.serverAddress,
-      serverPort: Number(row.serverPort),
-      serverVersion: row.serverVersion,
+      serverAddress: row.server_address,
+      serverPort: Number(row.server_port),
+      serverVersion: row.server_version,
       timezone: row.timezone,
-      inRecovery: row.inRecovery,
+      inRecovery: row.in_recovery,
       containerId: dockerIdentity.containerId,
       imageId: dockerIdentity.imageId,
       imageDigest: dockerIdentity.imageDigest,

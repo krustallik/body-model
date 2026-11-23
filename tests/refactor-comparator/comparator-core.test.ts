@@ -108,11 +108,11 @@ describe("refactor comparator core", () => {
 
     const invalidClockMode = structuredClone(manifest);
     invalidClockMode.integrationSuites.at(-1).clockMode = "warp";
-    expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen, fixed, or native/);
+    expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen or native/);
 
-    const nativeAuthClock = structuredClone(manifest);
-    nativeAuthClock.integrationSuites.at(-1).clockMode = "native";
-    expect(() => validateManifest(nativeAuthClock)).toThrow(/shared fixed application clock/);
+    const frozenAuthClock = structuredClone(manifest);
+    frozenAuthClock.integrationSuites.at(-1).clockMode = "frozen";
+    expect(() => validateManifest(frozenAuthClock)).toThrow(/retain native endpoint time/);
 
   });
 

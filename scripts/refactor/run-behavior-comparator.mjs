@@ -683,7 +683,7 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
   await mkdir(sideRoot, { recursive: true });
   const reportPath = path.join(sideRoot, "vitest-report.json");
   const env = safeEnvironment(target, {
-    BODYCAST_REFACTOR_FIXED_TIME: suite.clockMode === "fixed" ? authFixedTime : manifest.determinism.clock,
+    BODYCAST_REFACTOR_FIXED_TIME: suite.databaseProfile === "auth" ? authFixedTime : manifest.determinism.clock,
     BODYCAST_REFACTOR_CLOCK_MODE: suite.clockMode ?? "native",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,

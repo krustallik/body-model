@@ -27,6 +27,7 @@ if ((isolatedDatabase.databaseName !== POSTCOMMIT_TEST_DATABASE_NAME
 }
 
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
+let initialAuthRateLimitBuckets: Awaited<ReturnType<typeof prisma.authRateLimitBucket.findMany>> | null = null;
 const origin = "http://localhost:3000";
 const mailbox = new Map<string, string[]>();
 const userIds = new Set<string>();
@@ -196,6 +197,7 @@ describe("auth and tenant registration integration", () => {
     if (!await prisma.profile.findUnique({ where: { id: 1 }, select: { id: true } })) {
       throw new Error("The isolated migration rehearsal must contain its synthetic legacy Profile 1");
     }
+    initialAuthRateLimitBuckets = await prisma.authRateLimitBucket.findMany();
     // Keep legacy Profile 1's unrelated queue from affecting the tenant
     // worker assertions, while restoring its exact prior state after the suite.
     initialProfileOneTrainingState = await saveProfileOneTrainingState();
@@ -258,6 +260,12 @@ describe("auth and tenant registration integration", () => {
       await prisma.user.deleteMany({ where: { id: { in: ids } } });
     }
     if (initialProfileOneTrainingState) await restoreProfileOneTrainingState(initialProfileOneTrainingState);
+    if (initialAuthRateLimitBuckets !== null) {
+      await prisma.authRateLimitBucket.deleteMany();
+      if (initialAuthRateLimitBuckets.length > 0) {
+        await prisma.authRateLimitBucket.createMany({ data: initialAuthRateLimitBuckets });
+      }
+    }
     await prisma.$disconnect();
     vi.unstubAllGlobals();
   });
@@ -273,7 +281,6 @@ describe("auth and tenant registration integration", () => {
     const sharedKey = `bodycast:brevo:daily:${day}`;
     const bucketId = (key: string) => createHash("sha256").update(key, "utf8").digest("hex");
     await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: { in: [bucketId(publicOtpKey), bucketId(sharedKey)] } } });
-    const priorRateLimitBuckets = await prisma.authRateLimitBucket.findMany();
 
     try {
       process.env.AUTH_EMAIL_DAILY_LIMIT = "4";
@@ -283,9 +290,26 @@ describe("auth and tenant registration integration", () => {
       signupEmails.forEach((email) => emails.add(email));
 
       // Keep direct storage concurrency coverage separate from the endpoint-level race below.
-      const concurrentQuotaReservations = await Promise.allSettled(
-        Array.from({ length: 6 }, () => reservePublicOtpEmailQuota()),
-      );
+      const fixedTimeText = process.env.BODYCAST_REFACTOR_FIXED_TIME ?? new Date().toISOString();
+      const fixedTime = Date.parse(fixedTimeText);
+      if (!Number.isFinite(fixedTime) || new Date(fixedTime).toISOString() !== fixedTimeText) {
+        throw new Error("Auth comparator fixture clock must be a canonical UTC timestamp");
+      }
+      const dateNow = vi.spyOn(Date, "now").mockReturnValue(fixedTime);
+      let concurrentQuotaReservations: PromiseSettledResult<void>[];
+      try {
+        concurrentQuotaReservations = await Promise.allSettled(
+          Array.from({ length: 6 }, () => reservePublicOtpEmailQuota()),
+        );
+        const directQuotaBucket = await prisma.authRateLimitBucket.findUniqueOrThrow({
+          where: { bucketKey: bucketId(publicOtpKey) },
+          select: { hitCount: true, windowStart: true },
+        });
+        expect(directQuotaBucket.hitCount).toBe(6);
+        expect(directQuotaBucket.windowStart).toBe(BigInt(Math.floor(fixedTime / 1_000)));
+      } finally {
+        dateNow.mockRestore();
+      }
       expect(concurrentQuotaReservations.filter((result) => result.status === "fulfilled")).toHaveLength(2);
       expect(concurrentQuotaReservations.filter((result) => result.status === "rejected")).toHaveLength(4);
       await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: bucketId(publicOtpKey) } });
@@ -306,12 +330,6 @@ describe("auth and tenant registration integration", () => {
       expect(admittedEmails).toHaveLength(2);
       expect(exhaustedEmails).toHaveLength(4);
       expect(admittedEmails.every((email) => signupEmails.includes(email))).toBe(true);
-      const publicQuotaBucket = await prisma.authRateLimitBucket.findUniqueOrThrow({
-        where: { bucketKey: bucketId(publicOtpKey) },
-        select: { hitCount: true, windowStart: true },
-      });
-      expect(publicQuotaBucket.hitCount).toBe(2);
-      expect(publicQuotaBucket.windowStart).toBe(BigInt(Math.floor(Date.now() / 1_000)));
 
       const httpAuth = await import("@/app/api/auth/[...all]/route");
       for (const { email } of created) {
@@ -340,10 +358,7 @@ describe("auth and tenant registration integration", () => {
       else process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = priorLimits.public;
       if (priorLimits.recipient === undefined) delete process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT;
       else process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = priorLimits.recipient;
-      await prisma.authRateLimitBucket.deleteMany();
-      if (priorRateLimitBuckets.length > 0) {
-        await prisma.authRateLimitBucket.createMany({ data: priorRateLimitBuckets });
-      }
+      await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: { in: [bucketId(publicOtpKey), bucketId(sharedKey)] } } });
     }
   });
 

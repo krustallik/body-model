@@ -60,13 +60,4 @@ describe("deterministic comparator runtime", () => {
     expect(first.after.date).not.toBe("2026-11-23T12:00:00.007Z");
   });
 
-  it("freezes application time without advancing it when real timers fire", () => {
-    const first = executeDeterministicRuntime("fixed");
-    const second = executeDeterministicRuntime("fixed");
-    expect(first).toEqual(second);
-    expect(first.start.now).toBe(Date.parse("2026-11-23T12:00:00.000Z"));
-    expect(first.start.date).toBe("2026-11-23T12:00:00.000Z");
-    expect(first.after.now).toBe(first.start.now);
-    expect(first.after.date).toBe(first.start.date);
-  });
 });

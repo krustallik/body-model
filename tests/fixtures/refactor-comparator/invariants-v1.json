@@ -173,7 +173,7 @@
       "args": ["tests/integration/auth-multiuser.integration.test.ts"],
       "databaseProfile": "auth",
       "authEnvironment": true,
-      "clockMode": "fixed"
+      "clockMode": "native"
     }
   ]
 }

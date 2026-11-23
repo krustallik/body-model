@@ -7,11 +7,11 @@ if (process.env.NODE_ENV === "production") {
 const fixedTimeText = process.env.BODYCAST_REFACTOR_FIXED_TIME;
 const seedText = process.env.BODYCAST_REFACTOR_RANDOM_SEED;
 const clockMode = process.env.BODYCAST_REFACTOR_CLOCK_MODE;
-if (process.env.NODE_ENV !== "test" || !seedText || !["frozen", "fixed", "native"].includes(clockMode)) {
+if (process.env.NODE_ENV !== "test" || !seedText || !["frozen", "native"].includes(clockMode)) {
   throw new Error("Comparator deterministic runtime requires a test environment, random seed, and explicit clock mode.");
 }
 
-if (clockMode !== "native") {
+if (clockMode === "frozen") {
 const fixedTime = Date.parse(fixedTimeText);
 if (!Number.isFinite(fixedTime) || new Date(fixedTime).toISOString() !== fixedTimeText) {
   throw new Error("Comparator fixed clock must be a canonical UTC ISO timestamp.");
@@ -25,14 +25,9 @@ function ComparatorDate(...args) {
 Object.setPrototypeOf(ComparatorDate, NativeDate);
 ComparatorDate.prototype = NativeDate.prototype;
 Object.defineProperty(ComparatorDate, "name", { value: "Date" });
-Object.defineProperty(ComparatorDate, "now", {
-  configurable: true,
-  writable: true,
-  value: () => clockMode === "frozen" ? virtualTime : fixedTime,
-});
+Object.defineProperty(ComparatorDate, "now", { configurable: true, writable: true, value: () => virtualTime });
 globalThis.Date = ComparatorDate;
 
-if (clockMode === "frozen") {
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval.bind(globalThis);
 function normalizedDelay(value) {
@@ -59,7 +54,6 @@ globalThis.setInterval = function deterministicInterval(callback, delay, ...args
   }, advanceBy);
   return timer;
 };
-}
 }
 
 let state = 0;

@@ -56,14 +56,34 @@ globalThis.setInterval = function deterministicInterval(callback, delay, ...args
 };
 }
 
-let state = 0x811c9dc5;
-for (const character of seedText) {
-  state ^= character.charCodeAt(0);
-  state = Math.imul(state, 0x01000193) >>> 0;
+let state = 0;
+let mathState = 0;
+let activeRandomScope = null;
+
+function currentRandomScope() {
+  const testPath = globalThis.__vitest_worker__?.filepath;
+  if (typeof testPath !== "string") return "process";
+  const portablePath = testPath.replaceAll("\\", "/");
+  const testsMarker = portablePath.lastIndexOf("/tests/");
+  if (testsMarker < 0) throw new Error("Comparator cannot derive a repository-relative Vitest file scope.");
+  return portablePath.slice(testsMarker + 1);
 }
-if (state === 0) state = 0x6d2b79f5;
+
+function ensureRandomScope() {
+  const scope = `${seedText}\0${currentRandomScope()}`;
+  if (scope === activeRandomScope) return;
+  state = 0x811c9dc5;
+  for (const character of scope) {
+    state ^= character.charCodeAt(0);
+    state = Math.imul(state, 0x01000193) >>> 0;
+  }
+  if (state === 0) state = 0x6d2b79f5;
+  mathState = state;
+  activeRandomScope = scope;
+}
 
 function nextUint32() {
+  ensureRandomScope();
   state ^= state << 13;
   state ^= state >>> 17;
   state ^= state << 5;
@@ -170,8 +190,8 @@ Object.defineProperty(webCrypto, "getRandomValues", {
   },
 });
 
-let mathState = state;
 Math.random = () => {
+  ensureRandomScope();
   mathState = (Math.imul(mathState, 1664525) + 1013904223) >>> 0;
   return mathState / 0x100000000;
 };

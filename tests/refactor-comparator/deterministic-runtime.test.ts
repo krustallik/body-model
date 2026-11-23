@@ -31,6 +31,13 @@ function executeDeterministicRuntime(clockMode = "frozen") {
 }
 
 describe("deterministic comparator runtime", () => {
+  it("uses a repository-relative Vitest test-file scope", () => {
+    const worker = (globalThis as typeof globalThis & {
+      __vitest_worker__?: { filepath?: string };
+    }).__vitest_worker__;
+    expect(worker?.filepath?.replaceAll("\\", "/")).toContain("/tests/refactor-comparator/deterministic-runtime.test.ts");
+  });
+
   it("replays clock, UUID, random bytes, and random integers exactly across isolated processes", () => {
     const first = executeDeterministicRuntime();
     const second = executeDeterministicRuntime();

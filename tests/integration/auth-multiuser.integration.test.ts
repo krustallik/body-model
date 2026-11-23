@@ -37,6 +37,8 @@ const workoutIds = new Set<number>();
 const strengthSessionIds = new Set<number>();
 const canonicalEnergyEventIds = new Set<number>();
 const modelEpisodeIds = new Set<number>();
+let fixtureUuidSequence = 0;
+let fixtureIpSequence = 0;
 let providerAccepts = true;
 let initialProfileOneTrainingState: Awaited<ReturnType<typeof saveProfileOneTrainingState>> | null = null;
 let auth: typeof import("@/lib/auth")["auth"];
@@ -51,6 +53,11 @@ let healthSyncPost: typeof import("@/app/api/v1/health/sync/route").POST;
 let daysGet: typeof import("@/app/api/v1/days/route").GET;
 let strengthSessionGet: typeof import("@/app/api/v1/training/sessions/[id]/route").GET;
 let stepperWorkoutsGet: typeof import("@/app/api/v1/training/stepper-workouts/route").GET;
+
+function nextFixtureUuid(): string {
+  fixtureUuidSequence += 1;
+  return `00000000-0000-4000-8000-${fixtureUuidSequence.toString(16).padStart(12, "0")}`;
+}
 
 function request(body: unknown): Request {
   return new Request(`${origin}/api`, {
@@ -85,8 +92,8 @@ function authHttpRequest(path: string, body: unknown): Request {
 }
 
 function testClientIp(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(3));
-  return `198.51.100.${1 + ((bytes[0]! + bytes[1]! + bytes[2]!) % 254)}`;
+  fixtureIpSequence += 1;
+  return `198.51.100.${((fixtureIpSequence - 1) % 254) + 1}`;
 }
 
 async function saveProfileOneTrainingState() {
@@ -266,7 +273,7 @@ describe("auth and tenant registration integration", () => {
       process.env.AUTH_EMAIL_DAILY_LIMIT = "4";
       process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = "2";
       process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = "10";
-      const signupEmails = Array.from({ length: 6 }, () => `quota-signup-${crypto.randomUUID()}@example.invalid`);
+      const signupEmails = Array.from({ length: 6 }, () => `quota-signup-${nextFixtureUuid()}@example.invalid`);
       signupEmails.forEach((email) => emails.add(email));
 
       const responses = await Promise.all(signupEmails.map((email) => registrationStart(request({ email, name: "Quota User" }))));
@@ -291,9 +298,9 @@ describe("auth and tenant registration integration", () => {
       expect(signupEmails.slice(0, 2).every((email) => (mailbox.get(email) ?? []).length === 0)).toBe(true);
 
       const { sendAuthEmail } = await import("@/modules/auth/email");
-      await sendAuthEmail({ email: `recovery-a-${crypto.randomUUID()}@example.invalid`, code: "123456", purpose: "reset" });
-      await sendAuthEmail({ email: `recovery-b-${crypto.randomUUID()}@example.invalid`, code: "234567", purpose: "reset" });
-      await expect(sendAuthEmail({ email: `recovery-c-${crypto.randomUUID()}@example.invalid`, code: "345678", purpose: "reset" }))
+      await sendAuthEmail({ email: `recovery-a-${nextFixtureUuid()}@example.invalid`, code: "123456", purpose: "reset" });
+      await sendAuthEmail({ email: `recovery-b-${nextFixtureUuid()}@example.invalid`, code: "234567", purpose: "reset" });
+      await expect(sendAuthEmail({ email: `recovery-c-${nextFixtureUuid()}@example.invalid`, code: "345678", purpose: "reset" }))
         .rejects.toThrow("daily quota");
     } finally {
       if (priorLimits.daily === undefined) delete process.env.AUTH_EMAIL_DAILY_LIMIT;
@@ -356,7 +363,7 @@ describe("auth and tenant registration integration", () => {
     } as RequestInit & { duplex: "half" }));
     expect(oversizedDirectAuth.status).toBe(413);
 
-    const email = `auth-user-${crypto.randomUUID()}@example.invalid`;
+    const email = `auth-user-${nextFixtureUuid()}@example.invalid`;
     emails.add(email);
     const response = await registrationStart(request({ email, name: "First User" }));
     expect(response.status).toBe(202);
@@ -367,7 +374,7 @@ describe("auth and tenant registration integration", () => {
     expect(await prisma.profile.count({ where: { userId: pending.id } })).toBe(0);
     expect(await prisma.session.count({ where: { userId: pending.id } })).toBe(0);
 
-    const blockedLogin = await login(request({ email, password: `Chosen-${crypto.randomUUID()}-password` }));
+    const blockedLogin = await login(request({ email, password: `Chosen-${nextFixtureUuid()}-password` }));
     expect(blockedLogin.status).toBe(400);
     expect(blockedLogin.headers.get("set-cookie")).toBeNull();
     const otp = nextOtp(email);
@@ -405,7 +412,7 @@ describe("auth and tenant registration integration", () => {
     expect(verificationCookie).not.toBe("");
     expect(mailbox.get(email) ?? []).toHaveLength(0);
     expect(await prisma.account.count({ where: { userId: pending.id } })).toBe(0);
-    const initialPassword = `Initial-${crypto.randomUUID()}-pass`;
+    const initialPassword = `Initial-${nextFixtureUuid()}-pass`;
     const passwordSet = await registrationPasswordSetup(requestWithCookie(
       "/api/registration/password-setup", { password: initialPassword }, verificationCookie,
     ));
@@ -415,7 +422,7 @@ describe("auth and tenant registration integration", () => {
     const replay = await httpAuth.POST(authHttpRequest("/email-otp/verify-email", { email, otp }));
     expect(replay.status).toBeGreaterThanOrEqual(400);
 
-    const retryEmail = `provider-retry-${crypto.randomUUID()}@example.invalid`;
+    const retryEmail = `provider-retry-${nextFixtureUuid()}@example.invalid`;
     emails.add(retryEmail);
     providerAccepts = false;
     const rejectedByProvider = await registrationStart(request({ email: retryEmail, name: "Retry User" }));
@@ -444,7 +451,7 @@ describe("auth and tenant registration integration", () => {
     const retryProfile = await prisma.profile.findUniqueOrThrow({ where: { userId: retried.id }, select: { id: true } });
     profileIds.add(retryProfile.id);
 
-    const duplicateEmail = `signup-race-${crypto.randomUUID()}@example.invalid`;
+    const duplicateEmail = `signup-race-${nextFixtureUuid()}@example.invalid`;
     emails.add(duplicateEmail);
     const duplicateRequests = await Promise.all([
       registrationStart(request({ email: duplicateEmail, name: "First contender" })),
@@ -459,13 +466,13 @@ describe("auth and tenant registration integration", () => {
 
     process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = "3";
     const { sendAuthEmail } = await import("@/modules/auth/email");
-    const recipient = `quota-${crypto.randomUUID()}@example.invalid`;
+    const recipient = `quota-${nextFixtureUuid()}@example.invalid`;
     await sendAuthEmail({ email: recipient, code: "123456", purpose: "verify" });
     await sendAuthEmail({ email: recipient, code: "234567", purpose: "reset" });
     await sendAuthEmail({ email: recipient, code: "345678", purpose: "change" });
     await expect(sendAuthEmail({ email: recipient, code: "456789", purpose: "verify" }))
       .rejects.toThrow("recipient daily limit");
-    const otherRecipient = `quota-other-${crypto.randomUUID()}@example.invalid`;
+    const otherRecipient = `quota-other-${nextFixtureUuid()}@example.invalid`;
     await expect(sendAuthEmail({ email: otherRecipient, code: "567890", purpose: "verify" })).resolves.toBeUndefined();
     process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = "100";
 
@@ -485,7 +492,7 @@ describe("auth and tenant registration integration", () => {
     healthAuditIds.add(oversizedAudit.id);
     expect(oversizedAudit).toMatchObject({ profileId: null, rawBody: null });
 
-    const unauthorizedBody = JSON.stringify({ auditSentinel: crypto.randomUUID() });
+    const unauthorizedBody = JSON.stringify({ auditSentinel: nextFixtureUuid() });
     const unauthorizedSync = await healthSyncPost(new Request(syncUrl, {
       method: "POST",
       headers: { origin, "content-type": "application/json", "x-forwarded-for": testClientIp() },
@@ -502,7 +509,7 @@ describe("auth and tenant registration integration", () => {
 
   it("expires verification OTPs, limits attempts, and rotates resent codes", async () => {
     const httpAuth = await import("@/app/api/auth/[...all]/route");
-    const expiredEmail = `otp-expiry-${crypto.randomUUID()}@example.invalid`;
+    const expiredEmail = `otp-expiry-${nextFixtureUuid()}@example.invalid`;
     emails.add(expiredEmail);
     expect((await registrationStart(request({ email: expiredEmail, name: "Expiry User" }))).status).toBe(202);
     const expiredUser = await prisma.user.findUniqueOrThrow({ where: { email: expiredEmail }, select: { id: true } });
@@ -533,7 +540,7 @@ describe("auth and tenant registration integration", () => {
     const profile = await prisma.profile.findUniqueOrThrow({ where: { userId: expiredUser.id }, select: { id: true } });
     profileIds.add(profile.id);
 
-    const attemptsEmail = `otp-attempts-${crypto.randomUUID()}@example.invalid`;
+    const attemptsEmail = `otp-attempts-${nextFixtureUuid()}@example.invalid`;
     emails.add(attemptsEmail);
     expect((await registrationStart(request({ email: attemptsEmail, name: "Attempts User" }))).status).toBe(202);
     const attemptsUser = await prisma.user.findUniqueOrThrow({ where: { email: attemptsEmail }, select: { id: true } });
@@ -558,7 +565,7 @@ describe("auth and tenant registration integration", () => {
 
   it("recovers verification after Profile provisioning fails without issuing a session or duplicate Profile", async () => {
     const httpAuth = await import("@/app/api/auth/[...all]/route");
-    const email = `profile-provision-retry-${crypto.randomUUID()}@example.invalid`;
+    const email = `profile-provision-retry-${nextFixtureUuid()}@example.invalid`;
     emails.add(email);
     expect((await registrationStart(request({ email, name: "Provision Retry" }))).status).toBe(202);
     const pending = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
@@ -566,7 +573,7 @@ describe("auth and tenant registration integration", () => {
     const firstCode = nextOtp(email);
 
     const userIdSql = pending.id.replace(/'/g, "''");
-    const triggerSuffix = crypto.randomUUID().replaceAll("-", "");
+    const triggerSuffix = nextFixtureUuid().replaceAll("-", "");
     const functionName = `bodycast_auth_profile_fail_${triggerSuffix}`;
     const triggerName = `bodycast_auth_profile_fail_${triggerSuffix}`;
     await prisma.$executeRawUnsafe(`
@@ -612,14 +619,14 @@ describe("auth and tenant registration integration", () => {
   });
 
   it("scopes API keys to their verified Profiles and revokes all sessions after OTP password change", async () => {
-    const emailA = `auth-a-${crypto.randomUUID()}@example.invalid`;
-    const emailB = `auth-b-${crypto.randomUUID()}@example.invalid`;
+    const emailA = `auth-a-${nextFixtureUuid()}@example.invalid`;
+    const emailB = `auth-b-${nextFixtureUuid()}@example.invalid`;
     const userA = await startAndVerify(emailA, "User A");
     const userB = await startAndVerify(emailB, "User B");
     if (!userA.profile || !userB.profile) throw new Error("Verified user is missing Profile");
 
-    const passwordA = `Tenant-A-${crypto.randomUUID()}-pass`;
-    const passwordB = `Tenant-B-${crypto.randomUUID()}-pass`;
+    const passwordA = `Tenant-A-${nextFixtureUuid()}-pass`;
+    const passwordB = `Tenant-B-${nextFixtureUuid()}-pass`;
     for (const email of [emailA, emailB]) {
       await auth.api.requestPasswordResetEmailOTP({ headers: new Headers({ origin }), body: { email } });
       await auth.api.resetPasswordEmailOTP({
@@ -638,9 +645,9 @@ describe("auth and tenant registration integration", () => {
     if (!cookieA || !cookieB) throw new Error("Both verified test users must receive isolated sessions");
 
     const sessionsBeforeCredentialFailures = await prisma.session.count({ where: { userId: userA.id } });
-    const wrongPassword = await login(request({ email: emailA, password: `wrong-${crypto.randomUUID()}` }));
-    const unknownEmail = `missing-${crypto.randomUUID()}@example.invalid`;
-    const unknownAccount = await login(request({ email: unknownEmail, password: `wrong-${crypto.randomUUID()}` }));
+    const wrongPassword = await login(request({ email: emailA, password: `wrong-${nextFixtureUuid()}` }));
+    const unknownEmail = `missing-${nextFixtureUuid()}@example.invalid`;
+    const unknownAccount = await login(request({ email: unknownEmail, password: `wrong-${nextFixtureUuid()}` }));
     expect(wrongPassword.status).toBe(400);
     expect(unknownAccount.status).toBe(wrongPassword.status);
     expect(await wrongPassword.json()).toEqual({ error: "invalid_credentials" });
@@ -1003,7 +1010,7 @@ describe("auth and tenant registration integration", () => {
     expect(await apiKeys.revokeProfileApiKey(userA.profile.id, rotated.id)).toBe(true);
     expect(await apiKeys.resolveProfileApiKey(rotated.token)).toBeNull();
 
-    const initialPassword = `Changed-${crypto.randomUUID()}-pass`;
+    const initialPassword = `Changed-${nextFixtureUuid()}-pass`;
     await auth.api.requestPasswordResetEmailOTP({ headers: new Headers({ origin }), body: { email: emailA } });
     await auth.api.resetPasswordEmailOTP({
       headers: new Headers({ origin }),
@@ -1020,7 +1027,7 @@ describe("auth and tenant registration integration", () => {
 
     const requested = await passwordChangeRequest(requestWithCookie("/api/account/password-change/request", {}, cookie));
     expect(requested.status).toBe(202);
-    const changedPassword = `Final-${crypto.randomUUID()}-pass`;
+    const changedPassword = `Final-${nextFixtureUuid()}-pass`;
     const changed = await passwordChange(requestWithCookie("/api/account/password-change", {
       otp: nextOtp(emailA), password: changedPassword,
     }, cookie));
@@ -1053,8 +1060,8 @@ describe("auth and tenant registration integration", () => {
       where: { id: 1 },
       select: { userId: true, sex: true, dateOfBirth: true, heightCm: true },
     });
-    const email = `profile-one-${crypto.randomUUID()}@example.invalid`;
-    const unrelatedEmail = `unrelated-${crypto.randomUUID()}@example.invalid`;
+    const email = `profile-one-${nextFixtureUuid()}@example.invalid`;
+    const unrelatedEmail = `unrelated-${nextFixtureUuid()}@example.invalid`;
     emails.add(email);
     emails.add(unrelatedEmail);
     const priorRegistrationEnabled = process.env.AUTH_PUBLIC_REGISTRATION_ENABLED;
@@ -1113,7 +1120,7 @@ describe("auth and tenant registration integration", () => {
       await auth.api.requestPasswordResetEmailOTP({ headers: new Headers({ origin }), body: { email } });
       await auth.api.resetPasswordEmailOTP({
         headers: new Headers({ origin }),
-        body: { email, otp: nextOtp(email), password: `Owner-${crypto.randomUUID()}-pass` },
+        body: { email, otp: nextOtp(email), password: `Owner-${nextFixtureUuid()}-pass` },
       });
       expect(await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { passwordChangeRequired: true } }))
         .toEqual({ passwordChangeRequired: false });

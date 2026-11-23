@@ -34,12 +34,19 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
     `);
     const row = rows[0];
     if (!row || row.database !== configured.database || row.role !== configured.role
-      || Number(row.serverPort) !== 5432 || row.inRecovery !== false || row.timezone !== "UTC") {
-      throw new Error("Comparator PostgreSQL identity attestation failed.");
+      || Number(row.serverPort) !== 5432 || row.inRecovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)) {
+      throw new Error(`Comparator PostgreSQL identity attestation failed: ${JSON.stringify({
+        expected: { database: configured.database, role: configured.role, serverPort: 5432, timezone: "UTC", inRecovery: false },
+        actual: row ? toPlain(row) : null,
+      })}`);
     }
     if (!dockerIdentity || dockerIdentity.networkAddress !== row.serverAddress
       || dockerIdentity.containerId.length !== 64 || !/^[a-f0-9]{64}$/.test(dockerIdentity.containerId)) {
-      throw new Error("Comparator PostgreSQL server does not match the inspected isolated Docker container.");
+      throw new Error(`Comparator PostgreSQL server does not match the inspected isolated Docker container: ${JSON.stringify({
+        databaseServerAddress: row.serverAddress,
+        inspectedContainerAddress: dockerIdentity?.networkAddress ?? null,
+        containerId: dockerIdentity?.containerId ?? null,
+      })}`);
     }
     return await action(client, {
       host: configured.host,

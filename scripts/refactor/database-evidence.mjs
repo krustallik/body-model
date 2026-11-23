@@ -86,7 +86,7 @@ export async function capturePersistedState(client, tableNames) {
       ORDER BY key_column.ordinal
     `);
     if (primaryKey.length === 0) throw new Error(`Comparator required table has no primary key: ${tableName}`);
-    const order = primaryKey.map(({ name }) => `record.${quoteIdentifier(name)}`).join(", ");
+    const order = primaryKey.map(({ name }) => `r.${quoteIdentifier(name)}`).join(", ");
     const rows = await client.$queryRawUnsafe(`
       SELECT row_to_json(r)::text AS row_json
       FROM public.${table} AS r

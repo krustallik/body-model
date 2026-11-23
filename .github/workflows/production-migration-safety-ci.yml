@@ -657,9 +657,23 @@ jobs:
             exit "$postflight_status"
           fi
           # Rehearse the later 77-to-79 schema as a separate exact manifest.
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+          SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" =~ ^[a-f0-9]{64}$ ]] || {
+            echo "Canonical training session-context source-input fingerprint before migration is malformed." >&2; exit 1;
+          }
           node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
-            | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+            | PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+              --set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json" \
               --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-preflight-report.json"
+          node --input-type=module - "$RUNNER_TEMP/bodycast-session-context-preflight-report.json" "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [reportPath, fingerprint] = process.argv.slice(2);
+          if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Canonical training session-context fingerprint is malformed.');
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          report.logicalDataFingerprint = fingerprint;
+          writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
+          NODE
           node scripts/production-migration-preflight.mjs --preflight \
             --manifest training-session-context-v1 --release-sha "$GITHUB_SHA" \
             --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-session-context-preflight-report.json" \
@@ -713,9 +727,22 @@ jobs:
           }
           export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
           npx prisma migrate deploy --schema prisma/schema.prisma
+          SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" == "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER" ]] || {
+            echo "Canonical training session-context migrations changed immutable source-input rows or provenance." >&2; exit 1;
+          }
           node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
-            | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+            | PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+              --set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json" \
               --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-postflight.json"
+          node --input-type=module - "$RUNNER_TEMP/bodycast-session-context-postflight.json" "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [reportPath, fingerprint] = process.argv.slice(2);
+          if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Canonical training session-context fingerprint is malformed.');
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          report.logicalDataFingerprint = fingerprint;
+          writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
+          NODE
           node scripts/production-migration-preflight.mjs --postflight \
             --manifest training-session-context-v1 \
             --report "$RUNNER_TEMP/bodycast-session-context-postflight.json" \

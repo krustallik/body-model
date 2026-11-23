@@ -12,13 +12,16 @@ if [[ "$mode" == "--test-url" ]]; then
   [[ ( "$#" -eq 1 || ( "$#" -eq 2 && ( "$2" == "--v4-replay-inputs" || "$2" == "--v4-replay-stable-state" || "$2" == "--auth-multiuser-source-inputs" || "$2" == "--training-session-context-source-inputs" ) ) ) && -n "${BODYCAST_TEST_DATABASE_URL:-}" ]] || {
     echo "An isolated test PostgreSQL URL is required." >&2; exit 2;
   }
-  node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
+  node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" "${2:-}" <<'NODE'
 const url = new URL(process.argv[2]);
 const database = decodeURIComponent(url.pathname.slice(1));
+const fingerprintMode = process.argv[3];
 if (url.protocol !== "postgresql:" || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)
   || !url.password || url.search || url.hash
-  || !(database === "bodycast_restore" || database.endsWith("_test") || /^bodycast_cutback_live_[a-f0-9]{10}$/.test(database))) {
-  throw new Error("Data fingerprint accepts only an isolated loopback *_test/bodycast_restore database.");
+  || !(database === "bodycast_restore" || database.endsWith("_test")
+    || (database === "bodycast" && fingerprintMode === "--training-session-context-source-inputs")
+    || /^bodycast_cutback_live_[a-f0-9]{10}$/.test(database))) {
+  throw new Error("Data fingerprint accepts only a reviewed isolated loopback database and matching projection.");
 }
 NODE
   fingerprint_mode="full"
@@ -42,8 +45,8 @@ NODE
     fingerprint_mode="${2#--}"
     node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
 const url = new URL(process.argv[2]);
-if (decodeURIComponent(url.pathname.slice(1)) !== "bodycast_restore") {
-  throw new Error("Training session-context fingerprints accept only the isolated bodycast_restore database.");
+if (!["bodycast_restore", "bodycast"].includes(decodeURIComponent(url.pathname.slice(1)))) {
+  throw new Error("Training session-context fingerprints accept only the exact isolated BodyCast rehearsal databases.");
 }
 NODE
   fi

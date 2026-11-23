@@ -906,7 +906,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("Auth Health mutation clone does not match the migrated source-input baseline.");
     expect(safetyWorkflow).toContain("Auth Workout mutation clone does not match the migrated source-input baseline.");
     expect(fingerprintScript).toContain('["bodycast_restore", "bodycast_health_mutation_test", "bodycast_workout_mutation_test"]');
-    expect(fingerprintScript).toContain('decodeURIComponent(url.pathname.slice(1)) !== "bodycast_restore"');
+    expect(fingerprintScript).toContain('(database === "bodycast" && fingerprintMode === "--training-session-context-source-inputs")');
+    expect(fingerprintScript).toContain('["bodycast_restore", "bodycast"].includes(decodeURIComponent(url.pathname.slice(1)))');
+    expect(fingerprintScript).toContain("Training session-context fingerprints accept only the exact isolated BodyCast rehearsal databases.");
     expect(fingerprintScript).toContain("V4 replay fingerprints are restricted to the isolated bodycast_restore database.");
     const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
     const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
@@ -919,6 +921,34 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(exactTreeCheck).toBeLessThan(currentMigration);
     expect(safetyWorkflow).toContain("npx prisma migrate deploy --schema prisma/schema.prisma");
     expect(safetyWorkflow).toContain('npx prisma migrate deploy --schema "$auth_release_root/prisma/schema.prisma"');
+    const canonicalTrainingStart = safetyWorkflow.indexOf('SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE="');
+    const canonicalTrainingMigration = safetyWorkflow.lastIndexOf("npx prisma migrate deploy --schema prisma/schema.prisma");
+    const canonicalTrainingAfter = safetyWorkflow.indexOf('SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER="', canonicalTrainingMigration);
+    const canonicalTrainingPostflight = safetyWorkflow.indexOf("node scripts/production-migration-preflight.mjs --postflight", canonicalTrainingAfter);
+    expect(canonicalTrainingStart).toBeGreaterThan(0);
+    expect(canonicalTrainingMigration).toBeGreaterThan(canonicalTrainingStart);
+    expect(canonicalTrainingAfter).toBeGreaterThan(canonicalTrainingMigration);
+    expect(safetyWorkflow).toContain('[[ "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" == "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER" ]]');
+    expect(safetyWorkflow).toContain('PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL"');
+    expect(safetyWorkflow).toContain('--set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json"');
+    expect(safetyWorkflow).toContain("report.logicalDataFingerprint = fingerprint;");
+    const canonicalTrainingPreflightCapture = safetyWorkflow.indexOf(
+      "node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest",
+      canonicalTrainingStart,
+    );
+    const canonicalTrainingPreflightCheck = safetyWorkflow.indexOf(
+      "node scripts/production-migration-preflight.mjs --preflight",
+      canonicalTrainingPreflightCapture,
+    );
+    const canonicalPreflightEvidence = safetyWorkflow.slice(canonicalTrainingStart, canonicalTrainingPreflightCheck);
+    expect(canonicalTrainingPreflightCapture).toBeGreaterThan(canonicalTrainingStart);
+    expect(canonicalTrainingPreflightCheck).toBeGreaterThan(canonicalTrainingPreflightCapture);
+    expect(canonicalTrainingMigration).toBeGreaterThan(canonicalTrainingPreflightCheck);
+    expect(canonicalPreflightEvidence).toContain("PGAPPNAME=bodycast-production-preflight psql");
+    expect(canonicalPreflightEvidence).toContain('--set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json"');
+    expect(canonicalPreflightEvidence).toContain("report.logicalDataFingerprint = fingerprint;");
+    expect(canonicalPreflightEvidence).toContain("$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE");
+    expect(canonicalTrainingPostflight).toBeGreaterThan(canonicalTrainingAfter);
     expect(safetyWorkflow).toMatch(/\|\s*PGAPPNAME=bodycast-production-preflight\s+psql\s+"\$DATABASE_URL"/);
     expect(safetyWorkflow).not.toMatch(/PGAPPNAME=bodycast-production-preflight\s+\\\s*\n\s*node scripts\/production-db-preflight\.mjs/);
     expect(safetyWorkflow).toContain("AUTH_RELEASE_SHA: 18e67d53856af1f4742bbe9626abbd005b70e8bf");

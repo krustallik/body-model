@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 
 const authAccess = vi.hoisted(() => ({
   getSessionPrincipal: vi.fn(),
@@ -34,9 +35,15 @@ describe("PUT /api/v1/training/sessions/[id]/load-assessment", () => {
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ status: "lighter" }),
     }), context);
+    const body = await response.json();
+    recordRefactorObservation("TRAIN-LOAD-ASSESS-01/first-answer-api", {
+      status: response.status,
+      body,
+      persistedCall: trainingService.recordCompletedSessionLoadAssessment.mock.calls,
+    });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ saved: true, assessment: "LIGHTER" });
+    expect(body).toEqual({ saved: true, assessment: "LIGHTER" });
     expect(trainingService.recordCompletedSessionLoadAssessment).toHaveBeenCalledWith(74, 41, "LIGHTER");
   });
 

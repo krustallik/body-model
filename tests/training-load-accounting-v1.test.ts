@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import {
   BODYWEIGHT_COUNT_ONLY_CONFIG_VERSION_V1,
   calculateLoadAccountingWithBreakdownV1,
@@ -69,6 +70,7 @@ describe("Stage 01 literal load accounting golden", () => {
         sets: [{ reps: 10, weightKg: null, bandNominalResistanceKg: null }],
       }],
     });
+    recordRefactorObservation("TRAIN-02/bodyweight-load-accounting", result);
     expect(result.bodyweight.sets.value).toBe(1);
     expect(result.bodyweight.repetitions.value).toBe(10);
     expect(result.bodyweight.referenceVolume.value).toBeNull();

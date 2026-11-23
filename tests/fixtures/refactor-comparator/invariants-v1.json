@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "bootstrapBaseSha": "53d3a43014e2395256134723c17c107029772149",
+  "fixtureTree": "tests/fixtures",
+  "postgres": {
+    "image": "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+    "legacyMigrationBaselineSha": "0f93f37dd6a4208cfc74331a0fb4c063c542c6bd",
+    "legacyMigrationCount": 74,
+    "before": {
+      "host": "127.0.0.1",
+      "port": 55436,
+      "database": "bodycast_refactor_before_test",
+      "role": "bodycast_refactor_before_test_runner"
+    },
+    "after": {
+      "host": "127.0.0.1",
+      "port": 55437,
+      "database": "bodycast_refactor_after_test",
+      "role": "bodycast_refactor_after_test_runner"
+    },
+    "snapshotTables": [
+      "Profile",
+      "DailyHealthData",
+      "HealthMetricSample",
+      "HeartRateSample",
+      "RestingHeartRateSample",
+      "SleepSegment",
+      "HealthSyncSnapshot",
+      "HealthSyncAudit",
+      "HealthSyncRefreshJob",
+      "HealthActivityInterval",
+      "Workout",
+      "TrainingRefreshJob",
+      "TrainingSourceChange",
+      "StepperCreateOperation",
+      "TrainingSetCreateOperation",
+      "ExerciseCatalog",
+      "ExerciseLoadConfiguration",
+      "TrainingProgram",
+      "TrainingProgramVersion",
+      "ProgramExercise",
+      "StrengthDiarySession",
+      "StrengthSessionAccountingSnapshot",
+      "StrengthSessionAccountingOperation",
+      "StrengthDiaryProgramChange",
+      "StrengthSessionExercise",
+      "StrengthSet",
+      "ExperimentalStrengthEnergyShadow",
+      "ExperimentalStrengthGlycogenDemandShadow",
+      "ExperimentalTransientExerciseWaterShadow",
+      "ExperimentalStepperActiveEnergyShadow",
+      "ExperimentalStepperGlycogenDemandShadow",
+      "WorkInterval",
+      "ModelEpisode",
+      "ModelRecoveryRun",
+      "ModelUnknownInterval",
+      "DailyModelState",
+      "PhysiologyV7DailyResult",
+      "PhysiologyV7Lifecycle",
+      "PhysiologyV7ShadowDiagnostic",
+      "UnifiedPublicationBlock",
+      "UnifiedExperimentalPhysiologyState",
+      "UnifiedExperimentalPhysiologyStateV2",
+      "StepperReconciliationGroup",
+      "StepperReconciliationCandidate",
+      "ActiveEnergyCanonicalEvent",
+      "ActiveEnergyEventAlias",
+      "ActiveEnergyCandidate",
+      "ActiveEnergyResolutionRevision",
+      "User",
+      "Session",
+      "Account",
+      "Verification",
+      "ProfileApiKey",
+      "AuthRateLimitBucket"
+    ]
+  },
+  "observations": [
+    { "id": "ENERGY-01/activity-known-number", "path": "tests/workout-activity-v6-e2e-oracle.test.ts", "testName": "matches independent walking/workout/calibration arithmetic" },
+    { "id": "TRAIN-02/bodyweight-load-accounting", "path": "tests/training-load-accounting-v1.test.ts", "testName": "counts bodyweight push-up sets and reps without an unsupported default share" },
+    { "id": "V7-01/state-contract", "path": "tests/physiology-v7-contract.test.ts", "testName": "keeps the v7 compartments distinct and validates their structural invariants" },
+    { "id": "V7-01/state-fingerprint", "path": "tests/physiology-v7-contract.test.ts", "testName": "fingerprints the same v7 state deterministically" },
+    { "id": "UNIFIED-01/pure-transition", "path": "tests/unified-experimental-physiology-transition-v1.test.ts", "testName": "composes slow and fast change without adding relative muscle" },
+    { "id": "FORECAST-01/resolved-history", "path": "tests/model-forecast-service.test.ts", "testName": "forecasts fully resolved history without requiring recovery or mutating repositories" },
+    { "id": "CALENDAR-01/spring-dst-range", "path": "tests/calendar-range.test.ts", "testName": "uses a half-open 23-hour interval on the spring DST transition" },
+    { "id": "BODYMAP-PERFORMANCE-01/repeated-progress", "path": "tests/body-map-training-performance-v1.test.ts", "testName": "detects repeated progress from per-session medians and whole-window agreement" },
+    { "id": "BODYMAP-ENERGY-01/observed-windows", "path": "tests/body-map-energy-balance-context-v1.test.ts", "testName": "compares only highly covered, observed early and late windows" },
+    { "id": "BODYMAP-MAPPING-V3-01/legacy-projection", "path": "tests/exercise-anatomy-mapping-v3.test.ts", "testName": "projects existing hyperextension history through the current mapping without rewriting its legacy snapshot" },
+    { "id": "BODYMAP-ANALYTICS-01/authenticated-api", "path": "tests/body-map-training-analytics-route.test.ts", "testName": "reads only the authenticated profile and requested supported window" },
+    { "id": "TRAIN-LOAD-ASSESS-01/first-answer-api", "path": "tests/body-map-training-load-assessment-route.test.ts", "testName": "stores a user-confirmed lighter assessment separately from pre-session intent" }
+  ],
+  "unitSuites": [
+    {
+      "id": "unit-energy-training-model-bodymap",
+      "paths": [
+        "tests/health-sync-training-workouts.test.ts",
+        "tests/distance-ledger-v1.test.ts",
+        "tests/workout-activity-v6-regression.test.ts",
+        "tests/workout-activity-v6-e2e-oracle.test.ts",
+        "tests/workout-feed-coverage.test.ts",
+        "tests/model-occupational-activity.test.ts",
+        "tests/training-day-fact-currentness.test.ts",
+        "tests/session-set-time-and-strength-energy.test.ts",
+        "tests/strength-training-input-v7.test.ts",
+        "tests/training-load-accounting-v1.test.ts",
+        "tests/training-accounting-routes.test.ts",
+        "tests/training-session-accounting-ui.test.tsx",
+        "tests/training-refresh-queue-convergence-fence.test.ts",
+        "tests/training-refresh-worker-liveness.test.ts",
+        "tests/training-service.test.ts",
+        "tests/physiology-v7-persistence.test.ts",
+        "tests/physiology-v7-contract.test.ts",
+        "tests/staged-physiology-v1.test.ts",
+        "tests/unified-experimental-physiology-transition-v1.test.ts",
+        "tests/unified-energy-ledger-v1.test.ts",
+        "tests/model-forecast-service.test.ts",
+        "tests/model-forecast-schema.test.ts",
+        "tests/model-forecast-routes.test.ts",
+        "tests/calendar-range.test.ts",
+        "tests/model-calendar.test.ts",
+        "tests/body-map-analytics-period-v1.test.ts",
+        "tests/body-map-training-analytics-v1.test.ts",
+        "tests/body-map-training-performance-v1.test.ts",
+        "tests/body-map-energy-balance-context-v1.test.ts",
+        "tests/exercise-anatomy-mapping-v3.test.ts",
+        "tests/body-map-training-analytics.repository.test.ts",
+        "tests/body-map-training-analytics-route.test.ts",
+        "tests/body-map-training-analytics-panel.test.tsx",
+        "tests/body-map-training-load-assessment-route.test.ts",
+        "tests/bodyparts3d-v3-delivery.test.ts",
+        "tests/body-map-catalog-v2.test.ts"
+      ]
+    }
+  ],
+  "integrationSuites": [
+    {
+      "id": "postgres-ci-shard-1-of-2",
+      "args": [
+        "--shard=1/2",
+        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
+        "--testNamePattern=^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$"
+      ]
+    },
+    {
+      "id": "postgres-ci-shard-2-of-2",
+      "args": [
+        "--shard=2/2",
+        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
+        "--testNamePattern=^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$"
+      ]
+    },
+    {
+      "id": "postgres-health-training-recovery",
+      "args": [
+        "tests/integration/health-sync.integration.test.ts",
+        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
+        "--testNamePattern=completes Training edits through Health coordination, stale-worker fencing, and restart recovery"
+      ]
+    },
+    {
+      "id": "postgres-legacy-stepper-recovery",
+      "args": [
+        "tests/integration/health-sync.integration.test.ts",
+        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
+        "--testNamePattern=rebuilds and clears an acknowledged legacy Stepper block only after stable publication"
+      ]
+    },
+    {
+      "id": "postgres-health-cleanup-concurrency",
+      "args": [
+        "tests/integration/health-sync.integration.test.ts",
+        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
+        "--testNamePattern=runs the 30-day HealthSyncAudit cleanup at app startup and races concurrent cleanup safely"
+      ]
+    },
+    {
+      "id": "postgres-auth-multiuser",
+      "args": ["tests/integration/auth-multiuser.integration.test.ts"],
+      "authEnvironment": true
+    }
+  ]
+}

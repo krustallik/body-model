@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 
 const repositories = vi.hoisted(() => ({
   getActive: vi.fn(),
@@ -144,6 +145,7 @@ describe("forecast application service", () => {
       sourceDay("2026-08-22"), sourceDay("2026-08-23"),
     ]));
     const result = await forecastModelEpisode({ profileId: 1, ...fixedRequest, now }, forecastClient());
+    recordRefactorObservation("FORECAST-01/resolved-history", result);
     expect(result.status).toBe("ok");
     expect(result.initialStateQuality).toBe("deterministic");
     expect("dates" in result && result.dates).toHaveLength(7);

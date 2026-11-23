@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import { calculateDynamicDailyExpenditure } from "@/model/dynamic-daily-expenditure";
 import type { BodyCompositionState } from "@/model/body-composition/state";
 import { reconstructBodyWeightKg } from "@/model/body-composition/state";
@@ -123,6 +124,7 @@ describe("v6 workout known-number oracle (builder → expenditure)", () => {
         activityCalibration: ACTIVITY_CALIBRATION,
       },
     });
+    recordRefactorObservation("ENERGY-01/activity-known-number", { input: built.input, result });
 
     const weightKg = reconstructBodyWeightKg(bodyComposition);
     const durationHours = 3.8 / 5;

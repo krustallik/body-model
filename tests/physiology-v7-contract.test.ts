@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import {
   PHYSIOLOGY_V7_CONTRACT_VERSION,
   physiologyV7StateFingerprint,
@@ -25,7 +26,13 @@ const v7State: PhysiologyV7State = {
 describe("physiology v7 state contract", () => {
   it("keeps the v7 compartments distinct and validates their structural invariants", () => {
     expect(PHYSIOLOGY_V7_CONTRACT_VERSION).toBe("bodycast-physiology-v7-state-v3");
-    expect(validatePhysiologyV7State(v7State)).toEqual(v7State);
+    const validated = validatePhysiologyV7State(v7State);
+    recordRefactorObservation("V7-01/state-contract", {
+      contractVersion: PHYSIOLOGY_V7_CONTRACT_VERSION,
+      state: validated,
+      fingerprint: physiologyV7StateFingerprint(validated),
+    });
+    expect(validated).toEqual(v7State);
     for (const field of [
       "fatMassKg", "skeletalMuscleKg", "otherLeanTissueKg", "glycogenKg",
       "glycogenWaterKg", "transientExerciseWaterKg",
@@ -36,7 +43,9 @@ describe("physiology v7 state contract", () => {
   });
 
   it("fingerprints the same v7 state deterministically", () => {
-    expect(physiologyV7StateFingerprint(v7State)).toBe(physiologyV7StateFingerprint({ ...v7State }));
+    const fingerprint = physiologyV7StateFingerprint(v7State);
+    recordRefactorObservation("V7-01/state-fingerprint", fingerprint);
+    expect(fingerprint).toBe(physiologyV7StateFingerprint({ ...v7State }));
   });
 
   it("keeps an unavailable initial skeletal-muscle value unavailable rather than deriving it from lean tissue", () => {

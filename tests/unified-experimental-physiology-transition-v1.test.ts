@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import { transitionUnifiedExperimentalPhysiologyV1, type UnifiedChildTransitionsV1 } from "@/model/unified-experimental-physiology-v1";
 import { TRANSIENT_EPISODE_PARTITION_V2_REVISION } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 
@@ -29,6 +30,7 @@ describe("Unified V2 pure transition", () => {
       reconciliation: { anchorDate: "2064-12-31", anchorWeightKg: 80, observedWeightKg: 79.8, reason: null },
       sourceLineage: lineage,
     });
+    recordRefactorObservation("UNIFIED-01/pure-transition", result);
     expect(result.deltas.modeledChangeSinceAnchorKg?.point).toBeCloseTo(-0.21);
     expect(result.state.relativeMuscle.dailyTrainingSignalKg).toBe(0.012);
     expect(result.state.relativeMuscle.cumulativeDiagnosticKg).toBe(0.37);

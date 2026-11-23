@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 
 const authAccess = vi.hoisted(() => ({
   getSessionPrincipal: vi.fn(),
@@ -26,11 +27,17 @@ describe("GET /api/v1/training/body-map/analytics", () => {
     analyticsRepository.readBodyMapTrainingAnalyticsV1.mockResolvedValue(analytics);
 
     const response = await GET(new Request(`${base}?weeks=12`));
+    const body = await response.json();
+    recordRefactorObservation("BODYMAP-ANALYTICS-01/authenticated-api", {
+      status: response.status,
+      cacheControl: response.headers.get("cache-control"),
+      body,
+    });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("private");
     expect(response.headers.get("cache-control")).toContain("no-store");
-    await expect(response.json()).resolves.toEqual({ analytics });
+    expect(body).toEqual({ analytics });
     expect(analyticsRepository.readBodyMapTrainingAnalyticsV1).toHaveBeenCalledWith(41, 12, expect.any(Date), undefined);
   });
 

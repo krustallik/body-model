@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import { summarizeBodyMapEnergyBalanceContextV1 } from "@/modules/training/body-map-energy-balance-context-v1";
 
 function dateShift(date: string, days: number): string {
@@ -34,13 +35,15 @@ function inputs(validPerWindow = 19) {
 describe("Body Map calorie context", () => {
   it("compares only highly covered, observed early and late windows", () => {
     const source = inputs();
-    expect(summarizeBodyMapEnergyBalanceContextV1({
+    const result = summarizeBodyMapEnergyBalanceContextV1({
       periodFrom: "2026-01-01T00:00:00.000Z",
       periodTo: "2026-02-27T23:59:59.999Z",
       activeEpisodeId: 12,
       modelHistoryCurrent: true,
       ...source,
-    })).toMatchObject({
+    });
+    recordRefactorObservation("BODYMAP-ENERGY-01/observed-windows", result);
+    expect(result).toMatchObject({
       status: "available",
       sourceEpisodeId: 12,
       modelVersion: "active-test-model",

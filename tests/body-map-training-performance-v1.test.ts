@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import { trainingExerciseMappingSnapshotJsonV1 } from "@/modules/training/exercise-mapping-snapshot";
 import { buildBodyMapTrainingAnalyticsV1, type BodyMapAnalyticsSessionInputV1 } from "@/modules/training/body-map-training-analytics-v1";
 import { assessBodyMapMusclePerformanceV1 } from "@/modules/training/body-map-training-performance-v1";
@@ -113,6 +114,7 @@ describe("Body Map robust performance assessment", () => {
 
   it("detects repeated progress from per-session medians and whole-window agreement", () => {
     const result = assessment([20, 20, 22, 22, 24, 24].map((weight, index) => pressSession(index + 1, weight)));
+    recordRefactorObservation("BODYMAP-PERFORMANCE-01/repeated-progress", result);
     expect(result.status).toBe("progress");
     expect(result.exercises[0]).toMatchObject({ status: "progress", usableSessionCount: 6 });
     expect(result.exercises[0]?.early?.loadKg).toBe(20);

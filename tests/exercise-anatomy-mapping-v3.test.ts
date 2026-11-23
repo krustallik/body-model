@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { recordRefactorObservation } from "./refactor-comparator/capture";
 import { resolveExerciseInfo } from "@/app/training/exercise-info";
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 import { BODY_MAP_MEMBERSHIP_V2 } from "@/modules/training/body-map-catalog-v2";
@@ -72,6 +73,11 @@ describe("complete exercise-to-Body Map anatomy mapping v3", () => {
     };
     const before = structuredClone(legacySnapshot);
     const projected = projectStoredExerciseMappingToBodyMapV2("old-hyperextension-set", legacySnapshot);
+    recordRefactorObservation("BODYMAP-MAPPING-V3-01/legacy-projection", {
+      legacySnapshotBefore: before,
+      projected,
+      legacySnapshotAfter: legacySnapshot,
+    });
 
     expect(projected).toEqual(expect.arrayContaining([
       expect.objectContaining({ groupId: "spinal_extensors", anatomyId: "erector_spinae", exposure: "direct" }),

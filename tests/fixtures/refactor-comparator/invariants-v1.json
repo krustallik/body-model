@@ -158,10 +158,6 @@
   ],
   "integrationSuites": [
     {
-      "id": "postgres-database-safety",
-      "args": ["tests/integration/database-safety.test.ts"]
-    },
-    {
       "id": "postgres-training-refresh-liveness",
       "args": ["tests/integration/training-refresh-liveness.integration.test.ts"]
     },

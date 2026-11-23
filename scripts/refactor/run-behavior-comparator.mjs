@@ -642,8 +642,40 @@ async function runComparatorSelfTests({ root, manifest, evidenceDir, shimPath })
     label: "Comparator parser, isolation, deterministic runtime, and negative sentinel tests",
   });
   const cases = await readTestSummary(reportPath, "Comparator self-tests", root);
-  await writeJson(path.join(selfRoot, "case-summary.json"), cases);
-  return cases;
+  const databaseSafetyRoot = path.join(selfRoot, "database-safety");
+  await mkdir(databaseSafetyRoot, { recursive: true });
+  const databaseSafetyReportPath = path.join(databaseSafetyRoot, "vitest-report.json");
+  await runLogged(process.execPath, [
+    path.join(root, "node_modules", "vitest", "vitest.mjs"), "run",
+    "--config", "vitest.integration.config.ts",
+    "--pool=forks", "--maxWorkers=1", "--minWorkers=1", "--reporter=json",
+    `--outputFile=${databaseSafetyReportPath}`,
+    "tests/integration/database-safety.test.ts",
+  ], {
+    cwd: root,
+    env,
+    logPath: path.join(databaseSafetyRoot, "test.log"),
+    label: "Comparator exact isolated database guard tests",
+  });
+  const databaseSafetyCases = await readTestSummary(
+    databaseSafetyReportPath,
+    "Comparator database-safety tests",
+    root,
+  );
+  if (stableJson(databaseSafetyCases.files) !== stableJson(["tests/integration/database-safety.test.ts"])) {
+    fail("Comparator database-safety self-test did not execute its exact required file.");
+  }
+  await writeJson(path.join(databaseSafetyRoot, "case-summary.json"), databaseSafetyCases);
+  const combinedCases = {
+    total: cases.total + databaseSafetyCases.total,
+    passed: cases.passed + databaseSafetyCases.passed,
+    filtered: cases.filtered + databaseSafetyCases.filtered,
+    files: [...new Set([...cases.files, ...databaseSafetyCases.files])].sort(),
+    tests: [...cases.tests, ...databaseSafetyCases.tests]
+      .sort((left, right) => `${left.file}\0${left.name}`.localeCompare(`${right.file}\0${right.name}`)),
+  };
+  await writeJson(path.join(selfRoot, "case-summary.json"), combinedCases);
+  return combinedCases;
 }
 
 async function runIntegrationSuite({ root, repository, target, manifest, suite, evidenceDir, sideName, shimPath, dumpPath, imageId, runId }) {

@@ -56,5 +56,6 @@ describe("frozen refactor comparator manifest", () => {
       databaseProfile: "auth",
       authEnvironment: true,
     });
+    expect(manifest.integrationSuites.some(({ args }) => args.includes("tests/integration/database-safety.test.ts"))).toBe(false);
   });
 });

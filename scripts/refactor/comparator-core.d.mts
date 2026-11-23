@@ -63,6 +63,7 @@ export interface ComparatorCaseRun {
 export interface ComparatorCaseCoverage {
   file: string;
   name: string;
+  occurrence: number;
   executedIn: string[];
   filteredIn: string[];
 }

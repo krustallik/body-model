@@ -469,21 +469,33 @@ export function aggregateSuiteCases(suiteRuns) {
     if (!run || typeof run.suiteId !== "string" || !run.suiteId || !Array.isArray(run.cases)) {
       throw new Error("Comparator test-case suite report is malformed.");
     }
+    const occurrences = new Map();
     for (const testCase of run.cases) {
       if (!testCase || typeof testCase.file !== "string" || !testCase.file
         || typeof testCase.name !== "string" || !testCase.name
         || !["passed", "skipped"].includes(testCase.status)) {
         throw new Error("Comparator test-case report contains a failure, todo, or unknown status.");
       }
-      const key = `${testCase.file}\0${testCase.name}`;
-      const current = cases.get(key) ?? { file: testCase.file, name: testCase.name, executedIn: [], filteredIn: [] };
+      const testKey = `${testCase.file}\0${testCase.name}`;
+      const occurrence = (occurrences.get(testKey) ?? 0) + 1;
+      occurrences.set(testKey, occurrence);
+      const key = `${testKey}\0${occurrence}`;
+      const current = cases.get(key) ?? {
+        file: testCase.file,
+        name: testCase.name,
+        occurrence,
+        executedIn: [],
+        filteredIn: [],
+      };
       const destination = testCase.status === "passed" ? current.executedIn : current.filteredIn;
       if (destination.includes(run.suiteId)) throw new Error("Comparator test-case suite report contains a duplicate case.");
       destination.push(run.suiteId);
       cases.set(key, current);
     }
   }
-  const result = [...cases.values()].sort((left, right) => `${left.file}\0${left.name}`.localeCompare(`${right.file}\0${right.name}`));
+  const result = [...cases.values()].sort((left, right) => (
+    `${left.file}\0${left.name}\0${left.occurrence}`.localeCompare(`${right.file}\0${right.name}\0${right.occurrence}`)
+  ));
   if (result.length === 0 || result.some(({ executedIn }) => executedIn.length === 0)) {
     throw new Error("Comparator has a skipped test case that did not pass in any required suite.");
   }

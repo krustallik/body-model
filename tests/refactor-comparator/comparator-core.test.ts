@@ -284,8 +284,23 @@ describe("refactor comparator core", () => {
         { file: "tests/a.test.ts", name: "runs focused case", status: "passed" },
       ] },
     ])).toEqual([
-      { file: "tests/a.test.ts", name: "keeps invariant", executedIn: ["shard-1"], filteredIn: ["shard-2"] },
-      { file: "tests/a.test.ts", name: "runs focused case", executedIn: ["shard-2"], filteredIn: ["shard-1"] },
+      { file: "tests/a.test.ts", name: "keeps invariant", occurrence: 1, executedIn: ["shard-1"], filteredIn: ["shard-2"] },
+      { file: "tests/a.test.ts", name: "runs focused case", occurrence: 1, executedIn: ["shard-2"], filteredIn: ["shard-1"] },
+    ]);
+    expect(aggregateSuiteCases([
+      { suiteId: "parameterized", cases: [
+        { file: "tests/a.test.ts", name: "rejects URL [REDACTED_DATABASE_URL]", status: "passed" },
+        { file: "tests/a.test.ts", name: "rejects URL [REDACTED_DATABASE_URL]", status: "passed" },
+      ] },
+    ])).toEqual([
+      {
+        file: "tests/a.test.ts", name: "rejects URL [REDACTED_DATABASE_URL]", occurrence: 1,
+        executedIn: ["parameterized"], filteredIn: [],
+      },
+      {
+        file: "tests/a.test.ts", name: "rejects URL [REDACTED_DATABASE_URL]", occurrence: 2,
+        executedIn: ["parameterized"], filteredIn: [],
+      },
     ]);
     expect(() => aggregateSuiteCases([
       { suiteId: "all", cases: [{ file: "tests/a.test.ts", name: "skipped sentinel", status: "skipped" }] },

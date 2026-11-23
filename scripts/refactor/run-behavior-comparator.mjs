@@ -111,6 +111,11 @@ async function runLogged(program, args, { logPath, label, ...options }) {
 
 function integrationProgress(label) {
   let pending = "";
+  const syntheticMilestones = new Map([
+    ["synthetic-bodyweight-http-reproduction", "bodyweight API capture"],
+    ["synthetic-resistance-band-http-reproduction", "resistance-band API capture"],
+    ["synthetic-active-programless-http-reproduction", "active-session API capture"],
+  ]);
   return (chunk) => {
     const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
     pending = lines.pop() ?? "";
@@ -118,6 +123,9 @@ function integrationProgress(label) {
       const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
       const match = plain.match(/^\s*✓\s+(tests\/integration\/[^\s>]+\.test\.[A-Za-z0-9]+)\s*>/);
       if (match) process.stdout.write(`[${label}] ${path.basename(match[1])}\n`);
+      for (const [marker, description] of syntheticMilestones) {
+        if (plain.includes(marker)) process.stdout.write(`[${label}] reached ${description}\n`);
+      }
     }
   };
 }

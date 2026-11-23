@@ -39,6 +39,7 @@ export function validateComparatorDatabaseUrl(
 export function canonicalizeJson(value: unknown): unknown;
 export function stableJson(value: unknown): string;
 export function diffJson(before: unknown, after: unknown, currentPath?: string): JsonDifference[];
+export function sortObservationsByCaseId<T extends { caseId: string }>(observations: readonly T[]): T[];
 export interface ComparatorCaseRun {
   suiteId: string;
   cases: Array<{ file: string; name: string; status: string }>;

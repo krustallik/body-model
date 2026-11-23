@@ -319,6 +319,18 @@ export function diffJson(before, after, currentPath = "$") {
   return differences;
 }
 
+export function sortObservationsByCaseId(observations) {
+  if (!Array.isArray(observations) || observations.some((observation) => (
+    !observation || typeof observation !== "object" || Array.isArray(observation)
+    || typeof observation.caseId !== "string"
+  ))) {
+    throw new TypeError("Comparator observations must be objects with string case IDs.");
+  }
+  return [...observations].sort((left, right) => (
+    left.caseId < right.caseId ? -1 : left.caseId > right.caseId ? 1 : 0
+  ));
+}
+
 export function aggregateSuiteCases(suiteRuns) {
   if (!Array.isArray(suiteRuns) || suiteRuns.length === 0) throw new Error("Comparator test-case coverage requires suite reports.");
   const cases = new Map();

@@ -6,6 +6,7 @@ import {
   diffJson,
   parseComparatorArgs,
   sha256,
+  sortObservationsByCaseId,
   stableJson,
   validateComparatorDatabaseUrl,
   validateManifest,
@@ -184,6 +185,15 @@ describe("refactor comparator core", () => {
       before: { present: false },
       after: { present: true, value: 2 },
     });
+  });
+
+  it("orders captured observations by stable case ID without changing their values", () => {
+    const later = { caseId: "TRAIN-02/case", value: [2, 1] };
+    const earlier = { caseId: "ENERGY-01/case", value: [1, 2] };
+    expect(sortObservationsByCaseId([later, earlier])).toEqual([earlier, later]);
+    expect(sortObservationsByCaseId([later, earlier])).toEqual(sortObservationsByCaseId([earlier, later]));
+    expect(sortObservationsByCaseId([later, earlier])[1].value).toEqual([2, 1]);
+    expect(() => sortObservationsByCaseId([{} as { caseId: string }])).toThrow(/string case IDs/);
   });
 
   it("hashes deterministic UTF-8 evidence bytes", () => {

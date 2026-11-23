@@ -9,6 +9,7 @@ import {
   aggregateSuiteCases,
   diffJson,
   parseComparatorArgs,
+  sortObservationsByCaseId,
   stableJson,
   validateManifest,
   validateResolvedPostgresImage,
@@ -577,7 +578,7 @@ async function runUnitSuite({ repository, target, manifest, evidenceDir, sideNam
     fail(`${sideName} frozen unit suite did not execute every manifest path exactly once.`);
   }
   const observationLines = (await readFile(capturePath, "utf8")).split(/\r?\n/).filter(Boolean);
-  const observations = observationLines.map((line) => JSON.parse(line));
+  const observations = sortObservationsByCaseId(observationLines.map((line) => JSON.parse(line)));
   const expectedIds = manifest.observations.map(({ id }) => id).sort();
   const observedIds = observations.map(({ caseId }) => caseId).sort();
   if (stableJson(expectedIds) !== stableJson(observedIds)) fail(`${sideName} comparator observation set is missing, duplicated, or contains extra cases.`);

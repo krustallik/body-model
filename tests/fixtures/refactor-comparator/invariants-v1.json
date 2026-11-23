@@ -152,44 +152,20 @@
   ],
   "integrationSuites": [
     {
-      "id": "postgres-ci-shard-1-of-2",
-      "args": [
-        "--shard=1/2",
-        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
-        "--testNamePattern=^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$"
-      ]
+      "id": "postgres-database-safety",
+      "args": ["tests/integration/database-safety.test.ts"]
     },
     {
-      "id": "postgres-ci-shard-2-of-2",
-      "args": [
-        "--shard=2/2",
-        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
-        "--testNamePattern=^(?!.*(?:completes Training edits through Health coordination, stale-worker fencing, and restart recovery|rebuilds and clears an acknowledged legacy Stepper block only after stable publication)).*$"
-      ]
+      "id": "postgres-training-refresh-liveness",
+      "args": ["tests/integration/training-refresh-liveness.integration.test.ts"]
     },
     {
-      "id": "postgres-health-training-recovery",
-      "args": [
-        "tests/integration/health-sync.integration.test.ts",
-        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
-        "--testNamePattern=completes Training edits through Health coordination, stale-worker fencing, and restart recovery"
-      ]
+      "id": "postgres-active-energy-convergence",
+      "args": ["tests/integration/active-energy-convergence-fence.integration.test.ts"]
     },
     {
-      "id": "postgres-legacy-stepper-recovery",
-      "args": [
-        "tests/integration/health-sync.integration.test.ts",
-        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
-        "--testNamePattern=rebuilds and clears an acknowledged legacy Stepper block only after stable publication"
-      ]
-    },
-    {
-      "id": "postgres-health-cleanup-concurrency",
-      "args": [
-        "tests/integration/health-sync.integration.test.ts",
-        "--exclude=tests/integration/auth-multiuser.integration.test.ts",
-        "--testNamePattern=runs the 30-day HealthSyncAudit cleanup at app startup and races concurrent cleanup safely"
-      ]
+      "id": "postgres-training-http-reproduction",
+      "args": ["tests/integration/training-http-400-reproduction.integration.test.ts"]
     },
     {
       "id": "postgres-auth-multiuser",

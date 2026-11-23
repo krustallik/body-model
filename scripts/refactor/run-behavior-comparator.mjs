@@ -594,6 +594,7 @@ async function runComparatorSelfTests({ root, manifest, evidenceDir, shimPath })
   const reportPath = path.join(selfRoot, "vitest-report.json");
   const env = safeEnvironment(manifest.postgres.before, {
     BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
+    BODYCAST_REFACTOR_CLOCK_MODE: "frozen",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
   });

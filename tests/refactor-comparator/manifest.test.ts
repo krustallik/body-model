@@ -38,5 +38,16 @@ describe("frozen refactor comparator manifest", () => {
     expect(manifest.postgres.after.port).toBe(55437);
     expect(manifest.postgres.image).toMatch(/^docker\.io\/library\/postgres@sha256:[a-f0-9]{64}$/);
     expect(manifest.postgres.legacyMigrationCount).toBe(74);
+    expect(manifest.postgres.auth.before).toEqual(manifest.postgres.auth.after);
+    expect(manifest.postgres.auth.before).toEqual({
+      host: "127.0.0.1",
+      port: 55435,
+      database: "bodycast_training_postcommit_test",
+      role: "bodycast_test_runner",
+    });
+    expect(manifest.integrationSuites.find(({ id }) => id === "postgres-auth-multiuser")).toMatchObject({
+      databaseProfile: "auth",
+      authEnvironment: true,
+    });
   });
 });

@@ -16,7 +16,7 @@ import {
   validateManifest,
   validateResolvedPostgresImage,
 } from "./comparator-core.mjs";
-import { capturePersistedState, waitForLoopbackPort, withAttestedDatabase } from "./database-evidence.mjs";
+import { capturePersistedState, waitForLoopbackPort, waitForPostgresConnection, withAttestedDatabase } from "./database-evidence.mjs";
 
 const PASSWORD = "bodycast-refactor-test-only-password";
 const TEST_SECRET = "bodycast-comparator-only-secret-never-for-deployment";
@@ -348,7 +348,7 @@ async function stopDatabase(root, container, runId) {
 }
 
 async function attest(target, container) {
-  return withAttestedDatabase({
+  const checkIdentity = () => withAttestedDatabase({
     databaseUrl: databaseUrl(target),
     expected: target,
     mode: "test",
@@ -357,6 +357,10 @@ async function attest(target, container) {
       imageDigest: container.configuredImage,
     },
   }, async (_client, identity) => identity);
+  return waitForPostgresConnection(checkIdentity, {
+    host: target.host,
+    port: target.port,
+  });
 }
 
 async function captureDatabase(target, container, manifest) {

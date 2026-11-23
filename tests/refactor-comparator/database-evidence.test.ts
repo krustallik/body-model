@@ -2,7 +2,7 @@ import net from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
 import { diffJson, projectPersistedStateForComparison } from "../../scripts/refactor/comparator-core.mjs";
-import { waitForLoopbackPort } from "../../scripts/refactor/database-evidence.mjs";
+import { waitForLoopbackPort, waitForPostgresConnection } from "../../scripts/refactor/database-evidence.mjs";
 
 const servers: net.Server[] = [];
 
@@ -29,6 +29,32 @@ describe("comparator PostgreSQL TCP readiness", () => {
   it("rejects non-loopback targets and unbounded timeout values", async () => {
     await expect(waitForLoopbackPort("localhost", 5432)).rejects.toThrow(/exact loopback endpoint/);
     await expect(waitForLoopbackPort("127.0.0.1", 5432, { timeoutMs: 90_001 })).rejects.toThrow(/bounded timeout/);
+  });
+
+  it("retries only transient host PostgreSQL readiness and fails closed on identity errors", async () => {
+    let attempts = 0;
+    const attested = await waitForPostgresConnection(async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("Can't reach database server at `127.0.0.1:55436`");
+      return "attested";
+    }, { host: "127.0.0.1", port: 55_436, timeoutMs: 1_000, retryDelayMs: 1 });
+    expect(attested).toBe("attested");
+    expect(attempts).toBe(3);
+
+    attempts = 0;
+    await expect(waitForPostgresConnection(async () => {
+      attempts += 1;
+      throw new Error("Comparator PostgreSQL identity attestation failed");
+    }, { host: "127.0.0.1", port: 55_436, timeoutMs: 1_000, retryDelayMs: 1 }))
+      .rejects.toThrow(/identity attestation failed/);
+    expect(attempts).toBe(1);
+  });
+
+  it("times out rather than accepting a PostgreSQL endpoint that never becomes query-ready", async () => {
+    await expect(waitForPostgresConnection(async () => {
+      throw new Error("Can't reach database server at `127.0.0.1:55436`");
+    }, { host: "127.0.0.1", port: 55_436, timeoutMs: 10, retryDelayMs: 2 }))
+      .rejects.toThrow(/did not become ready.*within 10ms/);
   });
 });
 

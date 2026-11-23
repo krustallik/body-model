@@ -37,6 +37,38 @@ export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {
   throw new Error(`Comparator PostgreSQL loopback endpoint ${host}:${port} did not become reachable: ${lastError?.message ?? "timeout"}`);
 }
 
+export async function waitForPostgresConnection(check, {
+  host,
+  port,
+  timeoutMs = 30_000,
+  retryDelayMs = 200,
+} = {}) {
+  if (typeof check !== "function" || host !== "127.0.0.1"
+    || !Number.isSafeInteger(port) || port < 1 || port > 65_535
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 90_000
+    || !Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 1_000) {
+    throw new Error("Comparator PostgreSQL identity readiness requires an exact loopback endpoint and bounded retry policy.");
+  }
+
+  const expected = `Can't reach database server at \`${host}:${port}\``;
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  do {
+    try {
+      return await check();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes(expected)) throw error;
+      lastError = error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(retryDelayMs, remaining)));
+    }
+  } while (Date.now() < deadline);
+
+  throw new Error(`Comparator PostgreSQL host identity query did not become ready at ${host}:${port} within ${timeoutMs}ms: ${lastError instanceof Error ? lastError.message : "timeout"}`);
+}
+
 function quoteIdentifier(value) {
   if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_]*$/.test(value)) {
     throw new Error("Comparator SQL identifier is not allowlisted.");

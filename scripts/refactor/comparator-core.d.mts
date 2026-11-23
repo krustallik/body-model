@@ -29,6 +29,7 @@ export interface JsonDifference {
 
 export function parseComparatorArgs(argv: string[]): ComparatorArguments;
 export function validateRelativePath(value: unknown, label: string): string;
+export function validateResolvedPostgresImage(image: string, repoDigests: unknown): string;
 export function validateManifest(value: unknown): Record<string, unknown>;
 export function validateComparatorDatabaseUrl(
   databaseUrl: string,

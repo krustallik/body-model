@@ -37,6 +37,7 @@ const ALLOWLISTED_DATABASES = Object.freeze([
   REQUIRED_DATABASES.auth.before,
   REQUIRED_DATABASES.auth.after,
 ]);
+const PINNED_POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
 
 function requireObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -86,6 +87,17 @@ export function validateRelativePath(value, label) {
   return value;
 }
 
+export function validateResolvedPostgresImage(image, repoDigests) {
+  if (image !== PINNED_POSTGRES_IMAGE || !Array.isArray(repoDigests)) {
+    throw new Error("Comparator PostgreSQL image reference or digest inventory is invalid.");
+  }
+  const requestedDigest = image.match(/@sha256:([a-f0-9]{64})$/)?.[1];
+  if (!requestedDigest || !repoDigests.some((entry) => typeof entry === "string" && entry.endsWith(`@sha256:${requestedDigest}`))) {
+    throw new Error("Comparator PostgreSQL image does not resolve to the pinned content digest.");
+  }
+  return `sha256:${requestedDigest}`;
+}
+
 export function validateManifest(value) {
   requireObject(value, "Manifest");
   if (value.schemaVersion !== 1) throw new Error("Unsupported comparator manifest schema.");
@@ -105,7 +117,7 @@ export function validateManifest(value) {
 
   requireObject(value.postgres, "Manifest postgres");
   const database = value.postgres;
-  if (database.image !== "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24") {
+  if (database.image !== PINNED_POSTGRES_IMAGE) {
     throw new Error("Manifest PostgreSQL image is not the repository-pinned image digest.");
   }
   if (database.legacyMigrationBaselineSha !== "0f93f37dd6a4208cfc74331a0fb4c063c542c6bd" || database.legacyMigrationCount !== 74) {

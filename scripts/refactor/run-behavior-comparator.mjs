@@ -11,6 +11,7 @@ import {
   parseComparatorArgs,
   stableJson,
   validateManifest,
+  validateResolvedPostgresImage,
 } from "./comparator-core.mjs";
 import { capturePersistedState, withAttestedDatabase } from "./database-evidence.mjs";
 
@@ -224,8 +225,8 @@ async function verifyPinnedImage(root, image) {
   const details = await dockerJson(["image", "inspect", "--format", "{{json .}}", image], root);
   const imageId = details.Id;
   const repoDigests = Array.isArray(details.RepoDigests) ? details.RepoDigests : [];
-  if (typeof imageId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(imageId)
-    || !repoDigests.includes(image)) {
+  validateResolvedPostgresImage(image, repoDigests);
+  if (typeof imageId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(imageId)) {
     fail("Pinned PostgreSQL image digest is not present locally or did not resolve exactly.");
   }
   return { imageId, repoDigests };

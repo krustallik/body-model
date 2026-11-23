@@ -9,6 +9,7 @@ import {
   stableJson,
   validateComparatorDatabaseUrl,
   validateManifest,
+  validateResolvedPostgresImage,
   validateRelativePath,
 } from "../../scripts/refactor/comparator-core.mjs";
 
@@ -126,6 +127,16 @@ describe("refactor comparator core", () => {
     for (const [url, expected, mode] of invalidUrls) {
       expect(() => validateComparatorDatabaseUrl(url, expected, mode)).toThrow();
     }
+  });
+
+  it("attests the pinned PostgreSQL content digest through Docker canonical aliases", () => {
+    const digest = "b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
+    expect(validateResolvedPostgresImage(manifest.postgres.image, [
+      `postgres@sha256:${digest}`,
+      `public.ecr.aws/docker/library/postgres@sha256:${digest}`,
+    ])).toBe(`sha256:${digest}`);
+    expect(() => validateResolvedPostgresImage("postgres:latest", [`postgres@sha256:${digest}`])).toThrow(/reference or digest/);
+    expect(() => validateResolvedPostgresImage(manifest.postgres.image, ["postgres@sha256:" + "a".repeat(64)])).toThrow(/content digest/);
   });
 
   it("canonicalizes object key order while preserving numeric, null, and array semantics", () => {

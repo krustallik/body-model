@@ -41,7 +41,7 @@ const PINNED_POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e
 const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
   PhysiologyV7Lifecycle: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
-  Profile: Object.freeze({ updatedAt: "zoned-timestamp" }),
+  Profile: Object.freeze({ updatedAt: "local-timestamp" }),
   AuthRateLimitBucket: Object.freeze({ windowStart: "epoch-seconds" }),
 });
 
@@ -153,6 +153,7 @@ export function validateManifest(value) {
       if (!IDENTIFIER_PATTERN.test(field)) throw new Error(`Unsafe database clock field for ${table}.`);
       if (![
         "zoned-timestamp",
+        "local-timestamp",
         "epoch-seconds",
       ].includes(kind)) throw new Error(`Unsupported database clock field kind for ${table}.${field}.`);
     }
@@ -379,6 +380,12 @@ export function projectPersistedStateForComparison(persisted, databaseClockField
             || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
             || !Number.isFinite(Date.parse(value))) {
             throw new Error(`Persisted ${tableName}.${field} must be a valid zoned timestamp.`);
+          }
+        } else if (kind === "local-timestamp") {
+          if (typeof value !== "string"
+            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+            || !Number.isFinite(Date.parse(value))) {
+            throw new Error(`Persisted ${tableName}.${field} must be a valid local timestamp.`);
           }
         } else if (kind === "epoch-seconds") {
           if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {

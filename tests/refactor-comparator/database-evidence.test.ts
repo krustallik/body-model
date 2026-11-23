@@ -34,7 +34,7 @@ describe("comparator PostgreSQL TCP readiness", () => {
 
 function persistedState({
   lifecycleUpdatedAt = "2026-11-23T12:00:00.100+00:00",
-  profileUpdatedAt = "2026-11-23T12:00:00.100+00:00",
+  profileUpdatedAt = "2026-11-23T12:00:00.100",
   authWindowStart = 1_795_449_141,
   authHitCount = 2,
   invalidationGeneration = 4,
@@ -70,7 +70,7 @@ function persistedState({
         count: 1,
         rows: [JSON.stringify({
           id: 1,
-          createdAt: "2026-01-01T00:00:00.000+00:00",
+          createdAt: "2026-01-01T00:00:00.000",
           updatedAt: profileUpdatedAt,
           locale: "uk",
         })],
@@ -93,7 +93,7 @@ describe("comparator persisted state clock projection", () => {
     const before = persistedState();
     const after = persistedState({
       lifecycleUpdatedAt: "2026-11-23T12:00:06.671+00:00",
-      profileUpdatedAt: "2026-11-23T12:00:07.000+00:00",
+      profileUpdatedAt: "2026-11-23T12:00:07.000",
       authWindowStart: 1_795_449_149,
     });
     const beforeProjection = projectPersistedStateForComparison(before, policy);
@@ -137,5 +137,8 @@ describe("comparator persisted state clock projection", () => {
 
     const invalidEpoch = persistedState({ authWindowStart: -1 });
     expect(() => projectPersistedStateForComparison(invalidEpoch, policy)).toThrow(/non-negative integer epoch timestamp/);
+
+    const invalidLocalTimestamp = persistedState({ profileUpdatedAt: "2026-11-23T12:00:00.100Z" });
+    expect(() => projectPersistedStateForComparison(invalidLocalTimestamp, policy)).toThrow(/valid local timestamp/);
   });
 });

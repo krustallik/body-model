@@ -44,7 +44,7 @@ export interface PersistedStateClockEvidence {
   primaryKey: Record<string, unknown>;
   fields: Record<string, string | number>;
 }
-export type ComparatorClockFieldKind = "zoned-timestamp" | "epoch-seconds";
+export type ComparatorClockFieldKind = "zoned-timestamp" | "local-timestamp" | "epoch-seconds";
 export type ComparatorClockFieldPolicy = Record<string, Record<string, ComparatorClockFieldKind>>;
 export function projectPersistedStateForComparison(
   persisted: unknown,

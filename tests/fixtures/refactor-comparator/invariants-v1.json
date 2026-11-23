@@ -95,7 +95,7 @@
     "databaseClockFields": {
       "PhysiologyV7Lifecycle": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "UnifiedPublicationBlock": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
-      "Profile": { "updatedAt": "zoned-timestamp" },
+      "Profile": { "updatedAt": "local-timestamp" },
       "AuthRateLimitBucket": { "windowStart": "epoch-seconds" }
     }
   },

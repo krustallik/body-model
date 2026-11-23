@@ -6,14 +6,16 @@ if (process.env.NODE_ENV === "production") {
 } else {
 const fixedTimeText = process.env.BODYCAST_REFACTOR_FIXED_TIME;
 const seedText = process.env.BODYCAST_REFACTOR_RANDOM_SEED;
-if (process.env.NODE_ENV !== "test" || !fixedTimeText || !seedText) {
-  throw new Error("Comparator deterministic runtime requires an explicit fixed clock and random seed.");
+const clockMode = process.env.BODYCAST_REFACTOR_CLOCK_MODE;
+if (process.env.NODE_ENV !== "test" || !seedText || !["frozen", "native"].includes(clockMode)) {
+  throw new Error("Comparator deterministic runtime requires a test environment, random seed, and explicit clock mode.");
 }
+
+if (clockMode === "frozen") {
 const fixedTime = Date.parse(fixedTimeText);
 if (!Number.isFinite(fixedTime) || new Date(fixedTime).toISOString() !== fixedTimeText) {
   throw new Error("Comparator fixed clock must be a canonical UTC ISO timestamp.");
 }
-
 const NativeDate = globalThis.Date;
 let virtualTime = fixedTime;
 function ComparatorDate(...args) {
@@ -52,6 +54,7 @@ globalThis.setInterval = function deterministicInterval(callback, delay, ...args
   }, advanceBy);
   return timer;
 };
+}
 
 let state = 0x811c9dc5;
 for (const character of seedText) {

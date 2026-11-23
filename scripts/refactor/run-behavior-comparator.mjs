@@ -558,6 +558,7 @@ async function runUnitSuite({ repository, target, manifest, evidenceDir, sideNam
   const env = safeEnvironment(target, {
     BODYCAST_REFACTOR_CAPTURE_FILE: capturePath,
     BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
+    BODYCAST_REFACTOR_CLOCK_MODE: "frozen",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
   });
@@ -617,6 +618,7 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
   const reportPath = path.join(sideRoot, "vitest-report.json");
   const env = safeEnvironment(target, {
     BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
+    BODYCAST_REFACTOR_CLOCK_MODE: "native",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
     ...(suite.authEnvironment ? { LEGACY_IOS_SHORTCUT_ENABLED: "true" } : {}),

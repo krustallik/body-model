@@ -3,6 +3,7 @@ import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
 import {
   aggregateSuiteCases,
   canonicalizeJson,
+  deriveDatabaseClockTransitions,
   diffJson,
   parseComparatorArgs,
   sha256,
@@ -80,6 +81,22 @@ describe("refactor comparator core", () => {
     const unsafeTable = structuredClone(manifest);
     unsafeTable.postgres.snapshotTables[0] = "Profile; DROP TABLE Profile";
     expect(() => validateManifest(unsafeTable)).toThrow(/Unsafe PostgreSQL/);
+
+    const untrackedClockTable = structuredClone(manifest);
+    untrackedClockTable.postgres.databaseClockFields.MissingTable = ["createdAt"];
+    expect(() => validateManifest(untrackedClockTable)).toThrow(/not in snapshotTables/);
+
+    const unsafeClockField = structuredClone(manifest);
+    unsafeClockField.postgres.databaseClockFields.PhysiologyV7Lifecycle = ["createdAt; DROP TABLE Profile"];
+    expect(() => validateManifest(unsafeClockField)).toThrow(/Unsafe database clock field/);
+
+    const duplicateClockField = structuredClone(manifest);
+    duplicateClockField.postgres.databaseClockFields.PhysiologyV7Lifecycle = ["createdAt", "createdAt"];
+    expect(() => validateManifest(duplicateClockField)).toThrow(/contains duplicates/);
+
+    const incompleteClockPolicy = structuredClone(manifest);
+    incompleteClockPolicy.postgres.databaseClockFields.PhysiologyV7Lifecycle = ["updatedAt"];
+    expect(() => validateManifest(incompleteClockPolicy)).toThrow(/exact reviewed PostgreSQL wall-clock field policy/);
 
     const duplicatePath = structuredClone(manifest);
     duplicatePath.unitSuites[0].paths.push(duplicatePath.unitSuites[0].paths[0]);
@@ -194,6 +211,40 @@ describe("refactor comparator core", () => {
     expect(sortObservationsByCaseId([later, earlier])).toEqual(sortObservationsByCaseId([earlier, later]));
     expect(sortObservationsByCaseId([later, earlier])[1].value).toEqual([2, 1]);
     expect(() => sortObservationsByCaseId([{} as { caseId: string }])).toThrow(/string case IDs/);
+  });
+
+  it("compares clock-field update transitions without comparing environment wall time", () => {
+    const policy = { PhysiologyV7Lifecycle: ["createdAt", "updatedAt"] };
+    const firstRun = deriveDatabaseClockTransitions(
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.000+00:00",
+      } }],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.500+00:00",
+      } }],
+      policy,
+    );
+    const sameBehaviorAtDifferentWallTime = deriveDatabaseClockTransitions(
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.000+00:00",
+      } }],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.250+00:00",
+      } }],
+      policy,
+    );
+    const missingUpdate = deriveDatabaseClockTransitions(
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
+      } }],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
+      } }],
+      policy,
+    );
+
+    expect(firstRun).toEqual(sameBehaviorAtDifferentWallTime);
+    expect(diffJson(firstRun, missingUpdate)).not.toEqual([]);
   });
 
   it("hashes deterministic UTF-8 evidence bytes", () => {

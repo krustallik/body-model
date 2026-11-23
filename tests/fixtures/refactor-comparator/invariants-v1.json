@@ -91,7 +91,11 @@
       "Verification",
       "ProfileApiKey",
       "AuthRateLimitBucket"
-    ]
+    ],
+    "databaseClockFields": {
+      "PhysiologyV7Lifecycle": ["createdAt", "updatedAt"],
+      "UnifiedPublicationBlock": ["createdAt", "updatedAt"]
+    }
   },
   "observations": [
     { "id": "ENERGY-01/activity-known-number", "path": "tests/workout-activity-v6-e2e-oracle.test.ts", "testName": "matches independent walking/workout/calibration arithmetic" },

@@ -7,8 +7,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   aggregateSuiteCases,
+  deriveDatabaseClockTransitions,
   diffJson,
   parseComparatorArgs,
+  projectPersistedStateForComparison,
   sortObservationsByCaseId,
   stableJson,
   validateManifest,
@@ -1025,23 +1027,67 @@ async function main() {
       const caseEqual = stableTestResults(before.cases, after.cases);
       beforeIntegrationRuns.push({ suiteId: suite.id, cases: before.cases.tests });
       afterIntegrationRuns.push({ suiteId: suite.id, cases: after.cases.tests });
-      const initialDifferences = diffJson(before.initial.persisted, after.initial.persisted);
-      const finalDifferences = diffJson(before.finalState.persisted, after.finalState.persisted);
+      const beforeInitialProjection = projectPersistedStateForComparison(
+        before.initial.persisted,
+        manifest.postgres.databaseClockFields,
+      );
+      const afterInitialProjection = projectPersistedStateForComparison(
+        after.initial.persisted,
+        manifest.postgres.databaseClockFields,
+      );
+      const beforeFinalProjection = projectPersistedStateForComparison(
+        before.finalState.persisted,
+        manifest.postgres.databaseClockFields,
+      );
+      const afterFinalProjection = projectPersistedStateForComparison(
+        after.finalState.persisted,
+        manifest.postgres.databaseClockFields,
+      );
+      const initialDifferences = diffJson(beforeInitialProjection.comparable, afterInitialProjection.comparable);
+      const finalDifferences = diffJson(beforeFinalProjection.comparable, afterFinalProjection.comparable);
+      const beforeClockTransitions = deriveDatabaseClockTransitions(
+        beforeInitialProjection.clockEvidence,
+        beforeFinalProjection.clockEvidence,
+        manifest.postgres.databaseClockFields,
+      );
+      const afterClockTransitions = deriveDatabaseClockTransitions(
+        afterInitialProjection.clockEvidence,
+        afterFinalProjection.clockEvidence,
+        manifest.postgres.databaseClockFields,
+      );
+      const clockTransitionDifferences = diffJson(beforeClockTransitions, afterClockTransitions);
       const comparison = {
         suite: suite.id,
         casesEqual: caseEqual,
         initialPersistedStateEqual: initialDifferences.length === 0,
         finalPersistedStateEqual: finalDifferences.length === 0,
+        databaseClockTransitionsEqual: clockTransitionDifferences.length === 0,
+        persistedStatePolicy: "Exact across all captured rows, sequence states and migration ledger except manifest-listed database clock fields; raw snapshots and timestamp evidence are retained.",
         initialIdentityValid: true,
         finalIdentityValid: true,
         initialDifferences,
         finalDifferences,
+        databaseClockTransitionDifferences: clockTransitionDifferences,
+        databaseClockFields: {
+          initial: {
+            before: beforeInitialProjection.clockEvidence,
+            after: afterInitialProjection.clockEvidence,
+          },
+          final: {
+            before: beforeFinalProjection.clockEvidence,
+            after: afterFinalProjection.clockEvidence,
+          },
+          transitions: {
+            before: beforeClockTransitions,
+            after: afterClockTransitions,
+          },
+        },
       };
       const comparisonRoot = path.join(evidenceDir, "integration-comparisons");
       await mkdir(comparisonRoot, { recursive: true });
       await writeJson(path.join(comparisonRoot, `${suite.id}.json`), comparison);
       integrationResults.push(comparison);
-      if (!caseEqual || initialDifferences.length > 0 || finalDifferences.length > 0) {
+      if (!caseEqual || initialDifferences.length > 0 || finalDifferences.length > 0 || clockTransitionDifferences.length > 0) {
         fail(`Frozen integration suite ${suite.id} differs between base and candidate.`);
       }
     }

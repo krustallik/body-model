@@ -39,6 +39,20 @@ export function validateComparatorDatabaseUrl(
 export function canonicalizeJson(value: unknown): unknown;
 export function stableJson(value: unknown): string;
 export function diffJson(before: unknown, after: unknown, currentPath?: string): JsonDifference[];
+export interface PersistedStateClockEvidence {
+  table: string;
+  primaryKey: Record<string, unknown>;
+  fields: Record<string, string>;
+}
+export function projectPersistedStateForComparison(
+  persisted: unknown,
+  databaseClockFields: Record<string, string[]>,
+): { comparable: unknown; clockEvidence: PersistedStateClockEvidence[] };
+export function deriveDatabaseClockTransitions(
+  initialEvidence: PersistedStateClockEvidence[],
+  finalEvidence: PersistedStateClockEvidence[],
+  databaseClockFields: Record<string, string[]>,
+): Array<{ table: string; primaryKey: Record<string, unknown>; fields: Record<string, "created" | "deleted" | "unchanged" | "updated"> }>;
 export function sortObservationsByCaseId<T extends { caseId: string }>(observations: readonly T[]): T[];
 export interface ComparatorCaseRun {
   suiteId: string;

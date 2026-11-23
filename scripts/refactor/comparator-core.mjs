@@ -38,6 +38,10 @@ const ALLOWLISTED_DATABASES = Object.freeze([
   REQUIRED_DATABASES.auth.after,
 ]);
 const PINNED_POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
+const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
+  PhysiologyV7Lifecycle: Object.freeze(["createdAt", "updatedAt"]),
+  UnifiedPublicationBlock: Object.freeze(["createdAt", "updatedAt"]),
+});
 
 function requireObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -134,6 +138,20 @@ export function validateManifest(value) {
   }
   for (const table of database.snapshotTables) {
     if (!IDENTIFIER_PATTERN.test(table)) throw new Error(`Unsafe PostgreSQL snapshot table name: ${table}`);
+  }
+  requireObject(database.databaseClockFields, "Manifest postgres.databaseClockFields");
+  const clockTables = Object.entries(database.databaseClockFields);
+  if (clockTables.length === 0) throw new Error("Manifest databaseClockFields must explicitly identify dynamic database timestamps.");
+  for (const [table, fields] of clockTables) {
+    if (!database.snapshotTables.includes(table)) throw new Error(`Database clock field table is not in snapshotTables: ${table}`);
+    if (!Array.isArray(fields) || fields.length === 0) throw new Error(`Database clock fields for ${table} must be a non-empty list.`);
+    for (const field of fields) {
+      if (typeof field !== "string" || !IDENTIFIER_PATTERN.test(field)) throw new Error(`Unsafe database clock field for ${table}.`);
+    }
+    requireUnique(fields, `Database clock fields for ${table}`);
+  }
+  if (stableJson(database.databaseClockFields) !== stableJson(DATABASE_CLOCK_FIELD_POLICY)) {
+    throw new Error("Manifest databaseClockFields must match the exact reviewed PostgreSQL wall-clock field policy.");
   }
   requireObject(database.auth, "Manifest postgres.auth");
   for (const side of ["before", "after"]) {
@@ -317,6 +335,97 @@ export function diffJson(before, after, currentPath = "$") {
     }
   }
   return differences;
+}
+
+export function projectPersistedStateForComparison(persisted, databaseClockFields) {
+  requireObject(persisted, "Persisted database state");
+  requireObject(persisted.tables, "Persisted database tables");
+  requireObject(databaseClockFields, "Database clock field policy");
+  const comparable = structuredClone(persisted);
+  const clockEvidence = [];
+
+  for (const [tableName, fields] of Object.entries(databaseClockFields)) {
+    const table = persisted.tables[tableName];
+    if (!table || !Array.isArray(table.primaryKey) || !Array.isArray(table.rows)) {
+      throw new Error(`Persisted state is missing the configured database clock table: ${tableName}`);
+    }
+    comparable.tables[tableName].rows = table.rows.map((rowJson, index) => {
+      if (typeof rowJson !== "string") throw new Error(`Persisted ${tableName} row ${index} is not a JSON string.`);
+      let row;
+      try {
+        row = JSON.parse(rowJson);
+      } catch {
+        throw new Error(`Persisted ${tableName} row ${index} is invalid JSON.`);
+      }
+      requireObject(row, `Persisted ${tableName} row ${index}`);
+      const primaryKey = {};
+      for (const key of table.primaryKey) {
+        if (!Object.hasOwn(row, key)) throw new Error(`Persisted ${tableName} row ${index} is missing primary key ${key}.`);
+        primaryKey[key] = row[key];
+      }
+
+      const timestampValues = {};
+      for (const field of fields) {
+        const value = row[field];
+        if (typeof value !== "string"
+          || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+          || !Number.isFinite(Date.parse(value))) {
+          throw new Error(`Persisted ${tableName}.${field} must be a valid zoned timestamp.`);
+        }
+        timestampValues[field] = value;
+        delete row[field];
+      }
+      if (typeof timestampValues.createdAt === "string" && typeof timestampValues.updatedAt === "string"
+        && Date.parse(timestampValues.createdAt) > Date.parse(timestampValues.updatedAt)) {
+        throw new Error(`Persisted ${tableName} createdAt must not be after updatedAt.`);
+      }
+      clockEvidence.push({ table: tableName, primaryKey, fields: timestampValues });
+      return row;
+    });
+  }
+
+  return { comparable, clockEvidence };
+}
+
+export function deriveDatabaseClockTransitions(initialEvidence, finalEvidence, databaseClockFields) {
+  if (!Array.isArray(initialEvidence) || !Array.isArray(finalEvidence)) {
+    throw new TypeError("Database clock transition evidence must be arrays.");
+  }
+  requireObject(databaseClockFields, "Database clock field policy");
+  const toMap = (evidence, label) => {
+    const result = new Map();
+    for (const entry of evidence) {
+      if (!entry || typeof entry.table !== "string" || !entry.primaryKey || typeof entry.primaryKey !== "object"
+        || !entry.fields || typeof entry.fields !== "object") {
+        throw new Error(`${label} contains malformed database clock evidence.`);
+      }
+      const key = `${entry.table}\0${stableJson(entry.primaryKey)}`;
+      if (result.has(key)) throw new Error(`${label} contains duplicate primary keys.`);
+      result.set(key, entry);
+    }
+    return result;
+  };
+  const initial = toMap(initialEvidence, "Initial database clock evidence");
+  const final = toMap(finalEvidence, "Final database clock evidence");
+  const result = [];
+  for (const table of Object.keys(databaseClockFields).sort()) {
+    const tableKeys = [...new Set([
+      ...[...initial.entries()].filter(([, entry]) => entry.table === table).map(([key]) => key),
+      ...[...final.entries()].filter(([, entry]) => entry.table === table).map(([key]) => key),
+    ])].sort();
+    for (const key of tableKeys) {
+      const before = initial.get(key);
+      const after = final.get(key);
+      const fields = {};
+      for (const field of databaseClockFields[table]) {
+        fields[field] = before === undefined ? "created"
+          : after === undefined ? "deleted"
+            : before.fields[field] === after.fields[field] ? "unchanged" : "updated";
+      }
+      result.push({ table, primaryKey: (after ?? before).primaryKey, fields });
+    }
+  }
+  return result;
 }
 
 export function sortObservationsByCaseId(observations) {

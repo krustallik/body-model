@@ -111,6 +111,7 @@
     {
       "id": "unit-energy-training-model-bodymap",
       "paths": [
+        "tests/refactor-comparator/database-evidence.test.ts",
         "tests/health-sync-training-workouts.test.ts",
         "tests/distance-ledger-v1.test.ts",
         "tests/workout-activity-v6-regression.test.ts",

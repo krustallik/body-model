@@ -1,5 +1,41 @@
 import { PrismaClient } from "@prisma/client";
+import net from "node:net";
 import { validateComparatorDatabaseUrl } from "./comparator-core.mjs";
+
+export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {}) {
+  if (host !== "127.0.0.1" || !Number.isSafeInteger(port) || port < 1 || port > 65_535
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 90_000) {
+    throw new Error("Comparator PostgreSQL readiness requires an exact loopback endpoint and bounded timeout.");
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host, port });
+        const timer = setTimeout(() => {
+          socket.destroy();
+          reject(new Error("Comparator PostgreSQL loopback connection attempt timed out."));
+        }, Math.min(1_000, timeoutMs));
+        socket.once("connect", () => {
+          clearTimeout(timer);
+          socket.destroy();
+          resolve(undefined);
+        });
+        socket.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+  throw new Error(`Comparator PostgreSQL loopback endpoint ${host}:${port} did not become reachable: ${lastError?.message ?? "timeout"}`);
+}
 
 function quoteIdentifier(value) {
   if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_]*$/.test(value)) {

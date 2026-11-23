@@ -648,7 +648,7 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
   const reportPath = path.join(sideRoot, "vitest-report.json");
   const env = safeEnvironment(target, {
     BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
-    BODYCAST_REFACTOR_CLOCK_MODE: suite.clockMode ?? "native",
+    BODYCAST_REFACTOR_CLOCK_MODE: "native",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
     ...(suite.authEnvironment ? { LEGACY_IOS_SHORTCUT_ENABLED: "true" } : {}),
@@ -1062,7 +1062,7 @@ async function main() {
         initialPersistedStateEqual: initialDifferences.length === 0,
         finalPersistedStateEqual: finalDifferences.length === 0,
         databaseClockTransitionsEqual: clockTransitionDifferences.length === 0,
-        persistedStatePolicy: "Exact across all captured rows, sequence states and migration ledger except manifest-listed database clock fields; raw snapshots and timestamp evidence are retained.",
+        persistedStatePolicy: "Exact across all captured rows, sequence states and migration ledger except the exact manifest-listed clock-derived fields; raw snapshots and clock evidence are retained.",
         initialIdentityValid: true,
         finalIdentityValid: true,
         initialDifferences,

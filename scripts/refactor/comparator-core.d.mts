@@ -42,16 +42,18 @@ export function diffJson(before: unknown, after: unknown, currentPath?: string):
 export interface PersistedStateClockEvidence {
   table: string;
   primaryKey: Record<string, unknown>;
-  fields: Record<string, string>;
+  fields: Record<string, string | number>;
 }
+export type ComparatorClockFieldKind = "zoned-timestamp" | "epoch-seconds";
+export type ComparatorClockFieldPolicy = Record<string, Record<string, ComparatorClockFieldKind>>;
 export function projectPersistedStateForComparison(
   persisted: unknown,
-  databaseClockFields: Record<string, string[]>,
+  databaseClockFields: ComparatorClockFieldPolicy,
 ): { comparable: unknown; clockEvidence: PersistedStateClockEvidence[] };
 export function deriveDatabaseClockTransitions(
   initialEvidence: PersistedStateClockEvidence[],
   finalEvidence: PersistedStateClockEvidence[],
-  databaseClockFields: Record<string, string[]>,
+  databaseClockFields: ComparatorClockFieldPolicy,
 ): Array<{ table: string; primaryKey: Record<string, unknown>; fields: Record<string, "created" | "deleted" | "unchanged" | "updated"> }>;
 export function sortObservationsByCaseId<T extends { caseId: string }>(observations: readonly T[]): T[];
 export interface ComparatorCaseRun {

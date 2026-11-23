@@ -32,7 +32,14 @@ describe("comparator PostgreSQL TCP readiness", () => {
   });
 });
 
-function persistedState({ lifecycleUpdatedAt = "2026-11-23T12:00:00.100+00:00", invalidationGeneration = 4, leaseUntil = null } = {}) {
+function persistedState({
+  lifecycleUpdatedAt = "2026-11-23T12:00:00.100+00:00",
+  profileUpdatedAt = "2026-11-23T12:00:00.100+00:00",
+  authWindowStart = 1_795_449_141,
+  authHitCount = 2,
+  invalidationGeneration = 4,
+  leaseUntil = null,
+} = {}) {
   return {
     tables: {
       PhysiologyV7Lifecycle: {
@@ -58,6 +65,21 @@ function persistedState({ lifecycleUpdatedAt = "2026-11-23T12:00:00.100+00:00", 
           revision: 3,
         })],
       },
+      Profile: {
+        primaryKey: ["id"],
+        count: 1,
+        rows: [JSON.stringify({
+          id: 1,
+          createdAt: "2026-01-01T00:00:00.000+00:00",
+          updatedAt: profileUpdatedAt,
+          locale: "uk",
+        })],
+      },
+      AuthRateLimitBucket: {
+        primaryKey: ["bucketKey"],
+        count: 1,
+        rows: [JSON.stringify({ bucketKey: "bucket-a", hitCount: authHitCount, windowStart: authWindowStart })],
+      },
     },
     sequences: [{ schema: "public", name: "Profile_id_seq", lastValue: "1", isCalled: true }],
     migrationLedger: [{ name: "init", checksum: "abc", startedAt: "2026-11-23T12:00:00.000Z" }],
@@ -69,7 +91,11 @@ describe("comparator persisted state clock projection", () => {
 
   it("compares stable persisted semantics while retaining exact clock values as evidence", () => {
     const before = persistedState();
-    const after = persistedState({ lifecycleUpdatedAt: "2026-11-23T12:00:06.671+00:00" });
+    const after = persistedState({
+      lifecycleUpdatedAt: "2026-11-23T12:00:06.671+00:00",
+      profileUpdatedAt: "2026-11-23T12:00:07.000+00:00",
+      authWindowStart: 1_795_449_149,
+    });
     const beforeProjection = projectPersistedStateForComparison(before, policy);
     const afterProjection = projectPersistedStateForComparison(after, policy);
 
@@ -77,12 +103,14 @@ describe("comparator persisted state clock projection", () => {
     expect(beforeProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:00.100+00:00");
     expect(afterProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:06.671+00:00");
     expect(JSON.parse(before.tables.PhysiologyV7Lifecycle.rows[0])).toHaveProperty("updatedAt", "2026-11-23T12:00:00.100+00:00");
+    expect(afterProjection.clockEvidence.find(({ table }) => table === "AuthRateLimitBucket")?.fields.windowStart).toBe(1_795_449_149);
   });
 
   it("still fails on stable lifecycle fields, sequence state, lease semantics, or migration evidence", () => {
     const before = projectPersistedStateForComparison(persistedState(), policy).comparable;
     const changedLifecycle = projectPersistedStateForComparison(persistedState({ invalidationGeneration: 5 }), policy).comparable;
     const changedLease = projectPersistedStateForComparison(persistedState({ leaseUntil: "2026-11-23T12:01:00.000+00:00" }), policy).comparable;
+    const changedAuthCounter = projectPersistedStateForComparison(persistedState({ authHitCount: 3 }), policy).comparable;
     const changedSequence = projectPersistedStateForComparison(persistedState(), policy).comparable;
     const changedMigration = projectPersistedStateForComparison(persistedState(), policy).comparable;
     (changedSequence as { sequences: Array<{ lastValue: string }> }).sequences[0].lastValue = "2";
@@ -90,6 +118,7 @@ describe("comparator persisted state clock projection", () => {
 
     expect(diffJson(before, changedLifecycle)).not.toEqual([]);
     expect(diffJson(before, changedLease)).not.toEqual([]);
+    expect(diffJson(before, changedAuthCounter)).not.toEqual([]);
     expect(diffJson(before, changedSequence)).not.toEqual([]);
     expect(diffJson(before, changedMigration)).not.toEqual([]);
   });
@@ -105,5 +134,8 @@ describe("comparator persisted state clock projection", () => {
 
     const inverted = persistedState({ lifecycleUpdatedAt: "2026-11-22T12:00:00.000+00:00" });
     expect(() => projectPersistedStateForComparison(inverted, policy)).toThrow(/createdAt must not be after updatedAt/);
+
+    const invalidEpoch = persistedState({ authWindowStart: -1 });
+    expect(() => projectPersistedStateForComparison(invalidEpoch, policy)).toThrow(/non-negative integer epoch timestamp/);
   });
 });

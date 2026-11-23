@@ -93,8 +93,10 @@
       "AuthRateLimitBucket"
     ],
     "databaseClockFields": {
-      "PhysiologyV7Lifecycle": ["createdAt", "updatedAt"],
-      "UnifiedPublicationBlock": ["createdAt", "updatedAt"]
+      "PhysiologyV7Lifecycle": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "UnifiedPublicationBlock": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "Profile": { "updatedAt": "zoned-timestamp" },
+      "AuthRateLimitBucket": { "windowStart": "epoch-seconds" }
     }
   },
   "observations": [
@@ -176,8 +178,7 @@
       "id": "postgres-auth-multiuser",
       "args": ["tests/integration/auth-multiuser.integration.test.ts"],
       "databaseProfile": "auth",
-      "authEnvironment": true,
-      "clockMode": "frozen"
+      "authEnvironment": true
     }
   ]
 }

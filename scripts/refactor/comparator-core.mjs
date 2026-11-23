@@ -39,8 +39,10 @@ const ALLOWLISTED_DATABASES = Object.freeze([
 ]);
 const PINNED_POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
 const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
-  PhysiologyV7Lifecycle: Object.freeze(["createdAt", "updatedAt"]),
-  UnifiedPublicationBlock: Object.freeze(["createdAt", "updatedAt"]),
+  PhysiologyV7Lifecycle: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  Profile: Object.freeze({ updatedAt: "zoned-timestamp" }),
+  AuthRateLimitBucket: Object.freeze({ windowStart: "epoch-seconds" }),
 });
 
 function requireObject(value, label) {
@@ -141,17 +143,22 @@ export function validateManifest(value) {
   }
   requireObject(database.databaseClockFields, "Manifest postgres.databaseClockFields");
   const clockTables = Object.entries(database.databaseClockFields);
-  if (clockTables.length === 0) throw new Error("Manifest databaseClockFields must explicitly identify dynamic database timestamps.");
+  if (clockTables.length === 0) throw new Error("Manifest databaseClockFields must explicitly identify clock-derived persisted fields.");
   for (const [table, fields] of clockTables) {
     if (!database.snapshotTables.includes(table)) throw new Error(`Database clock field table is not in snapshotTables: ${table}`);
-    if (!Array.isArray(fields) || fields.length === 0) throw new Error(`Database clock fields for ${table} must be a non-empty list.`);
-    for (const field of fields) {
-      if (typeof field !== "string" || !IDENTIFIER_PATTERN.test(field)) throw new Error(`Unsafe database clock field for ${table}.`);
+    requireObject(fields, `Database clock fields for ${table}`);
+    const entries = Object.entries(fields);
+    if (entries.length === 0) throw new Error(`Database clock fields for ${table} must be a non-empty object.`);
+    for (const [field, kind] of entries) {
+      if (!IDENTIFIER_PATTERN.test(field)) throw new Error(`Unsafe database clock field for ${table}.`);
+      if (![
+        "zoned-timestamp",
+        "epoch-seconds",
+      ].includes(kind)) throw new Error(`Unsupported database clock field kind for ${table}.${field}.`);
     }
-    requireUnique(fields, `Database clock fields for ${table}`);
   }
   if (stableJson(database.databaseClockFields) !== stableJson(DATABASE_CLOCK_FIELD_POLICY)) {
-    throw new Error("Manifest databaseClockFields must match the exact reviewed PostgreSQL wall-clock field policy.");
+    throw new Error("Manifest databaseClockFields must match the exact reviewed clock-field policy.");
   }
   requireObject(database.auth, "Manifest postgres.auth");
   for (const side of ["before", "after"]) {
@@ -207,14 +214,8 @@ export function validateManifest(value) {
     if (suite.authEnvironment === true && suite.databaseProfile !== "auth") {
       throw new Error("Manifest integrationSuites[" + index + "] Auth suite must use the auth database profile.");
     }
-    if (suite.clockMode !== undefined && !["frozen", "native"].includes(suite.clockMode)) {
-      throw new Error("Manifest integrationSuites[" + index + "] clockMode must be frozen or native.");
-    }
     if (suite.databaseProfile === "auth" && suite.authEnvironment !== true) {
       throw new Error("Manifest integrationSuites[" + index + "] auth profile requires the Auth test environment.");
-    }
-    if (suite.databaseProfile === "auth" && suite.clockMode !== "frozen") {
-      throw new Error("Manifest Auth integration suite must use the deterministic application clock.");
     }
     suiteIds.push(suite.id);
   }
@@ -346,7 +347,7 @@ export function diffJson(before, after, currentPath = "$") {
 export function projectPersistedStateForComparison(persisted, databaseClockFields) {
   requireObject(persisted, "Persisted database state");
   requireObject(persisted.tables, "Persisted database tables");
-  requireObject(databaseClockFields, "Database clock field policy");
+  requireObject(databaseClockFields, "Persisted clock field policy");
   const comparable = structuredClone(persisted);
   const clockEvidence = [];
 
@@ -371,12 +372,20 @@ export function projectPersistedStateForComparison(persisted, databaseClockField
       }
 
       const timestampValues = {};
-      for (const field of fields) {
+      for (const [field, kind] of Object.entries(fields)) {
         const value = row[field];
-        if (typeof value !== "string"
-          || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-          || !Number.isFinite(Date.parse(value))) {
-          throw new Error(`Persisted ${tableName}.${field} must be a valid zoned timestamp.`);
+        if (kind === "zoned-timestamp") {
+          if (typeof value !== "string"
+            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+            || !Number.isFinite(Date.parse(value))) {
+            throw new Error(`Persisted ${tableName}.${field} must be a valid zoned timestamp.`);
+          }
+        } else if (kind === "epoch-seconds") {
+          if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+            throw new Error(`Persisted ${tableName}.${field} must be a non-negative integer epoch timestamp.`);
+          }
+        } else {
+          throw new Error(`Unsupported persisted clock field kind for ${tableName}.${field}.`);
         }
         timestampValues[field] = value;
         delete row[field];
@@ -397,7 +406,7 @@ export function deriveDatabaseClockTransitions(initialEvidence, finalEvidence, d
   if (!Array.isArray(initialEvidence) || !Array.isArray(finalEvidence)) {
     throw new TypeError("Database clock transition evidence must be arrays.");
   }
-  requireObject(databaseClockFields, "Database clock field policy");
+  requireObject(databaseClockFields, "Persisted clock field policy");
   const toMap = (evidence, label) => {
     const result = new Map();
     for (const entry of evidence) {
@@ -423,7 +432,7 @@ export function deriveDatabaseClockTransitions(initialEvidence, finalEvidence, d
       const before = initial.get(key);
       const after = final.get(key);
       const fields = {};
-      for (const field of databaseClockFields[table]) {
+      for (const field of Object.keys(databaseClockFields[table])) {
         fields[field] = before === undefined ? "created"
           : after === undefined ? "deleted"
             : before.fields[field] === after.fields[field] ? "unchanged" : "updated";

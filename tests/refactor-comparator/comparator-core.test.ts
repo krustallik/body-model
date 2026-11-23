@@ -87,16 +87,16 @@ describe("refactor comparator core", () => {
     expect(() => validateManifest(untrackedClockTable)).toThrow(/not in snapshotTables/);
 
     const unsafeClockField = structuredClone(manifest);
-    unsafeClockField.postgres.databaseClockFields.PhysiologyV7Lifecycle = ["createdAt; DROP TABLE Profile"];
+    unsafeClockField.postgres.databaseClockFields.PhysiologyV7Lifecycle = { "createdAt; DROP TABLE Profile": "zoned-timestamp" };
     expect(() => validateManifest(unsafeClockField)).toThrow(/Unsafe database clock field/);
 
-    const duplicateClockField = structuredClone(manifest);
-    duplicateClockField.postgres.databaseClockFields.PhysiologyV7Lifecycle = ["createdAt", "createdAt"];
-    expect(() => validateManifest(duplicateClockField)).toThrow(/contains duplicates/);
+    const unsupportedClockKind = structuredClone(manifest);
+    unsupportedClockKind.postgres.databaseClockFields.PhysiologyV7Lifecycle.createdAt = "free-text";
+    expect(() => validateManifest(unsupportedClockKind)).toThrow(/Unsupported database clock field kind/);
 
     const incompleteClockPolicy = structuredClone(manifest);
-    incompleteClockPolicy.postgres.databaseClockFields.PhysiologyV7Lifecycle = ["updatedAt"];
-    expect(() => validateManifest(incompleteClockPolicy)).toThrow(/exact reviewed PostgreSQL wall-clock field policy/);
+    incompleteClockPolicy.postgres.databaseClockFields.PhysiologyV7Lifecycle = { updatedAt: "zoned-timestamp" };
+    expect(() => validateManifest(incompleteClockPolicy)).toThrow(/exact reviewed clock-field policy/);
 
     const duplicatePath = structuredClone(manifest);
     duplicatePath.unitSuites[0].paths.push(duplicatePath.unitSuites[0].paths[0]);
@@ -106,13 +106,6 @@ describe("refactor comparator core", () => {
     invalidObservation.observations[0].path = "tests/not-in-a-suite.test.ts";
     expect(() => validateManifest(invalidObservation)).toThrow(/not covered by a unit suite/);
 
-    const invalidClockMode = structuredClone(manifest);
-    (invalidClockMode.integrationSuites[0] as unknown as { clockMode: string }).clockMode = "warp";
-    expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen or native/);
-
-    const nativeAuthClock = structuredClone(manifest);
-    (nativeAuthClock.integrationSuites.at(-1) as unknown as { clockMode: string }).clockMode = "native";
-    expect(() => validateManifest(nativeAuthClock)).toThrow(/deterministic application clock/);
   });
 
   it("accepts only the exact isolated before and after PostgreSQL identities", () => {
@@ -222,32 +215,53 @@ describe("refactor comparator core", () => {
   });
 
   it("compares clock-field update transitions without comparing environment wall time", () => {
-    const policy = { PhysiologyV7Lifecycle: ["createdAt", "updatedAt"] };
+    const policy = {
+      PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      AuthRateLimitBucket: { windowStart: "epoch-seconds" },
+    };
     const firstRun = deriveDatabaseClockTransitions(
-      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-        createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.000+00:00",
-      } }],
-      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-        createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.500+00:00",
-      } }],
+      [
+        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+          createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.000+00:00",
+        } },
+        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_140 } },
+      ],
+      [
+        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+          createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.500+00:00",
+        } },
+        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_142 } },
+      ],
       policy,
     );
     const sameBehaviorAtDifferentWallTime = deriveDatabaseClockTransitions(
-      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-        createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.000+00:00",
-      } }],
-      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-        createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.250+00:00",
-      } }],
+      [
+        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+          createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.000+00:00",
+        } },
+        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_240 } },
+      ],
+      [
+        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+          createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.250+00:00",
+        } },
+        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_244 } },
+      ],
       policy,
     );
     const missingUpdate = deriveDatabaseClockTransitions(
-      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-        createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
-      } }],
-      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-        createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
-      } }],
+      [
+        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+          createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
+        } },
+        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_340 } },
+      ],
+      [
+        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+          createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
+        } },
+        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_340 } },
+      ],
       policy,
     );
 

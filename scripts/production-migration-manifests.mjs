@@ -1856,12 +1856,95 @@ export const AUTH_MULTIUSER_MANIFEST = Object.freeze({
   ddlLockTargets: AUTH_MULTIUSER_DDL_LOCK_TARGETS,
 });
 
+// Keep Auth v1's historical 74→77 migration set immutable. This successor starts
+// from that exact postflight schema and contains only the two later nullable changes.
+const TRAINING_SESSION_CONTEXT_MIGRATIONS = Object.freeze([
+  Object.freeze({ name: "20261121130000_training_plan_intent", sha256: "42cc92bd6e2658e1859582d5b5a5899d610c731b3f3b3fc6f1f7e90bb00ff723" }),
+  Object.freeze({ name: "20261122140000_session_load_assessment", sha256: "01a5f94115c18ddb8dc9ecdb88092f45f2f6c3489ca21870f78b030f37e31959" }),
+]);
+const TRAINING_SESSION_CONTEXT_OBJECT_SIGNATURES = Object.freeze({
+  "ProgramExercise.plannedRepsMin": "integer|nullable=true|default=",
+  "ProgramExercise.plannedRepsMax": "integer|nullable=true|default=",
+  "ProgramExercise.plannedRir": "integer|nullable=true|default=",
+  "StrengthSessionExercise.plannedRepsMin": "integer|nullable=true|default=",
+  "StrengthSessionExercise.plannedRepsMax": "integer|nullable=true|default=",
+  "StrengthSessionExercise.plannedRir": "integer|nullable=true|default=",
+  "StrengthDiarySession.sessionIntent": "character varying(32)|nullable=true|default=",
+  "StrengthDiarySession.trainingBlockLabel": "character varying(80)|nullable=true|default=",
+  "StrengthDiarySession.trainingWeekNumber": "integer|nullable=true|default=",
+  "StrengthDiarySession.sessionLoadAssessment": "character varying(16)|nullable=true|default=",
+  "StrengthSet.restBeforeSeconds": "integer|nullable=true|default=",
+  "ProgramExercise_planned_reps_positive_check": "c|validated=true|table=\"ProgramExercise\"|definition=CHECK ((\"plannedRepsMin\" IS NULL OR \"plannedRepsMin\" > 0) AND (\"plannedRepsMax\" IS NULL OR \"plannedRepsMax\" > 0) AND (\"plannedRepsMin\" IS NULL OR \"plannedRepsMax\" IS NULL OR \"plannedRepsMin\" <= \"plannedRepsMax\"))",
+  "ProgramExercise_planned_rir_check": "c|validated=true|table=\"ProgramExercise\"|definition=CHECK (\"plannedRir\" IS NULL OR \"plannedRir\" >= 0 AND \"plannedRir\" <= 10)",
+  "StrengthSessionExercise_planned_reps_positive_check": "c|validated=true|table=\"StrengthSessionExercise\"|definition=CHECK ((\"plannedRepsMin\" IS NULL OR \"plannedRepsMin\" > 0) AND (\"plannedRepsMax\" IS NULL OR \"plannedRepsMax\" > 0) AND (\"plannedRepsMin\" IS NULL OR \"plannedRepsMax\" IS NULL OR \"plannedRepsMin\" <= \"plannedRepsMax\"))",
+  "StrengthSessionExercise_planned_rir_check": "c|validated=true|table=\"StrengthSessionExercise\"|definition=CHECK (\"plannedRir\" IS NULL OR \"plannedRir\" >= 0 AND \"plannedRir\" <= 10)",
+  "StrengthDiarySession_session_intent_check": "c|validated=true|table=\"StrengthDiarySession\"|definition=CHECK (\"sessionIntent\" IS NULL OR (\"sessionIntent\"::text = ANY (ARRAY['regular'::character varying, 'easy-deload'::character varying, 'strength'::character varying, 'test'::character varying, 'return-from-break'::character varying]::text[])))",
+  "StrengthDiarySession_training_week_number_check": "c|validated=true|table=\"StrengthDiarySession\"|definition=CHECK (\"trainingWeekNumber\" IS NULL OR \"trainingWeekNumber\" >= 1 AND \"trainingWeekNumber\" <= 52)",
+  "StrengthDiarySession_session_load_assessment_check": "c|validated=true|table=\"StrengthDiarySession\"|definition=CHECK (\"sessionLoadAssessment\" IS NULL OR (\"sessionLoadAssessment\"::text = ANY (ARRAY['LIGHTER'::character varying, 'NOT_LIGHTER'::character varying]::text[])))",
+  "StrengthSet_rest_before_seconds_check": "c|validated=true|table=\"StrengthSet\"|definition=CHECK (\"restBeforeSeconds\" IS NULL OR \"restBeforeSeconds\" >= 0 AND \"restBeforeSeconds\" <= 86400)",
+});
+const TRAINING_SESSION_CONTEXT_OBJECTS = Object.freeze(Object.keys(TRAINING_SESSION_CONTEXT_OBJECT_SIGNATURES).sort());
+const TRAINING_SESSION_CONTEXT_BASELINE_ABSENT = new Set(AUTH_MULTIUSER_MANIFEST.postflightAbsentObjects);
+const TRAINING_SESSION_CONTEXT_BASELINE_OBJECTS = Object.freeze(
+  AUTH_MULTIUSER_MANIFEST.postflightObjects.filter((name) => !TRAINING_SESSION_CONTEXT_BASELINE_ABSENT.has(name)),
+);
+const TRAINING_SESSION_CONTEXT_BASELINE_SIGNATURE_INCLUDES = Object.freeze(Object.fromEntries(
+  Object.entries(AUTH_MULTIUSER_MANIFEST.postflightSignatureIncludes)
+    .filter(([name]) => !TRAINING_SESSION_CONTEXT_BASELINE_ABSENT.has(name)),
+));
+const TRAINING_SESSION_CONTEXT_BASELINE_SIGNATURE_EQUALS = Object.freeze(Object.fromEntries(
+  Object.entries(AUTH_MULTIUSER_MANIFEST.postflightSignatureEquals)
+    .filter(([name]) => !TRAINING_SESSION_CONTEXT_BASELINE_ABSENT.has(name)),
+));
+
+export const TRAINING_SESSION_CONTEXT_MANIFEST = Object.freeze({
+  id: "training-session-context-v1",
+  ciOnly: true,
+  cutbackSupported: false,
+  requireCompleteReleaseTree: true,
+  requiredAppliedMigrations: Object.freeze([
+    ...AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations,
+    ...AUTH_MULTIUSER_MANIFEST.migrations,
+  ]),
+  migrations: TRAINING_SESSION_CONTEXT_MIGRATIONS,
+  requiredTablesBefore: Object.freeze([
+    ...AUTH_MULTIUSER_MANIFEST.requiredTablesBefore,
+    "Account", "AuthRateLimitBucket", "ProfileApiKey", "Session", "User", "Verification",
+  ].sort()),
+  requiredObjectsBefore: TRAINING_SESSION_CONTEXT_BASELINE_OBJECTS,
+  requiredObjectSignatureIncludes: TRAINING_SESSION_CONTEXT_BASELINE_SIGNATURE_INCLUDES,
+  requiredObjectSignatureEquals: TRAINING_SESSION_CONTEXT_BASELINE_SIGNATURE_EQUALS,
+  partialObjects: TRAINING_SESSION_CONTEXT_OBJECTS,
+  requiredAbsentObjectsBefore: Object.freeze([
+    ...AUTH_MULTIUSER_MANIFEST.postflightAbsentObjects,
+    ...TRAINING_SESSION_CONTEXT_OBJECTS,
+  ].sort()),
+  postflightAbsentObjects: AUTH_MULTIUSER_MANIFEST.postflightAbsentObjects,
+  postflightSignatureIncludes: Object.freeze({
+    ...AUTH_MULTIUSER_MANIFEST.postflightSignatureIncludes,
+    ...TRAINING_SESSION_CONTEXT_OBJECT_SIGNATURES,
+  }),
+  postflightSignatureEquals: Object.freeze({
+    ...AUTH_MULTIUSER_MANIFEST.postflightSignatureEquals,
+    ...TRAINING_SESSION_CONTEXT_OBJECT_SIGNATURES,
+  }),
+  postflightObjects: Object.freeze([
+    ...AUTH_MULTIUSER_MANIFEST.postflightObjects,
+    ...TRAINING_SESSION_CONTEXT_OBJECTS,
+  ]),
+  ddlLockTargets: Object.freeze([
+    "ProgramExercise", "StrengthDiarySession", "StrengthSessionExercise", "StrengthSet",
+  ].map((tableName) => Object.freeze({ tableName, requiredLockMode: "AccessExclusiveLock" }))),
+});
+
+
 export const PRODUCTION_MIGRATION_MANIFESTS = Object.freeze({
   [ACTIVE_ENERGY_UNIFIED_MANIFEST.id]: ACTIVE_ENERGY_UNIFIED_MANIFEST,
   [V4_REPUBLICATION_MANIFEST.id]: V4_REPUBLICATION_MANIFEST,
   [DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id]: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST,
   [TRAINING_MUTATION_LEDGER_MANIFEST.id]: TRAINING_MUTATION_LEDGER_MANIFEST,
   [AUTH_MULTIUSER_MANIFEST.id]: AUTH_MULTIUSER_MANIFEST,
+  [TRAINING_SESSION_CONTEXT_MANIFEST.id]: TRAINING_SESSION_CONTEXT_MANIFEST,
 });
 
 export function getProductionMigrationManifest(id) {

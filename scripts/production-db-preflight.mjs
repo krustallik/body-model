@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
-import { ALL_REVIEWED_OBJECTS } from "./production-migration-preflight.mjs";
+import { getProductionSchemaInventoryObjectNames } from "./production-migration-preflight.mjs";
 
-export function getExpectedSchemaObjectNames() {
-  return [...ALL_REVIEWED_OBJECTS].sort();
+export function getExpectedSchemaObjectNames(manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
+  return getProductionSchemaInventoryObjectNames(manifestId);
 }
 
 const DEFAULT_DDL_LOCK_TARGETS = Object.freeze([
@@ -41,7 +41,14 @@ async function main() {
   if (manifestIndex >= 0 && (!manifestId || manifestId.startsWith("--"))) {
     throw new Error("--manifest requires a reviewed production migration manifest id.");
   }
-  process.stdout.write(renderProductionDbPreflightSql(template, getExpectedSchemaObjectNames(), manifestId));
+  const manifest = getProductionMigrationManifest(manifestId);
+  const ciOnlyManifestOptIn = args.includes("--ci-only-manifest");
+  if ((manifest.ciOnly === true) !== ciOnlyManifestOptIn) {
+    throw new Error(manifest.ciOnly === true
+      ? "CI-only migration manifests require explicit CI-only scope opt-in."
+      : "CI-only scope opt-in cannot be used with a production migration manifest.");
+  }
+  process.stdout.write(renderProductionDbPreflightSql(template, getExpectedSchemaObjectNames(manifestId), manifestId));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

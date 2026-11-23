@@ -28,14 +28,23 @@ export const EXPECTED_MIGRATION_OBJECTS = Object.freeze([
 
 export const ALL_REVIEWED_MIGRATIONS = [...new Map([
   ...STAGE_02_MANIFEST.migrations,
-  ...Object.values(PRODUCTION_MIGRATION_MANIFESTS).flatMap((manifest) => [
+  ...Object.values(PRODUCTION_MIGRATION_MANIFESTS).filter((manifest) => manifest.ciOnly !== true).flatMap((manifest) => [
     ...manifest.migrations,
     ...(manifest.requiredAppliedMigrations ?? []),
   ]),
 ].map((migration) => [migration.name, migration])).values()];
+export function getProductionSchemaInventoryObjectNames(manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
+  const manifest = getProductionMigrationManifest(manifestId);
+  return [...new Set([
+    ...ALL_REVIEWED_OBJECTS,
+    ...manifest.requiredObjectsBefore,
+    ...manifest.postflightObjects,
+    ...(manifest.partialObjects ?? []),
+  ])].sort();
+}
 export const ALL_REVIEWED_OBJECTS = [...new Set([
   ...EXPECTED_MIGRATION_OBJECTS,
-  ...Object.values(PRODUCTION_MIGRATION_MANIFESTS).flatMap((manifest) => [
+  ...Object.values(PRODUCTION_MIGRATION_MANIFESTS).filter((manifest) => manifest.ciOnly !== true).flatMap((manifest) => [
     ...manifest.requiredObjectsBefore,
     ...manifest.postflightObjects,
     ...(manifest.partialObjects ?? []),
@@ -553,16 +562,18 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
 
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
   const objectNames = objectRows.map((object) => object?.name);
-  if (!sameArray(objectNames, ALL_REVIEWED_OBJECTS)) blockers.push("Schema inventory names do not exactly match the closed production migration manifests.");
+  const expectedObjectNames = getProductionSchemaInventoryObjectNames(manifestId);
+  if (!sameArray(objectNames, expectedObjectNames)) blockers.push("Schema inventory names do not exactly match the closed production migration manifests.");
   const objectMap = new Map(objectRows.map((object) => [object?.name, object]));
   if (objectRows.some((object) => object?.present === true && (typeof object.signature !== "string" || !object.signature))) {
     blockers.push("Current schema inventory is missing a signature for an existing reviewed object.");
   }
   const partialObjects = (manifest.partialObjects ?? manifest.postflightObjects).filter((name) => objectMap.get(name)?.present === true);
   if (partialObjects.length) blockers.push(`Migration output objects already exist while the exact migration set is pending: ${partialObjects.join(", ")}.`);
-  const presentForbiddenObjects = (manifest.requiredAbsentObjectsBefore ?? []).filter((name) => objectMap.get(name)?.present === true);
+  const requiredAbsentObjectsBefore = new Set(manifest.requiredAbsentObjectsBefore ?? []);
+  const presentForbiddenObjects = [...requiredAbsentObjectsBefore].filter((name) => objectMap.get(name)?.present === true);
   if (presentForbiddenObjects.length) blockers.push(`Prior migration output objects should be absent before this migration set: ${presentForbiddenObjects.join(", ")}.`);
-  const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => objectMap.get(name)?.present !== true);
+  const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => !requiredAbsentObjectsBefore.has(name) && objectMap.get(name)?.present !== true);
   if (missingStage02Objects.length) blockers.push(`Required Stage 02 schema objects are missing: ${missingStage02Objects.join(", ")}.`);
   const missingObjectsBefore = manifest.requiredObjectsBefore.filter((name) => objectMap.get(name)?.present !== true);
   if (missingObjectsBefore.length) blockers.push(`Required pre-migration schema objects are missing: ${missingObjectsBefore.join(", ")}.`);
@@ -673,7 +684,8 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (state.pending.length) blockers.push(`Pending migrations remain after DDL: ${state.pending.join(", ")}.`);
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
   const names = objectRows.map((entry) => entry?.name);
-  if (!sameArray(names, ALL_REVIEWED_OBJECTS)) blockers.push("Postflight object inventory differs from the closed production migration manifests.");
+  const expectedObjectNames = getProductionSchemaInventoryObjectNames(manifestId);
+  if (!sameArray(names, expectedObjectNames)) blockers.push("Postflight object inventory differs from the closed production migration manifests.");
   const byName = new Map(objectRows.map((entry) => [entry?.name, entry]));
   const expectedAbsent = new Set(manifest.postflightAbsentObjects);
   const missing = manifest.postflightObjects.filter((name) => !expectedAbsent.has(name) && byName.get(name)?.present !== true);
@@ -790,6 +802,12 @@ async function main() {
     const repositoryPath = path.resolve(args[args.indexOf("--repository") + 1] ?? process.cwd());
     const releaseSha = args[args.indexOf("--release-sha") + 1];
     const manifest = getProductionMigrationManifest(args[args.indexOf("--manifest") + 1] ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
+    const ciOnlyManifestOptIn = args.includes("--ci-only-manifest");
+    if ((manifest.ciOnly === true) !== ciOnlyManifestOptIn) {
+      throw new Error(manifest.ciOnly === true
+        ? "CI-only migration manifests require explicit CI-only scope opt-in."
+        : "CI-only scope opt-in cannot be used with a production migration manifest.");
+    }
     const files = [];
     const reviewedBlobs = [...new Map([
       ...manifest.migrations,
@@ -811,8 +829,20 @@ async function main() {
   if (mode === "--verify-release-tree" || mode === "--preflight" || mode === "--pre-maintenance" || mode === "--postflight") {
     const value = (flag) => { const index = args.indexOf(flag); return index < 0 ? null : args[index + 1]; };
     const manifestId = value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id;
+    const manifest = getProductionMigrationManifest(manifestId);
+    const ciOnlyManifestOptIn = args.includes("--ci-only-manifest");
+    if ((manifest.ciOnly === true) !== ciOnlyManifestOptIn) {
+      throw new Error(manifest.ciOnly === true
+        ? "CI-only migration manifests require explicit CI-only scope opt-in."
+        : "CI-only scope opt-in cannot be used with a production migration manifest.");
+    }
+    const ciOnlyRestoreIdentity = args.includes("--ci-only-restore-identity");
+    if (ciOnlyRestoreIdentity && (mode !== "--postflight" || manifest.ciOnly !== true)) {
+      throw new Error("The isolated restore identity override is restricted to CI-only migration postflight.");
+    }
     const repositoryPath = value("--repository") ?? process.cwd();
-    const migrationDirectories = (await readdir(path.resolve(repositoryPath, "prisma/migrations"), { withFileTypes: true }))
+    const migrationTreePath = value("--migration-tree") ?? repositoryPath;
+    const migrationDirectories = (await readdir(path.resolve(migrationTreePath, "prisma/migrations"), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     if (mode === "--verify-release-tree") {
       const result = evaluateProductionMigrationTree(migrationDirectories, manifestId);
@@ -847,7 +877,9 @@ async function main() {
       result.readyForOwnerAuthorization = !preMaintenance && result.blockers.length === 0;
       if (preMaintenance) result.readyForPreMaintenance = result.blockers.length === 0;
     } else {
-      result = evaluateProductionPostflight(report, migrationDirectories, manifestId);
+      result = evaluateProductionPostflight(report, migrationDirectories, manifestId, ciOnlyRestoreIdentity
+        ? { expectedDatabase: "bodycast_restore", expectedRole: "bodycast" }
+        : {});
       const integrity = [];
       for (const migration of getProductionMigrationManifest(manifestId).migrations) {
         const item = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha: value("--release-sha"), migration });

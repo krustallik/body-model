@@ -473,6 +473,7 @@ jobs:
       - name: Rehearse the exact Auth manifest from the pinned 74-migration baseline
         env:
           BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd
+          AUTH_RELEASE_SHA: 18e67d53856af1f4742bbe9626abbd005b70e8bf
           DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: |
           set -Eeuo pipefail
@@ -483,6 +484,13 @@ jobs:
           git archive "$BASELINE_SHA" prisma/schema.prisma prisma/migrations | tar -x -C "$baseline_root"
           baseline_count="$(find "$baseline_root/prisma/migrations" -mindepth 2 -maxdepth 2 -name migration.sql -type f | wc -l | tr -d ' ')"
           test "$baseline_count" = 74
+          auth_release_root="$RUNNER_TEMP/bodycast-auth-77-release"
+          git fetch --no-tags https://github.com/krustallik/body-model.git "$AUTH_RELEASE_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$AUTH_RELEASE_SHA"
+          mkdir -p "$auth_release_root"
+          git archive "$AUTH_RELEASE_SHA" prisma/schema.prisma prisma/migrations | tar -x -C "$auth_release_root"
+          auth_release_count="$(find "$auth_release_root/prisma/migrations" -mindepth 2 -maxdepth 2 -name migration.sql -type f | wc -l | tr -d ' ')"
+          test "$auth_release_count" = 77
           export BODYCAST_TEST_DATABASE_URL="$DATABASE_URL"
           npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"
           applied_before="$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
@@ -493,6 +501,8 @@ jobs:
           VALUES (DEFAULT, 'female', DATE '1990-01-01', 170.00, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
           INSERT INTO public."DailyHealthData" ("date", "weightKg", "rawPayload", "createdAt", "updatedAt")
           VALUES ('2026-10-01', 80.25, '{"source":"auth-migration-rehearsal","weightKg":80.25}'::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+          INSERT INTO public."StrengthDiarySession" ("profileId", "status", "createdAt", "updatedAt")
+          VALUES (1, 'CANCELLED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
           INSERT INTO public."Workout" ("dailyHealthDataId", "sourceIdentity", "type", "startAt", "endAt", "activeEnergyKcal", "createdAt", "updatedAt")
           SELECT id, 'auth-migration-rehearsal:garmin:1', 'Traditional Strength Training',
             TIMESTAMPTZ '2026-10-01 12:00:00+00', TIMESTAMPTZ '2026-10-01 12:30:00+00', 145.0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -512,7 +522,9 @@ jobs:
             "updatedAt" = EXCLUDED."updatedAt";
           SQL
           node scripts/production-migration-preflight.mjs --verify-release-tree \
-            --manifest auth-multiuser-v1 --repository "$GITHUB_WORKSPACE"
+            --manifest auth-multiuser-v1 --repository "$auth_release_root"
+          node scripts/production-migration-preflight.mjs --verify-release-tree \
+            --manifest training-session-context-v1 --repository "$GITHUB_WORKSPACE" --ci-only-manifest
           topology_json="$(node --input-type=module <<'NODE'
           process.stdout.write(JSON.stringify({
             schemaVersion: 1,
@@ -547,7 +559,7 @@ jobs:
           writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
           NODE
           AUTH_SOURCE_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
-          DATABASE_URL="$BODYCAST_TEST_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
+          DATABASE_URL="$BODYCAST_TEST_DATABASE_URL" npx prisma migrate deploy --schema "$auth_release_root/prisma/schema.prisma"
           AUTH_SOURCE_FINGERPRINT_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --auth-multiuser-source-inputs)"
           [[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]] || {
             echo "Auth ownership migration changed immutable source-input projection in isolated PostgreSQL." >&2; exit 1;
@@ -606,11 +618,12 @@ jobs:
           DELETE FROM public."HealthMetricSample" WHERE "metric" = 'auth-migration-invalid-owner-test';
           DELETE FROM public."Profile" WHERE "id" = 2;
           SQL
-          # Independently exercise the existing rehearsal path on the canonical test DB too.
+          # Independently exercise the historical Auth contract on the canonical test DB too.
           node scripts/production-migration-preflight.mjs --preflight \
-            --manifest auth-multiuser-v1 --release-sha "$GITHUB_SHA" \
-            --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-auth-preflight-report.json"
-          npx prisma migrate deploy --schema prisma/schema.prisma
+            --manifest auth-multiuser-v1 --release-sha "$AUTH_RELEASE_SHA" \
+            --repository "$GITHUB_WORKSPACE" --migration-tree "$auth_release_root" \
+            --report "$RUNNER_TEMP/bodycast-auth-preflight-report.json"
+          npx prisma migrate deploy --schema "$auth_release_root/prisma/schema.prisma"
           node scripts/production-db-preflight.mjs --manifest auth-multiuser-v1 \
             | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
             --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-training-postflight.json"
@@ -618,7 +631,8 @@ jobs:
           node scripts/production-migration-preflight.mjs --postflight \
             --manifest auth-multiuser-v1 \
             --report "$RUNNER_TEMP/bodycast-training-postflight.json" \
-            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA"
+            --repository "$GITHUB_WORKSPACE" --migration-tree "$auth_release_root" \
+            --release-sha "$AUTH_RELEASE_SHA"
           postflight_status=$?
           set -e
           if [ "$postflight_status" -ne 0 ]; then
@@ -642,7 +656,71 @@ jobs:
           NODE
             exit "$postflight_status"
           fi
-
+          # Rehearse the later 77-to-79 schema as a separate exact manifest.
+          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
+            | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+              --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-preflight-report.json"
+          node scripts/production-migration-preflight.mjs --preflight \
+            --manifest training-session-context-v1 --release-sha "$GITHUB_SHA" \
+            --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-session-context-preflight-report.json" \
+            --ci-only-manifest
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_restore
+          SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE" =~ ^[a-f0-9]{64}$ ]] || {
+            echo "Training session-context source-input fingerprint before migration is malformed." >&2; exit 1;
+          }
+          DATABASE_URL="$BODYCAST_TEST_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
+          SESSION_CONTEXT_SOURCE_FINGERPRINT_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE" == "$SESSION_CONTEXT_SOURCE_FINGERPRINT_AFTER" ]] || {
+            echo "Training session-context migrations changed immutable source-input rows or provenance in isolated PostgreSQL." >&2; exit 1;
+          }
+          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
+            | psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+              --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-restore-postflight.json"
+          node scripts/production-migration-preflight.mjs --postflight \
+            --manifest training-session-context-v1 \
+            --report "$RUNNER_TEMP/bodycast-session-context-restore-postflight.json" \
+            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA" \
+            --ci-only-manifest --ci-only-restore-identity
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"StrengthDiarySession\" SET \"sessionIntent\" = 'regular' WHERE \"id\" = 1"
+          if bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs \
+            > "$RUNNER_TEMP/session-context-populated-nullable-field.out" 2>&1; then
+            echo "Training session-context fingerprint accepted a populated historical nullable field." >&2; exit 1;
+          fi
+          grep -Fq 'populated a newly nullable historical field: StrengthDiarySession.sessionIntent' \
+            "$RUNNER_TEMP/session-context-populated-nullable-field.out" || {
+            echo "Training session-context null sentinel failed for an unexpected reason." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"StrengthDiarySession\" SET \"sessionIntent\" = NULL WHERE \"id\" = 1"
+          SESSION_CONTEXT_RESTORED_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_SOURCE_FINGERPRINT_AFTER" == "$SESSION_CONTEXT_RESTORED_FINGERPRINT" ]] || {
+            echo "Training session-context negative sentinel did not restore the isolated baseline." >&2; exit 1;
+          }
+          SESSION_CONTEXT_SOURCE_BEFORE_MUTATION="$SESSION_CONTEXT_RESTORED_FINGERPRINT"
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"StrengthDiarySession\" SET \"createdAt\" = \"createdAt\" + INTERVAL '1 second' WHERE \"id\" = 1"
+          SESSION_CONTEXT_SOURCE_MUTATED_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_SOURCE_BEFORE_MUTATION" != "$SESSION_CONTEXT_SOURCE_MUTATED_FINGERPRINT" ]] || {
+            echo "Training session-context fingerprint failed to detect a source-row mutation." >&2; exit 1;
+          }
+          psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+            --command="UPDATE public.\"StrengthDiarySession\" SET \"createdAt\" = \"createdAt\" - INTERVAL '1 second' WHERE \"id\" = 1"
+          SESSION_CONTEXT_SOURCE_RESTORED_FINGERPRINT="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
+          [[ "$SESSION_CONTEXT_SOURCE_BEFORE_MUTATION" == "$SESSION_CONTEXT_SOURCE_RESTORED_FINGERPRINT" ]] || {
+            echo "Training session-context source mutation sentinel did not restore the isolated baseline." >&2; exit 1;
+          }
+          export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+          npx prisma migrate deploy --schema prisma/schema.prisma
+          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
+            | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
+              --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-postflight.json"
+          node scripts/production-migration-preflight.mjs --postflight \
+            --manifest training-session-context-v1 \
+            --report "$RUNNER_TEMP/bodycast-session-context-postflight.json" \
+            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA" \
+            --ci-only-manifest
       - name: Run production migration release-tooling shell regressions
         env:
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast

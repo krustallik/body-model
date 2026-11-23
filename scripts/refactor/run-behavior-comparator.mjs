@@ -35,7 +35,7 @@ function redact(value) {
     .replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, "[REDACTED_DATABASE_URL]");
 }
 
-function runProcess(program, args, { cwd, env, input, timeoutMs = PROCESS_TIMEOUT_MS } = {}) {
+function runProcess(program, args, { cwd, env, input, onStdout, timeoutMs = PROCESS_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const stdout = [];
@@ -45,7 +45,10 @@ function runProcess(program, args, { cwd, env, input, timeoutMs = PROCESS_TIMEOU
       timedOut = true;
       child.kill();
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stdout.on("data", (chunk) => {
+      stdout.push(Buffer.from(chunk));
+      onStdout?.(chunk);
+    });
     child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
     child.once("error", (error) => {
       clearTimeout(timer);
@@ -104,6 +107,19 @@ async function runLogged(program, args, { logPath, label, ...options }) {
     fail(`${label} failed with exit ${result.code}; see ${logPath}`);
   }
   return { result, command: [program, ...args] };
+}
+
+function integrationProgress(label) {
+  let pending = "";
+  return (chunk) => {
+    const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
+      const match = plain.match(/^\s*✓\s+(tests\/integration\/[^\s>]+\.test\.[A-Za-z0-9]+)\s*>/);
+      if (match) process.stdout.write(`[${label}] ${path.basename(match[1])}\n`);
+    }
+  };
 }
 
 async function runToFile(program, args, { cwd, env, outputPath, timeoutMs = PROCESS_TIMEOUT_MS } = {}) {
@@ -639,7 +655,7 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
     await writeJson(path.join(sideRoot, "database-initial-state.json"), initial);
     const args = [
       path.join(repository, "node_modules", "vitest", "vitest.mjs"), "run",
-      "--config", "vitest.integration.config.ts",
+      "--config", "vitest.integration.config.ts", "--reporter=verbose",
       "--pool=forks", "--maxWorkers=1", "--minWorkers=1", "--reporter=json", `--outputFile=${reportPath}`,
       ...suite.args,
     ];
@@ -648,6 +664,7 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
       env,
       logPath: path.join(sideRoot, "test.log"),
       label: `${sideName} ${suite.id}`,
+      onStdout: integrationProgress(`${sideName} ${suite.id}`),
       timeoutMs: PROCESS_TIMEOUT_MS,
     });
     const cases = await readTestSummary(reportPath, `${sideName} ${suite.id}`, repository, { allowFiltered: true });

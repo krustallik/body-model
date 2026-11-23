@@ -39,6 +39,7 @@ const canonicalEnergyEventIds = new Set<number>();
 const modelEpisodeIds = new Set<number>();
 let fixtureUuidSequence = 0;
 let fixtureIpSequence = 0;
+const fixtureIpBlocks = ["198.51.100", "203.0.113", "192.0.2"] as const;
 let providerAccepts = true;
 let initialProfileOneTrainingState: Awaited<ReturnType<typeof saveProfileOneTrainingState>> | null = null;
 let auth: typeof import("@/lib/auth")["auth"];
@@ -93,7 +94,10 @@ function authHttpRequest(path: string, body: unknown): Request {
 
 function testClientIp(): string {
   fixtureIpSequence += 1;
-  return `198.51.100.${((fixtureIpSequence - 1) % 254) + 1}`;
+  const zeroBasedIndex = fixtureIpSequence - 1;
+  const block = fixtureIpBlocks[Math.floor(zeroBasedIndex / 254)];
+  if (!block) throw new Error("Auth integration fixture exhausted its reserved client IPs");
+  return `${block}.${(zeroBasedIndex % 254) + 1}`;
 }
 
 async function saveProfileOneTrainingState() {
@@ -355,7 +359,7 @@ describe("auth and tenant registration integration", () => {
 
     const oversizedDirectAuth = await httpAuth.POST(new Request(`${origin}/api/auth/email-otp/verify-email`, {
       method: "POST",
-      headers: { origin, "content-type": "application/json" },
+      headers: { origin, "content-type": "application/json", "x-forwarded-for": testClientIp() },
       body: new ReadableStream<Uint8Array>({
         pull(controller) { controller.enqueue(new Uint8Array(10 * 1024)); },
       }),

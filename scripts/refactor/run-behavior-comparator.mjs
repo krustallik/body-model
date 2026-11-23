@@ -374,7 +374,7 @@ async function prepareLegacyTree(root, sha, evidenceDir) {
   }
   const migrations = await migrationInventory(legacyRoot);
   if (migrations.migrations.length !== 74) fail("Pinned legacy migration archive must contain exactly 74 migrations.");
-  return { root: legacyRoot, migrations, schema: path.join(legacyRoot, "prisma", "schema.prisma"), target };
+  return { root: legacyRoot, migrations, schema: path.join(legacyRoot, "prisma", "schema.prisma") };
 }
 
 async function seedProfileOne(root, target, container) {

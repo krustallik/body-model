@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
+import type { ComparatorClockFieldPolicy } from "../../scripts/refactor/comparator-core.mjs";
 import {
   aggregateSuiteCases,
   canonicalizeJson,
@@ -27,6 +28,23 @@ const afterTarget = {
   database: "bodycast_refactor_after_test",
   role: "bodycast_refactor_after_test_runner",
 };
+
+type MutableComparatorManifest = {
+  determinism: { clock: string; randomSeed: string };
+  postgres: {
+    image: string;
+    before: { port: number };
+    snapshotTables: string[];
+    databaseClockFields: Record<string, unknown>;
+  };
+  unitSuites: Array<{ paths: string[] }>;
+  observations: Array<{ path: string }>;
+  integrationSuites: Array<{ clockMode: string }>;
+};
+
+function cloneManifestForMutation(): MutableComparatorManifest {
+  return structuredClone(manifest) as unknown as MutableComparatorManifest;
+}
 
 describe("refactor comparator core", () => {
   it("requires exact full source SHAs and all explicit arguments", () => {
@@ -62,56 +80,57 @@ describe("refactor comparator core", () => {
   it("validates the frozen manifest and rejects changed database identities, tables, and suite paths", () => {
     expect(validateManifest(manifest)).toBe(manifest);
 
-    const wrongImage = structuredClone(manifest);
+    const wrongImage = cloneManifestForMutation();
     wrongImage.postgres.image = "postgres:latest";
     expect(() => validateManifest(wrongImage)).toThrow(/image digest/);
 
-    const invalidClock = structuredClone(manifest);
+    const invalidClock = cloneManifestForMutation();
     invalidClock.determinism.clock = "2026-11-23T12:00:00Z";
     expect(() => validateManifest(invalidClock)).toThrow(/deterministic clock/);
 
-    const invalidSeed = structuredClone(manifest);
+    const invalidSeed = cloneManifestForMutation();
     invalidSeed.determinism.randomSeed = "not a safe seed!";
     expect(() => validateManifest(invalidSeed)).toThrow(/random seed/);
 
-    const wrongEndpoint = structuredClone(manifest);
+    const wrongEndpoint = cloneManifestForMutation();
     wrongEndpoint.postgres.before.port = 5432;
     expect(() => validateManifest(wrongEndpoint)).toThrow(/exact allowlisted/);
 
-    const unsafeTable = structuredClone(manifest);
+    const unsafeTable = cloneManifestForMutation();
     unsafeTable.postgres.snapshotTables[0] = "Profile; DROP TABLE Profile";
     expect(() => validateManifest(unsafeTable)).toThrow(/Unsafe PostgreSQL/);
 
-    const untrackedClockTable = structuredClone(manifest);
+    const untrackedClockTable = cloneManifestForMutation();
     untrackedClockTable.postgres.databaseClockFields.MissingTable = ["createdAt"];
     expect(() => validateManifest(untrackedClockTable)).toThrow(/not in snapshotTables/);
 
-    const unsafeClockField = structuredClone(manifest);
+    const unsafeClockField = cloneManifestForMutation();
     unsafeClockField.postgres.databaseClockFields.PhysiologyV7Lifecycle = { "createdAt; DROP TABLE Profile": "zoned-timestamp" };
     expect(() => validateManifest(unsafeClockField)).toThrow(/Unsafe database clock field/);
 
-    const unsupportedClockKind = structuredClone(manifest);
-    unsupportedClockKind.postgres.databaseClockFields.PhysiologyV7Lifecycle.createdAt = "free-text";
+    const unsupportedClockKind = cloneManifestForMutation();
+    const lifecycleClockFields = unsupportedClockKind.postgres.databaseClockFields.PhysiologyV7Lifecycle as Record<string, unknown>;
+    lifecycleClockFields.createdAt = "free-text";
     expect(() => validateManifest(unsupportedClockKind)).toThrow(/Unsupported database clock field kind/);
 
-    const incompleteClockPolicy = structuredClone(manifest);
+    const incompleteClockPolicy = cloneManifestForMutation();
     incompleteClockPolicy.postgres.databaseClockFields.PhysiologyV7Lifecycle = { updatedAt: "zoned-timestamp" };
     expect(() => validateManifest(incompleteClockPolicy)).toThrow(/exact reviewed clock-field policy/);
 
-    const duplicatePath = structuredClone(manifest);
+    const duplicatePath = cloneManifestForMutation();
     duplicatePath.unitSuites[0].paths.push(duplicatePath.unitSuites[0].paths[0]);
     expect(() => validateManifest(duplicatePath)).toThrow(/test paths contains duplicates/);
 
-    const invalidObservation = structuredClone(manifest);
+    const invalidObservation = cloneManifestForMutation();
     invalidObservation.observations[0].path = "tests/not-in-a-suite.test.ts";
     expect(() => validateManifest(invalidObservation)).toThrow(/not covered by a unit suite/);
 
-    const invalidClockMode = structuredClone(manifest);
-    invalidClockMode.integrationSuites.at(-1).clockMode = "warp";
+    const invalidClockMode = cloneManifestForMutation();
+    invalidClockMode.integrationSuites.at(-1)!.clockMode = "warp";
     expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen or native/);
 
-    const frozenAuthClock = structuredClone(manifest);
-    frozenAuthClock.integrationSuites.at(-1).clockMode = "frozen";
+    const frozenAuthClock = cloneManifestForMutation();
+    frozenAuthClock.integrationSuites.at(-1)!.clockMode = "frozen";
     expect(() => validateManifest(frozenAuthClock)).toThrow(/retain native endpoint time/);
 
   });
@@ -223,7 +242,7 @@ describe("refactor comparator core", () => {
   });
 
   it("compares clock-field update transitions without comparing environment wall time", () => {
-    const policy = {
+    const policy: ComparatorClockFieldPolicy = {
       PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
     };
     const firstRun = deriveDatabaseClockTransitions(

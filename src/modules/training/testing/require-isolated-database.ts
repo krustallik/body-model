@@ -115,8 +115,8 @@ export function requireIsolatedStage01Database(
     target.role === role
     && target.databaseName === databaseName
     && String(target.port) === parsed.port
-    && (!target.host || target.host === host)
-    && (!target.modes || target.modes.some((mode) => mode === expectedMode))
+    && (!("host" in target) || target.host === host)
+    && (!("modes" in target) || target.modes.some((allowedMode) => allowedMode === expectedMode))
   ));
   if (!allowedDatabase) throw new Error("Stage 01 database target is not allowlisted.");
   if (!parsed.password) throw new Error("Stage 01 database credentials are required.");

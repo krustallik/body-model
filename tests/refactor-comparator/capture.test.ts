@@ -23,7 +23,7 @@ describe("refactor comparator evidence serialization", () => {
       notANumber: Number.NaN,
       positiveInfinity: Infinity,
       instant: new Date("2026-01-02T03:04:05.000Z"),
-      integer: 9007199254740993n,
+      integer: BigInt("9007199254740993"),
       decimal,
       bytes: new Uint8Array([1, 2, 3]),
     })).toEqual({

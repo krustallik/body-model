@@ -16,7 +16,7 @@ function executeDeterministicRuntime(clockMode = "frozen") {
     process.stdout.write(JSON.stringify({ start, web: Buffer.from(web).toString("hex"), after }));
   `;
   const env = {
-    NODE_ENV: "test",
+    NODE_ENV: "test" as const,
     BODYCAST_REFACTOR_FIXED_TIME: "2026-11-23T12:00:00.000Z",
     BODYCAST_REFACTOR_CLOCK_MODE: clockMode,
     BODYCAST_REFACTOR_RANDOM_SEED: "bodycast-refactor-comparator-v1",

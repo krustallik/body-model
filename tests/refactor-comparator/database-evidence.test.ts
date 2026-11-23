@@ -1,6 +1,7 @@
 import net from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
+import type { ComparatorClockFieldPolicy } from "../../scripts/refactor/comparator-core.mjs";
 import { diffJson, projectPersistedStateForComparison } from "../../scripts/refactor/comparator-core.mjs";
 import { waitForLoopbackPort, waitForPostgresConnection } from "../../scripts/refactor/database-evidence.mjs";
 
@@ -67,6 +68,19 @@ describe("comparator PostgreSQL TCP readiness", () => {
   });
 });
 
+interface PersistedStateOptions {
+  lifecycleUpdatedAt?: string;
+  profileUpdatedAt?: string;
+  authWindowStart?: number;
+  authHitCount?: number;
+  invalidationGeneration?: number;
+  leaseUntil?: string | null;
+}
+
+interface ComparablePersistedState {
+  tables: Record<string, { rows: string[] }>;
+}
+
 function persistedState({
   lifecycleUpdatedAt = "2026-11-23T12:00:00.100+00:00",
   profileUpdatedAt = "2026-11-23T12:00:00.100",
@@ -74,7 +88,7 @@ function persistedState({
   authHitCount = 2,
   invalidationGeneration = 4,
   leaseUntil = null,
-} = {}) {
+}: PersistedStateOptions = {}) {
   return {
     tables: {
       PhysiologyV7Lifecycle: {
@@ -122,7 +136,7 @@ function persistedState({
 }
 
 describe("comparator persisted state clock projection", () => {
-  const policy = manifest.postgres.databaseClockFields;
+  const policy = manifest.postgres.databaseClockFields as unknown as ComparatorClockFieldPolicy;
 
   it("compares stable persisted semantics while retaining exact clock values as evidence", () => {
     const before = persistedState();
@@ -132,13 +146,15 @@ describe("comparator persisted state clock projection", () => {
     });
     const beforeProjection = projectPersistedStateForComparison(before, policy);
     const afterProjection = projectPersistedStateForComparison(after, policy);
+    const beforeComparable = beforeProjection.comparable as ComparablePersistedState;
+    const afterComparable = afterProjection.comparable as ComparablePersistedState;
 
-    expect(diffJson(beforeProjection.comparable, afterProjection.comparable)).toEqual([]);
+    expect(diffJson(beforeComparable, afterComparable)).toEqual([]);
     expect(beforeProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:00.100+00:00");
     expect(afterProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:06.671+00:00");
     expect(JSON.parse(before.tables.PhysiologyV7Lifecycle.rows[0])).toHaveProperty("updatedAt", "2026-11-23T12:00:00.100+00:00");
-    expect(JSON.parse(beforeProjection.comparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
-    expect(JSON.parse(afterProjection.comparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
+    expect(JSON.parse(beforeComparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
+    expect(JSON.parse(afterComparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
   });
 
   it("fails closed on any changed Auth rate-limit window timestamp", () => {

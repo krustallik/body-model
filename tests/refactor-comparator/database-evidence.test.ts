@@ -120,7 +120,6 @@ describe("comparator persisted state clock projection", () => {
     const after = persistedState({
       lifecycleUpdatedAt: "2026-11-23T12:00:06.671+00:00",
       profileUpdatedAt: "2026-11-23T12:00:07.000",
-      authWindowStart: 1_795_449_149,
     });
     const beforeProjection = projectPersistedStateForComparison(before, policy);
     const afterProjection = projectPersistedStateForComparison(after, policy);
@@ -129,7 +128,19 @@ describe("comparator persisted state clock projection", () => {
     expect(beforeProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:00.100+00:00");
     expect(afterProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:06.671+00:00");
     expect(JSON.parse(before.tables.PhysiologyV7Lifecycle.rows[0])).toHaveProperty("updatedAt", "2026-11-23T12:00:00.100+00:00");
-    expect(afterProjection.clockEvidence.find(({ table }) => table === "AuthRateLimitBucket")?.fields.windowStart).toBe(1_795_449_149);
+    expect(JSON.parse(beforeProjection.comparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
+    expect(JSON.parse(afterProjection.comparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
+  });
+
+  it("fails closed on any changed Auth rate-limit window timestamp", () => {
+    const before = projectPersistedStateForComparison(persistedState(), policy).comparable;
+    const changedWindowStart = projectPersistedStateForComparison(
+      persistedState({ authWindowStart: 1_795_449_142 }),
+      policy,
+    ).comparable;
+    expect(diffJson(before, changedWindowStart)).toContainEqual(expect.objectContaining({
+      path: expect.stringContaining("AuthRateLimitBucket"),
+    }));
   });
 
   it("still fails on stable lifecycle fields, sequence state, lease semantics, or migration evidence", () => {
@@ -160,9 +171,6 @@ describe("comparator persisted state clock projection", () => {
 
     const inverted = persistedState({ lifecycleUpdatedAt: "2026-11-22T12:00:00.000+00:00" });
     expect(() => projectPersistedStateForComparison(inverted, policy)).toThrow(/createdAt must not be after updatedAt/);
-
-    const invalidEpoch = persistedState({ authWindowStart: -1 });
-    expect(() => projectPersistedStateForComparison(invalidEpoch, policy)).toThrow(/non-negative integer epoch timestamp/);
 
     const invalidLocalTimestamp = persistedState({ profileUpdatedAt: "2026-11-23T12:00:00.100Z" });
     expect(() => projectPersistedStateForComparison(invalidLocalTimestamp, policy)).toThrow(/valid local timestamp/);

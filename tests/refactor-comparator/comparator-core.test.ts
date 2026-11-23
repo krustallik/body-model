@@ -106,6 +106,14 @@ describe("refactor comparator core", () => {
     invalidObservation.observations[0].path = "tests/not-in-a-suite.test.ts";
     expect(() => validateManifest(invalidObservation)).toThrow(/not covered by a unit suite/);
 
+    const invalidClockMode = structuredClone(manifest);
+    invalidClockMode.integrationSuites.at(-1).clockMode = "warp";
+    expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen, fixed, or native/);
+
+    const nativeAuthClock = structuredClone(manifest);
+    nativeAuthClock.integrationSuites.at(-1).clockMode = "native";
+    expect(() => validateManifest(nativeAuthClock)).toThrow(/shared fixed application clock/);
+
   });
 
   it("accepts only the exact isolated before and after PostgreSQL identities", () => {
@@ -217,51 +225,32 @@ describe("refactor comparator core", () => {
   it("compares clock-field update transitions without comparing environment wall time", () => {
     const policy = {
       PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
-      AuthRateLimitBucket: { windowStart: "epoch-seconds" },
     };
     const firstRun = deriveDatabaseClockTransitions(
-      [
-        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-          createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.000+00:00",
-        } },
-        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_140 } },
-      ],
-      [
-        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-          createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.500+00:00",
-        } },
-        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_142 } },
-      ],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.000+00:00",
+      } }],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T12:00:00.000+00:00", updatedAt: "2026-11-23T12:00:00.500+00:00",
+      } }],
       policy,
     );
     const sameBehaviorAtDifferentWallTime = deriveDatabaseClockTransitions(
-      [
-        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-          createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.000+00:00",
-        } },
-        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_240 } },
-      ],
-      [
-        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-          createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.250+00:00",
-        } },
-        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_244 } },
-      ],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.000+00:00",
+      } }],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T13:00:00.000+00:00", updatedAt: "2026-11-23T13:00:00.250+00:00",
+      } }],
       policy,
     );
     const missingUpdate = deriveDatabaseClockTransitions(
-      [
-        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-          createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
-        } },
-        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_340 } },
-      ],
-      [
-        { table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
-          createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
-        } },
-        { table: "AuthRateLimitBucket", primaryKey: { bucketKey: "bucket-a" }, fields: { windowStart: 1_795_449_340 } },
-      ],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
+      } }],
+      [{ table: "PhysiologyV7Lifecycle", primaryKey: { profileId: 1 }, fields: {
+        createdAt: "2026-11-23T14:00:00.000+00:00", updatedAt: "2026-11-23T14:00:00.000+00:00",
+      } }],
       policy,
     );
 

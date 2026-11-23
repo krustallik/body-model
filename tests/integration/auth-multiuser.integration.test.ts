@@ -273,6 +273,7 @@ describe("auth and tenant registration integration", () => {
     const sharedKey = `bodycast:brevo:daily:${day}`;
     const bucketId = (key: string) => createHash("sha256").update(key, "utf8").digest("hex");
     await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: { in: [bucketId(publicOtpKey), bucketId(sharedKey)] } } });
+    const priorRateLimitBuckets = await prisma.authRateLimitBucket.findMany();
 
     try {
       process.env.AUTH_EMAIL_DAILY_LIMIT = "4";
@@ -281,6 +282,7 @@ describe("auth and tenant registration integration", () => {
       const signupEmails = Array.from({ length: 6 }, () => `quota-signup-${nextFixtureUuid()}@example.invalid`);
       signupEmails.forEach((email) => emails.add(email));
 
+      // Keep direct storage concurrency coverage separate from the endpoint-level race below.
       const concurrentQuotaReservations = await Promise.allSettled(
         Array.from({ length: 6 }, () => reservePublicOtpEmailQuota()),
       );
@@ -288,21 +290,28 @@ describe("auth and tenant registration integration", () => {
       expect(concurrentQuotaReservations.filter((result) => result.status === "rejected")).toHaveLength(4);
       await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: bucketId(publicOtpKey) } });
 
-      const admittedResponses = await Promise.all(
-        signupEmails.slice(0, 2).map((email) => registrationStart(request({ email, name: "Quota User" }))),
+      const routeResponses = await Promise.all(
+        signupEmails.map((email) => registrationStart(request({ email, name: "Quota User" }))),
       );
-      const exhaustedResponses = await Promise.all(
-        signupEmails.slice(2).map((email) => registrationStart(request({ email, name: "Quota User" }))),
-      );
-      const responses = [...admittedResponses, ...exhaustedResponses];
-      expect(responses.map((response) => response.status)).toEqual(Array(6).fill(202));
+      expect(routeResponses.map((response) => response.status)).toEqual(Array(6).fill(202));
       const created = await prisma.user.findMany({
         where: { email: { in: signupEmails } },
         orderBy: { email: "asc" },
         select: { id: true, email: true },
       });
       created.forEach((user) => userIds.add(user.id));
-      expect(created.map((user) => user.email).sort()).toEqual(signupEmails.slice(0, 2).sort());
+      const admittedEmails = created.map((user) => user.email);
+      const admittedSet = new Set(admittedEmails);
+      const exhaustedEmails = signupEmails.filter((email) => !admittedSet.has(email));
+      expect(admittedEmails).toHaveLength(2);
+      expect(exhaustedEmails).toHaveLength(4);
+      expect(admittedEmails.every((email) => signupEmails.includes(email))).toBe(true);
+      const publicQuotaBucket = await prisma.authRateLimitBucket.findUniqueOrThrow({
+        where: { bucketKey: bucketId(publicOtpKey) },
+        select: { hitCount: true, windowStart: true },
+      });
+      expect(publicQuotaBucket.hitCount).toBe(2);
+      expect(publicQuotaBucket.windowStart).toBe(BigInt(Math.floor(Date.now() / 1_000)));
 
       const httpAuth = await import("@/app/api/auth/[...all]/route");
       for (const { email } of created) {
@@ -315,9 +324,9 @@ describe("auth and tenant registration integration", () => {
         if (verified.profile) profileIds.add(verified.profile.id);
       }
 
-      const resetResponses = await Promise.all(signupEmails.slice(0, 2).map((email) => passwordResetRequest(request({ email }))));
+      const resetResponses = await Promise.all(admittedEmails.map((email) => passwordResetRequest(request({ email }))));
       expect(resetResponses.map((response) => response.status)).toEqual([202, 202]);
-      expect(signupEmails.slice(0, 2).every((email) => (mailbox.get(email) ?? []).length === 0)).toBe(true);
+      expect(admittedEmails.every((email) => (mailbox.get(email) ?? []).length === 0)).toBe(true);
 
       const { sendAuthEmail } = await import("@/modules/auth/email");
       await sendAuthEmail({ email: `recovery-a-${nextFixtureUuid()}@example.invalid`, code: "123456", purpose: "reset" });
@@ -331,7 +340,10 @@ describe("auth and tenant registration integration", () => {
       else process.env.AUTH_EMAIL_PUBLIC_OTP_DAILY_LIMIT = priorLimits.public;
       if (priorLimits.recipient === undefined) delete process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT;
       else process.env.AUTH_EMAIL_RECIPIENT_DAILY_LIMIT = priorLimits.recipient;
-      await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: { in: [bucketId(publicOtpKey), bucketId(sharedKey)] } } });
+      await prisma.authRateLimitBucket.deleteMany();
+      if (priorRateLimitBuckets.length > 0) {
+        await prisma.authRateLimitBucket.createMany({ data: priorRateLimitBuckets });
+      }
     }
   });
 

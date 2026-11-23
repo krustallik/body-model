@@ -95,8 +95,7 @@
     "databaseClockFields": {
       "PhysiologyV7Lifecycle": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "UnifiedPublicationBlock": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
-      "Profile": { "updatedAt": "local-timestamp" },
-      "AuthRateLimitBucket": { "windowStart": "epoch-seconds" }
+      "Profile": { "updatedAt": "local-timestamp" }
     }
   },
   "observations": [
@@ -173,7 +172,8 @@
       "id": "postgres-auth-multiuser",
       "args": ["tests/integration/auth-multiuser.integration.test.ts"],
       "databaseProfile": "auth",
-      "authEnvironment": true
+      "authEnvironment": true,
+      "clockMode": "fixed"
     }
   ]
 }

@@ -42,7 +42,6 @@ const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
   PhysiologyV7Lifecycle: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   Profile: Object.freeze({ updatedAt: "local-timestamp" }),
-  AuthRateLimitBucket: Object.freeze({ windowStart: "epoch-seconds" }),
 });
 
 function requireObject(value, label) {
@@ -215,8 +214,14 @@ export function validateManifest(value) {
     if (suite.authEnvironment === true && suite.databaseProfile !== "auth") {
       throw new Error("Manifest integrationSuites[" + index + "] Auth suite must use the auth database profile.");
     }
+    if (suite.clockMode !== undefined && !["frozen", "fixed", "native"].includes(suite.clockMode)) {
+      throw new Error("Manifest integrationSuites[" + index + "] clockMode must be frozen, fixed, or native.");
+    }
     if (suite.databaseProfile === "auth" && suite.authEnvironment !== true) {
       throw new Error("Manifest integrationSuites[" + index + "] auth profile requires the Auth test environment.");
+    }
+    if (suite.databaseProfile === "auth" && suite.clockMode !== "fixed") {
+      throw new Error("Manifest Auth integration suite must use the shared fixed application clock.");
     }
     suiteIds.push(suite.id);
   }

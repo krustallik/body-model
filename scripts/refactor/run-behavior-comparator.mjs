@@ -678,13 +678,13 @@ async function runComparatorSelfTests({ root, manifest, evidenceDir, shimPath })
   return combinedCases;
 }
 
-async function runIntegrationSuite({ root, repository, target, manifest, suite, evidenceDir, sideName, shimPath, dumpPath, imageId, runId }) {
+async function runIntegrationSuite({ root, repository, target, manifest, suite, evidenceDir, sideName, shimPath, dumpPath, imageId, runId, authFixedTime }) {
   const sideRoot = path.join(evidenceDir, sideName, "integration", suite.id);
   await mkdir(sideRoot, { recursive: true });
   const reportPath = path.join(sideRoot, "vitest-report.json");
   const env = safeEnvironment(target, {
-    BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
-    BODYCAST_REFACTOR_CLOCK_MODE: "native",
+    BODYCAST_REFACTOR_FIXED_TIME: suite.clockMode === "fixed" ? authFixedTime : manifest.determinism.clock,
+    BODYCAST_REFACTOR_CLOCK_MODE: suite.clockMode ?? "native",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
     ...(suite.authEnvironment ? { LEGACY_IOS_SHORTCUT_ENABLED: "true" } : {}),
@@ -831,7 +831,7 @@ async function sourceTreeEvidence(repository) {
   };
 }
 
-async function writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId }) {
+async function writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId, authFixedTime }) {
   const commitEvidence = {};
   for (const [label, sha] of [["base", args.baseSha], ["candidate", args.candidateSha]]) {
     commitEvidence[label] = {
@@ -867,6 +867,7 @@ async function writeRunMetadata({ root, evidenceDir, args, manifest, manifestTex
       architecture: process.arch,
       tz: "UTC",
       fixedClock: manifest.determinism.clock,
+      authFixedClock: authFixedTime,
       randomSeedSha256: digestBytes(manifest.determinism.randomSeed),
       packageLockSha256: digestBytes(lockfileText),
     },
@@ -937,6 +938,7 @@ async function main() {
   const evidenceDir = path.resolve(args.evidenceDir);
   if (!path.isAbsolute(evidenceDir) || isWithin(root, evidenceDir)) fail("Evidence directory must be absolute and outside the repository/worktree.");
   const runId = digestBytes(`${process.pid}:${process.hrtime.bigint()}:${randomUUID()}`);
+  const authFixedTime = new Date().toISOString();
   const baseWorktree = path.join(evidenceDir, "scratch", "base");
   const candidateWorktree = path.join(evidenceDir, "scratch", "candidate");
   const backups = path.join(evidenceDir, "scratch", "frozen-test-backups");
@@ -991,7 +993,7 @@ async function main() {
     const shimPath = path.join(root, "scripts", "refactor", "deterministic-runtime.mjs");
     const image = await verifyPinnedImage(root, manifest.postgres.image);
     const sourceEvidence = { before: baseEvidence, candidate: candidateEvidence };
-    await writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId });
+    await writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId, authFixedTime });
     const comparatorSelfTests = await runComparatorSelfTests({ root, manifest, evidenceDir, shimPath });
     await writeJson(path.join(evidenceDir, "comparator-self-tests", "accepted.json"), {
       status: "PASS",
@@ -1046,6 +1048,7 @@ async function main() {
         dumpPath,
         imageId: image.imageId,
         runId,
+        authFixedTime,
       });
       const after = await runIntegrationSuite({
         root,
@@ -1059,6 +1062,7 @@ async function main() {
         dumpPath,
         imageId: image.imageId,
         runId,
+        authFixedTime,
       });
       const caseEqual = stableTestResults(before.cases, after.cases);
       beforeIntegrationRuns.push({ suiteId: suite.id, cases: before.cases.tests });

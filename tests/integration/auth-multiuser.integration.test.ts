@@ -7,6 +7,7 @@ import {
   POSTCOMMIT_TEST_DATABASE_ROLE,
   requireIsolatedStage01Database,
 } from "@/modules/training/testing/require-isolated-database";
+import { reservePublicOtpEmailQuota } from "@/modules/auth/email-quota";
 
 // Route handlers are invoked directly in this integration harness, outside a
 // Next request context. Keep the existing synchronous route lifecycle here;
@@ -280,11 +281,28 @@ describe("auth and tenant registration integration", () => {
       const signupEmails = Array.from({ length: 6 }, () => `quota-signup-${nextFixtureUuid()}@example.invalid`);
       signupEmails.forEach((email) => emails.add(email));
 
-      const responses = await Promise.all(signupEmails.map((email) => registrationStart(request({ email, name: "Quota User" }))));
+      const concurrentQuotaReservations = await Promise.allSettled(
+        Array.from({ length: 6 }, () => reservePublicOtpEmailQuota()),
+      );
+      expect(concurrentQuotaReservations.filter((result) => result.status === "fulfilled")).toHaveLength(2);
+      expect(concurrentQuotaReservations.filter((result) => result.status === "rejected")).toHaveLength(4);
+      await prisma.authRateLimitBucket.deleteMany({ where: { bucketKey: bucketId(publicOtpKey) } });
+
+      const admittedResponses = await Promise.all(
+        signupEmails.slice(0, 2).map((email) => registrationStart(request({ email, name: "Quota User" }))),
+      );
+      const exhaustedResponses = await Promise.all(
+        signupEmails.slice(2).map((email) => registrationStart(request({ email, name: "Quota User" }))),
+      );
+      const responses = [...admittedResponses, ...exhaustedResponses];
       expect(responses.map((response) => response.status)).toEqual(Array(6).fill(202));
-      const created = await prisma.user.findMany({ where: { email: { in: signupEmails } }, select: { id: true, email: true } });
+      const created = await prisma.user.findMany({
+        where: { email: { in: signupEmails } },
+        orderBy: { email: "asc" },
+        select: { id: true, email: true },
+      });
       created.forEach((user) => userIds.add(user.id));
-      expect(created).toHaveLength(2);
+      expect(created.map((user) => user.email).sort()).toEqual(signupEmails.slice(0, 2).sort());
 
       const httpAuth = await import("@/app/api/auth/[...all]/route");
       for (const { email } of created) {

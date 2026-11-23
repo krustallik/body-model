@@ -746,7 +746,7 @@ async function sourceTreeEvidence(repository) {
   const packageJson = JSON.parse(await readFile(path.join(repository, "package.json"), "utf8"));
   const packageLock = await shaForFile(path.join(repository, "package-lock.json"));
   const schemaSha = await shaForFile(path.join(repository, "prisma", "schema.prisma"));
-  const migrations = await migrationInventory(path.join(repository, "prisma"));
+  const migrations = await migrationInventory(repository);
   return {
     treeSha: await git(repository, ["rev-parse", "HEAD^{tree}"]),
     packageLockSha256: packageLock,

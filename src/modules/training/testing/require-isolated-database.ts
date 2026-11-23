@@ -10,6 +10,12 @@ export const POSTCOMMIT_TEST_DATABASE_ROLE = "bodycast_test_runner" as const;
 export const POSTCOMMIT_TEST_DATABASE_PORT = 55435 as const;
 export const COMPLETION_AUDIT_TEST_DATABASE_NAME = "bodycast_training_completion_audit_test" as const;
 export const COMPLETION_AUDIT_TEST_DATABASE_ROLE = "bodycast_completion_audit_test" as const;
+export const REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME = "bodycast_refactor_before_test" as const;
+export const REFACTOR_COMPARATOR_AFTER_DATABASE_NAME = "bodycast_refactor_after_test" as const;
+export const REFACTOR_COMPARATOR_BEFORE_DATABASE_ROLE = "bodycast_refactor_before_test_runner" as const;
+export const REFACTOR_COMPARATOR_AFTER_DATABASE_ROLE = "bodycast_refactor_after_test_runner" as const;
+export const REFACTOR_COMPARATOR_BEFORE_DATABASE_PORT = 55436 as const;
+export const REFACTOR_COMPARATOR_AFTER_DATABASE_PORT = 55437 as const;
 export type Stage01DatabaseMode = "test" | "seed" | "cleanup";
 
 const ALLOWED_TEST_DATABASES = [
@@ -48,6 +54,20 @@ const ALLOWED_TEST_DATABASES = [
     databaseName: COMPLETION_AUDIT_TEST_DATABASE_NAME,
     role: COMPLETION_AUDIT_TEST_DATABASE_ROLE,
     port: 5432,
+  },
+  {
+    databaseName: REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME,
+    role: REFACTOR_COMPARATOR_BEFORE_DATABASE_ROLE,
+    port: REFACTOR_COMPARATOR_BEFORE_DATABASE_PORT,
+    host: "127.0.0.1",
+    modes: ["test"],
+  },
+  {
+    databaseName: REFACTOR_COMPARATOR_AFTER_DATABASE_NAME,
+    role: REFACTOR_COMPARATOR_AFTER_DATABASE_ROLE,
+    port: REFACTOR_COMPARATOR_AFTER_DATABASE_PORT,
+    host: "127.0.0.1",
+    modes: ["test"],
   },
 ] as const;
 
@@ -92,7 +112,11 @@ export function requireIsolatedStage01Database(
   const role = decodeURIComponent(parsed.username);
   const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
   const allowedDatabase = ALLOWED_TEST_DATABASES.find((target) => (
-    target.role === role && target.databaseName === databaseName && String(target.port) === parsed.port
+    target.role === role
+    && target.databaseName === databaseName
+    && String(target.port) === parsed.port
+    && (!target.host || target.host === host)
+    && (!target.modes || target.modes.some((mode) => mode === expectedMode))
   ));
   if (!allowedDatabase) throw new Error("Stage 01 database target is not allowlisted.");
   if (!parsed.password) throw new Error("Stage 01 database credentials are required.");

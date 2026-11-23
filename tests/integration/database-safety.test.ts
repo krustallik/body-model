@@ -7,6 +7,12 @@ import {
   POSTCOMMIT_TEST_DATABASE_NAME,
   POSTCOMMIT_TEST_DATABASE_PORT,
   POSTCOMMIT_TEST_DATABASE_ROLE,
+  REFACTOR_COMPARATOR_AFTER_DATABASE_NAME,
+  REFACTOR_COMPARATOR_AFTER_DATABASE_PORT,
+  REFACTOR_COMPARATOR_AFTER_DATABASE_ROLE,
+  REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME,
+  REFACTOR_COMPARATOR_BEFORE_DATABASE_PORT,
+  REFACTOR_COMPARATOR_BEFORE_DATABASE_ROLE,
   STAGE01_TEST_DATABASE_NAME,
   STAGE01_TEST_DATABASE_ROLE,
 } from "../../src/modules/training/testing/require-isolated-database";
@@ -14,6 +20,8 @@ import {
 const safeUrl = `postgresql://${STAGE01_TEST_DATABASE_ROLE}:secret@127.0.0.1:5432/${STAGE01_TEST_DATABASE_NAME}`;
 const postcommitSafeUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/${POSTCOMMIT_TEST_DATABASE_NAME}`;
 const freshPostcommitSafeUrl = `postgresql://${POSTCOMMIT_TEST_DATABASE_ROLE}:secret@127.0.0.1:${POSTCOMMIT_TEST_DATABASE_PORT}/${POSTCOMMIT_FRESH_TEST_DATABASE_NAME}`;
+const comparatorBeforeSafeUrl = `postgresql://${REFACTOR_COMPARATOR_BEFORE_DATABASE_ROLE}:secret@127.0.0.1:${REFACTOR_COMPARATOR_BEFORE_DATABASE_PORT}/${REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME}`;
+const comparatorAfterSafeUrl = `postgresql://${REFACTOR_COMPARATOR_AFTER_DATABASE_ROLE}:secret@127.0.0.1:${REFACTOR_COMPARATOR_AFTER_DATABASE_PORT}/${REFACTOR_COMPARATOR_AFTER_DATABASE_NAME}`;
 
 describe("Stage 01 isolated database guard", () => {
   it("accepts only the exact local test DB, role, port, and explicit operation mode", () => {
@@ -81,10 +89,33 @@ describe("Stage 01 isolated database guard", () => {
     });
   });
 
+  it("accepts only the exact before and after comparator targets in test mode", () => {
+    expect(requireIsolatedStage01Database(comparatorBeforeSafeUrl, "test", "test")).toMatchObject({
+      databaseName: REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME,
+      role: REFACTOR_COMPARATOR_BEFORE_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: REFACTOR_COMPARATOR_BEFORE_DATABASE_PORT,
+      mode: "test",
+    });
+    expect(requireIsolatedStage01Database(comparatorAfterSafeUrl, "test", "test")).toMatchObject({
+      databaseName: REFACTOR_COMPARATOR_AFTER_DATABASE_NAME,
+      role: REFACTOR_COMPARATOR_AFTER_DATABASE_ROLE,
+      host: "127.0.0.1",
+      port: REFACTOR_COMPARATOR_AFTER_DATABASE_PORT,
+      mode: "test",
+    });
+    expect(() => requireIsolatedStage01Database(comparatorBeforeSafeUrl, "seed", "seed")).toThrow();
+    expect(() => requireIsolatedStage01Database(comparatorAfterSafeUrl, "cleanup", "cleanup")).toThrow();
+  });
+
   it.each([
     [undefined, "test", "test"],
     [safeUrl, undefined, "test"],
     [safeUrl, "seed", "test"],
+    [comparatorBeforeSafeUrl.replace("127.0.0.1", "localhost"), "test", "test"],
+    [comparatorBeforeSafeUrl.replace(":55436/", ":55437/"), "test", "test"],
+    [comparatorAfterSafeUrl.replace(REFACTOR_COMPARATOR_AFTER_DATABASE_NAME, REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME), "test", "test"],
+    [comparatorBeforeSafeUrl + "?schema=public", "test", "test"],
     ["postgresql://user:pass@127.0.0.1:5432/production", "test", "test"],
     [`postgresql://${STAGE01_TEST_DATABASE_ROLE}:secret@example.com:5432/${STAGE01_TEST_DATABASE_NAME}`, "test", "test"],
     [`postgresql://wrong:secret@127.0.0.1:5432/${STAGE01_TEST_DATABASE_NAME}`, "test", "test"],

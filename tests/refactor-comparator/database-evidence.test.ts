@@ -27,6 +27,22 @@ describe("comparator PostgreSQL TCP readiness", () => {
     await expect(waitForLoopbackPort("127.0.0.1", address.port, { timeoutMs: 1_000 })).resolves.toBeUndefined();
   });
 
+  it("times out rather than accepting a loopback endpoint that never opens", async () => {
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Test TCP server did not bind an IP endpoint.");
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+
+    await expect(waitForLoopbackPort("127.0.0.1", address.port, { timeoutMs: 20 }))
+      .rejects.toThrow(/did not become reachable/);
+  });
+
   it("rejects non-loopback targets and unbounded timeout values", async () => {
     await expect(waitForLoopbackPort("localhost", 5432)).rejects.toThrow(/exact loopback endpoint/);
     await expect(waitForLoopbackPort("127.0.0.1", 5432, { timeoutMs: 90_001 })).rejects.toThrow(/bounded timeout/);

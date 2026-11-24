@@ -3,6 +3,7 @@ import { createWriteStream } from "node:fs";
 import { access, copyFile, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile, symlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import net from "node:net";
+import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -308,8 +309,8 @@ async function startDatabase(root, target, image, imageId, runId, label) {
   if (!/^[a-f0-9]{64}$/.test(containerId)) fail("Docker did not return a full container ID.");
   try {
     const inspected = await inspectContainer(root, containerId, target, runId, image, imageId);
-    const started = Date.now();
-    while (Date.now() - started < 90_000) {
+    const deadline = performance.now() + 90_000;
+    while (performance.now() < deadline) {
       const ready = await runProcess("docker", ["exec", containerId, "pg_isready", "-U", target.role, "-d", target.database], {
         cwd: root,
         timeoutMs: 10_000,

@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import net from "node:net";
+import { performance } from "node:perf_hooks";
 import { validateComparatorDatabaseUrl } from "./comparator-core.mjs";
 
 export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {}) {
@@ -8,16 +9,18 @@ export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {
     throw new Error("Comparator PostgreSQL readiness requires an exact loopback endpoint and bounded timeout.");
   }
 
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let lastError;
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) break;
     try {
       await new Promise((resolve, reject) => {
         const socket = net.createConnection({ host, port });
         const timer = setTimeout(() => {
           socket.destroy();
           reject(new Error("Comparator PostgreSQL loopback connection attempt timed out."));
-        }, Math.min(1_000, timeoutMs));
+        }, Math.min(1_000, remaining));
         socket.once("connect", () => {
           clearTimeout(timer);
           socket.destroy();
@@ -31,7 +34,9 @@ export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      const retryDelay = Math.min(200, deadline - performance.now());
+      if (retryDelay <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
     }
   }
   throw new Error(`Comparator PostgreSQL loopback endpoint ${host}:${port} did not become reachable: ${lastError?.message ?? "timeout"}`);
@@ -54,7 +59,7 @@ export async function waitForPostgresConnection(check, {
     `Can't reach database server at \`${host}:${port}\``,
     "FATAL: the database system is starting up",
   ];
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let lastError;
   do {
     try {
@@ -63,11 +68,11 @@ export async function waitForPostgresConnection(check, {
       const message = error instanceof Error ? error.message : String(error);
       if (!transientReadinessErrors.some((expected) => message.includes(expected))) throw error;
       lastError = error;
-      const remaining = deadline - Date.now();
+      const remaining = deadline - performance.now();
       if (remaining <= 0) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(retryDelayMs, remaining)));
     }
-  } while (Date.now() < deadline);
+  } while (performance.now() < deadline);
 
   throw new Error(`Comparator PostgreSQL host identity query did not become ready at ${host}:${port} within ${timeoutMs}ms: ${lastError instanceof Error ? lastError.message : "timeout"}`);
 }

@@ -91,12 +91,15 @@ function assertCandidateInputsAreCommitted(manifestPath, sourceRoots) {
   if (status) throw new Error(`Module coverage inputs must match committed HEAD; dirty scoped paths:\n${status}`);
 }
 
-function assertSupportedRuntime(expectedVitestVersion) {
+function assertSupportedRuntime(measurement) {
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   if (nodeMajor !== 24) throw new Error(`Module coverage requires Node 24; received ${process.versions.node}.`);
+  if (process.version !== measurement.nodeVersion || process.versions.v8 !== measurement.v8Version) {
+    throw new Error(`Module coverage requires ${measurement.nodeVersion} / V8 ${measurement.v8Version}; received ${process.version} / V8 ${process.versions.v8}.`);
+  }
   const vitestPackage = JSON.parse(readFileSync(path.join(REPO_ROOT, "node_modules/vitest/package.json"), "utf8"));
-  if (vitestPackage.version !== expectedVitestVersion) {
-    throw new Error(`Module coverage expects Vitest ${expectedVitestVersion}; received ${vitestPackage.version}.`);
+  if (vitestPackage.version !== measurement.vitestVersion) {
+    throw new Error(`Module coverage expects Vitest ${measurement.vitestVersion}; received ${vitestPackage.version}.`);
   }
 }
 
@@ -176,7 +179,7 @@ function sha256(value) {
 export function runModuleCoverageGate(argv = process.argv.slice(2)) {
   const { manifest: manifestPath, reportsDir: reportsDirInput } = parseArgs(argv);
   const manifest = validateModuleCoverageManifest(JSON.parse(readFileSync(path.join(REPO_ROOT, manifestPath), "utf8")));
-  assertSupportedRuntime(manifest.measurement.vitestVersion);
+  assertSupportedRuntime(manifest.measurement);
   assertBaselineIsAncestor(manifest.baselineSha);
   assertCandidateInputsAreCommitted(manifestPath, manifest.sourceRoots);
   const baselineInventory = frozenSourceInventory(manifest);
@@ -202,6 +205,7 @@ export function runModuleCoverageGate(argv = process.argv.slice(2)) {
     candidateSha,
     baselineSha: manifest.baselineSha,
     node: process.version,
+    v8: process.versions.v8,
     vitest: manifest.measurement.vitestVersion,
     provider: manifest.measurement.provider,
     sourcePaths: sourcePaths.length,

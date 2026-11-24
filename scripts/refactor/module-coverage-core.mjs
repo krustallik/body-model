@@ -54,13 +54,29 @@ export function validateModuleCoverageManifest(value) {
   if (value.measurement.provider !== "v8" || value.measurement.selection !== "related" || value.measurement.nodeMajor !== 24) {
     throw new Error("Module coverage measurement must use the reviewed Vitest V8 related profile on Node 24.");
   }
+  if (!/^v24\.\d+\.\d+$/.test(value.measurement.nodeVersion ?? "")
+    || typeof value.measurement.v8Version !== "string" || !/^\d+(?:\.\d+){2,3}-node\.\d+$/.test(value.measurement.v8Version)) {
+    throw new Error("Module coverage measurement Node and V8 versions are invalid.");
+  }
+  if (value.measurement.profile !== "exact-tracked-paths-v1"
+    || value.measurement.coverageAll !== true
+    || value.measurement.ci !== true
+    || value.measurement.nodeEnv !== "test"
+    || value.measurement.maxWorkers !== 4
+    || value.measurement.minWorkers !== 1) {
+    throw new Error("Module coverage measurement must match the pinned exact-path CI profile.");
+  }
   if (typeof value.measurement.vitestVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(value.measurement.vitestVersion)) {
     throw new Error("Module coverage Vitest version is invalid.");
   }
-  for (const field of ["reportSha256", "logSha256"]) {
+  for (const field of ["reportSha256", "logSha256", "confirmationReportSha256", "confirmationLogSha256"]) {
     if (!/^[a-f0-9]{64}$/i.test(value.measurement[field] ?? "")) {
       throw new Error(`Module coverage measurement ${field} is invalid.`);
     }
+  }
+  if (value.measurement.confirmationReportSha256 !== value.measurement.reportSha256
+    || value.measurement.repeatedRunCount !== 2) {
+    throw new Error("Module coverage baseline must have two byte-identical confirmation reports.");
   }
   for (const field of ["sourceFileCount", "testFileCount", "testsPassed"]) {
     if (!Number.isSafeInteger(value.measurement[field]) || value.measurement[field] < 0) {

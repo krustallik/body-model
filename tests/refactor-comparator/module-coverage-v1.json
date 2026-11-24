@@ -5,9 +5,20 @@
     "provider": "v8",
     "selection": "related",
     "nodeMajor": 24,
+    "nodeVersion": "v24.19.0",
+    "v8Version": "13.6.233.17-node.51",
+    "profile": "exact-tracked-paths-v1",
+    "coverageAll": true,
+    "ci": true,
+    "nodeEnv": "test",
+    "maxWorkers": 4,
+    "minWorkers": 1,
     "vitestVersion": "3.2.7",
-    "reportSha256": "BAB5C514DAC1EA5D27A597CF4C723FF79D87BEF760F8BFF0BF9B7A14FCCAE547",
-    "logSha256": "8E1FD3779B28B208604157B9EF01626902C2A7C2C62668AD297426D531002823",
+    "reportSha256": "8250CDFFA4F4766CC35836EDD287705EF74CFF9ACF8BC6AAD1EB330ACCC6AEC9",
+    "logSha256": "93DAE8903D573DEE32E3679DF53B7B9734BAD528BF8D2FAE5ABF26F063F11D2C",
+    "confirmationReportSha256": "8250CDFFA4F4766CC35836EDD287705EF74CFF9ACF8BC6AAD1EB330ACCC6AEC9",
+    "confirmationLogSha256": "D4A8CD3DBFF2493761C97D6316663D0DA8250F00AEAB3A0C1D428B5D0990FF0D",
+    "repeatedRunCount": 2,
     "sourceFileCount": 74,
     "testFileCount": 172,
     "testsPassed": 1579
@@ -1124,9 +1135,9 @@
           "pct": 100.0
         },
         "branches": {
-          "covered": 32,
-          "total": 33,
-          "pct": 96.96
+          "covered": 31,
+          "total": 32,
+          "pct": 96.87
         }
       }
     },
@@ -1592,9 +1603,9 @@
           "pct": 84.45
         },
         "branches": {
-          "covered": 41,
-          "total": 61,
-          "pct": 67.21
+          "covered": 40,
+          "total": 60,
+          "pct": 66.66
         }
       }
     },

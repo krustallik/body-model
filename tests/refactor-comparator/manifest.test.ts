@@ -65,7 +65,7 @@ describe("frozen refactor comparator manifest", () => {
       "RAW-01", "TRAIN-HIST-01", "ENERGY-01", "TRAIN-02", "V7-01", "UNIFIED-01",
       "TX-CONCURRENCY-01", "FORECAST-CALENDAR-01", "BODYMAP-UI-01", "BODYMAP-ANALYTICS-01",
       "BODYMAP-PERFORMANCE-01", "BODYMAP-ENERGY-01", "BODYMAP-MAPPING-V3-01", "TRAIN-LOAD-ASSESS-01",
-      "COMPARATOR-CLOCK-01",
+      "COMPARATOR-CLOCK-01", "TRAIN-HISTORY-BOOTSTRAP-01",
     ];
     expect(manifest.caseGroups.map(({ id }) => id)).toEqual(requiredGroups);
 
@@ -127,6 +127,15 @@ describe("frozen refactor comparator manifest", () => {
       "tests/refactor-comparator/database-evidence.test.ts",
       "tests/refactor-comparator/manifest.test.ts",
     ]));
+
+    const trainingHistoryBootstrap = manifest.caseGroups.find(({ id }) => id === "TRAIN-HISTORY-BOOTSTRAP-01");
+    expect(trainingHistoryBootstrap?.integrationSuiteIds).toEqual(["postgres-training-history-stage01"]);
+    expect(trainingHistoryBootstrap?.databaseStateSuiteIds).toEqual(["postgres-training-history-stage01"]);
+    expect(trainingHistoryBootstrap?.inputFiles.map(({ path }) => path)).toEqual([
+      "tests/integration/training-history-stage01.integration.test.ts",
+      "src/modules/training/testing/stage01-persistence.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]);
   });
 
   it("retains and verifies the exact BodyMap and Training UI characterization evidence", () => {

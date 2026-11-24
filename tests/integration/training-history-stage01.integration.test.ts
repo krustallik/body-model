@@ -102,6 +102,8 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     const { PrismaClient } = await import("@prisma/client");
     prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL });
     await prisma.$connect();
+    // Profile 1's later canonical exercises are provisioned lazily by its normal catalog read.
+    await new TrainingRepository(prisma).listCatalog({ profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID });
     persistence = await import("../../src/modules/training/testing/stage01-persistence");
     priorTrainingRefreshState = await readTrainingRefreshState(prisma);
     await restoreTrainingRefreshState(prisma, { queue: null, sourceChanges: [] });

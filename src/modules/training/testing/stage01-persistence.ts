@@ -17,7 +17,7 @@ async function fixtureCatalogIdMap(tx: Prisma.TransactionClient, fixture: Return
     select: { id: true, stableKey: true, name: true },
   });
   const canonicalByKey = new Map(canonicalRows.map((row) => [row.stableKey, row]));
-  if (canonicalRows.length !== canonical.length) throw new Error("Stage 01 requires the migration-seeded canonical exercise catalog.");
+  if (canonicalRows.length !== canonical.length) throw new Error("Stage 01 requires the complete canonical exercise catalog.");
   const catalogIdMap = new Map<number, number>();
   for (const expected of canonical) {
     const actual = canonicalByKey.get(expected.stableKey);

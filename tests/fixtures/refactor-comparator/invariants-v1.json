@@ -415,6 +415,18 @@
         { "path": "tests/refactor-comparator/database-evidence.test.ts", "sha256": "21493975738f7c0817aa353d635e6933f8918e8e6aa6ac0bdc4b22d15fb534f1" },
         { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "d2eb09b29b934e53923c99bdfe9976c80a18ac1acd8529e7432cb937ce00efd1" }
       ]
+    },
+    {
+      "id": "TRAIN-HISTORY-BOOTSTRAP-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-training-history-stage01"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-training-history-stage01"],
+      "inputFiles": [
+        { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "9f4b203b60c63160b31db26ef689a28066373cdcea8887c0b60215abe315605d" },
+        { "path": "src/modules/training/testing/stage01-persistence.ts", "sha256": "06bde385e0551a5068f7bfdeebbcde78fde1af56fa4d75080f12f96f35589e72" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "08ff2adb3d4c79cfce96305af1f70a91ec84de668e045804c7db41bf33c326ec" }
+      ]
     }
   ]
 }

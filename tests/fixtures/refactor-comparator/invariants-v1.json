@@ -245,7 +245,7 @@
       "observationIds": ["RAW-01/raw-inventory-fingerprint"],
       "databaseStateSuiteIds": ["postgres-full-history-raw-input-inventory", "postgres-health-sync-contracts"],
       "inputFiles": [
-        { "path": "tests/integration/full-history-raw-input-inventory.integration.test.ts", "sha256": "6c8c9ac9178853bbf5ac6012ae24c290e3621daf78e4b55f3f696d673fb57a9d" },
+        { "path": "tests/integration/full-history-raw-input-inventory.integration.test.ts", "sha256": "c45e973f2374b6550c52203e0d0ec010cde9badf09e4200b6b83e7d776a79169" },
         { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "4c18f4ad1775f77c590f8c20fcc56124deb1968f080dc5379bcef0092fa4e4cb" }
       ]
     },

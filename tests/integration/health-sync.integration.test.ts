@@ -360,8 +360,20 @@ async function cleanTestRows(): Promise<void> {
   await deleteDailyHealthRows(prisma, testDates);
 }
 
-async function runWorkerStartupUntilAuditPruneEvidence(): Promise<{ code: number | null; stdout: string; stderr: string }> {
+async function runWorkerStartupUntilAuditPruneEvidence(referenceAt: Date): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const childCode = `
+    const referenceAtText = process.env.BODYCAST_HEALTH_SYNC_TEST_REFERENCE_AT;
+    if (!referenceAtText) throw new Error("Health sync startup test clock is missing.");
+    const NativeDate = globalThis.Date;
+    const referenceAtMs = NativeDate.parse(referenceAtText);
+    if (!Number.isFinite(referenceAtMs) || new NativeDate(referenceAtMs).toISOString() !== referenceAtText) {
+      throw new Error("Health sync startup test clock is malformed.");
+    }
+    class HealthSyncTestDate extends NativeDate {
+      constructor(...args) { super(...(args.length === 0 ? [referenceAtMs] : args)); }
+      static now() { return referenceAtMs; }
+    }
+    globalThis.Date = HealthSyncTestDate;
     const prismaModule = await import("./src/lib/db/prisma.ts");
     const { prisma } = prismaModule.default ?? prismaModule;
     const workerModule = await import("./src/modules/health/health-sync-refresh-worker.ts");
@@ -384,7 +396,11 @@ async function runWorkerStartupUntilAuditPruneEvidence(): Promise<{ code: number
   `;
   const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", childCode], {
     cwd: process.cwd(),
-    env: { ...process.env, NODE_ENV: "production" },
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      BODYCAST_HEALTH_SYNC_TEST_REFERENCE_AT: referenceAt.toISOString(),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -2463,7 +2479,10 @@ describe("Apple Health sync with PostgreSQL", () => {
       const startupBaseline = startupBaselineEvidence.healthSyncAuditRetentionBaseline;
       if (!startupBaseline) throw new Error("Startup HealthSyncAudit baseline was not produced.");
 
-      const startupResult = await runWorkerStartupUntilAuditPruneEvidence();
+      // The startup worker is a separate production-mode process. Pass it the
+      // exact captured baseline time so its retention evidence uses the same
+      // deterministic clock as this integration test.
+      const startupResult = await runWorkerStartupUntilAuditPruneEvidence(startupBaselineCapturedAt);
       expect(startupResult.code, startupResult.stderr).toBe(0);
       expect(startupResult.stdout).toContain(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX);
       expect(await prisma.healthSyncAudit.findUnique({ where: { id: startup.id } })).toBeNull();

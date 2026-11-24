@@ -16,6 +16,7 @@ const metricPrefix = `full-history-${comparatorMarker}-`;
 const episodeProfileId = 1;
 const fixtureMethod = `full-history-raw-input-inventory-${comparatorMarker}`;
 const sampleTimestamp = new Date("2098-01-01T00:00:00.000Z");
+const fixtureCreatedAt = new Date("2025-12-31T23:59:00.000Z");
 const sampleCount = 251;
 let profileCreated = false;
 
@@ -69,6 +70,8 @@ describe("full-history raw-input inventory PostgreSQL", () => {
         weightProcessNoiseVarianceKg2PerDay: 0.01,
         weightMeasurementNoiseVarianceKg2: 0.25,
         calibrationDiagnostics: {},
+        createdAt: fixtureCreatedAt,
+        updatedAt: fixtureCreatedAt,
       },
     });
     await prisma.healthMetricSample.createMany({
@@ -79,6 +82,7 @@ describe("full-history raw-input inventory PostgreSQL", () => {
         source: "isolated-preservation-fixture",
         timestamp: new Date(sampleTimestamp.getTime() + index),
         value: new Prisma.Decimal("71.2500000000"),
+        createdAt: fixtureCreatedAt,
       })),
     });
   });

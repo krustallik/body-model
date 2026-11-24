@@ -63,8 +63,8 @@ async function waitForWorkerBarrier<T>(barrier: Promise<T>, worker: Promise<unkn
 }
 
 async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
+  const deadline = process.hrtime.bigint() + 5_000_000_000n;
+  while (process.hrtime.bigint() < deadline) {
     const waiter = pid === undefined
       ? await prisma.$queryRaw<Array<{ waiting: boolean }>>`
         SELECT EXISTS (
@@ -386,8 +386,8 @@ async function runWorkerStartupUntilAuditPruneEvidence(referenceAt: Date): Promi
       return write(chunk, ...args);
     };
     startHealthSyncRefreshWorker();
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline && !pruneEvidenceSeen) await new Promise((resolve) => setTimeout(resolve, 10));
+    const deadline = process.hrtime.bigint() + 15_000_000_000n;
+    while (process.hrtime.bigint() < deadline && !pruneEvidenceSeen) await new Promise((resolve) => setTimeout(resolve, 10));
     if (!pruneEvidenceSeen) {
       process.stderr.write("Worker startup did not emit HealthSyncAudit cleanup evidence.\\n");
       process.exit(2);
@@ -1037,13 +1037,25 @@ describe("Apple Health sync with PostgreSQL", () => {
   it("does not create duplicate rows during concurrent retries", async () => {
     const date = testDates[3];
     await deleteDailyHealthRows(prisma, date!);
+    const days = [{ date, steps: 111 }];
+    const lastAuditId = (await prisma.healthSyncAudit.aggregate({ _max: { id: true } }))._max.id ?? 0;
     const responses = await Promise.all([
-      POST(syncRequest([{ date, steps: 111 }])),
-      POST(syncRequest([{ date, steps: 222 }])),
+      POST(syncRequest(days)),
+      POST(syncRequest(days)),
     ]);
     expect(responses.every(({ status }) => status === 200)).toBe(true);
     expect(await prisma.dailyHealthData.count({ where: { profileId: 1, date } })).toBe(1);
-    expect([111, 222]).toContain((await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: date } } }))?.steps);
+    expect((await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date } } }))?.steps).toBe(111);
+    const retryAudits = await prisma.healthSyncAudit.findMany({
+      where: { id: { gt: lastAuditId } },
+      orderBy: { id: "asc" },
+      select: { rawBody: true, outcome: true, httpStatus: true },
+    });
+    const expectedRawBody = JSON.stringify({ days });
+    expect(retryAudits).toEqual([
+      { rawBody: expectedRawBody, outcome: "success", httpStatus: 200 },
+      { rawBody: expectedRawBody, outcome: "success", httpStatus: 200 },
+    ]);
   });
 
   it("preserves observed walking zero and workout-feed coverage when a later payload omits the feed", async () => {

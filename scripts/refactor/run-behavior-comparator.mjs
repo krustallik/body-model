@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import {
   aggregateSuiteCases,
   assertAdditiveManifestExtension,
-  deriveDatabaseClockTransitions,
+  compareDatabaseClockOperationWindows,
   diffJson,
   parseComparatorArgs,
   projectPersistedStateForComparison,
@@ -376,7 +376,11 @@ async function captureDatabase(target, container, manifest) {
     },
   }, async (client, identity) => ({
     identity,
-    persisted: await capturePersistedState(client, manifest.postgres.snapshotTables),
+    persisted: await capturePersistedState(
+      client,
+      manifest.postgres.snapshotTables,
+      manifest.postgres.databaseClockFields,
+    ),
   }));
 }
 
@@ -1135,17 +1139,37 @@ async function main() {
       );
       const initialDifferences = diffJson(beforeInitialProjection.comparable, afterInitialProjection.comparable);
       const finalDifferences = diffJson(beforeFinalProjection.comparable, afterFinalProjection.comparable);
-      const beforeClockTransitions = deriveDatabaseClockTransitions(
-        beforeInitialProjection.clockEvidence,
-        beforeFinalProjection.clockEvidence,
-        manifest.postgres.databaseClockFields,
-      );
-      const afterClockTransitions = deriveDatabaseClockTransitions(
-        afterInitialProjection.clockEvidence,
-        afterFinalProjection.clockEvidence,
-        manifest.postgres.databaseClockFields,
-      );
+      const clockWindowComparison = compareDatabaseClockOperationWindows({
+        before: {
+          initialEvidence: beforeInitialProjection.clockEvidence,
+          finalEvidence: beforeFinalProjection.clockEvidence,
+          startAnchor: before.identity.operationAnchor,
+          endAnchor: before.finalState.identity.operationAnchor,
+        },
+        after: {
+          initialEvidence: afterInitialProjection.clockEvidence,
+          finalEvidence: afterFinalProjection.clockEvidence,
+          startAnchor: after.identity.operationAnchor,
+          endAnchor: after.finalState.identity.operationAnchor,
+        },
+        databaseClockFields: manifest.postgres.databaseClockFields,
+      });
+      const beforeClockTransitions = clockWindowComparison.transitions.before;
+      const afterClockTransitions = clockWindowComparison.transitions.after;
       const clockTransitionDifferences = diffJson(beforeClockTransitions, afterClockTransitions);
+      const beforeClockColumnMetadata = {
+        initial: before.initial.persisted.clockColumnMetadata,
+        final: before.finalState.persisted.clockColumnMetadata,
+      };
+      const afterClockColumnMetadata = {
+        initial: after.initial.persisted.clockColumnMetadata,
+        final: after.finalState.persisted.clockColumnMetadata,
+      };
+      const clockColumnMetadataDifferences = diffJson(
+        beforeClockColumnMetadata,
+        afterClockColumnMetadata,
+        "$.clockColumnMetadata",
+      );
       const comparison = {
         suite: suite.id,
         casesEqual: caseEqual,
@@ -1154,12 +1178,28 @@ async function main() {
         initialPersistedStateEqual: initialDifferences.length === 0,
         finalPersistedStateEqual: finalDifferences.length === 0,
         databaseClockTransitionsEqual: clockTransitionDifferences.length === 0,
-        persistedStatePolicy: "Exact across all captured rows, sequence states and migration ledger except the exact manifest-listed clock-derived fields; raw snapshots and clock evidence are retained.",
+        databaseClockOperationWindowEqual: clockWindowComparison.equal,
+        databaseClockColumnMetadataEqual: clockColumnMetadataDifferences.length === 0,
+        persistedStatePolicy: "All non-clock state is exact. Configured database-clock fields retain raw values, exact initial/unchanged history, column metadata and per-side operation-window offsets; created/updated values must fall inside each window and preserve transition status and cross-row order/ties. No generic ignore or tolerance is applied.",
         initialIdentityValid: true,
         finalIdentityValid: true,
         initialDifferences,
         finalDifferences,
         databaseClockTransitionDifferences: clockTransitionDifferences,
+        databaseClockOperationWindowDifferences: clockWindowComparison.differences,
+        databaseClockOperationWindowDetail: {
+          initialValueDifferences: clockWindowComparison.initialValueDifferences,
+          transitionDifferences: clockWindowComparison.transitionDifferences,
+          unchangedValueDifferences: clockWindowComparison.unchangedValueDifferences,
+          eventOrderingDifferences: clockWindowComparison.eventOrderingDifferences,
+          transitions: clockWindowComparison.transitions,
+          evidence: clockWindowComparison.evidence,
+        },
+        databaseClockColumnMetadataDifferences: clockColumnMetadataDifferences,
+        databaseClockColumnMetadata: {
+          before: beforeClockColumnMetadata,
+          after: afterClockColumnMetadata,
+        },
         databaseClockFields: {
           initial: {
             before: beforeInitialProjection.clockEvidence,
@@ -1180,7 +1220,8 @@ async function main() {
       await writeJson(path.join(comparisonRoot, `${suite.id}.json`), comparison);
       integrationResults.push(comparison);
       if (!caseEqual || integrationObservationDifferences.length > 0 || initialDifferences.length > 0
-        || finalDifferences.length > 0 || clockTransitionDifferences.length > 0) {
+        || finalDifferences.length > 0 || clockTransitionDifferences.length > 0
+        || !clockWindowComparison.equal || clockColumnMetadataDifferences.length > 0) {
         fail(`Frozen integration suite ${suite.id} differs between base and candidate.`);
       }
     }

@@ -2,7 +2,12 @@ import net from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
 import type { ComparatorClockFieldPolicy } from "../../scripts/refactor/comparator-core.mjs";
-import { diffJson, projectPersistedStateForComparison } from "../../scripts/refactor/comparator-core.mjs";
+import {
+  compareDatabaseClockOperationWindows,
+  diffJson,
+  projectPersistedStateForComparison,
+  validateDatabaseClockColumnMetadata,
+} from "../../scripts/refactor/comparator-core.mjs";
 import { waitForLoopbackPort, waitForPostgresConnection } from "../../scripts/refactor/database-evidence.mjs";
 
 const servers: net.Server[] = [];
@@ -107,6 +112,18 @@ function persistedState({
 }: PersistedStateOptions = {}) {
   return {
     tables: {
+      PhysiologyV7DailyResult: {
+        primaryKey: ["id"],
+        count: 1,
+        rows: [JSON.stringify({
+          id: 4,
+          profileId: 1,
+          date: "2026-11-22",
+          computedAt: "2026-11-23T12:00:00.000+00:00",
+          createdAt: "2026-11-23T12:00:00.000+00:00",
+          updatedAt: "2026-11-23T12:00:00.100+00:00",
+        })],
+      },
       PhysiologyV7Lifecycle: {
         primaryKey: ["profileId"],
         count: 1,
@@ -115,6 +132,17 @@ function persistedState({
           createdAt: "2026-11-23T12:00:00.000+00:00",
           updatedAt: lifecycleUpdatedAt,
           invalidationGeneration,
+        })],
+      },
+      PhysiologyV7ShadowDiagnostic: {
+        primaryKey: ["id"],
+        count: 1,
+        rows: [JSON.stringify({
+          id: 5,
+          profileId: 1,
+          date: "2026-11-22",
+          createdAt: "2026-11-23T12:00:00.000+00:00",
+          updatedAt: "2026-11-23T12:00:00.100+00:00",
         })],
       },
       UnifiedPublicationBlock: {
@@ -148,6 +176,17 @@ function persistedState({
     },
     sequences: [{ schema: "public", name: "Profile_id_seq", lastValue: "1", isCalled: true }],
     migrationLedger: [{ name: "init", checksum: "abc", startedAt: "2026-11-23T12:00:00.000Z" }],
+    clockColumnMetadata: [
+      { table: "PhysiologyV7DailyResult", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "PhysiologyV7DailyResult", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "PhysiologyV7Lifecycle", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "PhysiologyV7Lifecycle", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "PhysiologyV7ShadowDiagnostic", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "PhysiologyV7ShadowDiagnostic", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "Profile", field: "updatedAt", dataType: "timestamp without time zone", datetimePrecision: 3, nullable: false },
+      { table: "UnifiedPublicationBlock", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "UnifiedPublicationBlock", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+    ],
   };
 }
 
@@ -204,16 +243,182 @@ describe("comparator persisted state clock projection", () => {
   it("fails closed on missing, malformed, or inverted clock fields", () => {
     const missingField = persistedState();
     missingField.tables.PhysiologyV7Lifecycle.rows[0] = JSON.stringify({ profileId: 1, updatedAt: "2026-11-23T12:00:00.100+00:00" });
-    expect(() => projectPersistedStateForComparison(missingField, policy)).toThrow(/createdAt must be a valid zoned timestamp/);
+    expect(() => projectPersistedStateForComparison(missingField, policy)).toThrow(/reviewed UTC timestamp/);
 
     const malformed = persistedState();
     malformed.tables.PhysiologyV7Lifecycle.rows[0] = JSON.stringify({ profileId: 1, createdAt: "yesterday", updatedAt: "2026-11-23T12:00:00.100+00:00" });
-    expect(() => projectPersistedStateForComparison(malformed, policy)).toThrow(/valid zoned timestamp/);
+    expect(() => projectPersistedStateForComparison(malformed, policy)).toThrow(/reviewed UTC timestamp/);
 
     const inverted = persistedState({ lifecycleUpdatedAt: "2026-11-22T12:00:00.000+00:00" });
     expect(() => projectPersistedStateForComparison(inverted, policy)).toThrow(/createdAt must not be after updatedAt/);
 
     const invalidLocalTimestamp = persistedState({ profileUpdatedAt: "2026-11-23T12:00:00.100Z" });
-    expect(() => projectPersistedStateForComparison(invalidLocalTimestamp, policy)).toThrow(/valid local timestamp/);
+    expect(() => projectPersistedStateForComparison(invalidLocalTimestamp, policy)).toThrow(/reviewed UTC timestamp/);
+
+    const subMillisecond = persistedState();
+    subMillisecond.tables.PhysiologyV7Lifecycle.rows[0] = JSON.stringify({
+      profileId: 1,
+      createdAt: "2026-11-23T12:00:00.0001+00:00",
+      updatedAt: "2026-11-23T12:00:00.100+00:00",
+    });
+    expect(() => projectPersistedStateForComparison(subMillisecond, policy)).toThrow(/reviewed UTC timestamp/);
+
+    const nonUtcOffset = persistedState();
+    nonUtcOffset.tables.PhysiologyV7Lifecycle.rows[0] = JSON.stringify({
+      profileId: 1,
+      createdAt: "2026-11-23T13:00:00.000+01:00",
+      updatedAt: "2026-11-23T13:00:00.100+01:00",
+    });
+    expect(() => projectPersistedStateForComparison(nonUtcOffset, policy)).toThrow(/reviewed UTC timestamp/);
+  });
+
+  it("requires exact PostgreSQL clock column types, precision, and nullability", () => {
+    const metadata = persistedState().clockColumnMetadata;
+    expect(validateDatabaseClockColumnMetadata(
+      metadata.map((column) => ({ ...column, nullable: "NO" })),
+      policy,
+    )).toEqual(metadata);
+    expect(() => validateDatabaseClockColumnMetadata(
+      metadata.map((column) => ({ ...column, nullable: column.table === "Profile" ? "UNKNOWN" : "NO" })),
+      policy,
+    )).toThrow(/exact YES\/NO/);
+
+    const wrongPrecision = persistedState();
+    wrongPrecision.clockColumnMetadata[0].datetimePrecision = 6;
+    expect(() => projectPersistedStateForComparison(wrongPrecision, policy))
+      .toThrow(/type, precision, or nullability/);
+
+    const wrongType = persistedState();
+    wrongType.clockColumnMetadata[0].dataType = "timestamp without time zone";
+    expect(() => projectPersistedStateForComparison(wrongType, policy))
+      .toThrow(/type, precision, or nullability/);
+
+    const nullableColumn = persistedState();
+    nullableColumn.clockColumnMetadata[0].nullable = true;
+    expect(() => projectPersistedStateForComparison(nullableColumn, policy))
+      .toThrow(/type, precision, or nullability/);
+
+    const missingColumn = persistedState();
+    missingColumn.clockColumnMetadata.pop();
+    expect(() => projectPersistedStateForComparison(missingColumn, policy))
+      .toThrow(/type, precision, or nullability/);
+  });
+});
+
+describe("comparator database clock operation windows", () => {
+  const policy: ComparatorClockFieldPolicy = {
+    ClockRow: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+  };
+  const initialEvidence = [{
+    table: "ClockRow",
+    primaryKey: { id: 1 },
+    fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt: "2026-11-23T11:00:00.000+00:00" },
+  }];
+
+  it("accepts equal clock transitions across different run times and retains signed anchor offsets", () => {
+    const result = compareDatabaseClockOperationWindows({
+      before: {
+        initialEvidence,
+        finalEvidence: [{
+          table: "ClockRow",
+          primaryKey: { id: 1 },
+          fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt: "2026-11-23T12:00:01.250+00:00" },
+        }],
+        startAnchor: "2026-11-23T12:00:00.000000Z",
+        endAnchor: "2026-11-23T12:00:03.000000Z",
+      },
+      after: {
+        initialEvidence,
+        finalEvidence: [{
+          table: "ClockRow",
+          primaryKey: { id: 1 },
+          fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt: "2026-11-23T13:00:01.250+00:00" },
+        }],
+        startAnchor: "2026-11-23T13:00:00.000000Z",
+        endAnchor: "2026-11-23T13:00:03.000000Z",
+      },
+      databaseClockFields: policy,
+    });
+
+    expect(result.equal).toBe(true);
+    expect(result.evidence.before.events[0]).toMatchObject({
+      rawValue: "2026-11-23T12:00:01.250+00:00",
+      offsetFromStartMicroseconds: "1250000",
+      offsetFromEndMicroseconds: "-1750000",
+      orderGroup: 0,
+    });
+    expect(result.evidence.after.events[0]).toMatchObject({
+      rawValue: "2026-11-23T13:00:01.250+00:00",
+      offsetFromStartMicroseconds: "1250000",
+      offsetFromEndMicroseconds: "-1750000",
+      orderGroup: 0,
+    });
+  });
+
+  it("fails closed on missing, malformed, or inverted anchors and out-of-window writes", () => {
+    const side = {
+      initialEvidence,
+      finalEvidence: [{
+        table: "ClockRow",
+        primaryKey: { id: 1 },
+        fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt: "2026-11-23T12:00:01.000+00:00" },
+      }],
+      startAnchor: "2026-11-23T12:00:00.000000Z",
+      endAnchor: "2026-11-23T12:00:02.000000Z",
+    };
+    const compare = (before: typeof side, after: typeof side) => compareDatabaseClockOperationWindows({
+      before,
+      after,
+      databaseClockFields: policy,
+    });
+
+    expect(() => compare({ ...side, startAnchor: "" }, side)).toThrow(/reviewed UTC timestamp/);
+    expect(() => compare({ ...side, startAnchor: "2026-11-23T12:00:00.000Z" }, side)).toThrow(/reviewed UTC timestamp/);
+    expect(() => compare({ ...side, startAnchor: "2026-11-23T12:00:03.000000Z" }, side)).toThrow(/window is inverted/);
+
+    const outsideWindow = {
+      ...side,
+      finalEvidence: [{
+        table: "ClockRow",
+        primaryKey: { id: 1 },
+        fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt: "2026-11-23T12:00:03.000+00:00" },
+      }],
+    };
+    expect(() => compare(outsideWindow, side)).toThrow(/outside its recorded operation window/);
+  });
+
+  it("detects changed clock transitions, cross-row order changes, and altered ties", () => {
+    const twoRows = [1, 2].map((id) => ({
+      table: "ClockRow",
+      primaryKey: { id },
+      fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt: "2026-11-23T11:00:00.000+00:00" },
+    }));
+    const finalRows = (first: string, second: string) => [first, second].map((updatedAt, index) => ({
+      table: "ClockRow",
+      primaryKey: { id: index + 1 },
+      fields: { createdAt: "2026-11-23T11:00:00.000+00:00", updatedAt },
+    }));
+    const run = (initial: typeof twoRows, final: ReturnType<typeof finalRows>, startHour: string) => ({
+      initialEvidence: initial,
+      finalEvidence: final,
+      startAnchor: `2026-11-23T${startHour}:00:00.000000Z`,
+      endAnchor: `2026-11-23T${startHour}:01:00.000000Z`,
+    });
+    const before = run(twoRows, finalRows("2026-11-23T12:00:00.200+00:00", "2026-11-23T12:00:00.400+00:00"), "12");
+    const reverseOrder = run(twoRows, finalRows("2026-11-23T13:00:00.400+00:00", "2026-11-23T13:00:00.200+00:00"), "13");
+    const orderDiff = compareDatabaseClockOperationWindows({ before, after: reverseOrder, databaseClockFields: policy });
+    expect(orderDiff.equal).toBe(false);
+    expect(orderDiff.eventOrderingDifferences.length).toBeGreaterThan(0);
+
+    const tied = run(twoRows, finalRows("2026-11-23T12:00:00.200+00:00", "2026-11-23T12:00:00.200+00:00"), "12");
+    const untied = run(twoRows, finalRows("2026-11-23T13:00:00.200+00:00", "2026-11-23T13:00:00.400+00:00"), "13");
+    const tieDiff = compareDatabaseClockOperationWindows({ before: tied, after: untied, databaseClockFields: policy });
+    expect(tieDiff.equal).toBe(false);
+    expect(tieDiff.eventOrderingDifferences.length).toBeGreaterThan(0);
+
+    const unchanged = run(twoRows, twoRows, "13");
+    const transitionDiff = compareDatabaseClockOperationWindows({ before, after: unchanged, databaseClockFields: policy });
+    expect(transitionDiff.equal).toBe(false);
+    expect(transitionDiff.transitionDifferences.length).toBeGreaterThan(0);
   });
 });

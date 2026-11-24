@@ -177,6 +177,23 @@ describe("refactor comparator core", () => {
     const reorderedGroups = structuredClone(candidate);
     reorderedGroups.caseGroups.reverse();
     expect(() => assertAdditiveManifestExtension(base, reorderedGroups)).toThrow(/changed or reordered frozen case groups/);
+
+    const legacyClockPolicy = cloneManifestForMutation();
+    legacyClockPolicy.postgres.databaseClockFields = {
+      PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      UnifiedPublicationBlock: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      Profile: { updatedAt: "local-timestamp" },
+    };
+    expect(validateManifest(legacyClockPolicy)).toBe(legacyClockPolicy);
+    expect(assertAdditiveManifestExtension(legacyClockPolicy, manifest)).toMatchObject({ additive: true });
+
+    const widenedClockPolicy = cloneManifestForMutation();
+    widenedClockPolicy.postgres.databaseClockFields.PhysiologyV7DailyResult = {
+      createdAt: "zoned-timestamp",
+      updatedAt: "zoned-timestamp",
+      computedAt: "zoned-timestamp",
+    };
+    expect(() => validateManifest(widenedClockPolicy)).toThrow(/exact reviewed clock-field policy/);
   });
 
   it("accepts only the exact isolated before and after PostgreSQL identities", () => {

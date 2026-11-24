@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import net from "node:net";
 import { performance } from "node:perf_hooks";
-import { validateComparatorDatabaseUrl } from "./comparator-core.mjs";
+import { validateComparatorDatabaseUrl, validateDatabaseClockColumnMetadata } from "./comparator-core.mjs";
 
 export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {}) {
   if (host !== "127.0.0.1" || !Number.isSafeInteger(port) || port < 1 || port > 65_535
@@ -106,11 +106,15 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
              inet_server_port() AS server_port,
              current_setting('server_version') AS server_version,
              current_setting('TimeZone') AS timezone,
+             to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS operation_anchor,
              pg_is_in_recovery() AS in_recovery
     `);
     const row = rows[0];
     if (!row || row.database !== configured.database || row.role !== configured.role
-      || Number(row.server_port) !== 5432 || row.in_recovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)) {
+      || Number(row.server_port) !== 5432 || row.in_recovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)
+      || typeof row.operation_anchor !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(row.operation_anchor)
+      || !Number.isFinite(Date.parse(row.operation_anchor))) {
       throw new Error(`Comparator PostgreSQL identity attestation failed: ${JSON.stringify({
         expected: { database: configured.database, role: configured.role, serverPort: 5432, timezone: "UTC", inRecovery: false },
         actual: row ? toPlain(row) : null,
@@ -133,6 +137,7 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
       serverPort: Number(row.server_port),
       serverVersion: row.server_version,
       timezone: row.timezone,
+      operationAnchor: row.operation_anchor,
       inRecovery: row.in_recovery,
       containerId: dockerIdentity.containerId,
       imageId: dockerIdentity.imageId,
@@ -145,7 +150,39 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
   }
 }
 
-export async function capturePersistedState(client, tableNames) {
+async function captureDatabaseClockColumnMetadata(client, databaseClockFields) {
+  const metadata = [];
+  for (const [tableName, fields] of Object.entries(databaseClockFields)) {
+    quoteIdentifier(tableName);
+    for (const field of Object.keys(fields)) {
+      quoteIdentifier(field);
+      const rows = await client.$queryRawUnsafe(
+        "SELECT table_name AS \"table\", column_name AS field, data_type AS \"dataType\", "
+        + "datetime_precision AS \"datetimePrecision\", is_nullable AS nullable "
+        + "FROM information_schema.columns WHERE table_schema = 'public' "
+        + "AND table_name = '" + tableName + "' AND column_name = '" + field + "'",
+      );
+      if (rows.length !== 1) {
+        throw new Error("Comparator expected exactly one database clock column for " + tableName + "." + field + ".");
+      }
+      metadata.push({
+        table: rows[0].table,
+        field: rows[0].field,
+        dataType: rows[0].dataType,
+        datetimePrecision: rows[0].datetimePrecision === null ? null : Number(rows[0].datetimePrecision),
+        nullable: rows[0].nullable,
+      });
+    }
+  }
+  metadata.sort((left, right) => {
+    const leftKey = left.table + "\0" + left.field;
+    const rightKey = right.table + "\0" + right.field;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+  return validateDatabaseClockColumnMetadata(metadata, databaseClockFields);
+}
+
+export async function capturePersistedState(client, tableNames, databaseClockFields) {
   const tables = {};
   for (const tableName of tableNames) {
     const table = quoteIdentifier(tableName);
@@ -203,9 +240,11 @@ export async function capturePersistedState(client, tableNames) {
     ORDER BY migration_name
   `);
 
+  const clockColumnMetadata = await captureDatabaseClockColumnMetadata(client, databaseClockFields);
   return {
     tables,
     sequences,
     migrationLedger: toPlain(migrations),
+    clockColumnMetadata,
   };
 }

@@ -65,12 +65,14 @@ describe("frozen refactor comparator manifest", () => {
       "RAW-01", "TRAIN-HIST-01", "ENERGY-01", "TRAIN-02", "V7-01", "UNIFIED-01",
       "TX-CONCURRENCY-01", "FORECAST-CALENDAR-01", "BODYMAP-UI-01", "BODYMAP-ANALYTICS-01",
       "BODYMAP-PERFORMANCE-01", "BODYMAP-ENERGY-01", "BODYMAP-MAPPING-V3-01", "TRAIN-LOAD-ASSESS-01",
+      "COMPARATOR-CLOCK-01",
     ];
     expect(manifest.caseGroups.map(({ id }) => id)).toEqual(requiredGroups);
 
     const unitPaths = new Set(manifest.unitSuites.flatMap(({ paths }) => paths));
     const suiteIds = new Set(manifest.integrationSuites.map(({ id }) => id));
     const observationIds = new Set(manifest.observations.map(({ id }) => id));
+    const latestInputHashes = new Map<string, string>();
     const expectedGroupMembers: Record<string, string[]> = {
       "ENERGY-01": ["tests/distance-ledger-v1.test.ts", "tests/workout-feed-coverage.test.ts"],
       "TRAIN-02": [
@@ -94,7 +96,9 @@ describe("frozen refactor comparator manifest", () => {
       for (const id of group.databaseStateSuiteIds) expect(group.integrationSuiteIds).toContain(id);
       for (const id of group.observationIds) expect(observationIds.has(id), `${group.id}:${id}`).toBe(true);
       for (const input of group.inputFiles) {
-        expect(sha256File(input.path), `${group.id}:${input.path}`).toBe(input.sha256);
+        expect(existsSync(resolve(process.cwd(), input.path)), `${group.id}:${input.path}`).toBe(true);
+        expect(input.sha256, `${group.id}:${input.path}`).toMatch(/^[a-f0-9]{64}$/);
+        latestInputHashes.set(input.path, input.sha256);
       }
       if (group.uiEvidence) {
         expect(sha256File(group.uiEvidence.path), `${group.id}:uiEvidence`).toBe(group.uiEvidence.sha256);
@@ -103,6 +107,26 @@ describe("frozen refactor comparator manifest", () => {
       expect(group.unitPaths.length + group.integrationSuiteIds.length + group.observationIds.length
         + group.databaseStateSuiteIds.length + Number(Boolean(group.uiEvidence))).toBeGreaterThan(0);
     }
+    for (const [path, expected] of latestInputHashes) {
+      expect(sha256File(path), `latest frozen input ${path}`).toBe(expected);
+    }
+
+    const comparatorClock = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-CLOCK-01");
+    expect(comparatorClock?.integrationSuiteIds).toEqual([
+      "postgres-health-sync-contracts",
+      "postgres-physiology-v7-persistence",
+    ]);
+    expect(comparatorClock?.databaseStateSuiteIds).toEqual(comparatorClock?.integrationSuiteIds);
+    expect(comparatorClock?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "scripts/refactor/comparator-core.mjs",
+      "scripts/refactor/database-evidence.mjs",
+      "scripts/refactor/run-behavior-comparator.mjs",
+      "tests/integration/health-sync.integration.test.ts",
+      "tests/integration/physiology-v7-persistence.integration.test.ts",
+      "tests/refactor-comparator/comparator-core.test.ts",
+      "tests/refactor-comparator/database-evidence.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
   });
 
   it("retains and verifies the exact BodyMap and Training UI characterization evidence", () => {

@@ -63,7 +63,7 @@ async function waitForWorkerBarrier<T>(barrier: Promise<T>, worker: Promise<unkn
 }
 
 async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
-  const deadline = process.hrtime.bigint() + 5_000_000_000n;
+  const deadline = process.hrtime.bigint() + BigInt(5_000_000_000);
   while (process.hrtime.bigint() < deadline) {
     const waiter = pid === undefined
       ? await prisma.$queryRaw<Array<{ waiting: boolean }>>`

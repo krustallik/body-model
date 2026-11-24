@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import frozenManifest from "./module-coverage-v1.json";
 import type { ModuleCoverageManifest, ModuleCoverageMetric } from "../../scripts/refactor/module-coverage-core.mjs";
 import {
+  assertRepeatedModuleCoverageMatches,
+  EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256,
   filterModuleCoverageSourcePaths,
   normalizeModuleCoverageReportPath,
   validateModuleCoverageManifest,
+  verifyPinnedModuleCoverageManifest,
+  verifyFrozenExcludedPathBlobs,
   verifyFrozenModuleCoverageInventory,
   verifyModuleCoverage,
 } from "../../scripts/refactor/module-coverage-core.mjs";
+import { readFileSync } from "node:fs";
 
 const ROOT = "src/modules/training";
 const BASELINE_SHA = "1".repeat(40);
@@ -33,22 +38,25 @@ function makeManifest(): ModuleCoverageManifest {
     schemaVersion: 1,
     baselineSha: BASELINE_SHA,
     measurement: {
-      provider: "v8",
+      provider: "istanbul",
       selection: "related",
       nodeMajor: 24,
       nodeVersion: "v24.19.0",
       v8Version: "13.6.233.17-node.51",
-      profile: "exact-tracked-paths-v1",
+      profile: "exact-tracked-paths-istanbul-v1",
       coverageAll: true,
       ci: true,
       nodeEnv: "test",
       maxWorkers: 4,
       minWorkers: 1,
       vitestVersion: "3.2.7",
+      coverageProviderVersion: "3.2.7",
       reportSha256: "c".repeat(64),
       logSha256: "d".repeat(64),
       confirmationReportSha256: "c".repeat(64),
       confirmationLogSha256: "e".repeat(64),
+      baselineTestInputFingerprintSha256: "f".repeat(64),
+      baselineTestSelectionFingerprintSha256: "a".repeat(64),
       repeatedRunCount: 2,
       sourceFileCount: 2,
       testFileCount: 1,
@@ -120,6 +128,19 @@ describe("per-file module coverage gate", () => {
       coverageSummary: reportFor([firstPath!], () => 50),
       repoRoot: "D:\\repo",
     })).toThrow(`Coverage report is missing required path ${secondPath}.`);
+  });
+
+  it("rejects coverage report paths outside the tracked module inventory", () => {
+    const manifest = makeManifest();
+    const trackedPaths = manifest.files.map(({ path }) => path);
+    const unexpectedPath = `${ROOT}/untracked-report-only.ts`;
+
+    expect(() => verifyModuleCoverage({
+      manifest,
+      trackedPaths,
+      coverageSummary: reportFor([...trackedPaths, unexpectedPath], (filePath) => filePath.endsWith("untracked-report-only.ts") ? 100 : 50),
+      repoRoot: "D:\\repo",
+    })).toThrow(`Coverage report contains paths outside the tracked module inventory: ${unexpectedPath}.`);
   });
 
   it("requires new files to satisfy fixed 85/85/85/80 percent floors", () => {
@@ -217,14 +238,92 @@ describe("per-file module coverage gate", () => {
       repoRoot: "D:\\repo",
     })).toThrow(`Coverage summary repeats normalized path ${ROOT}/a.ts.`);
   });
+
+  it("requires two coverage reports to match exact paths and covered/total counts", () => {
+    const paths = makeManifest().files.map(({ path }) => path);
+    const first = reportFor(paths, (filePath) => filePath.endsWith("/a.ts") ? 50 : 100);
+    const sameInDifferentOrder = Object.fromEntries(Object.entries(first).reverse());
+
+    expect(assertRepeatedModuleCoverageMatches({
+      firstSummary: first,
+      secondSummary: sameInDifferentOrder,
+      repoRoot: "D:\\repo",
+    })).toEqual({ filesCompared: 2 });
+
+    const changedCovered = structuredClone(first);
+    changedCovered[`${ROOT}/a.ts`].branches = reportMetric(49, 100);
+    expect(() => assertRepeatedModuleCoverageMatches({
+      firstSummary: first,
+      secondSummary: changedCovered,
+      repoRoot: "D:\\repo",
+    })).toThrow(`Repeated module coverage differs for ${ROOT}/a.ts branches: 50/100 vs 49/100.`);
+
+    const changedTotal = structuredClone(first);
+    changedTotal[`${ROOT}/a.ts`].functions = reportMetric(51, 102);
+    expect(() => assertRepeatedModuleCoverageMatches({
+      firstSummary: first,
+      secondSummary: changedTotal,
+      repoRoot: "D:\\repo",
+    })).toThrow(`Repeated module coverage differs for ${ROOT}/a.ts functions: 50/100 vs 51/102.`);
+
+    const missingPath = { ...first };
+    delete missingPath[`${ROOT}/b.ts`];
+    expect(() => assertRepeatedModuleCoverageMatches({
+      firstSummary: first,
+      secondSummary: missingPath,
+      repoRoot: "D:\\repo",
+    })).toThrow(`Repeated module coverage path set differs; missingFromSecond=${ROOT}/b.ts; unexpectedInSecond=none.`);
+  });
 });
 
 describe("frozen module coverage inventory", () => {
-  it("keeps the checked-in 74-file baseline schema internally consistent", () => {
+  it("keeps the checked-in executable-file baseline and explicit exclusions internally consistent", () => {
     expect(() => validateModuleCoverageManifest(frozenManifest)).not.toThrow();
-    expect(frozenManifest.files).toHaveLength(74);
-    expect(frozenManifest.measurement.sourceFileCount).toBe(74);
-    expect(frozenManifest.excludedPaths).toHaveLength(2);
+    expect(frozenManifest.files).toHaveLength(71);
+    expect(frozenManifest.measurement.sourceFileCount).toBe(71);
+    expect(frozenManifest.excludedPaths).toHaveLength(5);
+    expect(frozenManifest.excludedPaths.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "src/modules/training/experimental-strength-energy.ts",
+      "src/modules/training/index.ts",
+      "src/modules/training/training.types.ts",
+    ]));
+    expect(frozenManifest.measurement.provider).toBe("istanbul");
+    expect(frozenManifest.measurement.coverageProviderVersion).toBe("3.2.7");
+    expect(frozenManifest.measurement.baselineTestInputFingerprintSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(frozenManifest.measurement.baselineTestSelectionFingerprintSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("pins the canonical checked-in baseline manifest content and rejects a sentinel edit", () => {
+    const bytes = readFileSync(new URL("./module-coverage-v1.json", import.meta.url));
+    expect(verifyPinnedModuleCoverageManifest(bytes)).toBe(EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256);
+    const windowsLineEndings = Buffer.from(bytes.toString("utf8").replace(/\n/g, "\r\n"), "utf8");
+    expect(verifyPinnedModuleCoverageManifest(windowsLineEndings)).toBe(EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256);
+
+    const changedBytes = Buffer.from(bytes);
+    changedBytes[0] = changedBytes[0]! ^ 1;
+    expect(() => verifyPinnedModuleCoverageManifest(changedBytes))
+      .toThrow("does not match the reviewed pin.");
+  });
+
+  it("fails closed if an uninstrumented compatibility path changes or disappears", () => {
+    const manifest = makeManifest();
+    const excludedPath = `${ROOT}/compatibility-export.ts`;
+    manifest.excludedPaths = [{
+      path: excludedPath,
+      gitBlobSha: BLOB_A,
+      reason: "Re-export-only compatibility contract has no Istanbul executable counters.",
+    }];
+
+    expect(verifyFrozenExcludedPathBlobs({
+      manifest,
+      candidateBlobShas: { [excludedPath]: BLOB_A },
+    })).toEqual({ excludedFilesChecked: 1 });
+    expect(() => verifyFrozenExcludedPathBlobs({
+      manifest,
+      candidateBlobShas: { [excludedPath]: BLOB_B },
+    })).toThrow(`Frozen excluded path changed without an executable coverage baseline update: ${excludedPath}.`);
+    expect(() => verifyFrozenExcludedPathBlobs({ manifest, candidateBlobShas: {} }))
+      .toThrow(`Frozen excluded path is missing from the candidate tree: ${excludedPath}.`);
   });
 
   it("requires every eligible baseline file and verifies its Git blob identity", () => {

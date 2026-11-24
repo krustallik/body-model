@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/i;
+export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "f8dcebe17e0d83e9e796ac920e393c6e6b343b29213b557665320c0909fd0ea1";
 const METRICS = Object.freeze(["lines", "functions", "statements", "branches"]);
 const NEW_FILE_FLOORS = Object.freeze({ lines: 85, functions: 85, statements: 85, branches: 80 });
 const SOURCE_EXTENSION_PATTERN = /\.(?:ts|tsx|js|jsx)$/i;
@@ -40,10 +42,22 @@ function validateCoverageMetric(value, label) {
   }
   if (value.covered > value.total) throw new Error(`${label}.covered cannot exceed total.`);
   const expectedPct = value.total === 0 ? 100 : Number(((value.covered / value.total) * 100).toFixed(2));
-  // Vitest/V8's displayed percentage can be off by 0.01 while covered/total remain exact.
+  // The reporter rounds percentages; covered/total remain the authoritative counts.
   if (!Number.isFinite(value.pct) || value.pct < 0 || value.pct > 100 || Math.abs(value.pct - expectedPct) > 0.02) {
     throw new Error(`${label}.pct does not match its covered/total counts.`);
   }
+}
+
+export function verifyPinnedModuleCoverageManifest(bytes) {
+  if (typeof bytes !== "string" && !(bytes instanceof Uint8Array)) {
+    throw new TypeError("Module coverage manifest bytes must be a string or Uint8Array.");
+  }
+  const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
+  const actual = createHash("sha256").update(text.replace(/\r\n/g, "\n")).digest("hex");
+  if (actual !== EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256) {
+    throw new Error(`Module coverage manifest SHA-256 ${actual} does not match the reviewed pin.`);
+  }
+  return actual;
 }
 
 export function validateModuleCoverageManifest(value) {
@@ -51,14 +65,14 @@ export function validateModuleCoverageManifest(value) {
   if (value.schemaVersion !== 1) throw new Error("Unsupported module coverage manifest schema.");
   if (!SHA_PATTERN.test(value.baselineSha ?? "")) throw new Error("Module coverage baseline SHA is invalid.");
   requireObject(value.measurement, "measurement");
-  if (value.measurement.provider !== "v8" || value.measurement.selection !== "related" || value.measurement.nodeMajor !== 24) {
-    throw new Error("Module coverage measurement must use the reviewed Vitest V8 related profile on Node 24.");
+  if (value.measurement.provider !== "istanbul" || value.measurement.selection !== "related" || value.measurement.nodeMajor !== 24) {
+    throw new Error("Module coverage measurement must use the reviewed Vitest Istanbul related profile on Node 24.");
   }
   if (!/^v24\.\d+\.\d+$/.test(value.measurement.nodeVersion ?? "")
     || typeof value.measurement.v8Version !== "string" || !/^\d+(?:\.\d+){2,3}-node\.\d+$/.test(value.measurement.v8Version)) {
     throw new Error("Module coverage measurement Node and V8 versions are invalid.");
   }
-  if (value.measurement.profile !== "exact-tracked-paths-v1"
+  if (value.measurement.profile !== "exact-tracked-paths-istanbul-v1"
     || value.measurement.coverageAll !== true
     || value.measurement.ci !== true
     || value.measurement.nodeEnv !== "test"
@@ -69,7 +83,18 @@ export function validateModuleCoverageManifest(value) {
   if (typeof value.measurement.vitestVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(value.measurement.vitestVersion)) {
     throw new Error("Module coverage Vitest version is invalid.");
   }
-  for (const field of ["reportSha256", "logSha256", "confirmationReportSha256", "confirmationLogSha256"]) {
+  if (typeof value.measurement.coverageProviderVersion !== "string"
+    || !/^\d+\.\d+\.\d+$/.test(value.measurement.coverageProviderVersion)) {
+    throw new Error("Module coverage provider version is invalid.");
+  }
+  for (const field of [
+    "reportSha256",
+    "logSha256",
+    "confirmationReportSha256",
+    "confirmationLogSha256",
+    "baselineTestInputFingerprintSha256",
+    "baselineTestSelectionFingerprintSha256",
+  ]) {
     if (!/^[a-f0-9]{64}$/i.test(value.measurement[field] ?? "")) {
       throw new Error(`Module coverage measurement ${field} is invalid.`);
     }
@@ -201,6 +226,30 @@ function normalizeCoverageSummary(summary, repoRoot) {
   return normalized;
 }
 
+export function assertRepeatedModuleCoverageMatches({ firstSummary, secondSummary, repoRoot }) {
+  const first = normalizeCoverageSummary(firstSummary, repoRoot);
+  const second = normalizeCoverageSummary(secondSummary, repoRoot);
+  const firstPaths = [...first.keys()].sort();
+  const secondPaths = [...second.keys()].sort();
+  if (firstPaths.length !== secondPaths.length
+    || firstPaths.some((filePath, index) => filePath !== secondPaths[index])) {
+    const missingFromSecond = firstPaths.filter((filePath) => !second.has(filePath));
+    const unexpectedInSecond = secondPaths.filter((filePath) => !first.has(filePath));
+    throw new Error(`Repeated module coverage path set differs; missingFromSecond=${missingFromSecond.join(",") || "none"}; unexpectedInSecond=${unexpectedInSecond.join(",") || "none"}.`);
+  }
+
+  for (const filePath of firstPaths) {
+    for (const metric of METRICS) {
+      const left = first.get(filePath)[metric];
+      const right = second.get(filePath)[metric];
+      if (left.covered !== right.covered || left.total !== right.total) {
+        throw new Error(`Repeated module coverage differs for ${filePath} ${metric}: ${left.covered}/${left.total} vs ${right.covered}/${right.total}.`);
+      }
+    }
+  }
+  return { filesCompared: firstPaths.length };
+}
+
 function isEligibleSourcePath(filePath, roots) {
   return isWithinRoots(filePath, roots)
     && SOURCE_EXTENSION_PATTERN.test(filePath)
@@ -244,6 +293,24 @@ export function verifyFrozenModuleCoverageInventory({ manifest, baselinePaths, b
     }
   }
   return { baselineSourceFilesChecked: eligibleBaselinePaths.length, baselineBlobFilesChecked: manifestPaths.length };
+}
+
+export function verifyFrozenExcludedPathBlobs({ manifest, candidateBlobShas }) {
+  validateModuleCoverageManifest(manifest);
+  if (!candidateBlobShas || typeof candidateBlobShas !== "object" || Array.isArray(candidateBlobShas)) {
+    throw new Error("candidateBlobShas must map excluded paths to candidate Git blob SHAs.");
+  }
+
+  for (const entry of manifest.excludedPaths) {
+    const candidateBlobSha = candidateBlobShas[entry.path];
+    if (!SHA_PATTERN.test(candidateBlobSha ?? "")) {
+      throw new Error(`Frozen excluded path is missing from the candidate tree: ${entry.path}.`);
+    }
+    if (candidateBlobSha !== entry.gitBlobSha) {
+      throw new Error(`Frozen excluded path changed without an executable coverage baseline update: ${entry.path}.`);
+    }
+  }
+  return { excludedFilesChecked: manifest.excludedPaths.length };
 }
 
 function isAtLeastPercent(coverage, minimumPct) {
@@ -290,6 +357,10 @@ export function verifyModuleCoverage({ manifest, coverageSummary, trackedPaths, 
   const moveByFrom = new Map(manifest.pathMoves.map((move) => [move.from, move.to]));
   const moveTargets = new Set(manifest.pathMoves.map((move) => move.to));
   const reportByPath = normalizeCoverageSummary(coverageSummary, repoRoot);
+  const unexpectedReportPaths = [...reportByPath.keys()].filter((filePath) => !currentPaths.has(filePath)).sort();
+  if (unexpectedReportPaths.length > 0) {
+    throw new Error(`Coverage report contains paths outside the tracked module inventory: ${unexpectedReportPaths.join(", ")}.`);
+  }
 
   for (const move of manifest.pathMoves) {
     if (currentPaths.has(move.from)) throw new Error(`Path move source still exists in the candidate inventory: ${move.from}.`);

@@ -246,7 +246,7 @@
       "databaseStateSuiteIds": ["postgres-full-history-raw-input-inventory", "postgres-health-sync-contracts"],
       "inputFiles": [
         { "path": "tests/integration/full-history-raw-input-inventory.integration.test.ts", "sha256": "c45e973f2374b6550c52203e0d0ec010cde9badf09e4200b6b83e7d776a79169" },
-        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "4c18f4ad1775f77c590f8c20fcc56124deb1968f080dc5379bcef0092fa4e4cb" }
+        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "a729ab848503ff5c70cb1e1cd8a08ec8ec75c8cab3e9445843972f1ac92a5cff" }
       ]
     },
     {
@@ -313,7 +313,7 @@
       "observationIds": [],
       "databaseStateSuiteIds": ["postgres-health-sync-contracts", "postgres-auth-multiuser", "postgres-training-postcommit-publication"],
       "inputFiles": [
-        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "4c18f4ad1775f77c590f8c20fcc56124deb1968f080dc5379bcef0092fa4e4cb" },
+        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "a729ab848503ff5c70cb1e1cd8a08ec8ec75c8cab3e9445843972f1ac92a5cff" },
         { "path": "tests/integration/training-postcommit-publication.integration.test.ts", "sha256": "a0307d8643a0a17b2a632a85a2e5ed1156d81603a529ceef91aa4c52ee801fd8" }
       ]
     },

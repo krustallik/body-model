@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/i;
-export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "d0e04ee985a9a3f4176e245c86af48bb1aa64fda59785590877c5e7da97b7c21";
+export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "472213cd749705cdaecade5d557bd0e84e7347e9c1479b23fb0a84f1713703b4";
 const METRICS = Object.freeze(["lines", "functions", "statements", "branches"]);
 const NEW_FILE_FLOORS = Object.freeze({ lines: 85, functions: 85, statements: 85, branches: 80 });
 const SOURCE_EXTENSION_PATTERN = /\.(?:ts|tsx|js|jsx)$/i;
@@ -73,20 +73,20 @@ export function validateModuleCoverageManifest(value) {
   if (value.schemaVersion !== 1) throw new Error("Unsupported module coverage manifest schema.");
   if (!SHA_PATTERN.test(value.baselineSha ?? "")) throw new Error("Module coverage baseline SHA is invalid.");
   requireObject(value.measurement, "measurement");
-  if (value.measurement.provider !== "istanbul" || value.measurement.selection !== "related" || value.measurement.nodeMajor !== 24) {
-    throw new Error("Module coverage measurement must use the reviewed Vitest Istanbul related profile on Node 24.");
+  if (value.measurement.provider !== "v8" || value.measurement.selection !== "related" || value.measurement.nodeMajor !== 24) {
+    throw new Error("Module coverage measurement must use the reviewed Vitest V8 related profile on Node 24.");
   }
   if (!/^v24\.\d+\.\d+$/.test(value.measurement.nodeVersion ?? "")
     || typeof value.measurement.v8Version !== "string" || !/^\d+(?:\.\d+){2,3}-node\.\d+$/.test(value.measurement.v8Version)) {
     throw new Error("Module coverage measurement Node and V8 versions are invalid.");
   }
-  if (value.measurement.profile !== "exact-tracked-paths-istanbul-single-worker-v1"
+  if (value.measurement.profile !== "exact-tracked-paths-v8-ast-aware-single-worker-v1"
     || value.measurement.coverageAll !== true
     || value.measurement.ci !== true
     || value.measurement.nodeEnv !== "test"
     || value.measurement.maxWorkers !== 1
     || value.measurement.minWorkers !== 1) {
-    throw new Error("Module coverage measurement must match the pinned exact-path CI profile.");
+    throw new Error("Module coverage measurement must match the pinned exact-path V8 AST-aware CI profile.");
   }
   if (typeof value.measurement.vitestVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(value.measurement.vitestVersion)) {
     throw new Error("Module coverage Vitest version is invalid.");

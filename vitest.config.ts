@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
 
+const moduleCoverageProfile = process.env.BODYCAST_MODULE_COVERAGE_PROFILE === "1";
+
 export default defineConfig({
   plugins: [tsconfigPaths()],
   test: {
@@ -10,7 +12,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "html"],
-      include: [
+      include: moduleCoverageProfile ? [] : [
         "src/model/**/*.ts",
         "src/modules/health/**/*.ts",
         "src/modules/days/**/*.ts",

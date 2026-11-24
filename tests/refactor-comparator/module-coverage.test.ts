@@ -39,12 +39,12 @@ function makeManifest(): ModuleCoverageManifest {
     schemaVersion: 1,
     baselineSha: BASELINE_SHA,
     measurement: {
-      provider: "istanbul",
+      provider: "v8",
       selection: "related",
       nodeMajor: 24,
       nodeVersion: "v24.19.0",
       v8Version: "13.6.233.17-node.51",
-      profile: "exact-tracked-paths-istanbul-single-worker-v1",
+      profile: "exact-tracked-paths-v8-ast-aware-single-worker-v1",
       coverageAll: true,
       ci: true,
       nodeEnv: "test",
@@ -308,7 +308,8 @@ describe("frozen module coverage inventory", () => {
       "src/modules/training/index.ts",
       "src/modules/training/training.types.ts",
     ]));
-    expect(frozenManifest.measurement.provider).toBe("istanbul");
+    expect(frozenManifest.measurement.provider).toBe("v8");
+    expect(frozenManifest.measurement.profile).toBe("exact-tracked-paths-v8-ast-aware-single-worker-v1");
     expect(frozenManifest.measurement.coverageProviderVersion).toBe("3.2.7");
     expect(frozenManifest.measurement.baselineTestInputFingerprintSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(frozenManifest.measurement.baselineTestSelectionFingerprintSha256).toMatch(/^[a-f0-9]{64}$/);

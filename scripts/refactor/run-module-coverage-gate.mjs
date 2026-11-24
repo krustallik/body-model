@@ -121,9 +121,9 @@ function assertSupportedRuntime(measurement) {
   if (vitestPackage.version !== measurement.vitestVersion) {
     throw new Error(`Module coverage expects Vitest ${measurement.vitestVersion}; received ${vitestPackage.version}.`);
   }
-  const providerPackage = JSON.parse(readFileSync(path.join(REPO_ROOT, "node_modules/@vitest/coverage-istanbul/package.json"), "utf8"));
+  const providerPackage = JSON.parse(readFileSync(path.join(REPO_ROOT, "node_modules/@vitest/coverage-v8/package.json"), "utf8"));
   if (providerPackage.version !== measurement.coverageProviderVersion) {
-    throw new Error(`Module coverage expects @vitest/coverage-istanbul ${measurement.coverageProviderVersion}; received ${providerPackage.version}.`);
+    throw new Error(`Module coverage expects @vitest/coverage-v8 ${measurement.coverageProviderVersion}; received ${providerPackage.version}.`);
   }
 }
 
@@ -240,7 +240,8 @@ function runRelatedCoverage(manifest, sourcePaths, reportsDir, testBlobShas) {
   args.push(
     "--coverage.enabled",
     "--coverage.all",
-    "--coverage.provider=istanbul",
+    "--coverage.provider=v8",
+    "--coverage.experimentalAstAwareRemapping=true",
     `--coverage.reportsDirectory=${reportsDir}`,
     "--coverage.reporter=json-summary",
     "--coverage.thresholds.lines=0",
@@ -266,6 +267,7 @@ function runRelatedCoverage(manifest, sourcePaths, reportsDir, testBlobShas) {
     DATABASE_URL: TEST_DATABASE_URL,
     IOS_SHORTCUT_API_KEY: TEST_API_KEY,
     BODYCAST_REQUIRE_POSTGRES_STORAGE_CONTAINER_TEST: "0",
+    BODYCAST_MODULE_COVERAGE_PROFILE: "1",
     BODYCAST_TEST_DATABASE_URL: TEST_DATABASE_URL,
     BODYCAST_RECOVERY_TEST_DATABASE_URL: TEST_DATABASE_URL,
     BODYCAST_GLYCOGEN_TEST_DATABASE_URL: TEST_DATABASE_URL,
@@ -289,11 +291,11 @@ function runRelatedCoverage(manifest, sourcePaths, reportsDir, testBlobShas) {
   if (stdout) process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr);
   const logBytes = Buffer.from(
-    `Node: ${process.version}\nV8: ${process.versions.v8}\nVitest: ${manifest.measurement.vitestVersion}\nProvider: Istanbul ${manifest.measurement.coverageProviderVersion}\nWorkers: ${manifest.measurement.maxWorkers}/${manifest.measurement.minWorkers}\nTracked production source paths: ${sourcePaths.length}\nDatabase sentinel: .invalid hostname; PostgreSQL containers disabled\nExit status: ${result.status ?? "unknown"}\n\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
+    `Node: ${process.version}\nV8: ${process.versions.v8}\nVitest: ${manifest.measurement.vitestVersion}\nProvider: V8 ${manifest.measurement.coverageProviderVersion} (AST-aware remapping)\nWorkers: ${manifest.measurement.maxWorkers}/${manifest.measurement.minWorkers}\nTracked production source paths: ${sourcePaths.length}\nDatabase sentinel: .invalid hostname; PostgreSQL containers disabled\nExit status: ${result.status ?? "unknown"}\n\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
     "utf8",
   );
   writeFileSync(path.join(reportsDir, "module-coverage-test-run.log"), logBytes);
-  if (result.status !== 0) throw new Error(`Related module unit tests or Istanbul coverage failed (exit ${result.status ?? "unknown"}).`);
+  if (result.status !== 0) throw new Error(`Related module unit tests or V8 AST-aware coverage failed (exit ${result.status ?? "unknown"}).`);
 
   const summaryPath = path.join(reportsDir, "coverage-summary.json");
   if (!existsSync(summaryPath)) throw new Error(`Vitest did not emit ${summaryPath}.`);

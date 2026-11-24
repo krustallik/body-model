@@ -14,12 +14,12 @@ export interface ModuleCoverageManifest {
   schemaVersion: 1;
   baselineSha: string;
   measurement: {
-    provider: "istanbul";
+    provider: "v8";
     selection: "related";
     nodeMajor: 24;
     nodeVersion: string;
     v8Version: string;
-    profile: "exact-tracked-paths-istanbul-single-worker-v1";
+    profile: "exact-tracked-paths-v8-ast-aware-single-worker-v1";
     coverageAll: true;
     ci: true;
     nodeEnv: "test";

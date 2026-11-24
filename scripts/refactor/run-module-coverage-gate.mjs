@@ -248,8 +248,8 @@ function runRelatedCoverage(manifest, sourcePaths, reportsDir, testBlobShas) {
     `--outputFile.json=${testReportPath}`,
     "--silent=passed-only",
     "--no-color",
-    "--maxWorkers=4",
-    "--minWorkers=1",
+    `--maxWorkers=${manifest.measurement.maxWorkers}`,
+    `--minWorkers=${manifest.measurement.minWorkers}`,
   );
   const inheritedEnvNames = new Set(["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]);
   const env = Object.fromEntries(Object.entries(process.env)
@@ -285,7 +285,7 @@ function runRelatedCoverage(manifest, sourcePaths, reportsDir, testBlobShas) {
   if (stdout) process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr);
   const logBytes = Buffer.from(
-    `Node: ${process.version}\nV8: ${process.versions.v8}\nVitest: ${manifest.measurement.vitestVersion}\nProvider: Istanbul ${manifest.measurement.coverageProviderVersion}\nTracked production source paths: ${sourcePaths.length}\nDatabase sentinel: .invalid hostname; PostgreSQL containers disabled\nExit status: ${result.status ?? "unknown"}\n\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
+    `Node: ${process.version}\nV8: ${process.versions.v8}\nVitest: ${manifest.measurement.vitestVersion}\nProvider: Istanbul ${manifest.measurement.coverageProviderVersion}\nWorkers: ${manifest.measurement.maxWorkers}/${manifest.measurement.minWorkers}\nTracked production source paths: ${sourcePaths.length}\nDatabase sentinel: .invalid hostname; PostgreSQL containers disabled\nExit status: ${result.status ?? "unknown"}\n\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
     "utf8",
   );
   writeFileSync(path.join(reportsDir, "module-coverage-test-run.log"), logBytes);

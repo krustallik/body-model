@@ -19,11 +19,11 @@ export interface ModuleCoverageManifest {
     nodeMajor: 24;
     nodeVersion: string;
     v8Version: string;
-    profile: "exact-tracked-paths-istanbul-v1";
+    profile: "exact-tracked-paths-istanbul-single-worker-v1";
     coverageAll: true;
     ci: true;
     nodeEnv: "test";
-    maxWorkers: 4;
+    maxWorkers: 1;
     minWorkers: 1;
     vitestVersion: string;
     coverageProviderVersion: string;

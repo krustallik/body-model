@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/i;
-export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "f8dcebe17e0d83e9e796ac920e393c6e6b343b29213b557665320c0909fd0ea1";
+export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "d0e04ee985a9a3f4176e245c86af48bb1aa64fda59785590877c5e7da97b7c21";
 const METRICS = Object.freeze(["lines", "functions", "statements", "branches"]);
 const NEW_FILE_FLOORS = Object.freeze({ lines: 85, functions: 85, statements: 85, branches: 80 });
 const SOURCE_EXTENSION_PATTERN = /\.(?:ts|tsx|js|jsx)$/i;
@@ -72,11 +72,11 @@ export function validateModuleCoverageManifest(value) {
     || typeof value.measurement.v8Version !== "string" || !/^\d+(?:\.\d+){2,3}-node\.\d+$/.test(value.measurement.v8Version)) {
     throw new Error("Module coverage measurement Node and V8 versions are invalid.");
   }
-  if (value.measurement.profile !== "exact-tracked-paths-istanbul-v1"
+  if (value.measurement.profile !== "exact-tracked-paths-istanbul-single-worker-v1"
     || value.measurement.coverageAll !== true
     || value.measurement.ci !== true
     || value.measurement.nodeEnv !== "test"
-    || value.measurement.maxWorkers !== 4
+    || value.measurement.maxWorkers !== 1
     || value.measurement.minWorkers !== 1) {
     throw new Error("Module coverage measurement must match the pinned exact-path CI profile.");
   }

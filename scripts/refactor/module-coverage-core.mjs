@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/i;
-export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "674fe13f79dc4c8ba0bc352990c27c07aa11a067f69aa3e26d3567f132937f03";
+export const EXPECTED_MODULE_COVERAGE_MANIFEST_SHA256 = "27e1e1eb08236b94d86fe68a4c1e96ea7c25d59626c8a9f1743391026fec2c42";
 const METRICS = Object.freeze(["lines", "functions", "statements", "branches"]);
 const NEW_FILE_FLOORS = Object.freeze({ lines: 85, functions: 85, statements: 85, branches: 80 });
 const SOURCE_EXTENSION_PATTERN = /\.(?:ts|tsx|js|jsx)$/i;

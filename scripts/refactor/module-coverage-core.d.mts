@@ -53,6 +53,7 @@ export function assertRepeatedModuleCoverageMatches(args: {
   repoRoot: string;
 }): { filesCompared: number };
 export function validateModuleCoverageRelativePath(value: unknown, label: string): string;
+export function validateModuleCoverageTestPath(value: unknown, label?: string): string;
 export function validateModuleCoverageManifest(value: unknown): ModuleCoverageManifest;
 export function normalizeModuleCoverageReportPath(value: unknown, repoRoot: string): string;
 export function filterModuleCoverageSourcePaths(paths: string[], manifest: ModuleCoverageManifest): string[];

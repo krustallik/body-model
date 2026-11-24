@@ -11,6 +11,7 @@ import {
   verifyFrozenExcludedPathBlobs,
   verifyFrozenModuleCoverageInventory,
   verifyModuleCoverage,
+  validateModuleCoverageTestPath,
 } from "../../scripts/refactor/module-coverage-core.mjs";
 import { readFileSync } from "node:fs";
 
@@ -91,6 +92,26 @@ function reportFor(paths: string[], coverageForPath: (filePath: string) => numbe
 }
 
 describe("per-file module coverage gate", () => {
+  it("accepts tracked Vitest test paths outside the tests directory", () => {
+    expect(validateModuleCoverageTestPath("research/physiology-adaptation/v7-causal-assimilation.test.ts"))
+      .toBe("research/physiology-adaptation/v7-causal-assimilation.test.ts");
+    expect(validateModuleCoverageTestPath("tests/refactor-comparator/module-coverage.test.ts"))
+      .toBe("tests/refactor-comparator/module-coverage.test.ts");
+    expect(validateModuleCoverageTestPath("tests/tooling/legacy-fixture.test.mjs"))
+      .toBe("tests/tooling/legacy-fixture.test.mjs");
+  });
+
+  it("rejects non-test inputs and unsafe Vitest paths", () => {
+    for (const testPath of [
+      "research/physiology-adaptation/methods.ts",
+      "tests/integration/database-safety.integration.ts",
+      "../tests/example.test.ts",
+      "D:/outside/example.test.ts",
+    ]) {
+      expect(() => validateModuleCoverageTestPath(testPath)).toThrow();
+    }
+  });
+
   it("accepts the frozen per-file baseline", () => {
     const manifest = makeManifest();
     const paths = manifest.files.map(({ path }) => path);

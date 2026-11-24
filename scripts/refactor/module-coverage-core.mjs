@@ -29,6 +29,14 @@ export function validateModuleCoverageRelativePath(value, label) {
   return value;
 }
 
+export function validateModuleCoverageTestPath(value, label = "Vitest test path") {
+  const testPath = validateModuleCoverageRelativePath(value, label);
+  if (!/\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/i.test(testPath)) {
+    throw new Error(`${label} is not a Vitest test file: ${testPath}`);
+  }
+  return testPath;
+}
+
 function isWithinRoots(filePath, roots) {
   return roots.some((root) => filePath.startsWith(`${root}/`));
 }

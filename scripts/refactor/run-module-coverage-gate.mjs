@@ -8,6 +8,7 @@ import {
   filterModuleCoverageSourcePaths,
   validateModuleCoverageManifest,
   validateModuleCoverageRelativePath,
+  validateModuleCoverageTestPath,
   verifyFrozenModuleCoverageInventory,
   verifyFrozenExcludedPathBlobs,
   verifyModuleCoverage,
@@ -70,14 +71,15 @@ function frozenSourceInventory(manifest) {
 }
 
 function trackedTestBlobShas() {
-  const entries = gitBytes(["ls-files", "-s", "-z", "--", "tests"]).toString("utf8").split("\0").filter(Boolean);
+  const entries = gitBytes(["ls-files", "-s", "-z"]).toString("utf8").split("\0").filter(Boolean);
   const blobShas = new Map();
   for (const entry of entries) {
     const tab = entry.indexOf("\t");
     if (tab < 0) throw new Error("git ls-files returned a malformed test entry.");
     const [, blobSha, stage] = entry.slice(0, tab).split(" ");
     if (stage !== "0") throw new Error(`Test input has an unmerged index entry: ${entry.slice(tab + 1)}.`);
-    blobShas.set(entry.slice(tab + 1).replaceAll("\\", "/"), blobSha);
+    const filePath = entry.slice(tab + 1).replaceAll("\\", "/");
+    if (/\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/i.test(filePath)) blobShas.set(filePath, blobSha);
   }
   return blobShas;
 }
@@ -172,9 +174,11 @@ function normalizeTestPath(testPath) {
     throw new Error(`Vitest test path is outside the repository: ${testPath}`);
   }
   const normalized = relative.replaceAll("\\", "/");
-  validateModuleCoverageRelativePath(normalized, "Vitest test path");
-  if (!normalized.startsWith("tests/")) throw new Error(`Related Vitest selection included a non-test input: ${normalized}`);
-  return normalized;
+  try {
+    return validateModuleCoverageTestPath(normalized);
+  } catch {
+    throw new Error(`Related Vitest selection included a non-test input: ${normalized}`);
+  }
 }
 
 function summarizeTestReport(testReport, stdout, testBlobShas) {

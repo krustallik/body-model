@@ -43,12 +43,12 @@
     {
       "path": "src/modules/training/experimental-strength-energy.ts",
       "gitBlobSha": "b01d24061961eb6a6595b1fdf0afdc7c72415b6d",
-      "reason": "Deprecated V1 compatibility re-export; Istanbul 3.2.7 emits no executable counters, so the exact baseline blob is frozen and any candidate edit fails closed."
+      "reason": "Deprecated V1 compatibility re-export; an explicit import probe at baseline 725f6f684d8693d174d940f673e01efd1646b518 under Node v24.19.0 / V8 13.6.233.17-node.51 and Vitest 3.2.7 @vitest/coverage-v8 with AST-aware remapping produced zero line/function/statement/branch counters (summary SHA-256 c53676b6e288e65df295a3ce561ffbb36831d18f33c9ed4d46afce73d3105fe); the exact baseline blob is frozen and any candidate edit fails closed."
     },
     {
       "path": "src/modules/training/index.ts",
       "gitBlobSha": "9fccab5c994052ad067e7b1647a28d601c997a5e",
-      "reason": "Public re-export barrel; Istanbul 3.2.7 emits no executable counters, so the exact baseline blob is frozen and any candidate edit fails closed."
+      "reason": "Public training re-export barrel; the same explicit baseline import probe produced zero line/function/statement/branch counters; the exact baseline blob is frozen and any candidate edit fails closed."
     },
     {
       "path": "src/modules/training/testing/require-isolated-database.ts",

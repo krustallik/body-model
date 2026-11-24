@@ -333,7 +333,7 @@ describe("frozen module coverage inventory", () => {
     manifest.excludedPaths = [{
       path: excludedPath,
       gitBlobSha: BLOB_A,
-      reason: "Re-export-only compatibility contract has no Istanbul executable counters.",
+      reason: "Re-export-only compatibility contract has no V8 AST-aware executable counters.",
     }];
 
     expect(verifyFrozenExcludedPathBlobs({

@@ -54,6 +54,11 @@ function requireUnique(values, label) {
   if (new Set(values).size !== values.length) throw new Error(`${label} contains duplicates.`);
 }
 
+function requireExactKeys(value, allowed, label) {
+  const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unexpected.length > 0) throw new Error(`${label} contains unsupported fields: ${unexpected.join(", ")}.`);
+}
+
 export function parseComparatorArgs(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {
@@ -179,6 +184,7 @@ export function validateManifest(value) {
   const unitPaths = [];
   for (const [index, suite] of value.unitSuites.entries()) {
     requireObject(suite, `Manifest unitSuites[${index}]`);
+    requireExactKeys(suite, ["id", "paths"], `Manifest unitSuites[${index}]`);
     if (typeof suite.id !== "string" || suite.id.length === 0) throw new Error(`Manifest unitSuites[${index}].id is invalid.`);
     if (!Array.isArray(suite.paths) || suite.paths.length === 0) throw new Error(`Manifest unitSuites[${index}].paths are required.`);
     suiteIds.push(suite.id);
@@ -190,11 +196,18 @@ export function validateManifest(value) {
   const observationIds = [];
   for (const [index, observation] of value.observations.entries()) {
     requireObject(observation, `Manifest observations[${index}]`);
+    requireExactKeys(observation, ["id", "path", "testName", "integrationSuiteId"], `Manifest observations[${index}]`);
     if (typeof observation.id !== "string" || !/^[A-Z0-9][A-Za-z0-9._/-]{1,180}$/.test(observation.id)) {
       throw new Error(`Manifest observations[${index}].id is invalid.`);
     }
     const source = validateRelativePath(observation.path, `Manifest observations[${index}].path`);
-    if (!unitPaths.includes(source)) throw new Error(`Observation ${observation.id} is not covered by a unit suite.`);
+    const integrationSuiteId = observation.integrationSuiteId;
+    if (integrationSuiteId !== undefined && (typeof integrationSuiteId !== "string" || integrationSuiteId.length === 0)) {
+      throw new Error(`Observation ${observation.id} has an invalid integrationSuiteId.`);
+    }
+    if (integrationSuiteId === undefined && !unitPaths.includes(source)) {
+      throw new Error(`Observation ${observation.id} is not covered by a unit suite.`);
+    }
     if (typeof observation.testName !== "string" || observation.testName.length === 0) {
       throw new Error(`Manifest observations[${index}].testName is invalid.`);
     }
@@ -204,9 +217,16 @@ export function validateManifest(value) {
 
   for (const [index, suite] of value.integrationSuites.entries()) {
     requireObject(suite, `Manifest integrationSuites[${index}]`);
+    requireExactKeys(suite, ["id", "args", "databaseProfile", "authEnvironment", "clockMode"], `Manifest integrationSuites[${index}]`);
     if (typeof suite.id !== "string" || suite.id.length === 0) throw new Error(`Manifest integrationSuites[${index}].id is invalid.`);
     if (!Array.isArray(suite.args) || suite.args.some((arg) => typeof arg !== "string" || arg.length === 0)) {
       throw new Error(`Manifest integrationSuites[${index}].args are invalid.`);
+    }
+    for (const [argIndex, arg] of suite.args.entries()) {
+      validateRelativePath(arg, `Manifest integrationSuites[${index}].args[${argIndex}]`);
+      if (!arg.startsWith("tests/integration/") || !arg.endsWith(".integration.test.ts")) {
+        throw new Error(`Manifest integrationSuites[${index}] may run only explicit integration test files.`);
+      }
     }
     if (suite.databaseProfile !== undefined && !["primary", "auth"].includes(suite.databaseProfile)) {
       throw new Error("Manifest integrationSuites[" + index + "].databaseProfile is invalid.");
@@ -228,7 +248,144 @@ export function validateManifest(value) {
   requireUnique(suiteIds, "Manifest suite IDs");
   const authSuites = value.integrationSuites.filter((suite) => suite.databaseProfile === "auth" && suite.authEnvironment === true);
   if (authSuites.length !== 1) throw new Error("Manifest must contain exactly one isolated Auth integration suite.");
+
+  const integrationById = new Map(value.integrationSuites.map((suite) => [suite.id, suite]));
+  for (const observation of value.observations) {
+    if (observation.integrationSuiteId === undefined) continue;
+    const suite = integrationById.get(observation.integrationSuiteId);
+    if (!suite || !suite.args.includes(observation.path)) {
+      throw new Error(`Integration observation ${observation.id} is not covered by its declared suite.`);
+    }
+  }
+
+  if (value.caseGroups !== undefined) {
+    if (!Array.isArray(value.caseGroups) || value.caseGroups.length === 0) {
+      throw new Error("Manifest caseGroups must be a non-empty array when present.");
+    }
+    const groupIds = [];
+    for (const [index, group] of value.caseGroups.entries()) {
+      requireObject(group, `Manifest caseGroups[${index}]`);
+      requireExactKeys(group, ["id", "unitPaths", "integrationSuiteIds", "observationIds", "databaseStateSuiteIds", "inputFiles", "uiEvidence"], `Manifest caseGroups[${index}]`);
+      if (typeof group.id !== "string" || !/^[A-Z0-9][A-Za-z0-9._/-]{1,120}$/.test(group.id)) {
+        throw new Error(`Manifest caseGroups[${index}].id is invalid.`);
+      }
+      groupIds.push(group.id);
+      for (const key of ["unitPaths", "integrationSuiteIds", "observationIds", "databaseStateSuiteIds", "inputFiles"]) {
+        if (!Array.isArray(group[key])) throw new Error(`Manifest case group ${group.id}.${key} must be an array.`);
+      }
+      if (group.unitPaths.length === 0 && group.integrationSuiteIds.length === 0
+        && group.observationIds.length === 0 && group.databaseStateSuiteIds.length === 0
+        && group.uiEvidence === undefined) {
+        throw new Error(`Manifest case group ${group.id} has no executable or frozen output evidence.`);
+      }
+      for (const file of group.unitPaths) {
+        validateRelativePath(file, `Manifest case group ${group.id} unit path`);
+        if (!unitPaths.includes(file)) throw new Error(`Manifest case group ${group.id} references an unfrozen unit path.`);
+      }
+      for (const suiteId of group.integrationSuiteIds) {
+        if (!integrationById.has(suiteId)) throw new Error(`Manifest case group ${group.id} references an unknown integration suite.`);
+      }
+      for (const suiteId of group.databaseStateSuiteIds) {
+        if (!integrationById.has(suiteId) || !group.integrationSuiteIds.includes(suiteId)) {
+          throw new Error(`Manifest case group ${group.id} database projection is not backed by an included integration suite.`);
+        }
+      }
+      for (const observationId of group.observationIds) {
+        if (!observationIds.includes(observationId)) throw new Error(`Manifest case group ${group.id} references an unknown observation.`);
+      }
+      if (group.inputFiles.length === 0) throw new Error(`Manifest case group ${group.id} must pin at least one input fixture or frozen evidence file.`);
+      for (const [fileIndex, input] of group.inputFiles.entries()) {
+        requireObject(input, `Manifest case group ${group.id}.inputFiles[${fileIndex}]`);
+        requireExactKeys(input, ["path", "sha256"], `Manifest case group ${group.id}.inputFiles[${fileIndex}]`);
+        validateRelativePath(input.path, `Manifest case group ${group.id} input path`);
+        if (typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+          throw new Error(`Manifest case group ${group.id} input SHA-256 is invalid.`);
+        }
+      }
+      if (group.uiEvidence !== undefined) {
+        requireObject(group.uiEvidence, `Manifest case group ${group.id}.uiEvidence`);
+        requireExactKeys(group.uiEvidence, ["path", "sha256"], `Manifest case group ${group.id}.uiEvidence`);
+        validateRelativePath(group.uiEvidence.path, `Manifest case group ${group.id} UI evidence path`);
+        if (typeof group.uiEvidence.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(group.uiEvidence.sha256)) {
+          throw new Error(`Manifest case group ${group.id} UI evidence SHA-256 is invalid.`);
+        }
+      }
+    }
+    requireUnique(groupIds, "Manifest case group IDs");
+  }
   return value;
+}
+
+function assertPrefixExtension(before, after, label) {
+  if (!Array.isArray(before) || !Array.isArray(after) || after.length < before.length
+    || stableJson(after.slice(0, before.length)) !== stableJson(before)) {
+    throw new Error(`Comparator manifest extension changed or reordered frozen ${label}.`);
+  }
+}
+
+/**
+ * A stage may enlarge the frozen corpus, but may not weaken or rewrite any
+ * contract already accepted on its base. The candidate harness is then
+ * overlaid byte-for-byte onto both source trees for the comparison.
+ */
+export function assertAdditiveManifestExtension(baseValue, candidateValue) {
+  const base = validateManifest(baseValue);
+  const candidate = validateManifest(candidateValue);
+  const stableFields = (value) => {
+    const { unitSuites: _unitSuites, integrationSuites: _integrationSuites, observations: _observations,
+      caseGroups: _caseGroups, ...stable } = value;
+    return stable;
+  };
+  if (stableJson(stableFields(base)) !== stableJson(stableFields(candidate))) {
+    throw new Error("Comparator manifest extension changed a frozen runtime, fixture, database, schema, or safety contract.");
+  }
+  assertPrefixExtension(base.unitSuites.map(({ id }) => id), candidate.unitSuites.map(({ id }) => id), "unit suite order");
+  assertPrefixExtension(base.integrationSuites.map(({ id }) => id), candidate.integrationSuites.map(({ id }) => id), "integration suite order");
+  assertPrefixExtension(base.observations, candidate.observations, "observations");
+  const baseGroups = base.caseGroups ?? [];
+  const candidateGroups = candidate.caseGroups ?? [];
+  assertPrefixExtension(baseGroups, candidateGroups, "case groups");
+
+  const candidateUnits = new Map(candidate.unitSuites.map((suite) => [suite.id, suite]));
+  for (const suite of base.unitSuites) {
+    const extended = candidateUnits.get(suite.id);
+    if (!extended) throw new Error(`Comparator manifest extension removed frozen unit suite ${suite.id}.`);
+    const { paths: _paths, ...beforeMetadata } = suite;
+    const { paths: _extendedPaths, ...afterMetadata } = extended;
+    if (stableJson(beforeMetadata) !== stableJson(afterMetadata)) {
+      throw new Error(`Comparator manifest extension changed frozen unit suite metadata for ${suite.id}.`);
+    }
+    assertPrefixExtension(suite.paths, extended.paths, `unit paths in ${suite.id}`);
+  }
+
+  const candidateIntegrations = new Map(candidate.integrationSuites.map((suite) => [suite.id, suite]));
+  for (const suite of base.integrationSuites) {
+    const extended = candidateIntegrations.get(suite.id);
+    if (!extended) throw new Error(`Comparator manifest extension removed frozen integration suite ${suite.id}.`);
+    const { args: _args, ...beforeMetadata } = suite;
+    const { args: _extendedArgs, ...afterMetadata } = extended;
+    if (stableJson(beforeMetadata) !== stableJson(afterMetadata)) {
+      throw new Error(`Comparator manifest extension changed frozen integration suite metadata for ${suite.id}.`);
+    }
+    assertPrefixExtension(suite.args, extended.args, `integration args in ${suite.id}`);
+  }
+
+  const baseObservationIds = new Set(base.observations.map(({ id }) => id));
+  return {
+    additive: stableJson(base) !== stableJson(candidate),
+    addedUnitSuites: candidate.unitSuites.filter(({ id }) => !base.unitSuites.some((item) => item.id === id)).map(({ id }) => id),
+    addedIntegrationSuites: candidate.integrationSuites.filter(({ id }) => !base.integrationSuites.some((item) => item.id === id)).map(({ id }) => id),
+    addedUnitPaths: candidate.unitSuites.flatMap(({ id, paths }) => {
+      const old = base.unitSuites.find((item) => item.id === id)?.paths ?? [];
+      return paths.filter((item) => !old.includes(item));
+    }),
+    addedIntegrationArgs: candidate.integrationSuites.flatMap(({ id, args }) => {
+      const old = base.integrationSuites.find((item) => item.id === id)?.args ?? [];
+      return args.filter((item) => !old.includes(item));
+    }),
+    addedObservations: candidate.observations.filter(({ id }) => !baseObservationIds.has(id)).map(({ id }) => id),
+    addedCaseGroups: candidateGroups.filter(({ id }) => !baseGroups.some((item) => item.id === id)).map(({ id }) => id),
+  };
 }
 
 export function validateComparatorDatabaseUrl(databaseUrl, expected, mode) {

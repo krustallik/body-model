@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   aggregateSuiteCases,
+  assertAdditiveManifestExtension,
   deriveDatabaseClockTransitions,
   diffJson,
   parseComparatorArgs,
@@ -581,41 +582,67 @@ async function readTestSummary(reportPath, label, repository, { allowFiltered = 
   };
 }
 
-async function runUnitSuite({ repository, target, manifest, evidenceDir, sideName, shimPath }) {
-  const suite = manifest.unitSuites[0];
-  const sideRoot = path.join(evidenceDir, sideName, "unit", suite.id);
-  await mkdir(sideRoot, { recursive: true });
-  const reportPath = path.join(sideRoot, "vitest-report.json");
-  const capturePath = path.join(sideRoot, "observations.ndjson");
-  await writeFile(capturePath, "", { encoding: "utf8", flag: "wx" });
-  const env = safeEnvironment(target, {
-    BODYCAST_REFACTOR_CAPTURE_FILE: capturePath,
-    BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
-    BODYCAST_REFACTOR_CLOCK_MODE: "frozen",
-    BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
-    NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
-  });
-  const args = [
-    path.join(repository, "node_modules", "vitest", "vitest.mjs"), "run",
-    "--pool=forks", "--maxWorkers=1", "--minWorkers=1", "--reporter=json", `--outputFile=${reportPath}`,
-    ...suite.paths,
-  ];
-  await runLogged(process.execPath, args, {
-    cwd: repository,
-    env,
-    logPath: path.join(sideRoot, "test.log"),
-    label: `${sideName} ${suite.id}`,
-    timeoutMs: PROCESS_TIMEOUT_MS,
-  });
-  const cases = await readTestSummary(reportPath, `${sideName} ${suite.id}`, repository);
-  if (stableJson(cases.files) !== stableJson([...suite.paths].sort())) {
-    fail(`${sideName} frozen unit suite did not execute every manifest path exactly once.`);
+async function runUnitSuites({ repository, target, manifest, evidenceDir, sideName, shimPath }) {
+  const suiteResults = [];
+  for (const suite of manifest.unitSuites) {
+    const sideRoot = path.join(evidenceDir, sideName, "unit", suite.id);
+    await mkdir(sideRoot, { recursive: true });
+    const reportPath = path.join(sideRoot, "vitest-report.json");
+    const capturePath = path.join(sideRoot, "observations.ndjson");
+    await writeFile(capturePath, "", { encoding: "utf8", flag: "wx" });
+    const env = safeEnvironment(target, {
+      BODYCAST_REFACTOR_CAPTURE_FILE: capturePath,
+      BODYCAST_REFACTOR_FIXED_TIME: manifest.determinism.clock,
+      BODYCAST_REFACTOR_CLOCK_MODE: "frozen",
+      BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
+      NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
+    });
+    const args = [
+      path.join(repository, "node_modules", "vitest", "vitest.mjs"), "run",
+      "--pool=forks", "--maxWorkers=1", "--minWorkers=1", "--reporter=json", `--outputFile=${reportPath}`,
+      ...suite.paths,
+    ];
+    await runLogged(process.execPath, args, {
+      cwd: repository,
+      env,
+      logPath: path.join(sideRoot, "test.log"),
+      label: `${sideName} ${suite.id}`,
+      timeoutMs: PROCESS_TIMEOUT_MS,
+    });
+    const cases = await readTestSummary(reportPath, `${sideName} ${suite.id}`, repository);
+    if (stableJson(cases.files) !== stableJson([...suite.paths].sort())) {
+      fail(`${sideName} frozen unit suite ${suite.id} did not execute every manifest path exactly once.`);
+    }
+    const observationLines = (await readFile(capturePath, "utf8")).split(/\r?\n/).filter(Boolean);
+    const observations = sortObservationsByCaseId(observationLines.map((line) => JSON.parse(line)));
+    const expectedIds = manifest.observations.filter(({ integrationSuiteId, path: observationPath }) => (
+      integrationSuiteId === undefined && suite.paths.includes(observationPath)
+    )).map(({ id }) => id).sort();
+    const observedIds = observations.map(({ caseId }) => caseId).sort();
+    if (stableJson(expectedIds) !== stableJson(observedIds)) {
+      fail(`${sideName} ${suite.id} observation set is missing, duplicated, or contains extra cases.`);
+    }
+    await writeJson(path.join(sideRoot, "case-summary.json"), cases);
+    await writeJson(path.join(sideRoot, "observations.json"), observations);
+    suiteResults.push({ cases, observations });
   }
-  const observationLines = (await readFile(capturePath, "utf8")).split(/\r?\n/).filter(Boolean);
-  const observations = sortObservationsByCaseId(observationLines.map((line) => JSON.parse(line)));
-  const expectedIds = manifest.observations.map(({ id }) => id).sort();
+
+  const cases = {
+    total: suiteResults.reduce((total, result) => total + result.cases.total, 0),
+    passed: suiteResults.reduce((total, result) => total + result.cases.passed, 0),
+    filtered: suiteResults.reduce((total, result) => total + result.cases.filtered, 0),
+    files: suiteResults.flatMap((result) => result.cases.files).sort(),
+    tests: suiteResults.flatMap((result) => result.cases.tests)
+      .sort((left, right) => `${left.file}\0${left.name}`.localeCompare(`${right.file}\0${right.name}`)),
+  };
+  const observations = sortObservationsByCaseId(suiteResults.flatMap((result) => result.observations));
+  const expectedIds = manifest.observations.filter(({ integrationSuiteId }) => integrationSuiteId === undefined)
+    .map(({ id }) => id).sort();
   const observedIds = observations.map(({ caseId }) => caseId).sort();
-  if (stableJson(expectedIds) !== stableJson(observedIds)) fail(`${sideName} comparator observation set is missing, duplicated, or contains extra cases.`);
+  if (stableJson(expectedIds) !== stableJson(observedIds)) {
+    fail(`${sideName} comparator observation set is missing, duplicated, or contains extra cases.`);
+  }
+  const sideRoot = path.join(evidenceDir, sideName, "unit");
   await writeJson(path.join(sideRoot, "case-summary.json"), cases);
   await writeJson(path.join(sideRoot, "observations.json"), observations);
   return { cases, observations };
@@ -682,10 +709,13 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
   const sideRoot = path.join(evidenceDir, sideName, "integration", suite.id);
   await mkdir(sideRoot, { recursive: true });
   const reportPath = path.join(sideRoot, "vitest-report.json");
+  const capturePath = path.join(sideRoot, "observations.ndjson");
+  await writeFile(capturePath, "", { encoding: "utf8", flag: "wx" });
   const env = safeEnvironment(target, {
     BODYCAST_REFACTOR_FIXED_TIME: suite.databaseProfile === "auth" ? authFixedTime : manifest.determinism.clock,
     BODYCAST_REFACTOR_CLOCK_MODE: suite.clockMode ?? "native",
     BODYCAST_REFACTOR_RANDOM_SEED: manifest.determinism.randomSeed,
+    BODYCAST_REFACTOR_CAPTURE_FILE: capturePath,
     NODE_OPTIONS: `--import=${pathToFileURL(shimPath).href}`,
     ...(suite.authEnvironment ? { LEGACY_IOS_SHORTCUT_ENABLED: "true" } : {}),
   });
@@ -717,10 +747,19 @@ async function runIntegrationSuite({ root, repository, target, manifest, suite, 
       timeoutMs: PROCESS_TIMEOUT_MS,
     });
     const cases = await readTestSummary(reportPath, `${sideName} ${suite.id}`, repository, { allowFiltered: true });
+    const observationLines = (await readFile(capturePath, "utf8")).split(/\r?\n/).filter(Boolean);
+    const observations = sortObservationsByCaseId(observationLines.map((line) => JSON.parse(line)));
+    const expectedIds = manifest.observations.filter(({ integrationSuiteId }) => integrationSuiteId === suite.id)
+      .map(({ id }) => id).sort();
+    const observedIds = observations.map(({ caseId }) => caseId).sort();
+    if (stableJson(expectedIds) !== stableJson(observedIds)) {
+      fail(`${sideName} ${suite.id} integration observation set is missing, duplicated, or contains extra cases.`);
+    }
     const finalState = await captureDatabase(target, container, manifest);
     await writeJson(path.join(sideRoot, "case-summary.json"), cases);
+    await writeJson(path.join(sideRoot, "observations.json"), observations);
     await writeJson(path.join(sideRoot, "database-final-state.json"), finalState);
-    return { cases, initial, finalState, identity: initialIdentity };
+    return { cases, observations, initial, finalState, identity: initialIdentity };
   } finally {
     await stopDatabase(root, container, runId);
   }
@@ -831,7 +870,7 @@ async function sourceTreeEvidence(repository) {
   };
 }
 
-async function writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId, authFixedTime }) {
+async function writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId, authFixedTime, manifestEvolution }) {
   const commitEvidence = {};
   for (const [label, sha] of [["base", args.baseSha], ["candidate", args.candidateSha]]) {
     commitEvidence[label] = {
@@ -855,6 +894,7 @@ async function writeRunMetadata({ root, evidenceDir, args, manifest, manifestTex
       deterministicRuntimeSha256: await shaForFile(shimPath),
       manifestSha256: digestBytes(manifestText),
       manifest,
+      manifestEvolution,
     },
     frozenHarness: {
       sha: harnessRoot === root ? args.candidateSha : await git(harnessRoot, ["rev-parse", "HEAD"]),
@@ -925,14 +965,21 @@ async function main() {
   if (!isWithin(root, manifestPath)) fail("Comparator manifest path escapes the repository root.");
   const manifestText = await readFile(manifestPath, "utf8");
   const manifest = validateManifest(JSON.parse(manifestText));
+  let manifestEvolution = {
+    additive: false,
+    addedUnitSuites: [],
+    addedIntegrationSuites: [],
+    addedUnitPaths: [],
+    addedIntegrationArgs: [],
+    addedObservations: [],
+    addedCaseGroups: [],
+  };
   if (!preflightResult.manifestExistsAtBase && manifest.bootstrapBaseSha !== args.baseSha) {
     fail("A comparator harness absent at base can only bootstrap its exact frozen base SHA.");
   }
   if (preflightResult.manifestExistsAtBase) {
     const baseManifest = await git(root, ["show", `${args.baseSha}:${args.manifest}`]);
-    if (stableJson(JSON.parse(baseManifest)) !== stableJson(manifest)) {
-      fail("Frozen comparator manifest differs from the exact stage base.");
-    }
+    manifestEvolution = assertAdditiveManifestExtension(JSON.parse(baseManifest), manifest);
   }
 
   const evidenceDir = path.resolve(args.evidenceDir);
@@ -974,7 +1021,8 @@ async function main() {
       fail(`Comparator currently requires the audited complete migration tree of 79 entries; found ${baseEvidence.migrations.migrations.length}.`);
     }
     const harnessRoot = path.join(evidenceDir, "scratch", "frozen-harness-source");
-    await git(root, ["worktree", "add", "--detach", harnessRoot, preflightResult.manifestExistsAtBase ? args.baseSha : args.candidateSha]);
+    await git(root, ["worktree", "add", "--detach", harnessRoot,
+      preflightResult.manifestExistsAtBase && !manifestEvolution.additive ? args.baseSha : args.candidateSha]);
     harnessAdded = true;
     const harnessSource = path.join(evidenceDir, "scratch", "frozen-tests-source");
     await mkdir(harnessSource, { recursive: true });
@@ -993,7 +1041,7 @@ async function main() {
     const shimPath = path.join(root, "scripts", "refactor", "deterministic-runtime.mjs");
     const image = await verifyPinnedImage(root, manifest.postgres.image);
     const sourceEvidence = { before: baseEvidence, candidate: candidateEvidence };
-    await writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId, authFixedTime });
+    await writeRunMetadata({ root, evidenceDir, args, manifest, manifestText, sourceEvidence, harnessRoot, shimPath, runId, authFixedTime, manifestEvolution });
     const comparatorSelfTests = await runComparatorSelfTests({ root, manifest, evidenceDir, shimPath });
     await writeJson(path.join(evidenceDir, "comparator-self-tests", "accepted.json"), {
       status: "PASS",
@@ -1005,7 +1053,7 @@ async function main() {
       root, beforeRepository: baseWorktree, manifest, evidenceDir, runId, imageId: image.imageId,
     });
     const dumpPath = dump.dumpPath;
-    const unitBefore = await runUnitSuite({
+    const unitBefore = await runUnitSuites({
       repository: baseWorktree,
       target: manifest.postgres.before,
       manifest,
@@ -1013,7 +1061,7 @@ async function main() {
       sideName: "before",
       shimPath,
     });
-    const unitAfter = await runUnitSuite({
+    const unitAfter = await runUnitSuites({
       repository: candidateWorktree,
       target: manifest.postgres.after,
       manifest,
@@ -1065,6 +1113,7 @@ async function main() {
         authFixedTime,
       });
       const caseEqual = stableTestResults(before.cases, after.cases);
+      const integrationObservationDifferences = diffJson(before.observations, after.observations);
       beforeIntegrationRuns.push({ suiteId: suite.id, cases: before.cases.tests });
       afterIntegrationRuns.push({ suiteId: suite.id, cases: after.cases.tests });
       const beforeInitialProjection = projectPersistedStateForComparison(
@@ -1099,6 +1148,8 @@ async function main() {
       const comparison = {
         suite: suite.id,
         casesEqual: caseEqual,
+        observationsEqual: integrationObservationDifferences.length === 0,
+        observationDifferences: integrationObservationDifferences,
         initialPersistedStateEqual: initialDifferences.length === 0,
         finalPersistedStateEqual: finalDifferences.length === 0,
         databaseClockTransitionsEqual: clockTransitionDifferences.length === 0,
@@ -1127,7 +1178,8 @@ async function main() {
       await mkdir(comparisonRoot, { recursive: true });
       await writeJson(path.join(comparisonRoot, `${suite.id}.json`), comparison);
       integrationResults.push(comparison);
-      if (!caseEqual || initialDifferences.length > 0 || finalDifferences.length > 0 || clockTransitionDifferences.length > 0) {
+      if (!caseEqual || integrationObservationDifferences.length > 0 || initialDifferences.length > 0
+        || finalDifferences.length > 0 || clockTransitionDifferences.length > 0) {
         fail(`Frozen integration suite ${suite.id} differs between base and candidate.`);
       }
     }

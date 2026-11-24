@@ -6,13 +6,15 @@ import {
   inventoryFullHistoryRawInputs,
 } from "@/modules/model-episodes/full-history-recalculation.service";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
+import { recordRefactorObservation } from "../refactor-comparator/capture";
 
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.BODYCAST_RECOVERY_TEST_DATABASE_URL);
 
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
-const metricPrefix = `full-history-${process.pid}-${Math.floor(Math.random() * 1_000_000)}-`;
+const comparatorMarker = process.env.BODYCAST_REFACTOR_CAPTURE_FILE ? "comparator" : `${process.pid}-${Math.floor(Math.random() * 1_000_000)}`;
+const metricPrefix = `full-history-${comparatorMarker}-`;
 const episodeProfileId = 1;
-const fixtureMethod = `full-history-raw-input-inventory-${process.pid}-${Math.floor(Math.random() * 1_000_000)}`;
+const fixtureMethod = `full-history-raw-input-inventory-${comparatorMarker}`;
 const sampleTimestamp = new Date("2098-01-01T00:00:00.000Z");
 const sampleCount = 251;
 let profileCreated = false;
@@ -148,8 +150,17 @@ describe("full-history raw-input inventory PostgreSQL", () => {
     const afterTable = after.tables.find((table) => table.table === "HealthMetricSample");
     expect(after.fingerprint).not.toBe(before.fingerprint);
     expect(afterTable?.contentSha256).not.toBe(beforeTable?.contentSha256);
-    expect(await prisma.healthMetricSample.findUniqueOrThrow({ where: { id: lastFixtureRow.id } }))
-      .toMatchObject({ id: lastFixtureRow.id, timestamp: lastFixtureRow.timestamp });
+    const changedFixtureRow = await prisma.healthMetricSample.findUniqueOrThrow({ where: { id: lastFixtureRow.id } });
+    expect(changedFixtureRow).toMatchObject({ id: lastFixtureRow.id, timestamp: lastFixtureRow.timestamp });
+    recordRefactorObservation("RAW-01/raw-inventory-fingerprint", {
+      before: { fingerprint: before.fingerprint, table: beforeTable },
+      after: { fingerprint: after.fingerprint, table: afterTable },
+      changedRow: {
+        id: changedFixtureRow.id,
+        timestamp: changedFixtureRow.timestamp,
+        value: changedFixtureRow.value,
+      },
+    });
   });
 
   it("fingerprints frozen ModelEpisode initialization inputs but excludes recalculated outputs", async () => {

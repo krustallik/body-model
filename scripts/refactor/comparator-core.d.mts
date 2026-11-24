@@ -31,6 +31,15 @@ export function parseComparatorArgs(argv: string[]): ComparatorArguments;
 export function validateRelativePath(value: unknown, label: string): string;
 export function validateResolvedPostgresImage(image: string, repoDigests: unknown): string;
 export function validateManifest(value: unknown): Record<string, unknown>;
+export function assertAdditiveManifestExtension(baseValue: unknown, candidateValue: unknown): {
+  additive: boolean;
+  addedUnitSuites: string[];
+  addedIntegrationSuites: string[];
+  addedUnitPaths: string[];
+  addedIntegrationArgs: string[];
+  addedObservations: string[];
+  addedCaseGroups: string[];
+};
 export function validateComparatorDatabaseUrl(
   databaseUrl: string,
   expected: DatabaseTarget,

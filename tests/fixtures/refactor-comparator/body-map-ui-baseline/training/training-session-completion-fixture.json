@@ -1,0 +1,50 @@
+{
+  "id": 42,
+  "status": "COMPLETED",
+  "entryMode": "LIVE",
+  "revision": 1,
+  "programId": 7,
+  "programName": "ТИСНИ",
+  "programVersionId": 11,
+  "programVersionNumber": 1,
+  "webStartedAt": "2026-09-17T16:00:00.000Z",
+  "webEndedAt": "2026-11-22T23:59:59.999Z",
+  "matchStatus": "PENDING",
+  "matchMethod": null,
+  "matchedAt": null,
+  "matchedWorkoutId": null,
+  "matchedWorkout": null,
+  "ordinaryTonnageKg": null,
+  "createdAt": "2026-09-17T16:00:00.000Z",
+  "updatedAt": "2026-11-22T23:59:59.999Z",
+  "exercises": [
+    {
+      "id": 3,
+      "sourceExerciseCatalogId": 5,
+      "stableKey": null,
+      "snapshotExerciseName": "Віджимання від ручок",
+      "order": 0,
+      "plannedSets": 1,
+      "resistanceType": "BODYWEIGHT",
+      "origin": "PLANNED",
+      "muscleMappingSnapshot": null,
+      "sets": [
+        {
+          "id": 91,
+          "sessionExerciseId": 3,
+          "setNumber": 1,
+          "reps": 12,
+          "weightKg": null,
+          "bandNominalResistanceKg": null,
+          "rir": null,
+          "restBeforeSeconds": null,
+          "comment": null,
+          "completedAt": "2026-11-22T23:59:59.999Z",
+          "createdAt": "2026-11-22T23:59:59.999Z",
+          "updatedAt": "2026-11-22T23:59:59.999Z",
+          "loadAccountingOverride": null
+        }
+      ]
+    }
+  ]
+}

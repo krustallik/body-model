@@ -1,0 +1,1031 @@
+{
+  "status": "PASS",
+  "baseSha": "725f6f684d8693d174d940f673e01efd1646b518",
+  "runnerSha256": "ecc97ebc83138e0286590e657d31e4d45d7dbdd7371bd151c04959f4e7f95902",
+  "route": "/body-map?group=chest&view=front",
+  "database": {
+    "host": "127.0.0.1",
+    "port": 55436,
+    "name": "bodycast_bodymap_qa_test",
+    "role": "bodycast_bodymap_qa_test",
+    "readOnly": true,
+    "verifiedServerPort": 5432
+  },
+  "runtime": {
+    "clock": "2026-11-22T23:59:59.999Z",
+    "timezone": "UTC",
+    "locale": "uk-UA"
+  },
+  "syntheticSessions": 100,
+  "mappedSets": 1612,
+  "unmappedSets": 0,
+  "analyticsFingerprints": {
+    "1": "8c96a2c6e9b492220a0b7ace977a47e8ee510aeca414a84d9667ac684a96e02c",
+    "2": "9fe055b421c44c875eb03917068ee7c7c4233ec8e4b3d87a75908eb33cab0849",
+    "3": "09cd835463843f5d2623c65666704148a884381192385ea62d28e74f46156d1c",
+    "6": "c6b6736cde0f9dd77c51ce95dc2b378a12b3a02d91d8c0161df6b266f6858198"
+  },
+  "characterizationTestEvidence": {
+    "command": "node node_modules/vitest/vitest.mjs run tests/body-map-training-analytics-route.test.ts tests/exercise-anatomy-mapping-v1.test.ts tests/exercise-anatomy-mapping-v2.test.ts tests/exercise-anatomy-mapping-v3.test.ts tests/exercise-mapping-snapshot-backfill.test.ts",
+    "files": [
+      {
+        "path": "tests/body-map-training-analytics-route.test.ts",
+        "sha256": "c7f258615f4f70ca34bc40f447eb28ab42c005b9329c9e4d16dd36ce3fd51b8f"
+      },
+      {
+        "path": "tests/exercise-anatomy-mapping-v1.test.ts",
+        "sha256": "9d07147488397cf437e0c4377401bcd537753a439a0df9cfec325421f5f95e3c"
+      },
+      {
+        "path": "tests/exercise-anatomy-mapping-v2.test.ts",
+        "sha256": "0d9be40fac038ef4a6bf31ed679356414afc65306e6eb92fc949f23be926a464"
+      },
+      {
+        "path": "tests/exercise-anatomy-mapping-v3.test.ts",
+        "sha256": "95fbd8e0f75b3fcc663cb86da162cb51856bf883ebbf89271df8de4a1e53655e"
+      },
+      {
+        "path": "tests/exercise-mapping-snapshot-backfill.test.ts",
+        "sha256": "a803891fc1711061bbdd8a57894b8ef29b926c2d686e93050cfaedb9bb5bbafc"
+      }
+    ],
+    "stdoutSha256": "fba7b0330784f82a2e755db90439934a47fecddd3fae3d6fef506ae119e77668",
+    "summary": [
+      "Test Files  5 passed (5)",
+      "Tests  29 passed (29)"
+    ]
+  },
+  "api": {
+    "profile": {
+      "status": 200,
+      "sha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78"
+    },
+    "analyticsUiFixtureResponses": {
+      "source": "readBodyMapTrainingAnalyticsV1 outputs read from the exact isolated synthetic QA database; browser API responses are intercepted to freeze these UI fixtures",
+      "responses": [
+        {
+          "months": 1,
+          "status": 200,
+          "sha256": "c7eee2e53cb02fa86cd51915d9a60dc52825f8f8ab4efdeb2244c51124ab666c",
+          "byteLength": 1258280,
+          "file": "api-analytics-1-months.json"
+        },
+        {
+          "months": 2,
+          "status": 200,
+          "sha256": "639f380338bf4d500c3d5fdbb1cadd12455c13467c0be42715517b50a837f65d",
+          "byteLength": 2349428,
+          "file": "api-analytics-2-months.json"
+        },
+        {
+          "months": 3,
+          "status": 200,
+          "sha256": "45d3c2c7204f1581bf74104d1e43146e7852c4a7a953be48c92d72fba446e735",
+          "byteLength": 3591199,
+          "file": "api-analytics-3-months.json"
+        },
+        {
+          "months": 6,
+          "status": 200,
+          "sha256": "a9a1949ff20ad16830f0f93efb476d679a4eab63c4da14625d9dbc8afc5a0fbf",
+          "byteLength": 6498932,
+          "file": "api-analytics-6-months.json"
+        }
+      ]
+    },
+    "authenticatedAnalyticsRouteContract": {
+      "evidenceFile": "body-map-contract-test-output.txt",
+      "test": "tests/body-map-training-analytics-route.test.ts",
+      "testSha256": "c7f258615f4f70ca34bc40f447eb28ab42c005b9329c9e4d16dd36ce3fd51b8f",
+      "routeSha256": "90ace6502971aff426aed543c106b35d021ea313e05a41ffa061e355b0144a05",
+      "statusAndNoStoreHeadersAssertedByTest": true,
+      "scope": "existing route unit test with auth and repository mocked; this is not an authenticated production HTTP capture"
+    },
+    "requestedPeriods": [
+      1,
+      2,
+      3,
+      6
+    ],
+    "unauthenticatedAnalytics": {
+      "status": 401,
+      "body": {
+        "error": "unauthorized"
+      },
+      "cacheControl": "private, no-store"
+    }
+  },
+  "routeAuth": {
+    "unauthenticatedBodyMapStatus": 307,
+    "redirect": "/login"
+  },
+  "developmentFallback": {
+    "manifestStatus": 503,
+    "body": "Prototype manifest is not generated yet."
+  },
+  "manifest": {
+    "sha256": "31debd42d7e6a3d7271bf30aeffdb180022f6dce1786c3b0e15c2dee0fa3afca",
+    "groups": 20,
+    "anatomy": 75,
+    "exerciseMapping": {
+      "expectedActiveRegistryVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+      "resolvedVersions": {
+        "bodycast-exercise-anatomy-mapping-v3.0.0": 588
+      },
+      "projections": [
+        {
+          "stableKey": "barbell_hip_thrust",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "gluteus_maximus",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "hamstrings",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "bulgarian_split_squat",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "quadriceps_femoris",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "gluteus_maximus",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "posterior_thigh",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "calf_complex",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "abdominal_wall",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "cable_leg_curl",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "hamstrings",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "calf_complex",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "dumbbell_front_raise_bilateral",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "deltoid_anterior",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "pectoralis_major_clavicular_head",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "dumbbell_hammer_curl_bilateral",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "brachialis",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "biceps_brachii",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "brachioradialis",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "flat_dumbbell_bench_press",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "pectoralis_major",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "deltoid_anterior",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "triceps_brachii",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "flat_dumbbell_fly",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "pectoralis_major",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "deltoid_anterior",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "goblet_squat",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "quadriceps_femoris",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "gluteus_maximus",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "adductor_region",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "abdominal_wall",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "hyperextension",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "erector_spinae",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "gluteus_maximus",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "hamstrings",
+              "role": "primary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "incline_dumbbell_press_30deg",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "pectoralis_major_clavicular_head",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "deltoid_anterior",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "triceps_brachii",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "incline_seated_rotating_dumbbell_curl",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "biceps_brachii",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "brachialis",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "lying_two_hand_dumbbell_triceps_extension_flat",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "triceps_brachii",
+              "role": "primary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "one_arm_cable_triceps_extension",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "triceps_brachii",
+              "role": "primary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "one_arm_concentration_curl",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "biceps_brachii",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "brachialis",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "brachioradialis",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "one_arm_dumbbell_row_bench_supported",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "latissimus_dorsi",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "trapezius_middle",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "rhomboid_region",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "biceps_brachii",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "deltoid_posterior",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "one_arm_lateral_raise",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "deltoid_middle",
+              "role": "primary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "one_arm_seated_cable_row",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "latissimus_dorsi",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "trapezius_middle",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "rhomboid_region",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "biceps_brachii",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "deltoid_posterior",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "pull_up",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "latissimus_dorsi",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "trapezius_middle",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "biceps_brachii",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "brachialis",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "brachioradialis",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "forearm_flexor_region",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "pushup_handles",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "pectoralis_major",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "triceps_brachii",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "deltoid_anterior",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "romanian_deadlift",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "hamstrings",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "gluteus_maximus",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "erector_spinae",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "seated_calf_raise",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "calf_complex",
+              "role": "primary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "seated_dumbbell_press",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "deltoid",
+              "role": "primary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "triceps_brachii",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            },
+            {
+              "anatomyId": "pectoralis_major_clavicular_head",
+              "role": "secondary-mover",
+              "coverage": "partial"
+            }
+          ]
+        },
+        {
+          "stableKey": "supported_dumbbell_wrist_curl",
+          "mappingVersion": "bodycast-exercise-anatomy-mapping-v3.0.0",
+          "targets": [
+            {
+              "anatomyId": "forearm_flexor_region",
+              "role": "primary-mover",
+              "coverage": "partial"
+            }
+          ]
+        }
+      ]
+    },
+    "assetUrl": "/body-map/bodyparts3d-v3/bodyparts3d-v4.0-full-body-v3.glb",
+    "assetBytes": 23400872,
+    "assetSha256": "0edfdadd4cb12722ed8a7bb1b3ec5975f8a7c740ae48958bc77339732a981945",
+    "publicDelivery": {
+      "manifest": {
+        "status": 307,
+        "redirect": "/login"
+      },
+      "asset": {
+        "status": 307,
+        "redirect": "/login"
+      }
+    }
+  },
+  "selectedMuscleStatus": "ambiguous",
+  "selectedMonths": "6",
+  "explanationFontSize": "16px",
+  "analyzedExerciseCount": 6,
+  "desktopScene": {
+    "compact": 420,
+    "expanded": 560
+  },
+  "cameraHistory": {
+    "backRestoredFront": true,
+    "forwardRestoredBack": true
+  },
+  "anatomyHistory": {
+    "backRestoredGroup": true,
+    "forwardRestoredSubregion": true
+  },
+  "reducedMotion": true,
+  "touch": {
+    "viewport": 390,
+    "selectedGroup": "chest",
+    "selectedAnatomy": "pectoralis_major",
+    "scrollWidth": 390
+  },
+  "responsive": [
+    {
+      "width": 360,
+      "compactHeight": 210,
+      "expandedHeight": 410,
+      "scrollWidth": 360
+    },
+    {
+      "width": 390,
+      "compactHeight": 210,
+      "expandedHeight": 401.421875,
+      "scrollWidth": 390
+    },
+    {
+      "width": 768,
+      "compactHeight": 250,
+      "expandedHeight": 470,
+      "scrollWidth": 768
+    }
+  ],
+  "screenshotRepeatability": [
+    {
+      "width": 360,
+      "sha256": "80a386cbf4925cd5823f6d73abbf25afa8a626c6d1f68b5aafe61a0201514677",
+      "repeatSha256": "80a386cbf4925cd5823f6d73abbf25afa8a626c6d1f68b5aafe61a0201514677"
+    },
+    {
+      "width": 390,
+      "sha256": "c257572d5a9979d99ed358e29c4e4436bad456baf92e6eaece87afb0a4b4bdb9",
+      "repeatSha256": "c257572d5a9979d99ed358e29c4e4436bad456baf92e6eaece87afb0a4b4bdb9"
+    },
+    {
+      "width": 768,
+      "sha256": "3612e1baba135424134f7a568059ab57ba508d78a81a1a73f793530fedf9261e",
+      "repeatSha256": "3612e1baba135424134f7a568059ab57ba508d78a81a1a73f793530fedf9261e"
+    },
+    {
+      "width": 1280,
+      "sha256": "d93c3ed6214a36157a0ca02eab95830ee7d5f82dcbc09d6735eae84a34b6a797",
+      "repeatSha256": "d93c3ed6214a36157a0ca02eab95830ee7d5f82dcbc09d6735eae84a34b6a797"
+    }
+  ],
+  "interaction": {
+    "keyboardMuscleSelection": true,
+    "keyboardExerciseDisclosure": true,
+    "browserHistoryBackForward": {
+      "camera": {
+        "backRestoredFront": true,
+        "forwardRestoredBack": true
+      },
+      "anatomy": {
+        "backRestoredGroup": true,
+        "forwardRestoredSubregion": true
+      }
+    }
+  },
+  "deliveryStates": {
+    "loading": {
+      "observed": true,
+      "fixedClock": "2026-11-22T23:59:59.999Z"
+    },
+    "unauthorized": {
+      "status": 401,
+      "ui": "sign-in notice",
+      "cacheControl": "private, no-store"
+    },
+    "error": {
+      "status": 503,
+      "ui": "non-destructive analytics unavailable notice"
+    },
+    "empty": {
+      "status": 200,
+      "completedSessionCount": 0,
+      "recordedSetCount": 0,
+      "analyticsSha256": "c714dcf6d4d8f290c1621f77f34a3f1c8335c5ef9aedd304477de817d917a044",
+      "ui": "empty muscle-window notice"
+    },
+    "webglFallback": {
+      "inducedBy": "isolated Chromium --disable-webgl context",
+      "rendererAvailable": false,
+      "keyboardGroupSelection": "chest",
+      "ui": "interactive 2D taxonomy fallback",
+      "developmentOverlay": {
+        "host": "nextjs-portal",
+        "present": true,
+        "observedAfterFallbackReady": true,
+        "shadowRootPresent": true,
+        "issueBadgePresent": true,
+        "rawBadgeText": "34 Issues",
+        "activeCountText": "4",
+        "exitingCountText": "3",
+        "activeIssueCount": 4,
+        "activeBadgeText": "4 Issues",
+        "issueBadgeVisible": true,
+        "capturedActiveIssues": 4,
+        "issueEvidenceFile": "webgl-fallback-next-issues.json",
+        "issueEvidenceSha256": "e1a1b1d983ad22ec847516ae6570a5504c4c75576badd885bede35cb026279df",
+        "issueEvidenceMatchesExpectedWebglConsoleCount": true,
+        "excludedFromScreenshot": true,
+        "rationale": "Next development tooling overlay is not BodyCast product UI; its active issue list is retained and reconciled to the induced WebGL-off console errors, while page-error, unexpected API and non-API HTTP monitors remain enabled."
+      }
+    }
+  },
+  "browserErrors": {
+    "page": [],
+    "console": [
+      {
+        "page": "analytics-unauthorized",
+        "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      },
+      {
+        "page": "analytics-error",
+        "message": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      },
+      {
+        "page": "webgl-fallback",
+        "message": "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch"
+      },
+      {
+        "page": "webgl-fallback",
+        "message": "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch"
+      },
+      {
+        "page": "webgl-fallback",
+        "message": "THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context."
+      },
+      {
+        "page": "webgl-fallback",
+        "message": "%o\n\n%s Error: THREE.WebGLRenderer: Error creating WebGL context.\n    at new WebGLRenderer (http://127.0.0.1:3002/_next/static/chunks/node_modules_three_build_three_module_03rsyo6.js:11021:31)\n    at createRenderer (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:1384:12)\n    at run (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:16270:106)\n    at Object.configure (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:16279:18)\n    at CanvasImpl.useIsomorphicLayoutEffect (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:16866:30)\n    at Object.react_stack_bottom_frame (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:14944:22)\n    at runWithFiberInDEV (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:761:74)\n    at commitHookEffectListMount (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7082:167)\n    at commitHookLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7070:60)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7677:30)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7680:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7680:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7680:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17) The above error occurred in the <CanvasImpl> component. It was handled by the <SceneErrorBoundary> error boundary."
+      }
+    ],
+    "requests": [
+      {
+        "page": "main-3d",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "page": "mobile-touch",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "page": "analytics-loading",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "page": "analytics-unauthorized",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "page": "analytics-error",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "page": "analytics-empty",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "page": "webgl-fallback",
+        "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+        "error": "net::ERR_ABORTED"
+      }
+    ],
+    "http": [],
+    "apiResponses": [
+      {
+        "page": "main-3d",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "main-3d",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "main-3d",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 200
+      },
+      {
+        "page": "main-3d",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=2",
+        "status": 200
+      },
+      {
+        "page": "main-3d",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=3",
+        "status": 200
+      },
+      {
+        "page": "main-3d",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=6",
+        "status": 200
+      },
+      {
+        "page": "mobile-touch",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "mobile-touch",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 200
+      },
+      {
+        "page": "mobile-touch",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-loading",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-loading",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-loading",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 200
+      },
+      {
+        "page": "analytics-unauthorized",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-unauthorized",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 401
+      },
+      {
+        "page": "analytics-unauthorized",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-error",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-error",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 503
+      },
+      {
+        "page": "analytics-error",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-empty",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "analytics-empty",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 200
+      },
+      {
+        "page": "analytics-empty",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "webgl-fallback",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "webgl-fallback",
+        "method": "GET",
+        "path": "/api/v1/training/body-map/analytics?months=1",
+        "status": 200
+      },
+      {
+        "page": "webgl-fallback",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      }
+    ],
+    "unexpectedApiRequests": []
+  },
+  "expectedConsole": [
+    {
+      "page": "analytics-unauthorized",
+      "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "page": "analytics-error",
+      "message": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    },
+    {
+      "page": "webgl-fallback",
+      "message": "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch"
+    },
+    {
+      "page": "webgl-fallback",
+      "message": "THREE.WebGLRenderer: A WebGL context could not be created. Reason:  disabled by enterprise policy or commandline switch"
+    },
+    {
+      "page": "webgl-fallback",
+      "message": "THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context."
+    },
+    {
+      "page": "webgl-fallback",
+      "message": "%o\n\n%s Error: THREE.WebGLRenderer: Error creating WebGL context.\n    at new WebGLRenderer (http://127.0.0.1:3002/_next/static/chunks/node_modules_three_build_three_module_03rsyo6.js:11021:31)\n    at createRenderer (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:1384:12)\n    at run (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:16270:106)\n    at Object.configure (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:16279:18)\n    at CanvasImpl.useIsomorphicLayoutEffect (http://127.0.0.1:3002/_next/static/chunks/node_modules_%40react-three_fiber_dist_188pun-._.js:16866:30)\n    at Object.react_stack_bottom_frame (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:14944:22)\n    at runWithFiberInDEV (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:761:74)\n    at commitHookEffectListMount (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7082:167)\n    at commitHookLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7070:60)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7677:30)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7680:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7680:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7716:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7680:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7676:17)\n    at recursivelyTraverseLayoutEffects (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:8360:105)\n    at commitLayoutEffectOnFiber (http://127.0.0.1:3002/_next/static/chunks/node_modules_next_dist_compiled_react-dom_096_9a-._.js:7774:17) The above error occurred in the <CanvasImpl> component. It was handled by the <SceneErrorBoundary> error boundary."
+    }
+  ],
+  "unexpectedConsole": [],
+  "expectedAnalyticsAborts": [
+    {
+      "page": "main-3d",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "page": "mobile-touch",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "page": "analytics-loading",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "page": "analytics-unauthorized",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "page": "analytics-error",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "page": "analytics-empty",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "page": "webgl-fallback",
+      "url": "http://127.0.0.1:3002/api/v1/training/body-map/analytics?months=1",
+      "error": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [
+    "selected-compact-1280.png",
+    "selected-expanded-1280.png",
+    "selected-compact-390.png",
+    "camera-back-1280.png",
+    "deep-internal-oblique-1280.png",
+    "mobile-touch-pectoralis-390.png",
+    "characterization-360.png",
+    "characterization-390.png",
+    "characterization-768.png",
+    "characterization-1280.png",
+    "analytics-loading.png",
+    "analytics-unauthorized.png",
+    "analytics-error.png",
+    "analytics-empty.png",
+    "body-map-2d-fallback.png"
+  ]
+}

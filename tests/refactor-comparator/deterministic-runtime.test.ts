@@ -38,14 +38,14 @@ describe("deterministic comparator runtime", () => {
     expect(worker?.filepath?.replaceAll("\\", "/")).toContain("/tests/refactor-comparator/deterministic-runtime.test.ts");
   });
 
-  it("replays clock, UUID, random bytes, and random integers exactly across isolated processes", () => {
+  it("keeps a fixed wall clock and replays random values across isolated processes", () => {
     const first = executeDeterministicRuntime();
     const second = executeDeterministicRuntime();
     expect(first).toEqual(second);
     expect(first.start.now).toBe(Date.parse("2026-11-23T12:00:00.000Z"));
     expect(first.start.date).toBe("2026-11-23T12:00:00.000Z");
-    expect(first.after.now - first.start.now).toBe(7);
-    expect(first.after.date).toBe("2026-11-23T12:00:00.007Z");
+    expect(first.after.now).toBe(first.start.now);
+    expect(first.after.date).toBe(first.start.date);
     expect(first.start.uuid).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
   });
 

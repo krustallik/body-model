@@ -17,7 +17,7 @@ if (!Number.isFinite(fixedTime) || new Date(fixedTime).toISOString() !== fixedTi
   throw new Error("Comparator fixed clock must be a canonical UTC ISO timestamp.");
 }
 const NativeDate = globalThis.Date;
-let virtualTime = fixedTime;
+const virtualTime = fixedTime;
 function ComparatorDate(...args) {
   if (!new.target) return new NativeDate(virtualTime).toString();
   return Reflect.construct(NativeDate, args.length === 0 ? [virtualTime] : args, new.target);
@@ -27,33 +27,6 @@ ComparatorDate.prototype = NativeDate.prototype;
 Object.defineProperty(ComparatorDate, "name", { value: "Date" });
 Object.defineProperty(ComparatorDate, "now", { configurable: true, writable: true, value: () => virtualTime });
 globalThis.Date = ComparatorDate;
-
-const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
-const nativeSetInterval = globalThis.setInterval.bind(globalThis);
-function normalizedDelay(value) {
-  const delay = Number(value);
-  return !Number.isFinite(delay) || delay < 1 || delay > 2_147_483_647 ? 1 : Math.trunc(delay);
-}
-globalThis.setTimeout = function deterministicTimeout(callback, delay, ...args) {
-  if (typeof callback !== "function") throw new TypeError("Comparator timers require a callback function.");
-  const advanceBy = normalizedDelay(delay);
-  let timer;
-  timer = nativeSetTimeout(function onTimeout(...callbackArgs) {
-    virtualTime += advanceBy;
-    callback.apply(timer, args.length ? args : callbackArgs);
-  }, advanceBy);
-  return timer;
-};
-globalThis.setInterval = function deterministicInterval(callback, delay, ...args) {
-  if (typeof callback !== "function") throw new TypeError("Comparator intervals require a callback function.");
-  const advanceBy = normalizedDelay(delay);
-  let timer;
-  timer = nativeSetInterval(function onInterval(...callbackArgs) {
-    virtualTime += advanceBy;
-    callback.apply(timer, args.length ? args : callbackArgs);
-  }, advanceBy);
-  return timer;
-};
 }
 
 let state = 0;

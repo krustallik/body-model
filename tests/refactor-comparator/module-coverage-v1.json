@@ -1,0 +1,1967 @@
+{
+  "schemaVersion": 1,
+  "baselineSha": "725f6f684d8693d174d940f673e01efd1646b518",
+  "measurement": {
+    "provider": "v8",
+    "selection": "related",
+    "nodeMajor": 24,
+    "vitestVersion": "3.2.7",
+    "reportSha256": "BAB5C514DAC1EA5D27A597CF4C723FF79D87BEF760F8BFF0BF9B7A14FCCAE547",
+    "logSha256": "8E1FD3779B28B208604157B9EF01626902C2A7C2C62668AD297426D531002823",
+    "sourceFileCount": 74,
+    "testFileCount": 172,
+    "testsPassed": 1579
+  },
+  "sourceRoots": [
+    "src/app/body-map",
+    "src/components/body-map",
+    "src/modules/activity",
+    "src/modules/auth",
+    "src/modules/training"
+  ],
+  "minimumForNewFiles": {
+    "lines": 85,
+    "functions": 85,
+    "statements": 85,
+    "branches": 80
+  },
+  "excludedPaths": [
+    {
+      "path": "src/modules/training/testing/require-isolated-database.ts",
+      "gitBlobSha": "bbe085bab2703adddc1cc71b4b5ff218b9a60265",
+      "reason": "Test-support utility imported only by PostgreSQL integration tests; it is not a product/runtime module and remains covered by integration behavior checks rather than this production-source coverage gate."
+    },
+    {
+      "path": "src/modules/training/testing/stage01-persistence.ts",
+      "gitBlobSha": "90fe8d71f3f488693dcc6eb222a952e620c23ef1",
+      "reason": "Test-support utility imported only by PostgreSQL integration tests; it is not a product/runtime module and remains covered by integration behavior checks rather than this production-source coverage gate."
+    }
+  ],
+  "files": [
+    {
+      "path": "src/app/body-map/page.tsx",
+      "gitBlobSha": "b44c35c66b7f91136c32becc68c59be090013076",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 18,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 18,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/components/body-map/body-map-camera-contract-v1.ts",
+      "gitBlobSha": "73f8be320bd0c3c7c5aaaf04bd5213c27e93fa31",
+      "baseline": {
+        "lines": {
+          "covered": 13,
+          "total": 13,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 13,
+          "total": 13,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/components/body-map/body-map-experience.tsx",
+      "gitBlobSha": "ced95d4d0d8bd316cf052943cbc3dcbba1cb1bec",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 1199,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 1199,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/components/body-map/body-map-localization.ts",
+      "gitBlobSha": "fb0c21372bf624cffc807a73ae2d557f04b37bf5",
+      "baseline": {
+        "lines": {
+          "covered": 124,
+          "total": 130,
+          "pct": 95.38
+        },
+        "functions": {
+          "covered": 0,
+          "total": 3,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 124,
+          "total": 130,
+          "pct": 95.38
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/components/body-map/body-map-training-analytics-panel.tsx",
+      "gitBlobSha": "63c0dcc0393ef53e313845aed2adce3f34c1b274",
+      "baseline": {
+        "lines": {
+          "covered": 208,
+          "total": 262,
+          "pct": 79.38
+        },
+        "functions": {
+          "covered": 13,
+          "total": 13,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 208,
+          "total": 262,
+          "pct": 79.38
+        },
+        "branches": {
+          "covered": 46,
+          "total": 127,
+          "pct": 36.22
+        }
+      }
+    },
+    {
+      "path": "src/components/body-map/camera-transition-v1.ts",
+      "gitBlobSha": "45a40463d58bf32ffa44826fd210780cd7d583f7",
+      "baseline": {
+        "lines": {
+          "covered": 73,
+          "total": 85,
+          "pct": 85.88
+        },
+        "functions": {
+          "covered": 6,
+          "total": 10,
+          "pct": 60.0
+        },
+        "statements": {
+          "covered": 73,
+          "total": 85,
+          "pct": 85.88
+        },
+        "branches": {
+          "covered": 13,
+          "total": 16,
+          "pct": 81.25
+        }
+      }
+    },
+    {
+      "path": "src/modules/activity/active-energy-invalidation.ts",
+      "gitBlobSha": "00b666f49ce7ef5e15f28793d798157a4ec2ad8c",
+      "baseline": {
+        "lines": {
+          "covered": 41,
+          "total": 96,
+          "pct": 42.7
+        },
+        "functions": {
+          "covered": 2,
+          "total": 4,
+          "pct": 50.0
+        },
+        "statements": {
+          "covered": 41,
+          "total": 96,
+          "pct": 42.7
+        },
+        "branches": {
+          "covered": 6,
+          "total": 11,
+          "pct": 54.54
+        }
+      }
+    },
+    {
+      "path": "src/modules/activity/active-energy-materialization.ts",
+      "gitBlobSha": "0b8c4496e903b8c32c96583b2021bbdf3a82c330",
+      "baseline": {
+        "lines": {
+          "covered": 239,
+          "total": 373,
+          "pct": 64.07
+        },
+        "functions": {
+          "covered": 5,
+          "total": 9,
+          "pct": 55.55
+        },
+        "statements": {
+          "covered": 239,
+          "total": 373,
+          "pct": 64.07
+        },
+        "branches": {
+          "covered": 55,
+          "total": 98,
+          "pct": 56.12
+        }
+      }
+    },
+    {
+      "path": "src/modules/activity/active-energy-publication.ts",
+      "gitBlobSha": "5c3e9707ebbebbc476b04f33f591497dbd2824fb",
+      "baseline": {
+        "lines": {
+          "covered": 31,
+          "total": 51,
+          "pct": 60.78
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 31,
+          "total": 51,
+          "pct": 60.78
+        },
+        "branches": {
+          "covered": 2,
+          "total": 14,
+          "pct": 14.28
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/access.ts",
+      "gitBlobSha": "7c753448e8ac10789e08c54571bf634c63743a56",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 109,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 109,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/api-keys.ts",
+      "gitBlobSha": "38b2f9950f56f286c992e42a377e03da0e874854",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 100,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 100,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/email-flow.ts",
+      "gitBlobSha": "edbe02c8de76ad4e4372003735ebc208fb9f90bb",
+      "baseline": {
+        "lines": {
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
+        },
+        "branches": {
+          "covered": 4,
+          "total": 6,
+          "pct": 66.66
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/email-quota.ts",
+      "gitBlobSha": "b6c8f494f167e77ca4a4df42f0c83de43e1749e5",
+      "baseline": {
+        "lines": {
+          "covered": 12,
+          "total": 12,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 12,
+          "total": 12,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 5,
+          "total": 5,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/email.ts",
+      "gitBlobSha": "b6b1459ea3e3ed51631ea8abea84f9d0056355e3",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 67,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 67,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/http.ts",
+      "gitBlobSha": "4c362e99a1f3e6d4ed1f174164f566473d13cae3",
+      "baseline": {
+        "lines": {
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
+        },
+        "branches": {
+          "covered": 6,
+          "total": 9,
+          "pct": 66.66
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/policy.ts",
+      "gitBlobSha": "f92e8b18e493dbdfe16c81275f56eccadb57608c",
+      "baseline": {
+        "lines": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/profile-provisioning.ts",
+      "gitBlobSha": "d18f0a0431c65694d1655ef24da82b45d7037dee",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 39,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 39,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/rate-limit.ts",
+      "gitBlobSha": "8d5886dbaef80811593f3a51ca12c470207fc73d",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 26,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 26,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/auth/registration-users.ts",
+      "gitBlobSha": "f3d70949fda81052014235d27f1cf88c79f02493",
+      "baseline": {
+        "lines": {
+          "covered": 15,
+          "total": 15,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 15,
+          "total": 15,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/auto-advance.ts",
+      "gitBlobSha": "9a255e6fce79b374d0ef71b8426253a35ceb8ad4",
+      "baseline": {
+        "lines": {
+          "covered": 10,
+          "total": 10,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 10,
+          "total": 10,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 7,
+          "total": 7,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-catalog-v2.ts",
+      "gitBlobSha": "676e07b8e4caa6b27b5380cbb2ec060b7990c733",
+      "baseline": {
+        "lines": {
+          "covered": 157,
+          "total": 184,
+          "pct": 85.32
+        },
+        "functions": {
+          "covered": 2,
+          "total": 5,
+          "pct": 40.0
+        },
+        "statements": {
+          "covered": 157,
+          "total": 184,
+          "pct": 85.32
+        },
+        "branches": {
+          "covered": 35,
+          "total": 44,
+          "pct": 79.54
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-energy-balance-context-v1.ts",
+      "gitBlobSha": "58da6451f5d039ebb42cc49e108bff368d29311f",
+      "baseline": {
+        "lines": {
+          "covered": 101,
+          "total": 101,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 6,
+          "total": 6,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 101,
+          "total": 101,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 47,
+          "total": 50,
+          "pct": 94.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-hierarchy-contract-v1.ts",
+      "gitBlobSha": "6a35ac356c3d79f5c41faa5c6d2216b5ec896f61",
+      "baseline": {
+        "lines": {
+          "covered": 122,
+          "total": 126,
+          "pct": 96.82
+        },
+        "functions": {
+          "covered": 4,
+          "total": 4,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 122,
+          "total": 126,
+          "pct": 96.82
+        },
+        "branches": {
+          "covered": 41,
+          "total": 54,
+          "pct": 75.92
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-navigation-contract-v2.ts",
+      "gitBlobSha": "1c01be8f7c4c91d22a913b18668df177001cdf05",
+      "baseline": {
+        "lines": {
+          "covered": 44,
+          "total": 47,
+          "pct": 93.61
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 44,
+          "total": 47,
+          "pct": 93.61
+        },
+        "branches": {
+          "covered": 12,
+          "total": 20,
+          "pct": 60.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-analytics-v1.ts",
+      "gitBlobSha": "d346a16a5c8fa081708b51d8ad1018ea8242870c",
+      "baseline": {
+        "lines": {
+          "covered": 669,
+          "total": 692,
+          "pct": 96.67
+        },
+        "functions": {
+          "covered": 18,
+          "total": 19,
+          "pct": 94.73
+        },
+        "statements": {
+          "covered": 669,
+          "total": 692,
+          "pct": 96.67
+        },
+        "branches": {
+          "covered": 335,
+          "total": 374,
+          "pct": 89.57
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-analytics.repository.ts",
+      "gitBlobSha": "953d8e366119e34c27581f889706769628b523f5",
+      "baseline": {
+        "lines": {
+          "covered": 147,
+          "total": 182,
+          "pct": 80.76
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 147,
+          "total": 182,
+          "pct": 80.76
+        },
+        "branches": {
+          "covered": 20,
+          "total": 27,
+          "pct": 74.07
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-exposure-v2.ts",
+      "gitBlobSha": "0b89fb97151c846a653619a2b380ee8c1eb1b8c2",
+      "baseline": {
+        "lines": {
+          "covered": 132,
+          "total": 141,
+          "pct": 93.61
+        },
+        "functions": {
+          "covered": 4,
+          "total": 5,
+          "pct": 80.0
+        },
+        "statements": {
+          "covered": 132,
+          "total": 141,
+          "pct": 93.61
+        },
+        "branches": {
+          "covered": 81,
+          "total": 84,
+          "pct": 96.42
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-performance-v1.ts",
+      "gitBlobSha": "65828ee62aeb80845389b16a58545fdabd1f1a86",
+      "baseline": {
+        "lines": {
+          "covered": 415,
+          "total": 421,
+          "pct": 98.57
+        },
+        "functions": {
+          "covered": 20,
+          "total": 20,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 415,
+          "total": 421,
+          "pct": 98.57
+        },
+        "branches": {
+          "covered": 235,
+          "total": 279,
+          "pct": 84.22
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-url-state-v1.ts",
+      "gitBlobSha": "78d70637086e507402c99eb2549b8c8c3e9e2b7b",
+      "baseline": {
+        "lines": {
+          "covered": 99,
+          "total": 99,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 8,
+          "total": 8,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 99,
+          "total": 99,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 58,
+          "total": 66,
+          "pct": 87.87
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/bodyweight-reference-v1.ts",
+      "gitBlobSha": "aa9d5c86309322e42a9361a6e9c7bddbed98e047",
+      "baseline": {
+        "lines": {
+          "covered": 57,
+          "total": 57,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 57,
+          "total": 57,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 20,
+          "total": 20,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/bodyweight-reference-v2.ts",
+      "gitBlobSha": "da1188aabff3c97579a8246c97d06a406deb3691",
+      "baseline": {
+        "lines": {
+          "covered": 76,
+          "total": 78,
+          "pct": 97.43
+        },
+        "functions": {
+          "covered": 3,
+          "total": 3,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 76,
+          "total": 78,
+          "pct": 97.43
+        },
+        "branches": {
+          "covered": 31,
+          "total": 33,
+          "pct": 93.93
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/canonical-exercise-identity.ts",
+      "gitBlobSha": "44b2f7fb215500a26004ceed76a98e9107e33863",
+      "baseline": {
+        "lines": {
+          "covered": 94,
+          "total": 94,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 94,
+          "total": 94,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/exercise-anatomy-mapping-v1.ts",
+      "gitBlobSha": "173cef0521a78cbc6c29ec21ad3e97f1c95add12",
+      "baseline": {
+        "lines": {
+          "covered": 735,
+          "total": 766,
+          "pct": 95.95
+        },
+        "functions": {
+          "covered": 24,
+          "total": 27,
+          "pct": 88.88
+        },
+        "statements": {
+          "covered": 735,
+          "total": 766,
+          "pct": 95.95
+        },
+        "branches": {
+          "covered": 133,
+          "total": 195,
+          "pct": 68.2
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/exercise-anatomy-mapping-v2.ts",
+      "gitBlobSha": "70288bb07be76c3aee835327aa0584cc089425cb",
+      "baseline": {
+        "lines": {
+          "covered": 151,
+          "total": 154,
+          "pct": 98.05
+        },
+        "functions": {
+          "covered": 3,
+          "total": 3,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 151,
+          "total": 154,
+          "pct": 98.05
+        },
+        "branches": {
+          "covered": 36,
+          "total": 43,
+          "pct": 83.72
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/exercise-anatomy-mapping-v3.ts",
+      "gitBlobSha": "d1efd6f47fa0720a5d62c54c6bf11cf48a745338",
+      "baseline": {
+        "lines": {
+          "covered": 148,
+          "total": 151,
+          "pct": 98.01
+        },
+        "functions": {
+          "covered": 9,
+          "total": 12,
+          "pct": 75.0
+        },
+        "statements": {
+          "covered": 148,
+          "total": 151,
+          "pct": 98.01
+        },
+        "branches": {
+          "covered": 44,
+          "total": 59,
+          "pct": 74.57
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/exercise-mapping-snapshot.ts",
+      "gitBlobSha": "58bb3145fe00593433fc48dd901f01d7e80c1daa",
+      "baseline": {
+        "lines": {
+          "covered": 152,
+          "total": 158,
+          "pct": 96.2
+        },
+        "functions": {
+          "covered": 6,
+          "total": 7,
+          "pct": 85.71
+        },
+        "statements": {
+          "covered": 152,
+          "total": 158,
+          "pct": 96.2
+        },
+        "branches": {
+          "covered": 19,
+          "total": 23,
+          "pct": 82.6
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/experimental-strength-active-energy-v1.ts",
+      "gitBlobSha": "c67e0309fd12e406bf13e92f69c94de0fed7e343",
+      "baseline": {
+        "lines": {
+          "covered": 263,
+          "total": 269,
+          "pct": 97.76
+        },
+        "functions": {
+          "covered": 12,
+          "total": 12,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 263,
+          "total": 269,
+          "pct": 97.76
+        },
+        "branches": {
+          "covered": 82,
+          "total": 90,
+          "pct": 91.11
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/experimental-strength-energy-shadow.service.ts",
+      "gitBlobSha": "48451a0a9e2326670d55dc74a20baf3d54f95e6a",
+      "baseline": {
+        "lines": {
+          "covered": 28,
+          "total": 417,
+          "pct": 6.71
+        },
+        "functions": {
+          "covered": 1,
+          "total": 4,
+          "pct": 25.0
+        },
+        "statements": {
+          "covered": 28,
+          "total": 417,
+          "pct": 6.71
+        },
+        "branches": {
+          "covered": 3,
+          "total": 3,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/experimental-strength-energy.ts",
+      "gitBlobSha": "b01d24061961eb6a6595b1fdf0afdc7c72415b6d",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/experimental-strength-glycogen-demand-shadow.service.ts",
+      "gitBlobSha": "9cd1152c0915bff171c76224b1583c7c86544179",
+      "baseline": {
+        "lines": {
+          "covered": 6,
+          "total": 67,
+          "pct": 8.95
+        },
+        "functions": {
+          "covered": 0,
+          "total": 2,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 6,
+          "total": 67,
+          "pct": 8.95
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/experimental-transient-exercise-water-shadow.service.ts",
+      "gitBlobSha": "ffff507338e682d308a6225dd67f84621cc78c45",
+      "baseline": {
+        "lines": {
+          "covered": 14,
+          "total": 249,
+          "pct": 5.62
+        },
+        "functions": {
+          "covered": 0,
+          "total": 9,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 14,
+          "total": 249,
+          "pct": 5.62
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/external-load-accounting.ts",
+      "gitBlobSha": "a835068c69a3e5e8d0079291223c540122fe0596",
+      "baseline": {
+        "lines": {
+          "covered": 119,
+          "total": 119,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 4,
+          "total": 4,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 119,
+          "total": 119,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 32,
+          "total": 33,
+          "pct": 96.96
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/index.ts",
+      "gitBlobSha": "9fccab5c994052ad067e7b1647a28d601c997a5e",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 14,
+          "pct": 0.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 14,
+          "pct": 0.0
+        },
+        "branches": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/load-accounting-v1.ts",
+      "gitBlobSha": "19698c9d45bbf24ffa884572b3952043d2c19216",
+      "baseline": {
+        "lines": {
+          "covered": 895,
+          "total": 978,
+          "pct": 91.51
+        },
+        "functions": {
+          "covered": 34,
+          "total": 34,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 895,
+          "total": 978,
+          "pct": 91.51
+        },
+        "branches": {
+          "covered": 235,
+          "total": 284,
+          "pct": 82.74
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/manual-stepper-fields-v1.ts",
+      "gitBlobSha": "81e044e8a2c9904978317e73567569708674794a",
+      "baseline": {
+        "lines": {
+          "covered": 46,
+          "total": 57,
+          "pct": 80.7
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 46,
+          "total": 57,
+          "pct": 80.7
+        },
+        "branches": {
+          "covered": 13,
+          "total": 16,
+          "pct": 81.25
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/parse-training-decimal.ts",
+      "gitBlobSha": "c9163c5e47c0801b7bcdaa77630b200d75444871",
+      "baseline": {
+        "lines": {
+          "covered": 5,
+          "total": 5,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 5,
+          "total": 5,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 3,
+          "total": 3,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/persisted-load-accounting-v1.ts",
+      "gitBlobSha": "2010e0943bdfe5f4289852c63e04c005b6378530",
+      "baseline": {
+        "lines": {
+          "covered": 364,
+          "total": 389,
+          "pct": 93.57
+        },
+        "functions": {
+          "covered": 6,
+          "total": 7,
+          "pct": 85.71
+        },
+        "statements": {
+          "covered": 364,
+          "total": 389,
+          "pct": 93.57
+        },
+        "branches": {
+          "covered": 51,
+          "total": 62,
+          "pct": 82.25
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/rebase-current-accounting-snapshot.ts",
+      "gitBlobSha": "cb52c47cc398b285cf110f0eb1f4e885fab06f24",
+      "baseline": {
+        "lines": {
+          "covered": 3,
+          "total": 98,
+          "pct": 3.06
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 3,
+          "total": 98,
+          "pct": 3.06
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/resolve-body-map-exercise-mapping-v3.ts",
+      "gitBlobSha": "7760f551c522dc386aaf2eb8e0ab769891e3f79b",
+      "baseline": {
+        "lines": {
+          "covered": 38,
+          "total": 52,
+          "pct": 73.07
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 38,
+          "total": 52,
+          "pct": 73.07
+        },
+        "branches": {
+          "covered": 27,
+          "total": 33,
+          "pct": 81.81
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/session-inactivity.ts",
+      "gitBlobSha": "c1df2c324ca9c3ca359f6e767b5fff4131869cef",
+      "baseline": {
+        "lines": {
+          "covered": 11,
+          "total": 11,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 11,
+          "total": 11,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 6,
+          "total": 6,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/session-mass-reference.ts",
+      "gitBlobSha": "7e62675cab130dc773acc3c06f51342a4643512d",
+      "baseline": {
+        "lines": {
+          "covered": 7,
+          "total": 104,
+          "pct": 6.73
+        },
+        "functions": {
+          "covered": 0,
+          "total": 2,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 7,
+          "total": 104,
+          "pct": 6.73
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/session-plan-completion.ts",
+      "gitBlobSha": "7d40c6f8c192014e7b61747c9693fab5fa4699d7",
+      "baseline": {
+        "lines": {
+          "covered": 15,
+          "total": 15,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 15,
+          "total": 15,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 7,
+          "total": 7,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/stepper-reconciliation-v1.ts",
+      "gitBlobSha": "59e4f0adda4c6048071c15d65c191f9dcca45f23",
+      "baseline": {
+        "lines": {
+          "covered": 60,
+          "total": 62,
+          "pct": 96.77
+        },
+        "functions": {
+          "covered": 3,
+          "total": 3,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 60,
+          "total": 62,
+          "pct": 96.77
+        },
+        "branches": {
+          "covered": 12,
+          "total": 21,
+          "pct": 57.14
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/stepper-reconciliation.service.ts",
+      "gitBlobSha": "41f1b143210d025c0d290d76ba6d908461204da3",
+      "baseline": {
+        "lines": {
+          "covered": 12,
+          "total": 409,
+          "pct": 2.93
+        },
+        "functions": {
+          "covered": 0,
+          "total": 9,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 12,
+          "total": 409,
+          "pct": 2.93
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/stepper-workout.repository.ts",
+      "gitBlobSha": "e7b27d8639205aa7c66adae0acf9461f6f3a6cc5",
+      "baseline": {
+        "lines": {
+          "covered": 151,
+          "total": 535,
+          "pct": 28.22
+        },
+        "functions": {
+          "covered": 4,
+          "total": 14,
+          "pct": 28.57
+        },
+        "statements": {
+          "covered": 151,
+          "total": 535,
+          "pct": 28.22
+        },
+        "branches": {
+          "covered": 13,
+          "total": 29,
+          "pct": 44.82
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/stepper-workout.schema.ts",
+      "gitBlobSha": "738877aa8876423cad9aedf50f2c354e0c82180c",
+      "baseline": {
+        "lines": {
+          "covered": 17,
+          "total": 17,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 17,
+          "total": 17,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 1,
+          "total": 2,
+          "pct": 50.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/strength-historical-energy-v1.ts",
+      "gitBlobSha": "c262b947fc810efe5300f584f05c09ebc31aa9a6",
+      "baseline": {
+        "lines": {
+          "covered": 143,
+          "total": 153,
+          "pct": 93.46
+        },
+        "functions": {
+          "covered": 9,
+          "total": 9,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 143,
+          "total": 153,
+          "pct": 93.46
+        },
+        "branches": {
+          "covered": 54,
+          "total": 63,
+          "pct": 85.71
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/strength-publication-v1.ts",
+      "gitBlobSha": "d5b8eab214d63ac6ccd87ae02c1238100a073d36",
+      "baseline": {
+        "lines": {
+          "covered": 60,
+          "total": 151,
+          "pct": 39.73
+        },
+        "functions": {
+          "covered": 5,
+          "total": 8,
+          "pct": 62.5
+        },
+        "statements": {
+          "covered": 60,
+          "total": 151,
+          "pct": 39.73
+        },
+        "branches": {
+          "covered": 22,
+          "total": 30,
+          "pct": 73.33
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training-analytics-contracts.ts",
+      "gitBlobSha": "413f6eac58275303d71b9046f7869a85991959fb",
+      "baseline": {
+        "lines": {
+          "covered": 33,
+          "total": 33,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 33,
+          "total": 33,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 9,
+          "total": 9,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training-refresh-queue.ts",
+      "gitBlobSha": "c371b75ffff22ceeb00c5e0d7c594207bda928eb",
+      "baseline": {
+        "lines": {
+          "covered": 125,
+          "total": 148,
+          "pct": 84.45
+        },
+        "functions": {
+          "covered": 9,
+          "total": 10,
+          "pct": 90.0
+        },
+        "statements": {
+          "covered": 125,
+          "total": 148,
+          "pct": 84.45
+        },
+        "branches": {
+          "covered": 41,
+          "total": 61,
+          "pct": 67.21
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training-refresh-worker-context.ts",
+      "gitBlobSha": "8224cf9d3dfe2683eb1c612fcb048990b37fd822",
+      "baseline": {
+        "lines": {
+          "covered": 30,
+          "total": 30,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 4,
+          "total": 4,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 30,
+          "total": 30,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 8,
+          "total": 9,
+          "pct": 88.88
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training-refresh-worker.ts",
+      "gitBlobSha": "d88af3d1faedc279ae69c54ee632d9c041cd654b",
+      "baseline": {
+        "lines": {
+          "covered": 46,
+          "total": 686,
+          "pct": 6.7
+        },
+        "functions": {
+          "covered": 2,
+          "total": 22,
+          "pct": 9.09
+        },
+        "statements": {
+          "covered": 46,
+          "total": 686,
+          "pct": 6.7
+        },
+        "branches": {
+          "covered": 5,
+          "total": 7,
+          "pct": 71.42
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.constants.ts",
+      "gitBlobSha": "433f450f4cc18e7387361c2ee6e2cafbbceca565",
+      "baseline": {
+        "lines": {
+          "covered": 84,
+          "total": 84,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 84,
+          "total": 84,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 7,
+          "total": 9,
+          "pct": 77.77
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.errors.ts",
+      "gitBlobSha": "c957b17357bf9d54b396331bcd991bdf40cb9c20",
+      "baseline": {
+        "lines": {
+          "covered": 126,
+          "total": 144,
+          "pct": 87.5
+        },
+        "functions": {
+          "covered": 17,
+          "total": 23,
+          "pct": 73.91
+        },
+        "statements": {
+          "covered": 126,
+          "total": 144,
+          "pct": 87.5
+        },
+        "branches": {
+          "covered": 17,
+          "total": 17,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.http.ts",
+      "gitBlobSha": "113a3357176b80560db6d88ccc4b08a4e039952e",
+      "baseline": {
+        "lines": {
+          "covered": 46,
+          "total": 54,
+          "pct": 85.18
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 46,
+          "total": 54,
+          "pct": 85.18
+        },
+        "branches": {
+          "covered": 29,
+          "total": 33,
+          "pct": 87.87
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.matcher.ts",
+      "gitBlobSha": "c2950816857250c6216611c8fc2fbeedbe8d48c2",
+      "baseline": {
+        "lines": {
+          "covered": 71,
+          "total": 75,
+          "pct": 94.66
+        },
+        "functions": {
+          "covered": 5,
+          "total": 5,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 71,
+          "total": 75,
+          "pct": 94.66
+        },
+        "branches": {
+          "covered": 25,
+          "total": 32,
+          "pct": 78.12
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.program-reconcile.ts",
+      "gitBlobSha": "e84efe201862558fecba97d4c5c12b04315f196e",
+      "baseline": {
+        "lines": {
+          "covered": 63,
+          "total": 64,
+          "pct": 98.43
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 63,
+          "total": 64,
+          "pct": 98.43
+        },
+        "branches": {
+          "covered": 14,
+          "total": 15,
+          "pct": 93.33
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.repository.ts",
+      "gitBlobSha": "28e86ed06d166f0b2ac8823ade22b946f07100c9",
+      "baseline": {
+        "lines": {
+          "covered": 1874,
+          "total": 3267,
+          "pct": 57.36
+        },
+        "functions": {
+          "covered": 58,
+          "total": 87,
+          "pct": 66.66
+        },
+        "statements": {
+          "covered": 1874,
+          "total": 3267,
+          "pct": 57.36
+        },
+        "branches": {
+          "covered": 229,
+          "total": 409,
+          "pct": 55.99
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.schema.ts",
+      "gitBlobSha": "82f1239f775b166a1595cf6ba4047247ab4ccd64",
+      "baseline": {
+        "lines": {
+          "covered": 197,
+          "total": 199,
+          "pct": 98.99
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 197,
+          "total": 199,
+          "pct": 98.99
+        },
+        "branches": {
+          "covered": 21,
+          "total": 24,
+          "pct": 87.5
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.service.ts",
+      "gitBlobSha": "93ff5f17f93dfb46c13cf16e895da895cafc2107",
+      "baseline": {
+        "lines": {
+          "covered": 921,
+          "total": 1797,
+          "pct": 51.25
+        },
+        "functions": {
+          "covered": 42,
+          "total": 83,
+          "pct": 50.6
+        },
+        "statements": {
+          "covered": 921,
+          "total": 1797,
+          "pct": 51.25
+        },
+        "branches": {
+          "covered": 181,
+          "total": 305,
+          "pct": 59.34
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.set-validation.ts",
+      "gitBlobSha": "b3a05fb19262eac201bfbcdf1ed4cbff508cb1a3",
+      "baseline": {
+        "lines": {
+          "covered": 73,
+          "total": 82,
+          "pct": 89.02
+        },
+        "functions": {
+          "covered": 3,
+          "total": 3,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 73,
+          "total": 82,
+          "pct": 89.02
+        },
+        "branches": {
+          "covered": 43,
+          "total": 48,
+          "pct": 89.58
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.source-revision.ts",
+      "gitBlobSha": "e0be300d51b7c75ba302c8284880ece5e8493f9d",
+      "baseline": {
+        "lines": {
+          "covered": 1,
+          "total": 3,
+          "pct": 33.33
+        },
+        "functions": {
+          "covered": 0,
+          "total": 1,
+          "pct": 0.0
+        },
+        "statements": {
+          "covered": 1,
+          "total": 3,
+          "pct": 33.33
+        },
+        "branches": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.tonnage.ts",
+      "gitBlobSha": "ee6554517d0917926901f412ade7fde0cc552dee",
+      "baseline": {
+        "lines": {
+          "covered": 18,
+          "total": 18,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 18,
+          "total": 18,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 15,
+          "total": 17,
+          "pct": 88.23
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/training.types.ts",
+      "gitBlobSha": "88378af67f08da42c24a13ea930bb599a0b7eda2",
+      "baseline": {
+        "lines": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        },
+        "statements": {
+          "covered": 0,
+          "total": 0,
+          "pct": 100.0
+        },
+        "branches": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100.0
+        }
+      }
+    }
+  ],
+  "pathMoves": []
+}

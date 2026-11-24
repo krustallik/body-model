@@ -141,6 +141,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Prisma Client for supplemental unit tests
+        run: npm run prisma:generate
+
       - name: Download all Vitest shard reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -150,6 +153,21 @@ jobs:
 
       - name: Merge reports and enforce combined coverage thresholds
         run: npx vitest run --merge-reports --coverage
+
+      - name: Enforce frozen per-file module coverage floors
+        run: node scripts/refactor/run-module-coverage-gate.mjs --manifest tests/refactor-comparator/module-coverage-v1.json --reports-dir coverage/module-coverage
+
+      - name: Upload per-file module coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: module-coverage-${{ github.run_id }}
+          path: |
+            coverage/module-coverage/**
+            tests/refactor-comparator/module-coverage-v1.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
 
   postgres_integration:
     name: PostgreSQL integration shard ${{ matrix.shard }}

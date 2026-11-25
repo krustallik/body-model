@@ -5,8 +5,8 @@ import { LEGACY_LOAD_CONFIGS_V1, loadConfigV1Schema } from "@/modules/training/l
 import { externalWeightEntryLabel } from "@/modules/training/external-load-accounting";
 
 const expected = [
-  { key: "bulgarian_split_squat", name: "Болгарські присідання з упором задньої ноги на лаву", primary: "квадрицепси, сідничні м’язи", secondary: "задня поверхня стегна, литкові м’язи, м’язи корпуса" },
-  { key: "forward_dumbbell_lunge", name: "Випади вперед", primary: "квадрицепси, сідничні м’язи", secondary: "задня поверхня стегна, литкові м’язи, м’язи корпуса" },
+  { key: "bulgarian_split_squat", name: "Болгарські присідання з упором задньої ноги на лаву", primary: "квадрицепси, сідничні м’язи", secondary: "задня поверхня стегна, привідні м’язи стегна, литкові м’язи, м’язи корпуса" },
+  { key: "forward_dumbbell_lunge", name: "Випади вперед", primary: "квадрицепси, сідничні м’язи", secondary: "задня поверхня стегна, привідні м’язи стегна, литкові м’язи, м’язи корпуса" },
   { key: "goblet_squat", name: "Присідання з гантеллю в руках", primary: "квадрицепси, сідничні м’язи", secondary: "привідні м’язи стегна, м’язи корпуса" },
   { key: "dumbbell_crunch", name: "Прямі скручування з гантеллю на прес", primary: "прямий м’яз живота", secondary: "косі м’язи живота" },
   { key: "dumbbell_russian_twist", name: "Бокові скручування з гантеллю на прес", primary: "косі м’язи живота", secondary: "прямий м’яз живота" },

@@ -106,8 +106,70 @@ export async function readProductionReleaseMarker(markerPath) {
   return { marker: parseProductionReleaseMarker(bytes), digest: createHash("sha256").update(bytes).digest("hex"), bytes };
 }
 
+function parseAuthPredecessorMarker(text) {
+  const source = String(text ?? "");
+  if (Buffer.byteLength(source, "utf8") > 4096 || !source.endsWith("\n") || source.includes("\r")) {
+    throw new Error("Auth predecessor marker encoding is not canonical");
+  }
+  const lines = source.slice(0, -1).split("\n");
+  const keys = ["schemaVersion", "manifestId", "migrationOriginSha", "deploySha", "state", "workflowRunId",
+    "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState", "sourceMarkerDigest", "compatibilityDigest"];
+  if (lines.length !== keys.length || lines[0] !== "schemaVersion=3") {
+    throw new Error("Auth predecessor marker schema is unsupported");
+  }
+  const values = {};
+  for (let index = 1; index < keys.length; index += 1) {
+    const prefix = `${keys[index]}=`;
+    if (!lines[index].startsWith(prefix)) throw new Error("Auth predecessor marker fields are not canonical");
+    values[keys[index]] = lines[index].slice(prefix.length);
+  }
+  const marker = {
+    schemaVersion: 3,
+    manifestId: values.manifestId,
+    migrationOriginSha: values.migrationOriginSha,
+    deploySha: values.deploySha,
+    state: values.state,
+    workflowRunId: values.workflowRunId,
+    workflowRunAttempt: Number(values.workflowRunAttempt),
+    authorizationId: values.authorizationId,
+    lineageDigest: values.lineageDigest,
+    spawnState: values.spawnState,
+    sourceMarkerDigest: values.sourceMarkerDigest,
+    compatibilityDigest: values.compatibilityDigest,
+  };
+  if (marker.manifestId !== "auth-multiuser-v1" || marker.migrationOriginSha !== "18e67d53856af1f4742bbe9626abbd005b70e8bf"
+    || !SHA.test(marker.deploySha) || marker.state !== "app-ready" || !RUN_ID.test(marker.workflowRunId)
+    || !Number.isSafeInteger(marker.workflowRunAttempt) || marker.workflowRunAttempt < 1
+    || !/^[A-Za-z0-9-]{16,80}$/.test(marker.authorizationId) || !DIGEST.test(marker.lineageDigest)
+    || marker.spawnState !== "started" || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)) {
+    throw new Error("Auth predecessor marker values are invalid");
+  }
+  return Object.freeze(marker);
+}
+
+export async function readAuthPredecessorMarker(markerPath) {
+  const details = await lstat(markerPath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+  if (!details) return null;
+  if (!details.isFile() || details.isSymbolicLink()) throw new Error("Auth predecessor marker path is not a regular file");
+  const bytes = await readFile(markerPath, "utf8");
+  return { marker: parseAuthPredecessorMarker(bytes), digest: createHash("sha256").update(bytes).digest("hex"), bytes };
+}
+
+function assertAuthPredecessorMarker(existing, expectedPriorDigest, expected, releaseSha) {
+  const marker = existing?.marker;
+  const markerKeys = ["schemaVersion", "manifestId", "migrationOriginSha", "deploySha", "state", "workflowRunId",
+    "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState", "sourceMarkerDigest", "compatibilityDigest"];
+  if (!existing || existing.digest !== expectedPriorDigest || marker?.schemaVersion !== 3
+    || marker.manifestId !== "auth-multiuser-v1" || marker.migrationOriginSha !== "18e67d53856af1f4742bbe9626abbd005b70e8bf"
+    || marker.state !== "app-ready" || marker.deploySha !== expected.liveAppSha || expected.liveAppSha !== expected.deploySha
+    || !/^[a-f0-9]{40}$/.test(String(releaseSha ?? ""))
+    || markerKeys.some((key) => marker[key] !== expected[key])) {
+    throw new Error("Auth predecessor marker lineage changed before Training DDL handoff");
+  }
+}
+
 export async function writeDdlStartingMarker({ markerDirectory, releaseSha, manifestId = "active-energy-unified-v2", workflowRunId, workflowRunAttempt,
-  authorizationId, lineageDigest, expectedPriorDigest = null, expectedPriorMarker = null }) {
+  authorizationId, lineageDigest, expectedPriorDigest = null, expectedPriorMarker = null, expectedPriorMode = null }) {
   const directory = path.resolve(markerDirectory);
   const details = await lstat(directory).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
   if (!details || !details.isDirectory() || details.isSymbolicLink()) throw new Error("durable release marker directory is unavailable or unsafe");
@@ -118,9 +180,20 @@ export async function writeDdlStartingMarker({ markerDirectory, releaseSha, mani
     throw error;
   });
   try {
-    const existing = await readProductionReleaseMarker(markerPath);
+    if (expectedPriorMode !== null && expectedPriorMode !== "auth-to-training-session-context") {
+      throw new Error("unsupported production marker predecessor transition");
+    }
+    if (expectedPriorMode === "auth-to-training-session-context"
+      && (manifestId !== "training-session-context-v1" || expectedPriorDigest === null || !expectedPriorMarker)) {
+      throw new Error("Auth predecessor transition is restricted to the reviewed Training session-context manifest");
+    }
+    const existing = expectedPriorMode === "auth-to-training-session-context"
+      ? await readAuthPredecessorMarker(markerPath)
+      : await readProductionReleaseMarker(markerPath);
     if (expectedPriorDigest === null) {
       if (existing) throw new Error("release marker appeared before DDL handoff");
+    } else if (expectedPriorMode === "auth-to-training-session-context") {
+      assertAuthPredecessorMarker(existing, expectedPriorDigest, expectedPriorMarker, releaseSha);
     } else {
       const expected = expectedPriorMarker ?? { releaseSha, workflowRunId: String(workflowRunId),
         workflowRunAttempt: Number(workflowRunAttempt), authorizationId, lineageDigest };
@@ -141,7 +214,12 @@ export async function writeDdlStartingMarker({ markerDirectory, releaseSha, mani
     try {
       if (expectedPriorDigest === null) await link(temporary, markerPath);
       else {
-        const latest = await readProductionReleaseMarker(markerPath);
+        const latest = expectedPriorMode === "auth-to-training-session-context"
+          ? await readAuthPredecessorMarker(markerPath)
+          : await readProductionReleaseMarker(markerPath);
+        if (expectedPriorMode === "auth-to-training-session-context") {
+          assertAuthPredecessorMarker(latest, expectedPriorDigest, expectedPriorMarker, releaseSha);
+        }
         if (!latest || latest.digest !== expectedPriorDigest) throw new Error("release marker changed during DDL handoff");
         await rename(temporary, markerPath);
       }

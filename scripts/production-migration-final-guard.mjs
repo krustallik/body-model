@@ -70,6 +70,30 @@ export function assertAuthSourceProjectionMatchesRestore({ manifestId, restoreRe
   return true;
 }
 
+export function sourceReleaseMarkerDigest(preflightResult, manifestId) {
+  const witness = preflightResult?.sourceReleaseMarker;
+  if (manifestId !== "training-session-context-v1") {
+    if (witness !== undefined) throw new Error("Migration blocked: a source release-marker witness is not valid for this manifest.");
+    return null;
+  }
+  if (witness === undefined) return null;
+  const fields = ["schemaVersion", "manifestId", "migrationOriginSha", "deploySha", "state", "workflowRunId",
+    "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState", "sourceMarkerDigest",
+    "compatibilityDigest", "digest", "liveAppSha"].sort();
+  if (!witness || typeof witness !== "object" || Array.isArray(witness)
+    || JSON.stringify(Object.keys(witness).sort()) !== JSON.stringify(fields)
+    || witness.schemaVersion !== 3 || witness.manifestId !== "auth-multiuser-v1"
+    || witness.migrationOriginSha !== "18e67d53856af1f4742bbe9626abbd005b70e8bf"
+    || witness.state !== "app-ready" || witness.deploySha !== witness.liveAppSha
+    || !/^[a-f0-9]{40}$/.test(String(witness.deploySha ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(witness.digest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(witness.compatibilityDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(witness.sourceMarkerDigest ?? ""))) {
+    throw new Error("Migration blocked: Training preflight lacks the exact retained Auth app-ready marker witness.");
+  }
+  return witness.digest;
+}
+
 export function verifyFinalMigrationAuthorization({ envelope, preflightResult, evidence, restoreResult, artifactMetadata, liveReport, liveMainSha, releaseSha, manifestId, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, now = Date.now() }) {
   assertSignedAuthorizationRequired({ envelope, confirmation: process.env.CONFIRM_PRODUCTION_MIGRATE });
   const manifest = getProductionMigrationManifest(manifestId);
@@ -82,6 +106,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   if (preflightResult?.readyForOwnerAuthorization !== true || preflightResult.manifestId !== manifest.id) {
     throw new Error("Migration blocked: signed preflight result is missing or not ready.");
   }
+  const previousReleaseMarkerDigest = sourceReleaseMarkerDigest(preflightResult, manifest.id);
   if (canonicalSha256(preflightResult) !== evidence.preflightResultDigest) throw new Error("Migration blocked: preflight result digest differs from verified evidence.");
   if (canonicalSha256(preflightResult?.writerDrain) !== evidence.writerDrainDigest
     || canonicalSha256(preflightResult?.writerDrain?.topology) !== evidence.writerTopologyDigest
@@ -197,6 +222,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     finalTopologyObservedAt: liveReport.writerDrain.topology.observedAt,
     postSchemaDigest: restoreResult.postSchemaDigest,
     snapshotDataFingerprint,
+    ...(previousReleaseMarkerDigest ? { sourceReleaseMarkerDigest: previousReleaseMarkerDigest } : {}),
     verifiedAt: new Date(now).toISOString(),
   };
   if (forwardContext) Object.assign(receipt, forwardResumeClaims(forwardContext));
@@ -212,6 +238,7 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     "productionIdentityDigest", "preflightWriterDrainDigest", "preflightWriterTopologyDigest",
     "finalWriterDrainDigest", "finalWriterTopologyDigest", "finalWriterDrainObservedAt", "finalTopologyObservedAt",
     "postSchemaDigest", "snapshotDataFingerprint", "verifiedAt",
+    ...(receipt?.sourceReleaseMarkerDigest !== undefined ? ["sourceReleaseMarkerDigest"] : []),
     ...(isForwardResume ? ["executionMode", "forwardResumeProofDigest", "forwardResumeSourceRunId", "forwardResumeSourceRunAttempt",
       "forwardResumeSourceSha", "forwardResumeMarkerDigest", "forwardResumeSourceAuthorizationId",
       "forwardResumeSourcePreflightResultDigest", "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest"] : []),
@@ -227,7 +254,9 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     || !/^[a-f0-9]{64}$/.test(String(receipt.preflightWriterTopologyDigest ?? ""))
     || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterDrainDigest ?? ""))
     || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterTopologyDigest ?? ""))
-    || !/^[a-f0-9]{64}$/.test(String(receipt.snapshotDataFingerprint ?? ""))) {
+    || !/^[a-f0-9]{64}$/.test(String(receipt.snapshotDataFingerprint ?? ""))
+    || (receipt.sourceReleaseMarkerDigest !== undefined
+      && !/^[a-f0-9]{64}$/.test(String(receipt.sourceReleaseMarkerDigest)))) {
     throw new Error("Migration blocked: final guard receipt is incomplete or not ready.");
   }
   for (const [label, value] of [["writer-drain", receipt.finalWriterDrainObservedAt], ["topology", receipt.finalTopologyObservedAt]]) {

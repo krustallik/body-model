@@ -772,9 +772,61 @@ jobs:
           REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$TOOL_ARCHIVE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
           "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
             < "$TOOL_ARCHIVE" > "$RUNNER_TEMP/pre-maintenance-report.json"
+          SOURCE_MARKER_ARGS=()
+          if [[ "$MANIFEST_ID" == "training-session-context-v1" ]]; then
+            DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+            SOURCE_MARKER_REPLY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$DEPLOY_PATH_B64'" <<'REMOTE'
+          set -Eeuo pipefail
+          deploy_path="$(printf '%s' "$1" | base64 --decode)"
+          [[ "$deploy_path" == /* && -d "$deploy_path" && ! -L "$deploy_path" \
+            && "$(git -C "$deploy_path" rev-parse --show-toplevel)" == "$deploy_path" ]] || {
+            echo "Production release-marker checkout is unavailable or unsafe." >&2; exit 1;
+          }
+          git_dir="$(git -C "$deploy_path" rev-parse --absolute-git-dir)"
+          marker_dir="$git_dir/bodycast-production-release-marker"
+          if [[ ! -e "$marker_dir" && ! -L "$marker_dir" ]]; then
+            printf 'absent\n'
+            exit 0
+          fi
+          [[ -d "$marker_dir" && ! -L "$marker_dir" && "$(realpath -e "$marker_dir")" == "$marker_dir" ]] || {
+            echo "Production release-marker directory is unavailable or unsafe." >&2; exit 1;
+          }
+          marker_path="$marker_dir/marker"
+          if [[ ! -e "$marker_path" && ! -L "$marker_path" ]]; then
+            printf 'absent\n'
+            exit 0
+          fi
+          [[ -f "$marker_path" && ! -L "$marker_path" ]] || {
+            echo "Production release marker is not a regular file." >&2; exit 1;
+          }
+          app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
+          [[ "$app_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Running production app SHA is unavailable." >&2; exit 1; }
+          printf '%s %s\n' "$app_sha" "$(base64 -w0 < "$marker_path")"
+          REMOTE
+            )"
+            if [[ "$SOURCE_MARKER_REPLY" != "absent" ]]; then
+              read -r SOURCE_APP_SHA SOURCE_MARKER_B64 <<< "$SOURCE_MARKER_REPLY"
+              [[ "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ && "$SOURCE_MARKER_B64" =~ ^[A-Za-z0-9+/]+=*$ ]] || {
+                echo "Production Auth marker witness transport is malformed." >&2; exit 1;
+              }
+              git merge-base --is-ancestor "$SOURCE_APP_SHA" "$RELEASE_SHA" || {
+                echo "Production Auth app-ready SHA is not an ancestor of the exact Training release." >&2; exit 1;
+              }
+              SOURCE_MARKER_TEXT="$(printf '%s' "$SOURCE_MARKER_B64" | base64 --decode)"
+              SOURCE_MARKER_JSON="$(node --input-type=module - "$SOURCE_APP_SHA" "$GITHUB_WORKSPACE" "$SOURCE_MARKER_TEXT" <<'NODE'
+          import { validateAuthMarkerForTrainingMigrationHandoff } from "./scripts/production-schema-deploy-handoff.mjs";
+          const [liveAppSha, repositoryPath, text] = process.argv.slice(2);
+          const marker = validateAuthMarkerForTrainingMigrationHandoff(text, { liveAppSha, repositoryPath });
+          process.stdout.write(JSON.stringify({ ...marker, liveAppSha }));
+          NODE
+              )"
+              SOURCE_MARKER_ARGS=(--source-release-marker-json "$SOURCE_MARKER_JSON")
+            fi
+          fi
           node scripts/production-migration-preflight.mjs --pre-maintenance --manifest "$MANIFEST_ID" \
             --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
-            --report "$RUNNER_TEMP/pre-maintenance-report.json" > "$RUNNER_TEMP/pre-maintenance-result.json"
+            --report "$RUNNER_TEMP/pre-maintenance-report.json" "${SOURCE_MARKER_ARGS[@]}" \
+            > "$RUNNER_TEMP/pre-maintenance-result.json"
           echo "Read-only database identity, schema, migration set, locks, and Profile 1 baseline passed before maintenance." \
             >> "$GITHUB_STEP_SUMMARY"
       - name: Enter maintenance and drain the old app before backup
@@ -973,7 +1025,14 @@ jobs:
           REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
             > "$RUNNER_TEMP/preflight-report.json"
-          node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" \
+          SOURCE_MARKER_ARGS=()
+          if [[ "$MANIFEST_ID" == "training-session-context-v1" ]]; then
+            SOURCE_MARKER_JSON="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker ? JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker) : ""' "$RUNNER_TEMP/pre-maintenance-result.json")"
+            if [[ -n "$SOURCE_MARKER_JSON" ]]; then
+              SOURCE_MARKER_ARGS=(--source-release-marker-json "$SOURCE_MARKER_JSON")
+            fi
+          fi
+          node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" "${SOURCE_MARKER_ARGS[@]}" \
             > "$RUNNER_TEMP/preflight-result.json"
           node scripts/production-migration-preflight.mjs --execution-integrity --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/execution-integrity.json"

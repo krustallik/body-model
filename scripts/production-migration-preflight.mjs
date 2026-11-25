@@ -855,6 +855,11 @@ async function main() {
     }
     const reportPath = value("--report");
     const report = await readJsonInput(reportPath);
+    const sourceReleaseMarkerJson = value("--source-release-marker-json");
+    if (sourceReleaseMarkerJson
+      && (!new Set(["--pre-maintenance", "--preflight"]).has(mode) || manifestId !== "training-session-context-v1")) {
+      throw new Error("A source release-marker witness is restricted to Training migration preflight.");
+    }
     let result;
     let preMaintenanceNow;
     if (mode === "--preflight" || mode === "--pre-maintenance") {
@@ -874,6 +879,26 @@ async function main() {
         if (!item.matchesManifest) result.blockers.push(`Committed migration blob ${item.name} differs from the reviewed manifest checksum.`);
       }
       result.blobIntegrity = integrity;
+      if (sourceReleaseMarkerJson) {
+        let sourceReleaseMarker;
+        try { sourceReleaseMarker = JSON.parse(sourceReleaseMarkerJson); }
+        catch { throw new Error("Source Auth release-marker witness is malformed."); }
+        const fields = ["schemaVersion", "manifestId", "migrationOriginSha", "deploySha", "state", "workflowRunId",
+          "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState", "sourceMarkerDigest",
+          "compatibilityDigest", "digest", "liveAppSha"];
+        if (!sourceReleaseMarker || typeof sourceReleaseMarker !== "object" || Array.isArray(sourceReleaseMarker)
+          || JSON.stringify(Object.keys(sourceReleaseMarker).sort()) !== JSON.stringify(fields.sort())
+          || sourceReleaseMarker.schemaVersion !== 3 || sourceReleaseMarker.manifestId !== "auth-multiuser-v1"
+          || sourceReleaseMarker.migrationOriginSha !== "18e67d53856af1f4742bbe9626abbd005b70e8bf"
+          || sourceReleaseMarker.state !== "app-ready" || sourceReleaseMarker.deploySha !== sourceReleaseMarker.liveAppSha
+          || !/^[a-f0-9]{40}$/.test(String(sourceReleaseMarker.deploySha ?? ""))
+          || !/^[a-f0-9]{64}$/.test(String(sourceReleaseMarker.digest ?? ""))
+          || !/^[a-f0-9]{64}$/.test(String(sourceReleaseMarker.compatibilityDigest ?? ""))
+          || !/^[a-f0-9]{64}$/.test(String(sourceReleaseMarker.sourceMarkerDigest ?? ""))) {
+          throw new Error("Source Auth release-marker witness is not bound to a valid exact live app-ready marker.");
+        }
+        result.sourceReleaseMarker = sourceReleaseMarker;
+      }
       result.readyForOwnerAuthorization = !preMaintenance && result.blockers.length === 0;
       if (preMaintenance) result.readyForPreMaintenance = result.blockers.length === 0;
     } else {

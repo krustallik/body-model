@@ -1116,7 +1116,8 @@ cleanup_pre_ddl_recovery_pin_after_serving_commit() {
 
 assert_pre_maintenance_migration_state() (
   set -Eeuo pipefail
-  local target_sha manifest_id marker_status report_path result_path
+  local target_sha manifest_id marker_status report_path result_path source_marker_json app_sha
+  local -a source_marker_args=()
   result_path="${1:-}"
   [[ "$#" -eq 1 && "$result_path" == /* && -f "$result_path" && ! -L "$result_path" ]] || {
     echo "Pre-maintenance evidence output path is missing or unsafe." >&2; exit 1;
@@ -1131,12 +1132,30 @@ assert_pre_maintenance_migration_state() (
   }
   bodycast_assert_current_main_sha "$target_sha"
   if read_bodycast_release_marker; then
-    echo "An existing release marker blocks a new maintenance preflight." >&2
-    exit 1
+    [[ "$manifest_id" == "training-session-context-v1" \
+      && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+      && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+      && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {
+      echo "Only the exact retained Auth app-ready marker can precede the Training session-context manifest." >&2
+      exit 1
+    }
+    app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" \
+      || { echo "The running predecessor app release SHA is unavailable." >&2; exit 1; }
+    git merge-base --is-ancestor "$app_sha" "$target_sha" \
+      || { echo "The retained Auth app-ready release is not an ancestor of the exact Training release." >&2; exit 1; }
+    source_marker_json="$(node --input-type=module - "$BODYCAST_MARKER_FILE_PATH" "$app_sha" "$ROOT_DIR" <<'NODE'
+import { readFileSync } from "node:fs";
+import { validateAuthMarkerForTrainingMigrationHandoff } from "./scripts/production-schema-deploy-handoff.mjs";
+const [markerPath, liveAppSha, repositoryPath] = process.argv.slice(2);
+const marker = validateAuthMarkerForTrainingMigrationHandoff(readFileSync(markerPath, "utf8"), { liveAppSha, repositoryPath });
+process.stdout.write(JSON.stringify({ ...marker, liveAppSha }));
+NODE
+    )" || { echo "The retained Auth marker is not an exact compatible app-ready predecessor." >&2; exit 1; }
+    source_marker_args=(--source-release-marker-json "$source_marker_json")
   else
     marker_status=$?
+    [[ "$marker_status" -eq 1 ]] || { echo "Release-marker state is unknown; maintenance is blocked." >&2; exit 1; }
   fi
-  [[ "$marker_status" -eq 1 ]] || { echo "Release-marker state is unknown; maintenance is blocked." >&2; exit 1; }
 
   report_path="$(mktemp /tmp/bodycast-pre-maintenance-report.XXXXXX)"
   chmod 0600 "$report_path"
@@ -1144,7 +1163,8 @@ assert_pre_maintenance_migration_state() (
   node "$ROOT_DIR/scripts/production-db-preflight.mjs" --manifest "$manifest_id" \
     | bash "$ROOT_DIR/scripts/production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod > "$report_path"
   if ! node "$ROOT_DIR/scripts/production-migration-preflight.mjs" --pre-maintenance \
-    --manifest "$manifest_id" --release-sha "$target_sha" --repository "$ROOT_DIR" --report "$report_path" > "$result_path"; then
+    --manifest "$manifest_id" --release-sha "$target_sha" --repository "$ROOT_DIR" --report "$report_path" \
+    "${source_marker_args[@]}" > "$result_path"; then
     echo "Read-only pre-maintenance database, schema, ownership, recovery-topology, or manifest checks failed; maintenance was not entered." >&2
     exit 1
   fi

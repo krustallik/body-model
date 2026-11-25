@@ -55,14 +55,34 @@ FORWARD_RESUME_MODE=false
 SOURCE_MARKER_DIGEST=""
 FORWARD_SOURCE_MARKER_SCHEMA_VERSION=""
 if [[ "$marker_status" -eq 0 ]]; then
-  [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_STATE" == "ddl-started" ) \
+  if [[ "$MANIFEST_ID" == "training-session-context-v1" \
+    && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+    && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+    && "$BODYCAST_MARKER_STATE" == "app-ready" ]]; then
+    node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$BODYCAST_MARKER_FILE_PATH" "$ROOT_DIR" <<'NODE' \
+      || fail "the Auth predecessor marker is not the exact signed Training preflight source."
+import { readFileSync } from "node:fs";
+import { validateAuthMarkerForTrainingMigrationHandoff } from "./scripts/production-schema-deploy-handoff.mjs";
+const [preflightPath, markerPath, repositoryPath] = process.argv.slice(2);
+const preflight = JSON.parse(readFileSync(preflightPath, "utf8"));
+const witness = preflight.sourceReleaseMarker;
+if (!witness || preflight.manifestId !== "training-session-context-v1") throw new Error("Training preflight marker witness is missing.");
+const current = validateAuthMarkerForTrainingMigrationHandoff(readFileSync(markerPath, "utf8"), {
+  liveAppSha: witness.liveAppSha, repositoryPath,
+});
+if (JSON.stringify(current) !== JSON.stringify(witness)) throw new Error("Current Auth marker differs from the signed preflight witness.");
+NODE
+    SOURCE_MARKER_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker.digest' "$CONTEXT_DIR/preflight-result.json")"
+    [[ "$SOURCE_MARKER_DIGEST" == "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" ]] \
+      || fail "the Auth predecessor marker digest differs from the signed preflight source."
+  elif [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_STATE" == "ddl-started" ) \
     || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
       && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ) ) \
     && "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] \
-    || fail "only an exact verified pre-spawn marker has an owner-authorized forward-resume path."
-  SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-  FORWARD_SOURCE_MARKER_SCHEMA_VERSION="$BODYCAST_MARKER_SCHEMA_VERSION"
-  node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$RELEASE_SHA" "$SOURCE_MARKER_DIGEST" <<'NODE' \
+    ; then
+    SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+    FORWARD_SOURCE_MARKER_SCHEMA_VERSION="$BODYCAST_MARKER_SCHEMA_VERSION"
+    node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$RELEASE_SHA" "$SOURCE_MARKER_DIGEST" <<'NODE' \
     || fail "the existing marker is not bound to a verified forward-resume preflight context."
 import { readFileSync } from "node:fs";
 import { verifyForwardResumeContext } from "./scripts/production-forward-resume.mjs";
@@ -75,11 +95,11 @@ if (context.markerDigest !== markerDigest || context.markerReleaseSha !== result
   throw new Error("Forward-resume context does not match the current durable marker digest.");
 }
 NODE
-  [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.sourceSha' "$CONTEXT_DIR/preflight-result.json")" ]] \
-    || fail "legacy marker SHA differs from the verified forward-resume source SHA."
-  if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 2 ]]; then
-    node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" \
-      "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" "$BODYCAST_MARKER_AUTHORIZATION_ID" "$BODYCAST_MARKER_LINEAGE_DIGEST" <<'NODE' \
+    [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.sourceSha' "$CONTEXT_DIR/preflight-result.json")" ]] \
+      || fail "legacy marker SHA differs from the verified forward-resume source SHA."
+    if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 2 ]]; then
+      node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" \
+        "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" "$BODYCAST_MARKER_AUTHORIZATION_ID" "$BODYCAST_MARKER_LINEAGE_DIGEST" <<'NODE' \
       || fail "the armed marker does not match its signed pre-spawn source lineage."
 import { readFileSync } from "node:fs";
 const [file, runId, attempt, authorizationId, lineageDigest] = process.argv.slice(2);
@@ -90,8 +110,11 @@ if (context?.markerSchemaVersion !== 2 || context.sourceRunId !== runId
   throw new Error("Armed marker identity or lineage differs from the verified source context.");
 }
 NODE
+    fi
+    FORWARD_RESUME_MODE=true
+  else
+    fail "only an exact verified pre-spawn marker has an owner-authorized forward-resume path, or an exact retained Auth app-ready predecessor may precede Training DDL."
   fi
-  FORWARD_RESUME_MODE=true
 elif [[ "$marker_status" -ne 1 ]]; then
   fail "production release marker state is unknown; migration is blocked."
 fi

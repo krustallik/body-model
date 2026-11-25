@@ -14,9 +14,10 @@ import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyMan
 import { renderProductionDbPreflightSql, getExpectedSchemaObjectNames } from "../scripts/production-db-preflight.mjs";
 import { combineRestoreResults, verifyBaseRestore, verifyDisposablePostflight, verifyDisposableRehearsalAdmission } from "../scripts/production-migration-restore-check.mjs";
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
-import { assertAuthSourceProjectionMatchesRestore, assertLiveDataMatchesBackupReadability, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
+import { assertAuthSourceProjectionMatchesRestore, assertLiveDataMatchesBackupReadability, sourceReleaseMarkerDigest, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
+import { writeDdlStartingMarker } from "../scripts/production-release-marker.mjs";
 import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-database-identity.mjs";
 import { psqlCompatibleDatabaseUrl, psqlUrlFromRenderedComposeConfig } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
@@ -47,6 +48,20 @@ const dirs = [
 const fullDirs = [...dirs, ...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migration.name)];
 
 describe("Auth migration data projection and pre-maintenance headroom", () => {
+  it("binds the exact retained Auth marker digest only to the Training session-context manifest", () => {
+    const witness = {
+      schemaVersion: 3, manifestId: "auth-multiuser-v1", migrationOriginSha: "18e67d53856af1f4742bbe9626abbd005b70e8bf",
+      deploySha: "c616eba0f874c8c481cb889fade149b68f9ba590", state: "app-ready", workflowRunId: "41545707543",
+      workflowRunAttempt: 1, authorizationId: "auth-marker-predecessor-test", lineageDigest: "a".repeat(64),
+      spawnState: "started", sourceMarkerDigest: "b".repeat(64), compatibilityDigest: "c".repeat(64),
+      digest: "d".repeat(64), liveAppSha: "c616eba0f874c8c481cb889fade149b68f9ba590",
+    };
+    expect(sourceReleaseMarkerDigest({}, "training-session-context-v1")).toBeNull();
+    expect(sourceReleaseMarkerDigest({ sourceReleaseMarker: witness }, "training-session-context-v1")).toBe(witness.digest);
+    expect(() => sourceReleaseMarkerDigest({ sourceReleaseMarker: witness }, ACTIVE_ENERGY_UNIFIED_MANIFEST.id)).toThrow(/not valid for this manifest/);
+    expect(() => sourceReleaseMarkerDigest({ sourceReleaseMarker: { ...witness, extra: true } }, "training-session-context-v1")).toThrow(/exact retained Auth/);
+  });
+
   it("requires correctly measured database, Docker, and runner capacity before maintenance", () => {
     expect(assertPreMaintenanceStorageHeadroom(validPreMaintenanceStorageHeadroom)).toBe(true);
     expect(assertPreMaintenanceStorageHeadroom({
@@ -768,6 +783,54 @@ function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret
   };
 }
 
+function trainingBoundaryWithSourceMarker(fixture, sourceReleaseMarker) {
+  const baseline = authorizedBoundary(fixture);
+  const pending = TRAINING_SESSION_CONTEXT_MANIFEST.migrations.map(({ name }) => name).sort();
+  const preflightResult = { sourceReleaseMarker };
+  const preflightResultDigest = canonicalSha256(preflightResult);
+  const signedClaims = claims({
+    manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+    pendingMigrationNames: pending,
+    pendingSetDigest: canonicalSha256(pending),
+    preflightResultDigest,
+    productionIdentityDigest: baseline.receipt.productionIdentityDigest,
+  });
+  return {
+    ...baseline,
+    envelope: signClaims(signedClaims),
+    receipt: {
+      ...baseline.receipt,
+      manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+      pending,
+      pendingSetDigest: canonicalSha256(pending),
+      preflightResultDigest,
+      sourceReleaseMarkerDigest: sourceReleaseMarker.digest,
+    },
+    preflightResult,
+  };
+}
+
+function authPredecessorMarkerFixture() {
+  const marker = {
+    schemaVersion: 3, manifestId: "auth-multiuser-v1", migrationOriginSha: "18e67d53856af1f4742bbe9626abbd005b70e8bf",
+    deploySha: "c616eba0f874c8c481cb889fade149b68f9ba590", state: "app-ready", workflowRunId: "41545707543",
+    workflowRunAttempt: 1, authorizationId: "auth-marker-predecessor-test", lineageDigest: "a".repeat(64),
+    spawnState: "started", sourceMarkerDigest: "b".repeat(64), compatibilityDigest: "c".repeat(64),
+  };
+  const text = [
+    "schemaVersion=3", `manifestId=${marker.manifestId}`, `migrationOriginSha=${marker.migrationOriginSha}`,
+    `deploySha=${marker.deploySha}`, `state=${marker.state}`, `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`, `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`, `spawnState=${marker.spawnState}`,
+    `sourceMarkerDigest=${marker.sourceMarkerDigest}`, `compatibilityDigest=${marker.compatibilityDigest}`, "",
+  ].join("\n");
+  return {
+    text,
+    witness: { ...marker, digest: createHash("sha256").update(text).digest("hex"), liveAppSha: marker.deploySha },
+    staleText: text.replace(`compatibilityDigest=${marker.compatibilityDigest}`, `compatibilityDigest=${"e".repeat(64)}`),
+  };
+}
+
 describe("V5 closed migration manifest and full pending set", () => {
   it("keeps the V4 runbook migration hashes bound to the release manifest", async () => {
     const runbook = await readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8");
@@ -1135,6 +1198,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(target.indexOf(reportBinding, compatibilityTargetStart)).toBeLessThan(target.indexOf('printf \'%s\\n\' "$RAW_REPORT"', compatibilityTargetStart));
     expect(preflight).toContain('production-db-target.sh\\" --preflight bodycast-db-prod');
     expect(preflight).toContain("Pre-maintenance tooling archive digest mismatch.");
+    expect(preflight).toContain('marker_dir="$git_dir/bodycast-production-release-marker"');
+    expect(preflight).toContain('marker_path="$marker_dir/marker"');
+    expect(preflight).toContain("--source-release-marker-json");
+    expect(preflight).toContain('JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker');
     expect(preflight).toContain(`trap 'rm -rf -- "$stage"' EXIT`);
     const productionCheckoutOriginGate = preflight.indexOf('ORIGIN_URL="$(git remote get-url origin)"');
     const productionCheckoutFetch = preflight.indexOf('git fetch --no-tags origin "$RELEASE_SHA"');
@@ -2051,6 +2118,48 @@ describe("V5 closed migration manifest and full pending set", () => {
     }
   });
 
+  it("accepts the exact signed Auth marker in assertPrismaMigrationAuthorized and blocks changed marker bytes", async () => {
+    const fixture = await executionBoundaryFixture();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-training-auth-source-guard-"));
+    const { text, witness, staleText } = authPredecessorMarkerFixture();
+    const markerPath = path.join(directory, "marker");
+    const receiptPath = path.join(directory, "receipt.json");
+    const envelopePath = path.join(directory, "authorization.json");
+    const keysPath = path.join(directory, "keys.json");
+    const preflightPath = path.join(directory, "preflight-result.json");
+    const authorized = trainingBoundaryWithSourceMarker(fixture, witness);
+    const environment = {
+      DATABASE_URL: authorized.databaseUrl,
+      BODYCAST_FINAL_GUARD_RECEIPT: receiptPath,
+      BODYCAST_AUTHORIZATION_ENVELOPE: envelopePath,
+      BODYCAST_VERIFICATION_KEYS: keysPath,
+      BODYCAST_RELEASE_SHA: authorized.releaseSha,
+      BODYCAST_CANONICAL_MAIN_SHA: authorized.currentMainSha,
+      BODYCAST_AUTHORIZATION_WORKFLOW_ID: authorized.currentWorkflowId,
+      BODYCAST_AUTHORIZATION_RUN_ID: authorized.currentWorkflowRunId,
+      BODYCAST_AUTHORIZATION_RUN_ATTEMPT: String(authorized.currentWorkflowRunAttempt),
+      BODYCAST_RELEASE_MARKER_DIRECTORY: directory,
+    };
+    try {
+      await Promise.all([
+        writeFile(markerPath, text, { mode: 0o600, flag: "wx" }),
+        writeFile(receiptPath, JSON.stringify(authorized.receipt), { mode: 0o600 }),
+        writeFile(envelopePath, authorized.envelope + "\n", { mode: 0o600 }),
+        writeFile(keysPath, JSON.stringify(authorized.allowlist), { mode: 0o600 }),
+        writeFile(preflightPath, JSON.stringify(authorized.preflightResult), { mode: 0o600 }),
+      ]);
+      await expect(assertPrismaMigrationAuthorized(environment, fixture.checkedAt))
+        .resolves.toMatchObject({ preflightResult: authorized.preflightResult, receipt: { sourceReleaseMarkerDigest: witness.digest } });
+
+      await writeFile(markerPath, staleText);
+      await expect(assertPrismaMigrationAuthorized(environment, fixture.checkedAt))
+        .rejects.toThrow("the live Auth predecessor marker differs from signed preflight evidence");
+      await rm(markerPath);
+      await expect(assertPrismaMigrationAuthorized(environment, fixture.checkedAt))
+        .rejects.toThrow("the live Auth predecessor marker is missing before the Training DDL boundary");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it("executes DDL only after a signed final guard, fresh backup, and matching live database identity", async () => {
     const identity = validPreflightReport().identity;
     const fixture = await executionBoundaryFixture(identity);
@@ -2084,6 +2193,28 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(ioOrder).toEqual(["durable-marker", "spawn", "spawn-ack"]);
     expect(markerWriter).toHaveBeenCalledBefore(spawn);
     expect(ioOrder.indexOf("spawn-ack")).toBeGreaterThan(ioOrder.indexOf("spawn"));
+  });
+
+  it("blocks Prisma spawn when the retained Auth marker differs from the signed Training preflight witness", async () => {
+    const identity = validPreflightReport().identity;
+    const fixture = await executionBoundaryFixture(identity);
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-training-auth-marker-boundary-"));
+    const markerPath = path.join(directory, "marker");
+    const { text: sourceText, witness, staleText } = authPredecessorMarkerFixture();
+    await writeFile(markerPath, staleText, { mode: 0o600, flag: "wx" });
+    const spawn = vi.fn();
+    try {
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized: trainingBoundaryWithSourceMarker(fixture, witness),
+        spawn,
+        markerWriter: (options) => writeDdlStartingMarker({ ...options, markerDirectory: directory }),
+        environment: { ...process.env, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
+        identityProbe: async () => validPrismaTargetState(identity, now),
+        now: () => now,
+      })).rejects.toThrow("Auth predecessor marker lineage changed before Training DDL handoff");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(await readFile(markerPath, "utf8")).toBe(staleText);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it("leaves a blocking pre-spawn marker and never invokes Prisma if durable marker publication fails", async () => {

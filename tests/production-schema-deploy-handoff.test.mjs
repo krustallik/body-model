@@ -14,6 +14,7 @@ import {
   applyAuthSchemaReattestation, applySchemaDeployHandoff, buildAuthSchemaReattestation,
   evaluateSchemaDeployHandoff, parseSchemaDeployMarker, validateHistoricalAuthMigrationRuns,
   readGitCompatibility, renderSchemaDeployTransition,
+  validateAuthMarkerForTrainingMigrationHandoff,
   validateSchemaDeployHandoffMarker,
 } from "../scripts/production-schema-deploy-handoff.mjs";
 import {
@@ -426,6 +427,18 @@ describe("schema deploy compatibility handoff", () => {
       deploySha: previousDeploySha,
       state: "app-ready",
     });
+    expect(validateAuthMarkerForTrainingMigrationHandoff(previousAppReadyMarker, {
+      liveAppSha: previousDeploySha,
+      repositoryPath: process.cwd(),
+    })).toMatchObject({
+      manifestId: AUTH_MULTIUSER_MANIFEST.id,
+      deploySha: previousDeploySha,
+      state: "app-ready",
+    });
+    expect(() => validateAuthMarkerForTrainingMigrationHandoff(previousAppReadyMarker, {
+      liveAppSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+      repositoryPath: process.cwd(),
+    })).toThrow(/not the exact live Auth app-ready handoff/);
     expect(evaluateSchemaDeployHandoff({
       markerText: previousAppReadyMarker,
       deploySha: previousDeploySha,

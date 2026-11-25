@@ -494,6 +494,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "046a694a3044d9e51273bb16a0ba3848c1ac3a8b",
       "fc59d0aac9e166291135e920aa5979064e296eac",
       "e84ce0ab584052bbeadee2a5a08f93d524d7ee23",
+      "2e86ab1f4d9cd25db2b6e96f326151f9b7a25ae9",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({
@@ -1343,6 +1344,35 @@ export function validateSchemaDeployHandoffMarker(markerText) {
     reject("schema deploy handoff marker provenance is not admitted");
   }
   return marker;
+}
+
+export function validateAuthMarkerForTrainingMigrationHandoff(markerText, { liveAppSha, repositoryPath }) {
+  const parsed = parseSchemaDeployMarker(markerText);
+  const marker = parsed.marker;
+  if (marker.schemaVersion !== 3 || marker.manifestId !== AUTH_MULTIUSER_MANIFEST_ID
+    || marker.state !== "app-ready" || marker.deploySha !== liveAppSha
+    || marker.migrationOriginSha !== AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA || !admittedV3Marker(marker)) {
+    reject("Training migration predecessor is not the exact live Auth app-ready handoff");
+  }
+  const compatibility = readGitCompatibility(repositoryPath, marker.deploySha,
+    marker.migrationOriginSha, AUTH_MULTIUSER_MANIFEST_ID);
+  assertCompatibleChangedPaths(compatibility.changedPaths, compatibility.changedPathObjects,
+    AUTH_MULTIUSER_CONTENT_BOUND_PATHS, AUTH_MULTIUSER_NON_RUNTIME_PATH);
+  assertCriticalObjects(compatibility.criticalObjects, AUTH_MULTIUSER_CRITICAL_TREES, AUTH_MULTIUSER_CRITICAL_FILES);
+  const expectedCompatibilityDigest = compatibilityDigest({
+    migrationOriginSha: marker.migrationOriginSha,
+    deploySha: marker.deploySha,
+    changedPaths: compatibility.changedPaths,
+    changedPathObjects: compatibility.changedPathObjects,
+    criticalObjects: compatibility.criticalObjects,
+  });
+  if (marker.compatibilityDigest !== expectedCompatibilityDigest) {
+    reject("Auth predecessor marker compatibility digest differs from its exact Git history");
+  }
+  return Object.freeze({
+    ...marker,
+    digest: parsed.digest,
+  });
 }
 
 export function renderSchemaDeployTransition(markerText, state) {

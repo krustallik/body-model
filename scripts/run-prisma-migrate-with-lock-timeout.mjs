@@ -8,8 +8,10 @@ import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { normalizeWorkflowRuns } from "./production-migration-select-preflight.mjs";
 import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
 import { isCanonicalPostgresDatabaseIdentity, matchesPostgresDatabaseIdentityDigest, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
-import { acknowledgePrismaSpawn, readProductionReleaseMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
+import { acknowledgePrismaSpawn, readAuthPredecessorMarker, readProductionReleaseMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
 import { ARMED_RETRY_FAILED_RUN_ID, ARMED_RETRY_FAILED_SHA } from "./production-forward-resume.mjs";
+
+const AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA = "18e67d53856af1f4742bbe9626abbd005b70e8bf";
 
 function reject(message) {
   throw new Error("Refusing Prisma DDL: " + message);
@@ -168,6 +170,35 @@ export async function assertPrismaMigrationAuthorized(environment = process.env,
     now,
   });
   assertBackupFreshAtDdlStart(verified.receipt, now);
+  const preflightResultPath = path.join(path.dirname(receiptPath), "preflight-result.json");
+  const preflightResult = await readFile(preflightResultPath, "utf8").then((value) => JSON.parse(value));
+  if (canonicalSha256(preflightResult) !== verified.receipt.preflightResultDigest) {
+    reject("signed preflight result changed before the final DDL marker transition.");
+  }
+  const sourceReleaseMarker = preflightResult?.sourceReleaseMarker ?? null;
+  if (sourceReleaseMarker !== null) {
+    if (verified.receipt.manifestId !== "training-session-context-v1"
+      || verified.receipt.sourceReleaseMarkerDigest !== sourceReleaseMarker.digest
+      || sourceReleaseMarker.schemaVersion !== 3 || sourceReleaseMarker.manifestId !== "auth-multiuser-v1"
+      || sourceReleaseMarker.migrationOriginSha !== AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA
+      || sourceReleaseMarker.state !== "app-ready" || sourceReleaseMarker.deploySha !== sourceReleaseMarker.liveAppSha
+      || !/^[a-f0-9]{40}$/.test(String(sourceReleaseMarker.deploySha ?? ""))
+      || !/^[a-f0-9]{64}$/.test(String(sourceReleaseMarker.digest ?? ""))) {
+      reject("signed Training preflight does not bind a valid exact Auth predecessor marker.");
+    }
+    const currentMarker = await readAuthPredecessorMarker(path.join(environment.BODYCAST_RELEASE_MARKER_DIRECTORY, "marker"));
+    if (!currentMarker) reject("the live Auth predecessor marker is missing before the Training DDL boundary.");
+    const parsedCurrentMarker = currentMarker.marker;
+    for (const key of ["schemaVersion", "manifestId", "migrationOriginSha", "deploySha", "state", "workflowRunId",
+      "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState", "sourceMarkerDigest", "compatibilityDigest"]) {
+      if (parsedCurrentMarker[key] !== sourceReleaseMarker[key]) reject("the live Auth predecessor marker differs from signed preflight evidence.");
+    }
+    if (currentMarker.digest !== sourceReleaseMarker.digest) {
+      reject("the live Auth predecessor marker digest differs from signed preflight evidence.");
+    }
+  } else if (verified.receipt.sourceReleaseMarkerDigest !== undefined) {
+    reject("final guard receipt contains an unbound Auth predecessor digest.");
+  }
   return {
     databaseUrl,
     receipt: verified.receipt,
@@ -178,6 +209,7 @@ export async function assertPrismaMigrationAuthorized(environment = process.env,
     currentWorkflowRunAttempt: Number(environment.BODYCAST_AUTHORIZATION_RUN_ATTEMPT),
     currentMainSha: environment.BODYCAST_CANONICAL_MAIN_SHA,
     releaseSha: environment.BODYCAST_RELEASE_SHA,
+    preflightResult,
   };
 }
 
@@ -217,7 +249,8 @@ export async function startPrismaMigrationAtDdlBoundary({
   const receipt = finalGuard.receipt;
   let expectedPriorDigest = null;
   let expectedPriorMarker = null;
-  const lineageDigest = receipt.executionMode === "forward-resume" ? receipt.forwardResumeProofDigest : canonicalSha256({
+  let expectedPriorMode = null;
+  let lineageDigest = receipt.executionMode === "forward-resume" ? receipt.forwardResumeProofDigest : canonicalSha256({
     authorizationId: receipt.authorizationId,
     executionMode: receipt.executionMode ?? "standard",
     releaseSha: receipt.releaseSha,
@@ -256,6 +289,24 @@ export async function startPrismaMigrationAtDdlBoundary({
       lineageDigest: armed.marker.lineageDigest,
     };
   }
+  if (authorized.preflightResult?.sourceReleaseMarker) {
+    if (receipt.executionMode === "forward-resume" || receipt.manifestId !== "training-session-context-v1") {
+      reject("Auth predecessor handoff cannot be combined with another migration resume mode.");
+    }
+    const source = authorized.preflightResult.sourceReleaseMarker;
+    if (expectedPriorDigest !== null) reject("multiple prior marker transitions were requested.");
+    expectedPriorDigest = source.digest;
+    expectedPriorMode = "auth-to-training-session-context";
+    expectedPriorMarker = source;
+    lineageDigest = canonicalSha256({
+      authorizationId: receipt.authorizationId,
+      executionMode: expectedPriorMode,
+      releaseSha: receipt.releaseSha,
+      workflowRunId: String(authorized.currentWorkflowRunId),
+      workflowRunAttempt: Number(authorized.currentWorkflowRunAttempt),
+      sourceMarkerDigest: source.digest,
+    });
+  }
   const marker = await markerWriter({
     markerDirectory,
     releaseSha: authorized.releaseSha,
@@ -266,6 +317,7 @@ export async function startPrismaMigrationAtDdlBoundary({
     lineageDigest,
     expectedPriorDigest,
     expectedPriorMarker,
+    expectedPriorMode,
   });
   let child;
   try {

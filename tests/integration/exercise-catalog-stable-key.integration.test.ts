@@ -86,15 +86,19 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
 
   it("extends an existing non-owner profile with all newly supported canonical exercises", async () => {
     await clean([profileExisting]);
-    const additions = new Set<string>(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey));
-    const previouslySupported = CANONICAL_EXERCISE_IDENTITIES.filter(({ stableKey }) => !additions.has(stableKey));
+    const existingCanonical = CANONICAL_EXERCISE_IDENTITIES.slice(0, 27);
+    const unkeyedLegacyIdentity = existingCanonical[0]!;
+    const inactiveKeyedIdentity = existingCanonical[1]!;
     await prisma.exerciseCatalog.createMany({
-      data: previouslySupported.map(({ displayName, stableKey }) => ({
+      data: existingCanonical.map(({ displayName, stableKey }, index) => ({
         profileId: profileExisting,
         name: displayName,
-        stableKey,
-        isActive: true,
+        stableKey: index === 0 ? null : stableKey,
+        isActive: index !== 0 && index !== 1,
       })),
+    });
+    await prisma.exerciseCatalog.create({
+      data: { profileId: profileExisting, name: "My custom exercise", stableKey: null },
     });
     const before = await prisma.exerciseCatalog.findMany({
       where: { profileId: profileExisting },
@@ -105,10 +109,17 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     const firstRead = await trainingRepository.listCatalog({ profileId: profileExisting, activeOnly: false });
     const secondRead = await trainingRepository.listCatalog({ profileId: profileExisting, activeOnly: false });
 
-    expect(firstRead).toHaveLength(CANONICAL_EXERCISE_IDENTITIES.length);
-    expect(firstRead.filter(({ stableKey }) => additions.has(stableKey!))).toHaveLength(
-      ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.length,
-    );
+    const canonicalNames = new Set<string>(CANONICAL_EXERCISE_IDENTITIES.map(({ displayName }) => displayName));
+    const canonicalRows = firstRead.filter(({ name }) => canonicalNames.has(name));
+    expect(before).toHaveLength(28);
+    expect(canonicalRows).toHaveLength(CANONICAL_EXERCISE_IDENTITIES.length);
+    expect(firstRead.some(({ name, stableKey }) => name === "My custom exercise" && stableKey === null)).toBe(true);
+    expect(canonicalRows.find(({ name }) => name === unkeyedLegacyIdentity.displayName))
+      .toMatchObject({ isActive: false, stableKey: null });
+    expect(canonicalRows.find(({ name }) => name === inactiveKeyedIdentity.displayName))
+      .toMatchObject({ isActive: false, stableKey: inactiveKeyedIdentity.stableKey });
+    expect((await trainingRepository.listCatalog({ profileId: profileExisting }))
+      .some(({ stableKey }) => stableKey === inactiveKeyedIdentity.stableKey)).toBe(false);
     expect(firstRead
       .filter(({ id }) => before.some((row) => row.id === id))
       .map(({ id, name, stableKey, isActive }) => ({ id, name, stableKey, isActive }))

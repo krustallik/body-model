@@ -7,10 +7,7 @@ import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/mo
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { selectPersistedEnergyResolutionV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
-import {
-  ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES,
-  CANONICAL_EXERCISE_IDENTITIES,
-} from "./canonical-exercise-identity";
+import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
   DIARY_COMPLETENESS,
   ENTRY_MODE,
@@ -957,7 +954,7 @@ export class TrainingRepository {
     activeOnly?: boolean;
   }): Promise<ExerciseCatalogDto[]> {
     const profileId = requireProfileId(options.profileId);
-    await this.ensureProfileExerciseCatalogExtensions(profileId);
+    await this.ensureProfileCanonicalExercises(profileId);
     const activeOnly = options.activeOnly ?? true;
     const rows = await this.db.exerciseCatalog.findMany({
       where: {
@@ -971,12 +968,12 @@ export class TrainingRepository {
   }
 
   /**
-   * Add newly supported canonical rows on a profile's first catalog read
-   * without a schema/data migration. Existing rows are never re-keyed, renamed,
-   * reactivated, or otherwise rewritten; conflicting names/keys fail closed.
+   * Fill missing canonical rows on a profile's catalog read without a schema
+   * migration. Existing rows and custom exercises are preserved; conflicts
+   * between canonical names and stable keys fail closed.
    */
-  private async ensureProfileExerciseCatalogExtensions(profileId: number): Promise<void> {
-    const identities = ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES;
+  private async ensureProfileCanonicalExercises(profileId: number): Promise<void> {
+    const identities = CANONICAL_EXERCISE_IDENTITIES;
     const where = {
       profileId,
       OR: [
@@ -1003,10 +1000,14 @@ export class TrainingRepository {
       }
       const keyed = byKey[0];
       const named = byName[0];
-      if (keyed || named) {
-        if (!keyed || !named || keyed.id !== named.id
-          || keyed.name !== identity.displayName || keyed.stableKey !== identity.stableKey
-          || !keyed.isActive) {
+      if (keyed) {
+        if (named && keyed.id !== named.id) {
+          throw new Error(`ExerciseCatalog conflict for ${identity.stableKey}`);
+        }
+        continue;
+      }
+      if (named) {
+        if (named.stableKey != null && named.stableKey !== identity.stableKey) {
           throw new Error(`ExerciseCatalog conflict for ${identity.stableKey}`);
         }
         continue;
@@ -1026,11 +1027,11 @@ export class TrainingRepository {
       where,
       select: { id: true, name: true, stableKey: true, isActive: true },
     });
-    for (const identity of identities) {
+    for (const identity of additions) {
       const keyed = persisted.filter((row) => row.stableKey === identity.stableKey);
-      const named = persisted.filter((row) => row.name === identity.displayName);
+      const named = persisted.filter((row) => row.name === identity.name);
       if (keyed.length !== 1 || named.length !== 1 || keyed[0]!.id !== named[0]!.id
-        || !keyed[0]!.isActive || keyed[0]!.name !== identity.displayName) {
+        || !keyed[0]!.isActive || keyed[0]!.name !== identity.name) {
         throw new Error(`ExerciseCatalog conflict while adding ${identity.stableKey}`);
       }
     }

@@ -1041,6 +1041,11 @@ describe("Apple Health sync with PostgreSQL", () => {
     const date = testDates[3]!;
     await deleteDailyHealthRows(prisma, date);
     const lastAuditId = (await prisma.healthSyncAudit.aggregate({ _max: { id: true } }))._max.id ?? 0;
+    // Keep earlier immutable observations for this date out of this race assertion.
+    const lastSnapshotId = (await prisma.healthSyncSnapshot.aggregate({
+      where: { profileId: 1, date },
+      _max: { id: true },
+    }))._max.id ?? 0;
     const firstDay = { date, steps: 111 };
     const secondDay = { date, steps: 222 };
     const profileLockHeld = deferred<void>();
@@ -1077,7 +1082,7 @@ describe("Apple Health sync with PostgreSQL", () => {
         where: { profileId_date: { profileId: 1, date } },
       })).resolves.toMatchObject({ steps: 222, rawPayload: secondDay });
       const snapshots = await prisma.healthSyncSnapshot.findMany({
-        where: { profileId: 1, date },
+        where: { profileId: 1, date, id: { gt: lastSnapshotId } },
         orderBy: { id: "asc" },
         select: { steps: true, rawPayload: true },
       });

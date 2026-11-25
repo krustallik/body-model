@@ -43,13 +43,23 @@ const LEGACY_DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
   UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   Profile: Object.freeze({ updatedAt: "local-timestamp" }),
 });
-const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
+const PREVIOUS_DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
   PhysiologyV7Lifecycle: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   PhysiologyV7DailyResult: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   PhysiologyV7ShadowDiagnostic: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   Profile: Object.freeze({ updatedAt: "local-timestamp" }),
 });
+const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
+  ...PREVIOUS_DATABASE_CLOCK_FIELD_POLICY,
+  ExerciseCatalog: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  TrainingSetCreateOperation: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+});
+const REVIEWED_DATABASE_CLOCK_FIELD_POLICIES = Object.freeze([
+  LEGACY_DATABASE_CLOCK_FIELD_POLICY,
+  PREVIOUS_DATABASE_CLOCK_FIELD_POLICY,
+  DATABASE_CLOCK_FIELD_POLICY,
+]);
 
 function requireObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -169,8 +179,8 @@ export function validateManifest(value) {
       ].includes(kind)) throw new Error(`Unsupported database clock field kind for ${table}.${field}.`);
     }
   }
-  if (stableJson(database.databaseClockFields) !== stableJson(DATABASE_CLOCK_FIELD_POLICY)
-    && stableJson(database.databaseClockFields) !== stableJson(LEGACY_DATABASE_CLOCK_FIELD_POLICY)) {
+  if (!REVIEWED_DATABASE_CLOCK_FIELD_POLICIES.some((policy) =>
+    stableJson(database.databaseClockFields) === stableJson(policy))) {
     throw new Error("Manifest databaseClockFields must match an exact reviewed clock-field policy.");
   }
   requireObject(database.auth, "Manifest postgres.auth");
@@ -350,8 +360,12 @@ export function assertAdditiveManifestExtension(baseValue, candidateValue) {
   }
   const baseClockPolicy = stableJson(base.postgres.databaseClockFields);
   const candidateClockPolicy = stableJson(candidate.postgres.databaseClockFields);
-  const exactClockPolicyExtension = baseClockPolicy === stableJson(LEGACY_DATABASE_CLOCK_FIELD_POLICY)
-    && candidateClockPolicy === stableJson(DATABASE_CLOCK_FIELD_POLICY);
+  const exactClockPolicyExtension = [
+    [LEGACY_DATABASE_CLOCK_FIELD_POLICY, PREVIOUS_DATABASE_CLOCK_FIELD_POLICY],
+    [PREVIOUS_DATABASE_CLOCK_FIELD_POLICY, DATABASE_CLOCK_FIELD_POLICY],
+    [LEGACY_DATABASE_CLOCK_FIELD_POLICY, DATABASE_CLOCK_FIELD_POLICY],
+  ].some(([basePolicy, candidatePolicy]) =>
+    baseClockPolicy === stableJson(basePolicy) && candidateClockPolicy === stableJson(candidatePolicy));
   if (baseClockPolicy !== candidateClockPolicy && !exactClockPolicyExtension) {
     throw new Error("Comparator manifest extension changed the exact reviewed database clock-field policy.");
   }

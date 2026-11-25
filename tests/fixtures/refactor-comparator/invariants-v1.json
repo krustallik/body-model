@@ -97,6 +97,8 @@
       "UnifiedPublicationBlock": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "PhysiologyV7DailyResult": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "PhysiologyV7ShadowDiagnostic": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "ExerciseCatalog": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "TrainingSetCreateOperation": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "Profile": { "updatedAt": "local-timestamp" }
     }
   },
@@ -170,6 +172,14 @@
         "tests/body-map-visual-selection-v1.test.ts",
         "tests/body-map-cache-policy.test.ts",
         "tests/body-map-dev-asset-route.test.ts"
+      ]
+    },
+    {
+      "id": "unit-refactor-comparator-clock-policy",
+      "paths": [
+        "tests/refactor-comparator/comparator-core.test.ts",
+        "tests/refactor-comparator/database-evidence.test.ts",
+        "tests/refactor-comparator/manifest.test.ts"
       ]
     }
   ],
@@ -426,6 +436,25 @@
         { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "9f4b203b60c63160b31db26ef689a28066373cdcea8887c0b60215abe315605d" },
         { "path": "src/modules/training/testing/stage01-persistence.ts", "sha256": "06bde385e0551a5068f7bfdeebbcde78fde1af56fa4d75080f12f96f35589e72" },
         { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "08ff2adb3d4c79cfce96305af1f70a91ec84de668e045804c7db41bf33c326ec" }
+      ]
+    },
+    {
+      "id": "COMPARATOR-CLOCK-02",
+      "unitPaths": [
+        "tests/refactor-comparator/comparator-core.test.ts",
+        "tests/refactor-comparator/database-evidence.test.ts",
+        "tests/refactor-comparator/manifest.test.ts"
+      ],
+      "integrationSuiteIds": ["postgres-training-history-stage01"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-training-history-stage01"],
+      "inputFiles": [
+        { "path": "scripts/refactor/comparator-core.mjs", "sha256": "5d456c25e4bd94b3586490f44ad69cf603972c5078f4a9684802662e8da1ba9d" },
+        { "path": "scripts/refactor/database-evidence.mjs", "sha256": "80e6a9322c3a2e282c25499bb5198b43cecdc15febad72062e1a37b098cfb8ee" },
+        { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "9f4b203b60c63160b31db26ef689a28066373cdcea8887c0b60215abe315605d" },
+        { "path": "tests/refactor-comparator/comparator-core.test.ts", "sha256": "2ec1fa11fab99902731d5a8dd93cc179c22fab2bdda908fd93321846a555a2ba" },
+        { "path": "tests/refactor-comparator/database-evidence.test.ts", "sha256": "ba9b861a652225d1c1a68d815835589e8cd8126646bfbb7b3e3eacc595314202" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "69c1bfebdafc61e63c5f8ccb4fb8a7df9a8736e327efb3b9ad493ee4dad62e61" }
       ]
     }
   ]

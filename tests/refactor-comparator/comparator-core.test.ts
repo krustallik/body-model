@@ -194,6 +194,20 @@ describe("refactor comparator core", () => {
       computedAt: "zoned-timestamp",
     };
     expect(() => validateManifest(widenedClockPolicy)).toThrow(/exact reviewed clock-field policy/);
+
+    const previousClockPolicy = cloneManifestForMutation();
+    previousClockPolicy.postgres.databaseClockFields = {
+      PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      UnifiedPublicationBlock: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      PhysiologyV7DailyResult: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      PhysiologyV7ShadowDiagnostic: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      Profile: { updatedAt: "local-timestamp" },
+    };
+    expect(validateManifest(previousClockPolicy)).toBe(previousClockPolicy);
+    expect(assertAdditiveManifestExtension(previousClockPolicy, manifest)).toMatchObject({ additive: true });
+
+    expect(() => assertAdditiveManifestExtension(manifest, previousClockPolicy))
+      .toThrow(/exact reviewed database clock-field policy/);
   });
 
   it("accepts only the exact isolated before and after PostgreSQL identities", () => {

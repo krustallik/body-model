@@ -92,6 +92,10 @@ describe("comparator PostgreSQL TCP readiness", () => {
 interface PersistedStateOptions {
   lifecycleUpdatedAt?: string;
   profileUpdatedAt?: string;
+  exerciseCatalogCreatedAt?: string;
+  exerciseCatalogUpdatedAt?: string;
+  trainingOperationCreatedAt?: string;
+  trainingOperationUpdatedAt?: string;
   authWindowStart?: number;
   authHitCount?: number;
   invalidationGeneration?: number;
@@ -105,6 +109,10 @@ interface ComparablePersistedState {
 function persistedState({
   lifecycleUpdatedAt = "2026-11-23T12:00:00.100+00:00",
   profileUpdatedAt = "2026-11-23T12:00:00.100",
+  exerciseCatalogCreatedAt = "2026-11-23T12:00:00.000+00:00",
+  exerciseCatalogUpdatedAt = "2026-11-23T12:00:00.100+00:00",
+  trainingOperationCreatedAt = "2026-11-23T12:00:00.000+00:00",
+  trainingOperationUpdatedAt = "2026-11-23T12:00:00.100+00:00",
   authWindowStart = 1_795_449_141,
   authHitCount = 2,
   invalidationGeneration = 4,
@@ -122,6 +130,17 @@ function persistedState({
           computedAt: "2026-11-23T12:00:00.000+00:00",
           createdAt: "2026-11-23T12:00:00.000+00:00",
           updatedAt: "2026-11-23T12:00:00.100+00:00",
+        })],
+      },
+      ExerciseCatalog: {
+        primaryKey: ["id"],
+        count: 1,
+        rows: [JSON.stringify({
+          id: 12,
+          profileId: 1,
+          name: "Squat",
+          createdAt: exerciseCatalogCreatedAt,
+          updatedAt: exerciseCatalogUpdatedAt,
         })],
       },
       PhysiologyV7Lifecycle: {
@@ -168,6 +187,18 @@ function persistedState({
           locale: "uk",
         })],
       },
+      TrainingSetCreateOperation: {
+        primaryKey: ["profileId", "operationId"],
+        count: 1,
+        rows: [JSON.stringify({
+          profileId: 1,
+          operationId: "f0a1c6b3-4a5d-4d52-a80c-6a6fce6ed6c0",
+          state: "COMPLETED",
+          payloadDigest: "a".repeat(64),
+          createdAt: trainingOperationCreatedAt,
+          updatedAt: trainingOperationUpdatedAt,
+        })],
+      },
       AuthRateLimitBucket: {
         primaryKey: ["bucketKey"],
         count: 1,
@@ -177,6 +208,8 @@ function persistedState({
     sequences: [{ schema: "public", name: "Profile_id_seq", lastValue: "1", isCalled: true }],
     migrationLedger: [{ name: "init", checksum: "abc", startedAt: "2026-11-23T12:00:00.000Z" }],
     clockColumnMetadata: [
+      { table: "ExerciseCatalog", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "ExerciseCatalog", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "PhysiologyV7DailyResult", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "PhysiologyV7DailyResult", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "PhysiologyV7Lifecycle", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
@@ -184,6 +217,8 @@ function persistedState({
       { table: "PhysiologyV7ShadowDiagnostic", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "PhysiologyV7ShadowDiagnostic", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "Profile", field: "updatedAt", dataType: "timestamp without time zone", datetimePrecision: 3, nullable: false },
+      { table: "TrainingSetCreateOperation", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
+      { table: "TrainingSetCreateOperation", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "UnifiedPublicationBlock", field: "createdAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
       { table: "UnifiedPublicationBlock", field: "updatedAt", dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false },
     ],
@@ -196,8 +231,12 @@ describe("comparator persisted state clock projection", () => {
   it("compares stable persisted semantics while retaining exact clock values as evidence", () => {
     const before = persistedState();
     const after = persistedState({
+      exerciseCatalogCreatedAt: "2026-11-23T12:00:06.000+00:00",
+      exerciseCatalogUpdatedAt: "2026-11-23T12:00:06.100+00:00",
       lifecycleUpdatedAt: "2026-11-23T12:00:06.671+00:00",
       profileUpdatedAt: "2026-11-23T12:00:07.000",
+      trainingOperationCreatedAt: "2026-11-23T12:00:07.000+00:00",
+      trainingOperationUpdatedAt: "2026-11-23T12:00:07.100+00:00",
     });
     const beforeProjection = projectPersistedStateForComparison(before, policy);
     const afterProjection = projectPersistedStateForComparison(after, policy);
@@ -207,6 +246,22 @@ describe("comparator persisted state clock projection", () => {
     expect(diffJson(beforeComparable, afterComparable)).toEqual([]);
     expect(beforeProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:00.100+00:00");
     expect(afterProjection.clockEvidence[0].fields.updatedAt).toBe("2026-11-23T12:00:06.671+00:00");
+    expect(beforeProjection.clockEvidence).toContainEqual({
+      table: "ExerciseCatalog",
+      primaryKey: { id: 12 },
+      fields: {
+        createdAt: "2026-11-23T12:00:00.000+00:00",
+        updatedAt: "2026-11-23T12:00:00.100+00:00",
+      },
+    });
+    expect(afterProjection.clockEvidence).toContainEqual({
+      table: "TrainingSetCreateOperation",
+      primaryKey: { profileId: 1, operationId: "f0a1c6b3-4a5d-4d52-a80c-6a6fce6ed6c0" },
+      fields: {
+        createdAt: "2026-11-23T12:00:07.000+00:00",
+        updatedAt: "2026-11-23T12:00:07.100+00:00",
+      },
+    });
     expect(JSON.parse(before.tables.PhysiologyV7Lifecycle.rows[0])).toHaveProperty("updatedAt", "2026-11-23T12:00:00.100+00:00");
     expect(JSON.parse(beforeComparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
     expect(JSON.parse(afterComparable.tables.AuthRateLimitBucket.rows[0]).windowStart).toBe(1_795_449_141);
@@ -251,6 +306,12 @@ describe("comparator persisted state clock projection", () => {
 
     const inverted = persistedState({ lifecycleUpdatedAt: "2026-11-22T12:00:00.000+00:00" });
     expect(() => projectPersistedStateForComparison(inverted, policy)).toThrow(/createdAt must not be after updatedAt/);
+
+    const invertedTrainingOperation = persistedState({
+      trainingOperationUpdatedAt: "2026-11-22T12:00:00.000+00:00",
+    });
+    expect(() => projectPersistedStateForComparison(invertedTrainingOperation, policy))
+      .toThrow(/TrainingSetCreateOperation createdAt must not be after updatedAt/);
 
     const invalidLocalTimestamp = persistedState({ profileUpdatedAt: "2026-11-23T12:00:00.100Z" });
     expect(() => projectPersistedStateForComparison(invalidLocalTimestamp, policy)).toThrow(/reviewed UTC timestamp/);

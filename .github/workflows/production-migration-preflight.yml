@@ -1033,8 +1033,28 @@ jobs:
               SOURCE_MARKER_ARGS=(--source-release-marker-json "$SOURCE_MARKER_JSON")
             fi
           fi
-          node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" "${SOURCE_MARKER_ARGS[@]}" \
-            > "$RUNNER_TEMP/preflight-result.json"
+          if ! node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" "${SOURCE_MARKER_ARGS[@]}" \
+            > "$RUNNER_TEMP/preflight-result.json"; then
+            {
+              echo "### Sanitized migration preflight blockers"
+              echo "The full production report remains on the ephemeral runner. Only blocker messages are included here."
+              node --input-type=module - "$RUNNER_TEMP/preflight-result.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!Array.isArray(result.blockers) || result.blockers.some((blocker) => typeof blocker !== "string")) {
+            throw new Error("Failed preflight result does not contain a valid blocker list.");
+          }
+          const escapeMarkdown = (value) => value.slice(0, 500)
+            .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (character) => `\\u${character.codePointAt(0).toString(16).padStart(4, "0")}`)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/([\\`*_{}[\]()#+.!|])/g, "\\$1");
+          process.stdout.write(`Blocker count: ${result.blockers.length}\n`);
+          for (const blocker of result.blockers.slice(0, 100)) process.stdout.write(`- ${escapeMarkdown(blocker)}\n`);
+          if (result.blockers.length > 100) process.stdout.write(`- ${result.blockers.length - 100} additional blockers omitted.\n`);
+          NODE
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           node scripts/production-migration-preflight.mjs --execution-integrity --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/execution-integrity.json"
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"

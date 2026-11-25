@@ -173,14 +173,6 @@
         "tests/body-map-cache-policy.test.ts",
         "tests/body-map-dev-asset-route.test.ts"
       ]
-    },
-    {
-      "id": "unit-refactor-comparator-clock-policy",
-      "paths": [
-        "tests/refactor-comparator/comparator-core.test.ts",
-        "tests/refactor-comparator/database-evidence.test.ts",
-        "tests/refactor-comparator/manifest.test.ts"
-      ]
     }
   ],
   "integrationSuites": [
@@ -440,11 +432,7 @@
     },
     {
       "id": "COMPARATOR-CLOCK-02",
-      "unitPaths": [
-        "tests/refactor-comparator/comparator-core.test.ts",
-        "tests/refactor-comparator/database-evidence.test.ts",
-        "tests/refactor-comparator/manifest.test.ts"
-      ],
+      "unitPaths": [],
       "integrationSuiteIds": ["postgres-training-history-stage01"],
       "observationIds": [],
       "databaseStateSuiteIds": ["postgres-training-history-stage01"],
@@ -478,7 +466,7 @@
       "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
       "inputFiles": [
         { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "193995ea2d9eba96059e6edafbff6d3d533bcb87d1741879e93473907dde4a48" },
-        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "97c8a834a9e2ddefbfe9242e77205820e8e8d80789a618a1d816cc4fc8f1d454" }
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "c9337267176b991c8b1b36ddafbcc7dc4a61dfc70ef788311730aaa2ce1fefae" }
       ]
     }
   ]

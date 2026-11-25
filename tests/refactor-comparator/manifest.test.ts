@@ -71,6 +71,7 @@ describe("frozen refactor comparator manifest", () => {
     expect(manifest.caseGroups.map(({ id }) => id)).toEqual(requiredGroups);
 
     const unitPaths = new Set(manifest.unitSuites.flatMap(({ paths }) => paths));
+    expect([...unitPaths].filter((path) => path.startsWith("tests/refactor-comparator/"))).toEqual([]);
     const suiteIds = new Set(manifest.integrationSuites.map(({ id }) => id));
     const observationIds = new Set(manifest.observations.map(({ id }) => id));
     const latestInputHashes = new Map<string, string>();
@@ -141,7 +142,8 @@ describe("frozen refactor comparator manifest", () => {
     const comparatorClockTrainingHistory = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-CLOCK-02");
     expect(comparatorClockTrainingHistory?.integrationSuiteIds).toEqual(["postgres-training-history-stage01"]);
     expect(comparatorClockTrainingHistory?.databaseStateSuiteIds).toEqual(["postgres-training-history-stage01"]);
-    expect(comparatorClockTrainingHistory?.unitPaths).toEqual(expect.arrayContaining([
+    expect(comparatorClockTrainingHistory?.unitPaths).toEqual([]);
+    expect(comparatorClockTrainingHistory?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
       "tests/refactor-comparator/comparator-core.test.ts",
       "tests/refactor-comparator/database-evidence.test.ts",
       "tests/refactor-comparator/manifest.test.ts",

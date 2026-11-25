@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -608,6 +608,51 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(events).toContain("writer-drain-topology-check");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expectNoDatabaseContainerMutation(readFileSync(path.join(fixture.root, "docker.log"), "utf8"));
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the serving app and route untouched when a release marker lacks fresh Training preflight evidence", () => {
+    const fixture = createFixture();
+    const { recordPath } = seedCapturedPreviousRelease(fixture);
+    const oldRecordBytes = readFileSync(recordPath, "utf8");
+    writeFileSync(path.join(fixture.root, "app-present"), "true\n");
+    writeFileSync(path.join(fixture.root, "app-status"), "healthy\n");
+    writeFileSync(path.join(fixture.root, "active-route"), "serving\n");
+    const markerDirectory = path.join(fixture.repo, ".git", "bodycast-production-release-marker");
+    mkdirSync(markerDirectory, { recursive: true });
+    const markerPath = path.join(markerDirectory, "marker");
+    writeFileSync(markerPath, [
+      "schemaVersion=3",
+      "manifestId=auth-multiuser-v1",
+      `migrationOriginSha=${"1".repeat(40)}`,
+      `deploySha=${PREVIOUS_SHA}`,
+      "state=app-ready",
+      "workflowRunId=41545707543",
+      "workflowRunAttempt=1",
+      "authorizationId=auth-marker-test-1234",
+      `lineageDigest=${"a".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"b".repeat(64)}`,
+      `compatibilityDigest=${"c".repeat(64)}`,
+      "",
+    ].join("\n"), { mode: 0o600 });
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_REFRESH_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000009",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Only a retained Auth marker bound to fresh Training pre-maintenance evidence");
+    expect(readFileSync(recordPath, "utf8")).toBe(oldRecordBytes);
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).not.toContain("live-route-mutation:maintenance");
+    expect(events).not.toContain("compose-stop-app");
+    expect(readFileSync(markerPath, "utf8")).toContain(`deploySha=${PREVIOUS_SHA}`);
   }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps the old capture, image pin, and running app if refreshed capture creation fails", () => {

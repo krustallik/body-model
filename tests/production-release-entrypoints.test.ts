@@ -384,6 +384,11 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID");
     expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT");
     expect(capture).toContain("refresh_pre_ddl_previous_release");
+    expect(capture).toContain('refresh_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir" "$preflight_result_path"');
+    expect(capture).toContain('--validate-training-capture-marker "$BODYCAST_MARKER_FILE_PATH" "$preflight_result_path" \\');
+    expect(capture).toContain('"${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" "$app_sha" "$ROOT_DIR"');
+    expect(capture).toContain('preflightMode: "pre-maintenance", releaseSha');
+    expect(capture.match(/assert_pre_ddl_refresh_marker_state "\$preflight_result_path"/g)).toHaveLength(2);
     expect(capture).toContain('bodycast-production-pre-ddl-release-archive-${current_run_id}-${current_attempt}');
     expect(capture).toContain('bodycast-app:rollback-preflight-${current_run_id}-${current_attempt}');
     expect(capture.indexOf('ln -- "$record_path" "$archive_path"')).toBeLessThan(capture.indexOf('mv -fT -- "$record_tmp" "$record_path"'));

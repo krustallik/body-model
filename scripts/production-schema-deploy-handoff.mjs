@@ -497,6 +497,8 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "2e86ab1f4d9cd25db2b6e96f326151f9b7a25ae9",
       "5ce1ee1318989351c6685cb5500ad33b961c9978",
       "b0f26cf89fc8c843b497d2f9440afb733cd55be0",
+      "d600fd3de2c9f025774e1c950baac2e2c4e92667",
+      "e412b404f3e8d70b9c005572cdbb18e39d2c68bb",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({
@@ -1377,6 +1379,35 @@ export function validateAuthMarkerForTrainingMigrationHandoff(markerText, { live
   });
 }
 
+export function validateTrainingCaptureMarkerWitness({
+  markerText, preflightResult, expectedReleaseSha, liveAppSha, repositoryPath,
+}) {
+  if (!preflightResult || typeof preflightResult !== "object" || Array.isArray(preflightResult)
+    || preflightResult.manifestId !== TRAINING_SESSION_CONTEXT_MANIFEST_ID
+    || preflightResult.preflightMode !== "pre-maintenance"
+    || !SHA.test(String(expectedReleaseSha ?? "")) || preflightResult.releaseSha !== expectedReleaseSha
+    || preflightResult.readyForOwnerAuthorization !== false
+    || preflightResult.readyForPreMaintenance !== true
+    || !Array.isArray(preflightResult.blockers) || preflightResult.blockers.length !== 0) {
+    reject("Training capture requires successful exact-SHA Training pre-maintenance evidence");
+  }
+  const witness = preflightResult.sourceReleaseMarker;
+  const fields = ["schemaVersion", "manifestId", "migrationOriginSha", "deploySha", "state", "workflowRunId",
+    "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState", "sourceMarkerDigest",
+    "compatibilityDigest", "digest", "liveAppSha"];
+  if (!witness || typeof witness !== "object" || Array.isArray(witness)
+    || JSON.stringify(Object.keys(witness).sort()) !== JSON.stringify([...fields].sort())) {
+    reject("Training capture lacks the exact retained Auth marker witness");
+  }
+  const marker = validateAuthMarkerForTrainingMigrationHandoff(markerText, { liveAppSha, repositoryPath });
+  const currentWitness = { ...marker, liveAppSha };
+  if (JSON.stringify(Object.fromEntries(fields.map((field) => [field, currentWitness[field]])))
+    !== JSON.stringify(Object.fromEntries(fields.map((field) => [field, witness[field]])))) {
+    reject("The current Auth marker differs from successful Training pre-maintenance evidence");
+  }
+  return marker;
+}
+
 export function renderSchemaDeployTransition(markerText, state) {
   const marker = validateSchemaDeployHandoffMarker(markerText);
   if (!V3_STATES.has(state)) reject("transition is not a schema-deploy handoff state");
@@ -1679,6 +1710,17 @@ async function main() {
   }
   if (mode === "--validate-marker") {
     validateSchemaDeployHandoffMarker(await readFile(markerPath));
+    return;
+  }
+  if (mode === "--validate-training-capture-marker") {
+    const [preflightResultPath, expectedReleaseSha, liveAppSha, repo] = [second, third, ...remaining];
+    if (![markerPath, preflightResultPath, expectedReleaseSha, liveAppSha, repo].every(Boolean)) {
+      reject("usage: --validate-training-capture-marker <marker> <preflight-result> <release-sha> <live-app-sha> <repository>");
+    }
+    const preflightResult = JSON.parse(await readFile(preflightResultPath, "utf8"));
+    validateTrainingCaptureMarkerWitness({
+      markerText: await readFile(markerPath, "utf8"), preflightResult, expectedReleaseSha, liveAppSha, repositoryPath: repo,
+    });
     return;
   }
   reject(`unknown mode ${mode ?? ""}`);

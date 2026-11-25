@@ -15,6 +15,7 @@ import {
   evaluateSchemaDeployHandoff, parseSchemaDeployMarker, validateHistoricalAuthMigrationRuns,
   readGitCompatibility, renderSchemaDeployTransition,
   validateAuthMarkerForTrainingMigrationHandoff,
+  validateTrainingCaptureMarkerWitness,
   validateSchemaDeployHandoffMarker,
 } from "../scripts/production-schema-deploy-handoff.mjs";
 import {
@@ -435,6 +436,72 @@ describe("schema deploy compatibility handoff", () => {
       deploySha: previousDeploySha,
       state: "app-ready",
     });
+    const sourceMarkerWitness = {
+      ...validateAuthMarkerForTrainingMigrationHandoff(previousAppReadyMarker, {
+        liveAppSha: previousDeploySha,
+        repositoryPath: process.cwd(),
+      }),
+      liveAppSha: previousDeploySha,
+    };
+    const capturePreflight = {
+      manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+      preflightMode: "pre-maintenance",
+      releaseSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+      readyForOwnerAuthorization: false,
+      readyForPreMaintenance: true,
+      blockers: [],
+      sourceReleaseMarker: sourceMarkerWitness,
+    };
+    expect(validateTrainingCaptureMarkerWitness({
+      markerText: previousAppReadyMarker,
+      preflightResult: capturePreflight,
+      expectedReleaseSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+      liveAppSha: previousDeploySha,
+      repositoryPath: process.cwd(),
+    })).toMatchObject({ digest: sourceMarkerWitness.digest, deploySha: previousDeploySha, state: "app-ready" });
+    expect(() => validateTrainingCaptureMarkerWitness({
+      markerText: previousAppReadyMarker.toString("utf8").replace(sourceMarkerWitness.compatibilityDigest,
+        "f".repeat(64)),
+      preflightResult: capturePreflight,
+      expectedReleaseSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+      liveAppSha: previousDeploySha,
+      repositoryPath: process.cwd(),
+    })).toThrow(/compatibility digest differs/);
+    expect(() => validateTrainingCaptureMarkerWitness({
+      markerText: previousAppReadyMarker,
+      preflightResult: { ...capturePreflight, sourceReleaseMarker: { ...sourceMarkerWitness, digest: "0".repeat(64) } },
+      expectedReleaseSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+      liveAppSha: previousDeploySha,
+      repositoryPath: process.cwd(),
+    })).toThrow(/differs from successful Training/);
+    expect(() => validateTrainingCaptureMarkerWitness({
+      markerText: previousAppReadyMarker,
+      preflightResult: { ...capturePreflight, readyForPreMaintenance: false },
+      expectedReleaseSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+      liveAppSha: previousDeploySha,
+      repositoryPath: process.cwd(),
+    })).toThrow(/successful exact-SHA Training pre-maintenance evidence/);
+    for (const invalidPreflight of [
+      { ...capturePreflight, manifestId: "unified-v4-republication-v1" },
+      { ...capturePreflight, releaseSha: TRAINING_MIGRATION_SHA },
+      { ...capturePreflight, preflightMode: "preflight" },
+      { ...capturePreflight, readyForOwnerAuthorization: true },
+    ]) {
+      expect(() => validateTrainingCaptureMarkerWitness({
+        markerText: previousAppReadyMarker,
+        preflightResult: invalidPreflight,
+        expectedReleaseSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
+        liveAppSha: previousDeploySha,
+        repositoryPath: process.cwd(),
+      })).toThrow(/successful exact-SHA Training pre-maintenance evidence/);
+    }
+    expect(() => validateTrainingCaptureMarkerWitness({
+      markerText: previousAppReadyMarker,
+      preflightResult: capturePreflight,
+      expectedReleaseSha: TRAINING_MIGRATION_SHA,
+      liveAppSha: previousDeploySha,
+      repositoryPath: process.cwd(),
+    })).toThrow(/successful exact-SHA Training pre-maintenance evidence/);
     expect(() => validateAuthMarkerForTrainingMigrationHandoff(previousAppReadyMarker, {
       liveAppSha: REVIEWED_AUTH_COMPATIBLE_CANDIDATE_SHA,
       repositoryPath: process.cwd(),

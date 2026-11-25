@@ -159,7 +159,7 @@ capture_pre_ddl_previous_release() {
   record_path="$git_dir/bodycast-production-pre-ddl-release"
   if [[ -e "$record_path" || -L "$record_path" ]]; then
     if [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
-      refresh_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir"
+      refresh_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir" "$preflight_result_path"
       return
     fi
     [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]] || {
@@ -219,8 +219,28 @@ capture_pre_ddl_previous_release() {
   echo "Captured versioned prior-app provenance and read-only pre-DDL database compatibility digests for manual cutback."
 }
 
+assert_pre_ddl_refresh_marker_state() {
+  local preflight_result_path="$1" marker_status app_sha
+  if read_bodycast_release_marker; then
+    [[ "${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}" == "training-session-context-v1" \
+      && -n "$preflight_result_path" && -f "$preflight_result_path" && ! -L "$preflight_result_path" ]] || {
+      echo "Only a retained Auth marker bound to fresh Training pre-maintenance evidence can precede capture refresh." >&2
+      return 1
+    }
+    app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" || {
+      echo "The running Auth predecessor app SHA is unavailable during capture refresh." >&2; return 1;
+    }
+    node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" \
+      --validate-training-capture-marker "$BODYCAST_MARKER_FILE_PATH" "$preflight_result_path" \
+      "${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" "$app_sha" "$ROOT_DIR"
+  else
+    marker_status=$?
+    [[ "$marker_status" -eq 1 ]] || { echo "Release-marker state is unknown; capture refresh is blocked." >&2; return 1; }
+  fi
+}
+
 refresh_pre_ddl_previous_release() {
-  local target_sha="$1" record_path="$2" git_dir="$3"
+  local target_sha="$1" record_path="$2" git_dir="$3" preflight_result_path="${4:-}"
   local current_run_id current_attempt marker_status maintenance_marker existing_app app_status old_meta old_pin old_image archive_path
   local capture_text capture_meta new_pin new_image pin_id record_tmp canonical_record
   current_run_id="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID:-}"
@@ -229,9 +249,7 @@ refresh_pre_ddl_previous_release() {
     echo "Fresh capture refresh lacks the trusted current workflow run identity." >&2; return 1;
   }
   bodycast_assert_current_main_sha "$target_sha" || return 1
-  marker_status=1
-  if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
-  [[ "$marker_status" -eq 1 ]] || { echo "A release marker is present or unreadable; fresh capture refresh is blocked." >&2; return 1; }
+  assert_pre_ddl_refresh_marker_state "$preflight_result_path" || return 1
   [[ -f "$record_path" && ! -L "$record_path" ]] || { echo "The existing previous-app capture is not a regular file." >&2; return 1; }
   old_meta="$(cat -- "$record_path" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)" || {
     echo "The existing previous-app capture is invalid and cannot be safely archived." >&2; return 1;
@@ -250,6 +268,8 @@ refresh_pre_ddl_previous_release() {
   fi
   [[ "$app_status" == "running|healthy" ]] || { echo "Capture refresh requires the current app to be running and healthy." >&2; return 1; }
 
+  # Revalidate the exact marker witness immediately before any route mutation.
+  assert_pre_ddl_refresh_marker_state "$preflight_result_path" || return 1
   if bodycast_verify_exact_maintenance_route; then
     maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
     bodycast_probe_public_maintenance "$maintenance_marker" || return 1
@@ -1179,6 +1199,24 @@ NODE
     echo "Read-only pre-maintenance database, schema, ownership, recovery-topology, or manifest checks failed; maintenance was not entered." >&2
     exit 1
   fi
+  node --input-type=module - "$result_path" "$target_sha" "$manifest_id" <<'NODE'
+import { chmodSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+const [resultPath, releaseSha, manifestId] = process.argv.slice(2);
+const result = JSON.parse(readFileSync(resultPath, "utf8"));
+if (result.manifestId !== manifestId || result.readyForPreMaintenance !== true
+  || result.readyForOwnerAuthorization !== false || !Array.isArray(result.blockers) || result.blockers.length !== 0) {
+  throw new Error("Cannot bind an unsuccessful or wrong-manifest pre-maintenance result.");
+}
+const temporaryPath = `${resultPath}.bound-${process.pid}`;
+try {
+  writeFileSync(temporaryPath, `${JSON.stringify({ ...result, preflightMode: "pre-maintenance", releaseSha })}\n`,
+    { encoding: "utf8", mode: 0o600, flag: "wx" });
+  renameSync(temporaryPath, resultPath);
+  chmodSync(resultPath, 0o600);
+} finally {
+  try { unlinkSync(temporaryPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+}
+NODE
   bodycast_assert_current_main_sha "$target_sha"
   echo "Exact-SHA read-only pre-maintenance DB/schema/Profile 1 and recovery-topology gates passed under the production release lock."
 )
@@ -1226,10 +1264,16 @@ enter_maintenance() {
       publish_maintenance_route || return 1
     fi
   else
-    if ! publish_maintenance_route; then
-      return 1
+    if [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
+      # A refresh has its own marker/evidence gate and only publishes maintenance
+      # after the prior capture and current app have been validated.
+      capture_pre_ddl_previous_release || return 1
+    else
+      if ! publish_maintenance_route; then
+        return 1
+      fi
+      capture_pre_ddl_previous_release
     fi
-    capture_pre_ddl_previous_release
   fi
   stop_old_app
 }

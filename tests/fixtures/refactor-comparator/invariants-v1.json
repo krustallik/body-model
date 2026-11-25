@@ -407,7 +407,7 @@
       "observationIds": [],
       "databaseStateSuiteIds": ["postgres-health-sync-contracts", "postgres-physiology-v7-persistence"],
       "inputFiles": [
-        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "e3a00af624f5dbcc080f8a7a95e41c1dfdb906675d031db9965c9854f0c4e811" },
+        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "12ae4375d7af3c4d34734e932f88116df6cbac22466792c43e18ab4bee59ca72" },
         { "path": "tests/integration/physiology-v7-persistence.integration.test.ts", "sha256": "4cea70828bc950803a89d1283785662bd8270036e506982712450c16408682c8" },
         { "path": "scripts/refactor/comparator-core.mjs", "sha256": "ac1edfc667372f6ac7b414e033023da201f195ea68b410bef3e599b5306d286d" },
         { "path": "scripts/refactor/comparator-core.d.mts", "sha256": "4ba8f89f5df3a3b54a52d1dc680bfd2724d5b12053be07bd3bd886e450916524" },

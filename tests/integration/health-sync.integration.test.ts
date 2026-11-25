@@ -63,27 +63,30 @@ async function waitForWorkerBarrier<T>(barrier: Promise<T>, worker: Promise<unkn
 }
 
 async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
+  await waitForProfileAdvisoryLockWaiters(1, pid);
+}
+
+async function waitForProfileAdvisoryLockWaiters(expectedWaiters: number, pid?: number): Promise<void> {
+  if (!Number.isSafeInteger(expectedWaiters) || expectedWaiters < 1) {
+    throw new Error("Expected at least one profile advisory-lock waiter.");
+  }
   const deadline = process.hrtime.bigint() + BigInt(5_000_000_000);
   while (process.hrtime.bigint() < deadline) {
     const waiter = pid === undefined
-      ? await prisma.$queryRaw<Array<{ waiting: boolean }>>`
-        SELECT EXISTS (
-          SELECT 1 FROM pg_locks
-          WHERE locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
-            AND objid = 1::oid AND objsubid = 2 AND granted = false
-        ) AS waiting
+      ? await prisma.$queryRaw<Array<{ waiterCount: number }>>`
+        SELECT count(*)::integer AS "waiterCount" FROM pg_locks
+        WHERE locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
+          AND objid = 1::oid AND objsubid = 2 AND granted = false
       `
-      : await prisma.$queryRaw<Array<{ waiting: boolean }>>`
-        SELECT EXISTS (
-          SELECT 1 FROM pg_locks
-          WHERE pid = ${pid} AND locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
-            AND objid = 1::oid AND objsubid = 2 AND granted = false
-        ) AS waiting
+      : await prisma.$queryRaw<Array<{ waiterCount: number }>>`
+        SELECT count(*)::integer AS "waiterCount" FROM pg_locks
+        WHERE pid = ${pid} AND locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
+          AND objid = 1::oid AND objsubid = 2 AND granted = false
       `;
-    if (waiter[0]?.waiting) return;
+    if ((waiter[0]?.waiterCount ?? 0) >= expectedWaiters) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("Expected transaction did not wait for the profile advisory lock.");
+  throw new Error(`Expected ${expectedWaiters} transaction(s) to wait for the profile advisory lock.`);
 }
 
 async function saveHealthState(profileId = 1) {
@@ -1034,7 +1037,84 @@ describe("Apple Health sync with PostgreSQL", () => {
     });
   });
 
-  it("does not create duplicate rows during concurrent retries", async () => {
+  it("serializes conflicting concurrent Health syncs with a deterministic winner", async () => {
+    const date = testDates[3]!;
+    await deleteDailyHealthRows(prisma, date);
+    const lastAuditId = (await prisma.healthSyncAudit.aggregate({ _max: { id: true } }))._max.id ?? 0;
+    const firstDay = { date, steps: 111 };
+    const secondDay = { date, steps: 222 };
+    const profileLockHeld = deferred<void>();
+    const releaseProfileLock = deferred<void>();
+    let profileLockHolder: Promise<void> | null = null;
+    const inFlightResponses: Promise<Response>[] = [];
+
+    try {
+      profileLockHolder = prisma.$transaction(async (transaction) => {
+        await transaction.$executeRaw`SELECT pg_advisory_xact_lock(
+          CAST(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE} AS integer), 1::integer
+        )`;
+        profileLockHeld.resolve();
+        await releaseProfileLock.promise;
+      }, { maxWait: 5_000, timeout: 30_000 });
+      await waitForWorkerBarrier(profileLockHeld.promise, profileLockHolder, "the Health profile advisory lock");
+
+      const firstResponse = POST(syncRequest([firstDay]));
+      inFlightResponses.push(firstResponse);
+      await waitForProfileAdvisoryLockWaiter();
+
+      const secondResponse = POST(syncRequest([secondDay]));
+      inFlightResponses.push(secondResponse);
+      await waitForProfileAdvisoryLockWaiters(2);
+
+      releaseProfileLock.resolve();
+      const responses = await Promise.all([firstResponse, secondResponse]);
+      expect(responses.map(({ status }) => status)).toEqual([200, 200]);
+      const responseBodies = await Promise.all(responses.map((response) => response.json()));
+      expect(responseBodies[0]).toMatchObject({ status: "ok", created: 1, updated: 0 });
+      expect(responseBodies[1]).toMatchObject({ status: "ok", created: 0, updated: 1 });
+
+      await expect(prisma.dailyHealthData.findUniqueOrThrow({
+        where: { profileId_date: { profileId: 1, date } },
+      })).resolves.toMatchObject({ steps: 222, rawPayload: secondDay });
+      const snapshots = await prisma.healthSyncSnapshot.findMany({
+        where: { profileId: 1, date },
+        orderBy: { id: "asc" },
+        select: { steps: true, rawPayload: true },
+      });
+      expect(snapshots).toEqual([
+        { steps: 111, rawPayload: firstDay },
+        { steps: 222, rawPayload: secondDay },
+      ]);
+
+      const expectedRawBodies = [firstDay, secondDay].map((day) => JSON.stringify({ days: [day] }));
+      const audits = await prisma.healthSyncAudit.findMany({
+        where: { id: { gt: lastAuditId }, profileId: 1, rawBody: { in: expectedRawBodies } },
+        orderBy: { id: "asc" },
+        select: { rawBody: true, outcome: true, httpStatus: true },
+      });
+      expect(audits).toHaveLength(2);
+      expect(audits.map(({ rawBody, outcome, httpStatus }) => ({ rawBody, outcome, httpStatus }))
+        .sort((left, right) => (left.rawBody ?? "").localeCompare(right.rawBody ?? "")))
+        .toEqual(expectedRawBodies.sort((left, right) => left.localeCompare(right)).map((rawBody) => ({
+          rawBody, outcome: "success", httpStatus: 200,
+        })));
+    } finally {
+      releaseProfileLock.resolve();
+      await Promise.allSettled([
+        ...inFlightResponses,
+        ...(profileLockHolder ? [profileLockHolder] : []),
+      ]);
+      await prisma.healthSyncAudit.deleteMany({
+        where: {
+          id: { gt: lastAuditId },
+          profileId: 1,
+          rawBody: { in: [firstDay, secondDay].map((day) => JSON.stringify({ days: [day] })) },
+        },
+      });
+    }
+  });
+
+  it("does not create duplicate rows during concurrent identical retries", async () => {
     const date = testDates[3];
     await deleteDailyHealthRows(prisma, date!);
     const days = [{ date, steps: 111 }];

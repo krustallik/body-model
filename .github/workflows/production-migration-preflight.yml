@@ -762,6 +762,7 @@ jobs:
             echo "The configured production Compose path is unavailable." >&2; exit 1;
           }
           BODYCAST_PRODUCTION_COMPOSE_FILE="$deploy_path/docker-compose.prod.yml" \
+            BODYCAST_PREFLIGHT_SQL_FILE="$stage/pre-maintenance.sql" \
             APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" \
             bash "$stage/scripts/production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod \
             < "$stage/pre-maintenance.sql"

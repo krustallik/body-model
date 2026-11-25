@@ -41,7 +41,12 @@ run_readonly_db_report() (
   local topology_report="$2"
   local manifest_id="${3:-}"
   local sql
-  if [[ -n "$manifest_id" ]]; then
+  if [[ -n "${BODYCAST_PREFLIGHT_SQL_FILE:-}" ]]; then
+    [[ -f "$BODYCAST_PREFLIGHT_SQL_FILE" && ! -L "$BODYCAST_PREFLIGHT_SQL_FILE" ]] || {
+      echo "The staged read-only production DB report query is unavailable or unsafe." >&2; return 1;
+    }
+    sql="$(cat -- "$BODYCAST_PREFLIGHT_SQL_FILE")"
+  elif [[ -n "$manifest_id" ]]; then
     sql="$(cd "$ROOT_DIR" && node scripts/production-db-preflight.mjs --manifest "$manifest_id")"
   else
     sql="$(cd "$ROOT_DIR" && node scripts/production-db-preflight.mjs)"

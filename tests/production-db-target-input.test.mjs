@@ -24,6 +24,8 @@ describe("production DB read-only report input", () => {
   it("feeds generated SQL through psql stdin in every report mode", () => {
     expect(targetScript).toContain('printf \'%s\\n\' "$sql" | docker exec -i');
     expect(targetScript).toContain("--file=-");
+    expect(targetScript).toContain('BODYCAST_PREFLIGHT_SQL_FILE:-');
+    expect(targetScript).toContain('[[ -f "$BODYCAST_PREFLIGHT_SQL_FILE" && ! -L "$BODYCAST_PREFLIGHT_SQL_FILE" ]]');
 
     for (const mode of ["--preflight)", "--pre-maintenance-snapshot)", "--previous-app-compatibility-snapshot)"]) {
       const start = targetScript.indexOf(`  ${mode}`);
@@ -32,6 +34,12 @@ describe("production DB read-only report input", () => {
       const section = targetScript.slice(start, end < 0 ? targetScript.length : end);
       expect(section).toContain("run_readonly_db_report");
     }
+  });
+
+  it("uses the digest-verified staged SQL for the remote pre-maintenance snapshot", async () => {
+    const workflow = readFileSync(path.join(repoRoot, ".github/workflows/production-migration-preflight.yml"), "utf8");
+    expect(workflow).toContain('BODYCAST_PREFLIGHT_SQL_FILE="$stage/pre-maintenance.sql"');
+    expect(workflow).toContain('-C "$RUNNER_TEMP" pre-maintenance.sql');
   });
 
   it("binds Auth handoff re-attestation to its reviewed schema manifest", () => {

@@ -360,13 +360,26 @@ describe("active production release entrypoints", () => {
     expect(capture).toContain('if [[ "${BODYCAST_FORWARD_RESUME_CAPTURE:-0}" == "1" ]]');
   });
 
-  it("allows only an explicit owner-gated V4 capture refresh and preserves the old capture before replacing it", () => {
+  it("allows only explicit owner-gated V4 or Training capture refresh and preserves the old capture before replacing it", () => {
     const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
+    const refreshGate = /if \[\[ -n "\$REFRESH_CAPTURE_CONFIRMATION" \]\]; then([\s\S]*?)\n\s*if \[\[ "\$MANIFEST_ID" == "unified-v4-republication-v1"/.exec(workflow)?.[1];
     expect(workflow).toContain("refresh_existing_capture_confirmation:");
     expect(workflow).toContain('"$REFRESH_CAPTURE_CONFIRMATION" == "refresh-stale-pre-ddl-capture"');
-    expect(workflow).toContain('MANIFEST_ID" == "unified-v4-republication-v1"');
+    expect(workflow).toContain("Capture refresh requires its exact confirmation, an explicitly allowed release manifest, and no incident-resume inputs");
+    expect(refreshGate).toBeDefined();
+    const allowedRefreshManifestIds = [...(refreshGate ?? "").matchAll(/"\$MANIFEST_ID" == "([^"]+)"/g)]
+      .map((match) => match[1]).sort();
+    const blockedResumeInputs = [...(refreshGate ?? "").matchAll(/-z "\$([A-Z_]+)"/g)]
+      .map((match) => match[1]).sort();
+    expect(allowedRefreshManifestIds).toEqual(["training-session-context-v1", "unified-v4-republication-v1"]);
+    expect(blockedResumeInputs).toEqual([
+      "FORWARD_RESUME_FAILED_RUN_ID",
+      "RESUME_BLOCKED_CAPTURE_RUN_ID",
+      "RESUME_MIGRATION_FAILURE_RUN_ID",
+      "RESUME_SOURCE_RUN_ID",
+    ]);
     expect(workflow).toContain("BODYCAST_REFRESH_PRE_DDL_CAPTURE=1");
     expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID");
     expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT");

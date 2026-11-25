@@ -127,10 +127,11 @@ jobs:
           REFRESH_CAPTURE=0
           if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then
             [[ "$REFRESH_CAPTURE_CONFIRMATION" == "refresh-stale-pre-ddl-capture" \
-              && "$MANIFEST_ID" == "unified-v4-republication-v1" \
+              && ( "$MANIFEST_ID" == "unified-v4-republication-v1" \
+                || "$MANIFEST_ID" == "training-session-context-v1" ) \
               && -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" && -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || {
-              echo "::error::Capture refresh requires its exact confirmation, the V4 republication manifest, and no incident-resume inputs."; exit 1;
+              echo "::error::Capture refresh requires its exact confirmation, an explicitly allowed release manifest, and no incident-resume inputs."; exit 1;
             }
             REFRESH_CAPTURE=1
             echo "- explicitly authorized preservation and refresh of the existing pre-DDL app capture" >> "$GITHUB_STEP_SUMMARY"

@@ -524,7 +524,7 @@ jobs:
           node scripts/production-migration-preflight.mjs --verify-release-tree \
             --manifest auth-multiuser-v1 --repository "$auth_release_root"
           node scripts/production-migration-preflight.mjs --verify-release-tree \
-            --manifest training-session-context-v1 --repository "$GITHUB_WORKSPACE" --ci-only-manifest
+            --manifest training-session-context-v1 --repository "$GITHUB_WORKSPACE"
           topology_json="$(node --input-type=module <<'NODE'
           process.stdout.write(JSON.stringify({
             schemaVersion: 1,

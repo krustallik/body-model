@@ -884,7 +884,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("test \"$baseline_count\" = 74");
     expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1");
     expect(safetyWorkflow).toContain("--manifest training-session-context-v1");
-    expect(safetyWorkflow).toContain("--ci-only-manifest");
+    expect(safetyWorkflow).not.toContain("--ci-only-manifest");
     const trainingContextRehearsal = safetyWorkflow.slice(
       safetyWorkflow.indexOf("# Rehearse the later 77-to-79 schema"),
       safetyWorkflow.indexOf("- name: Run production migration release-tooling shell regressions"),

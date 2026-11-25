@@ -456,6 +456,19 @@
         { "path": "tests/refactor-comparator/database-evidence.test.ts", "sha256": "ba9b861a652225d1c1a68d815835589e8cd8126646bfbb7b3e3eacc595314202" },
         { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "69c1bfebdafc61e63c5f8ccb4fb8a7df9a8736e327efb3b9ad493ee4dad62e61" }
       ]
+    },
+    {
+      "id": "COMPARATOR-UNIFIED-DB-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-unified-physiology-state"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
+      "inputFiles": [
+        { "path": "src/modules/training/testing/require-isolated-database.ts", "sha256": "0b04b4094493e8fb249cc8923d8feffe51edcf25ba82d3052a2c80b2aa04c725" },
+        { "path": "tests/integration/database-safety.test.ts", "sha256": "b9d50a7a8748536c8534fbd8c310646157e8f1f29c172135be9671a7c82f2233" },
+        { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "53d7400a560bb8e42ac07db63713f00d3a9d9ab1c77c20fcbccbea609ed34cd0" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "b0a4338840d41884968ffae94ffd9912ff3cdf2adce0d8bf517a9c570ff2bb59" }
+      ]
     }
   ]
 }

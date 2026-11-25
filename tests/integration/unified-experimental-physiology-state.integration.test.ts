@@ -12,6 +12,8 @@ import {
   FULL_INTEGRATION_CLEAN_DATABASE_NAME,
   FULL_INTEGRATION_REAUDIT_DATABASE_NAME,
   REAUDIT_TEST_DATABASE_NAME,
+  REFACTOR_COMPARATOR_AFTER_DATABASE_NAME,
+  REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME,
   requireIsolatedStage01Database,
 } from "@/modules/training/testing/require-isolated-database";
 import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
@@ -513,8 +515,16 @@ async function runHealthRefreshToCompletion(profileId: number, maxAttempts = 5):
 
 describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
   beforeAll(() => {
-    expect(["bodycast_training_history_stage01_test", "bodycast_training_postcommit_test", POSTCOMMIT_FRESH_TEST_DATABASE_NAME, REAUDIT_TEST_DATABASE_NAME, FULL_INTEGRATION_REAUDIT_DATABASE_NAME, FULL_INTEGRATION_CLEAN_DATABASE_NAME])
-      .toContain(isolatedDatabase.databaseName);
+    expect([
+      "bodycast_training_history_stage01_test",
+      "bodycast_training_postcommit_test",
+      POSTCOMMIT_FRESH_TEST_DATABASE_NAME,
+      REAUDIT_TEST_DATABASE_NAME,
+      FULL_INTEGRATION_REAUDIT_DATABASE_NAME,
+      FULL_INTEGRATION_CLEAN_DATABASE_NAME,
+      REFACTOR_COMPARATOR_BEFORE_DATABASE_NAME,
+      REFACTOR_COMPARATOR_AFTER_DATABASE_NAME,
+    ]).toContain(isolatedDatabase.databaseName);
   });
 
   beforeEach(async () => {

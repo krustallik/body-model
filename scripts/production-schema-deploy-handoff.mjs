@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { link, lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST } from "./production-migration-manifests.mjs";
+import { AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, TRAINING_SESSION_CONTEXT_MANIFEST } from "./production-migration-manifests.mjs";
 import { evaluateProductionPostflight, schemaInventoryDigest } from "./production-migration-preflight.mjs";
 import { PROGRAMLESS_STRENGTH_SESSIONS_CAPABILITY, readProductionAppCapabilitiesAtSha } from "./production-app-capabilities.mjs";
 
@@ -36,6 +36,7 @@ const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const AUTH_MULTIUSER_MANIFEST_ID = AUTH_MULTIUSER_MANIFEST.id;
 const DYNAMIC_WORKOUT_MANIFEST_ID = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id;
 const TRAINING_MUTATION_LEDGER_MANIFEST_ID = TRAINING_MUTATION_LEDGER_MANIFEST.id;
+const TRAINING_SESSION_CONTEXT_MANIFEST_ID = TRAINING_SESSION_CONTEXT_MANIFEST.id;
 const DYNAMIC_WORKOUT_NON_RUNTIME_PATH = /^(?:tests\/|docs\/development\/)/;
 const AUTH_MULTIUSER_NON_RUNTIME_PATH = /^(?:tests\/|research\/|docs\/research\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
@@ -475,6 +476,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "b9ac4565b6a352d52fae63d66495ca364e795281",
       "f8f1260935d060bac853ebf9678e2c86e5876195",
       "1ddf90306cfae3823195c9e17cd50453e3158adb",
+      "b8806a7319f5f9d9308edf9f0079f1db967048b4",
     ]),
   }),
   "scripts/production-db-target.sh": Object.freeze({
@@ -491,6 +493,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "4b7ed6e33ad583bc058b6a17bdd95a1269ae3f5c",
       "046a694a3044d9e51273bb16a0ba3848c1ac3a8b",
       "fc59d0aac9e166291135e920aa5979064e296eac",
+      "e84ce0ab584052bbeadee2a5a08f93d524d7ee23",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({
@@ -763,6 +766,18 @@ function authMultiuserSourceMarkerMatches(marker) {
 function trainingMutationSourceMarkerMatches(marker) {
   return marker.schemaVersion === 2
     && marker.manifestId === TRAINING_MUTATION_LEDGER_MANIFEST_ID
+    && SHA.test(String(marker.releaseSha ?? ""))
+    && marker.state === "schema-applied"
+    && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+    && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+    && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+    && DIGEST.test(String(marker.lineageDigest ?? ""))
+    && marker.spawnState === "started";
+}
+
+function trainingSessionContextSourceMarkerMatches(marker) {
+  return marker.schemaVersion === 2
+    && marker.manifestId === TRAINING_SESSION_CONTEXT_MANIFEST_ID
     && SHA.test(String(marker.releaseSha ?? ""))
     && marker.state === "schema-applied"
     && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
@@ -1113,6 +1128,12 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
   if (!SHA.test(String(deploySha ?? ""))) reject("deploy candidate SHA is malformed");
   const observed = parseSchemaDeployMarker(markerText);
   const marker = observed.marker;
+  if (marker.schemaVersion === 2 && marker.manifestId === TRAINING_SESSION_CONTEXT_MANIFEST_ID) {
+    if (!trainingSessionContextSourceMarkerMatches(marker) || marker.releaseSha !== deploySha) {
+      reject("training session-context migration requires its exact schema-applied release SHA and acknowledged lineage");
+    }
+    return { action: "not-needed", marker, sourceDigest: observed.digest };
+  }
   if (marker.schemaVersion === 2 && marker.manifestId === AUTH_MULTIUSER_MANIFEST_ID) {
     if (!authMultiuserSourceMarkerMatches(marker)) {
       reject("Auth migration marker run, lineage, origin, or state is not admitted");
@@ -1540,9 +1561,14 @@ export async function applySchemaDeployHandoff({ markerPath, deploySha, repo, be
     && current.marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
     && current.marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
     && current.marker.releaseSha === deploySha && current.marker.state === "schema-applied";
+  const exactTrainingSessionContextMarker = current.marker.schemaVersion === 2
+    && current.marker.manifestId === TRAINING_SESSION_CONTEXT_MANIFEST_ID
+    && current.marker.releaseSha === deploySha && current.marker.state === "schema-applied";
   const compatibility = exactMigrationMarker
     ? (provenanceMatches(current.marker, V4_REPUBLICATION_HANDOFF_PROVENANCE) ? {} : reject("exact V4 migration marker provenance is invalid"))
-    : readCompatibilityForMarker(repo, current.marker, deploySha);
+    : exactTrainingSessionContextMarker
+      ? (trainingSessionContextSourceMarkerMatches(current.marker) ? {} : reject("exact training session-context migration marker provenance is invalid"))
+      : readCompatibilityForMarker(repo, current.marker, deploySha);
   const plan = evaluateSchemaDeployHandoff({ markerText: current.bytes, deploySha, ...compatibility });
   if (plan.action !== "write") return plan;
   const lockPath = `${markerPath}.lock`;
@@ -1601,9 +1627,14 @@ async function main() {
         && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
         && marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
         && marker.releaseSha === deploySha && marker.state === "schema-applied";
+      const exactTrainingSessionContextMarker = marker.schemaVersion === 2
+        && marker.manifestId === TRAINING_SESSION_CONTEXT_MANIFEST_ID
+        && marker.releaseSha === deploySha && marker.state === "schema-applied";
       const compatibility = exactMigrationMarker
         ? (provenanceMatches(marker, V4_REPUBLICATION_HANDOFF_PROVENANCE) ? {} : reject("exact V4 migration marker provenance is invalid"))
-        : readCompatibilityForMarker(repo, marker, deploySha);
+        : exactTrainingSessionContextMarker
+          ? (trainingSessionContextSourceMarkerMatches(marker) ? {} : reject("exact training session-context migration marker provenance is invalid"))
+          : readCompatibilityForMarker(repo, marker, deploySha);
       evaluateSchemaDeployHandoff({ markerText, deploySha, ...compatibility });
       return;
     }

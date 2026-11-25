@@ -759,6 +759,13 @@ serve_training_release() {
     recovery_marker_digest="$(sha256sum "$recovery_marker_path" | awk '{print $1}')"
     [[ "$recovery_marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Completed V4 recovery marker digest is invalid." >&2; return 1; }
     recovered_v4_release=true
+  elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "2" \
+    && "$BODYCAST_MARKER_MANIFEST_ID" == "training-session-context-v1" \
+    && "$BODYCAST_MARKER_STATE" == "app-ready" \
+    && "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" ]]; then
+    marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+    [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training session-context release marker digest is invalid." >&2; return 1; }
+    expected_migration_count=79
   else
     require_ready_release_marker
     [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
@@ -1118,7 +1125,8 @@ assert_pre_maintenance_migration_state() (
   manifest_id="${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}"
   [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-maintenance checks require the exact release SHA." >&2; exit 1; }
   [[ "$manifest_id" == "active-energy-unified-v2" || "$manifest_id" == "unified-v4-republication-v1" \
-    || "$manifest_id" == "training-mutation-ledger-refresh-queue-v1" || "$manifest_id" == "auth-multiuser-v1" ]] || {
+    || "$manifest_id" == "training-mutation-ledger-refresh-queue-v1" || "$manifest_id" == "auth-multiuser-v1" \
+    || "$manifest_id" == "training-session-context-v1" ]] || {
     echo "Pre-maintenance checks require a closed reviewed migration manifest." >&2; exit 1;
   }
   bodycast_assert_current_main_sha "$target_sha"

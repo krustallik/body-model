@@ -788,7 +788,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(runbook).toContain("The Training manifest has `cutbackSupported: false`");
   });
 
-  it("keeps Auth v1 pinned at 77 and rehearses the post-Auth 77-to-79 tree only in CI", async () => {
+  it("keeps Auth v1 pinned at 77 and admits the exact post-Auth 77-to-79 training context release", async () => {
     const [migrationWorkflow, preflightWorkflow, safetyWorkflow, fingerprintScript, deployMigrateScript] = await Promise.all([
       readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8"),
@@ -806,7 +806,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(TRAINING_SESSION_CONTEXT_MANIFEST.requiredAppliedMigrations).toHaveLength(77);
     expect(TRAINING_SESSION_CONTEXT_MANIFEST.migrations).toHaveLength(2);
     expect(TRAINING_SESSION_CONTEXT_MANIFEST.requireCompleteReleaseTree).toBe(true);
-    expect(TRAINING_SESSION_CONTEXT_MANIFEST.ciOnly).toBe(true);
+    expect(TRAINING_SESSION_CONTEXT_MANIFEST.ciOnly).not.toBe(true);
     expect(TRAINING_SESSION_CONTEXT_MANIFEST.cutbackSupported).toBe(false);
 
     const migrationDirectories = await readdir(new URL("../prisma/migrations/", import.meta.url), { withFileTypes: true });
@@ -846,13 +846,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(migrationWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
     expect(migrationWorkflow).not.toContain("programless-workouts-health-sync-v1");
     expect(migrationWorkflow).toContain("auth-multiuser-v1");
-    expect(migrationWorkflow).not.toContain("training-session-context-v1");
+    expect(migrationWorkflow).toContain("training-session-context-v1");
     expect(migrationWorkflow).toContain("The Auth migration manifest accepts standard exact-SHA execution only.");
     expect(preflightWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
     expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
     expect(preflightWorkflow).toContain("auth-multiuser-v1");
-    expect(preflightWorkflow).not.toContain("training-session-context-v1");
-    expect(deployMigrateScript).not.toContain("training-session-context-v1");
+    expect(preflightWorkflow).toContain("training-session-context-v1");
+    expect(deployMigrateScript).toContain("training-session-context-v1");
     expect(preflightWorkflow).toContain("Auth resume requires an exact failed-restore source alone or the complete source/migration-failure/blocked-preflight tuple");
     const authResumeGuardStart = preflightWorkflow.indexOf('if [[ "$MANIFEST_ID" == "auth-multiuser-v1"');
     const authResumeGuardEnd = preflightWorkflow.indexOf("          fi", authResumeGuardStart);
@@ -885,13 +885,19 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1");
     expect(safetyWorkflow).toContain("--manifest training-session-context-v1");
     expect(safetyWorkflow).toContain("--ci-only-manifest");
+    const trainingContextRehearsal = safetyWorkflow.slice(
+      safetyWorkflow.indexOf("# Rehearse the later 77-to-79 schema"),
+      safetyWorkflow.indexOf("- name: Run production migration release-tooling shell regressions"),
+    );
+    expect(trainingContextRehearsal).not.toContain("--ci-only-manifest");
+    expect(trainingContextRehearsal).not.toContain("--ci-only-restore-identity");
     expect(safetyWorkflow).toContain("--test-url --auth-multiuser-source-inputs");
     expect(safetyWorkflow).toContain("--test-url --training-session-context-source-inputs");
     expect(safetyWorkflow).toContain("SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE");
     expect(safetyWorkflow).toContain("SESSION_CONTEXT_SOURCE_FINGERPRINT_AFTER");
     expect(safetyWorkflow).toContain("Training session-context null sentinel failed for an unexpected reason.");
     expect(safetyWorkflow).toContain("Training session-context fingerprint failed to detect a source-row mutation.");
-    expect(safetyWorkflow).toContain("--ci-only-restore-identity");
+    expect(trainingContextRehearsal).not.toContain("--ci-only-restore-identity");
     expect(safetyWorkflow).toContain('[[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]]');
     expect(safetyWorkflow).toContain('"PhysiologyV7Lifecycle" (');
     expect(safetyWorkflow).toContain("Derived V7 lifecycle refresh changed the isolated immutable source-input projection.");
@@ -933,7 +939,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(safetyWorkflow).toContain('--set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json"');
     expect(safetyWorkflow).toContain("report.logicalDataFingerprint = fingerprint;");
     const canonicalTrainingPreflightCapture = safetyWorkflow.indexOf(
-      "node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest",
+      "node scripts/production-db-preflight.mjs --manifest training-session-context-v1",
       canonicalTrainingStart,
     );
     const canonicalTrainingPreflightCheck = safetyWorkflow.indexOf(
@@ -991,34 +997,26 @@ describe("V5 closed migration manifest and full pending set", () => {
     }
   });
 
-  it("restricts CI-only manifest and restore identity overrides to their exact scope", () => {
+  it("runs the training session-context manifest in standard scope and rejects CI-only identity overrides", () => {
     const scriptPath = path.resolve("scripts/production-migration-preflight.mjs");
-    const missingOptIn = spawnSync(process.execPath, [
+    const standardTree = spawnSync(process.execPath, [
       scriptPath,
       "--verify-release-tree",
       "--manifest", TRAINING_SESSION_CONTEXT_MANIFEST.id,
       "--repository", process.cwd(),
     ], { encoding: "utf8" });
-    expect(missingOptIn.status).toBe(1);
-    expect(missingOptIn.stderr).toContain("require explicit CI-only scope opt-in");
+    expect(standardTree.status, standardTree.stderr).toBe(0);
+    expect(JSON.parse(standardTree.stdout).ready).toBe(true);
 
-    const missingExecutionOptIn = spawnSync(process.execPath, [
-      scriptPath,
-      "--execution-integrity",
-      "--manifest", TRAINING_SESSION_CONTEXT_MANIFEST.id,
-    ], { encoding: "utf8" });
-    expect(missingExecutionOptIn.status).toBe(1);
-    expect(missingExecutionOptIn.stderr).toContain("require explicit CI-only scope opt-in");
-
-    const validCiTree = spawnSync(process.execPath, [
+    const rejectedCiOnlyTree = spawnSync(process.execPath, [
       scriptPath,
       "--verify-release-tree",
       "--manifest", TRAINING_SESSION_CONTEXT_MANIFEST.id,
       "--repository", process.cwd(),
       "--ci-only-manifest",
     ], { encoding: "utf8" });
-    expect(validCiTree.status, validCiTree.stderr).toBe(0);
-    expect(JSON.parse(validCiTree.stdout).ready).toBe(true);
+    expect(rejectedCiOnlyTree.status).toBe(1);
+    expect(rejectedCiOnlyTree.stderr).toContain("CI-only scope opt-in cannot be used with a production migration manifest");
 
     const wrongManifest = spawnSync(process.execPath, [
       scriptPath,
@@ -1033,26 +1031,25 @@ describe("V5 closed migration manifest and full pending set", () => {
       scriptPath,
       "--verify-release-tree",
       "--manifest", TRAINING_SESSION_CONTEXT_MANIFEST.id,
-      "--ci-only-manifest",
       "--ci-only-restore-identity",
     ], { encoding: "utf8" });
     expect(wrongMode.status).toBe(1);
     expect(wrongMode.stderr).toContain("restricted to CI-only migration postflight");
 
     const dbPreflightPath = path.resolve("scripts/production-db-preflight.mjs");
-    const missingDbOptIn = spawnSync(process.execPath, [
+    const standardDbPreflight = spawnSync(process.execPath, [
       dbPreflightPath,
       "--manifest", TRAINING_SESSION_CONTEXT_MANIFEST.id,
     ], { encoding: "utf8" });
-    expect(missingDbOptIn.status).toBe(1);
-    expect(missingDbOptIn.stderr).toContain("require explicit CI-only scope opt-in");
-    const validDbPreflight = spawnSync(process.execPath, [
+    expect(standardDbPreflight.status, standardDbPreflight.stderr).toBe(0);
+    expect(standardDbPreflight.stdout).toContain('"StrengthDiarySession.sessionIntent"');
+    const rejectedDbCiOptIn = spawnSync(process.execPath, [
       dbPreflightPath,
       "--manifest", TRAINING_SESSION_CONTEXT_MANIFEST.id,
       "--ci-only-manifest",
     ], { encoding: "utf8" });
-    expect(validDbPreflight.status, validDbPreflight.stderr).toBe(0);
-    expect(validDbPreflight.stdout).toContain('"StrengthDiarySession.sessionIntent"');
+    expect(rejectedDbCiOptIn.status).toBe(1);
+    expect(rejectedDbCiOptIn.stderr).toContain("CI-only scope opt-in cannot be used with a production migration manifest");
   });
 
   it("renders Auth baseline tables and DDL locks from its reviewed manifest", async () => {

@@ -22,7 +22,8 @@ fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
   || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
   || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-  || "$MANIFEST_ID" == "auth-multiuser-v1" ]] \
+  || "$MANIFEST_ID" == "auth-multiuser-v1" \
+  || "$MANIFEST_ID" == "training-session-context-v1" ]] \
   || fail "a closed reviewed manifest id is required."
 if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "${BODYCAST_MIGRATION_EXECUTION_MODE:-standard}" != "standard" ]]; then
   fail "the Training mutation ledger manifest accepts standard exact-SHA execution only."

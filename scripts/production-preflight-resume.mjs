@@ -44,7 +44,7 @@ const SUCCESSFUL_PREFLIGHT_APP_PROBE_STEPS = Object.freeze([
 ]);
 const REVIEWED_MANIFESTS = new Set([
   "active-energy-unified-v2", "unified-v4-republication-v1",
-  "training-mutation-ledger-refresh-queue-v1", "auth-multiuser-v1",
+  "training-mutation-ledger-refresh-queue-v1", "auth-multiuser-v1", "training-session-context-v1",
 ]);
 
 export function serializePreflightRetryRunIds(runIds) {

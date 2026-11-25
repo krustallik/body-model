@@ -662,7 +662,7 @@ jobs:
           [[ "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" =~ ^[a-f0-9]{64}$ ]] || {
             echo "Canonical training session-context source-input fingerprint before migration is malformed." >&2; exit 1;
           }
-          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
+          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 \
             | PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
               --set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json" \
               --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-preflight-report.json"
@@ -676,8 +676,7 @@ jobs:
           NODE
           node scripts/production-migration-preflight.mjs --preflight \
             --manifest training-session-context-v1 --release-sha "$GITHUB_SHA" \
-            --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-session-context-preflight-report.json" \
-            --ci-only-manifest
+            --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/bodycast-session-context-preflight-report.json"
           export BODYCAST_TEST_DATABASE_URL=postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_restore
           SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs)"
           [[ "$SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE" =~ ^[a-f0-9]{64}$ ]] || {
@@ -688,14 +687,9 @@ jobs:
           [[ "$SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE" == "$SESSION_CONTEXT_SOURCE_FINGERPRINT_AFTER" ]] || {
             echo "Training session-context migrations changed immutable source-input rows or provenance in isolated PostgreSQL." >&2; exit 1;
           }
-          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
+          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 \
             | psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
               --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-restore-postflight.json"
-          node scripts/production-migration-preflight.mjs --postflight \
-            --manifest training-session-context-v1 \
-            --report "$RUNNER_TEMP/bodycast-session-context-restore-postflight.json" \
-            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA" \
-            --ci-only-manifest --ci-only-restore-identity
           psql "$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
             --command="UPDATE public.\"StrengthDiarySession\" SET \"sessionIntent\" = 'regular' WHERE \"id\" = 1"
           if bash scripts/production-db-data-fingerprint.sh --test-url --training-session-context-source-inputs \
@@ -731,7 +725,7 @@ jobs:
           [[ "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" == "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER" ]] || {
             echo "Canonical training session-context migrations changed immutable source-input rows or provenance." >&2; exit 1;
           }
-          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 --ci-only-manifest \
+          node scripts/production-db-preflight.mjs --manifest training-session-context-v1 \
             | PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align \
               --set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json" \
               --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/bodycast-session-context-postflight.json"
@@ -746,8 +740,7 @@ jobs:
           node scripts/production-migration-preflight.mjs --postflight \
             --manifest training-session-context-v1 \
             --report "$RUNNER_TEMP/bodycast-session-context-postflight.json" \
-            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA" \
-            --ci-only-manifest
+            --repository "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA"
       - name: Run production migration release-tooling shell regressions
         env:
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast

@@ -20,6 +20,7 @@ import {
   DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST,
   AUTH_MULTIUSER_MANIFEST,
   TRAINING_MUTATION_LEDGER_MANIFEST,
+  TRAINING_SESSION_CONTEXT_MANIFEST,
 } from "../scripts/production-migration-manifests.mjs";
 import { ALL_REVIEWED_OBJECTS } from "../scripts/production-migration-preflight.mjs";
 
@@ -173,6 +174,32 @@ function trainingMutationMarkerText(overrides = {}) {
     workflowRunAttempt: 1,
     authorizationId: "training-migration-authorization-01",
     lineageDigest: "b".repeat(64),
+    spawnState: "started",
+    ...overrides,
+  };
+  return [
+    "schemaVersion=2",
+    `manifestId=${marker.manifestId}`,
+    `releaseSha=${marker.releaseSha}`,
+    `state=${marker.state}`,
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    `spawnState=${marker.spawnState}`,
+    "",
+  ].join("\n");
+}
+
+function trainingSessionContextMarkerText(overrides = {}) {
+  const marker = {
+    manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+    releaseSha: TRAINING_MIGRATION_SHA,
+    state: "schema-applied",
+    workflowRunId: "40123456792",
+    workflowRunAttempt: 1,
+    authorizationId: "training-context-authorization",
+    lineageDigest: "d".repeat(64),
     spawnState: "started",
     ...overrides,
   };
@@ -1186,6 +1213,34 @@ describe("schema deploy compatibility handoff", () => {
       deploySha: "e".repeat(40),
       ...compatibility,
     })).toThrow(/deploy SHA to equal the exact migration release SHA/);
+  });
+
+  it("accepts only the exact acknowledged training session-context schema marker", () => {
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: trainingSessionContextMarkerText(),
+      deploySha: TRAINING_MIGRATION_SHA,
+    });
+    expect(plan.action).toBe("not-needed");
+    expect(plan.marker).toMatchObject({
+      manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+      releaseSha: TRAINING_MIGRATION_SHA,
+      state: "schema-applied",
+      spawnState: "started",
+    });
+    for (const overrides of [
+      { releaseSha: "e".repeat(40) },
+      { state: "app-ready" },
+      { workflowRunId: "0" },
+      { workflowRunAttempt: 0 },
+      { authorizationId: "bad" },
+      { lineageDigest: "not-a-digest" },
+      { spawnState: "not-started" },
+    ]) {
+      expect(() => evaluateSchemaDeployHandoff({
+        markerText: trainingSessionContextMarkerText(overrides),
+        deploySha: TRAINING_MIGRATION_SHA,
+      })).toThrow();
+    }
   });
 
   it("rejects an altered Training migration checksum at the declared origin", async () => {

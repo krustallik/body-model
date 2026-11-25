@@ -461,6 +461,10 @@ if [[ "$active_recovered_v4_release" != "true" && "$BODYCAST_NON_SERVING_DEPLOY"
       && ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "schema-applied" ) \
         || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
           && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ) ) ) \
+    || ( "$BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA" \
+      && "$BODYCAST_MARKER_MANIFEST_ID" == "training-session-context-v1" \
+      && "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
+      && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ) \
   ) ]]; then
   node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
     "$BODYCAST_MARKER_FILE_PATH" "$DEPLOY_SHA" "$ROOT_DIR"

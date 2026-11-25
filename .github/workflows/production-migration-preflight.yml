@@ -17,6 +17,7 @@ on:
           - unified-v4-republication-v1
           - training-mutation-ledger-refresh-queue-v1
           - auth-multiuser-v1
+          - training-session-context-v1
       confirm_production_preflight:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
         required: true
@@ -109,7 +110,8 @@ jobs:
           NODE
           [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact maintenance/preflight confirmation is required."; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" \
+            || "$MANIFEST_ID" == "training-session-context-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
           if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
             && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then

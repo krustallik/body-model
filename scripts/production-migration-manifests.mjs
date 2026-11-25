@@ -1899,7 +1899,6 @@ const TRAINING_SESSION_CONTEXT_BASELINE_SIGNATURE_EQUALS = Object.freeze(Object.
 
 export const TRAINING_SESSION_CONTEXT_MANIFEST = Object.freeze({
   id: "training-session-context-v1",
-  ciOnly: true,
   cutbackSupported: false,
   requireCompleteReleaseTree: true,
   requiredAppliedMigrations: Object.freeze([

@@ -410,7 +410,7 @@
         { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "f16e47a8f15212b53f4895cf24331be4240a025ecb0a09f9c349ba2b24639025" },
         { "path": "tests/integration/physiology-v7-persistence.integration.test.ts", "sha256": "4cea70828bc950803a89d1283785662bd8270036e506982712450c16408682c8" },
         { "path": "scripts/refactor/comparator-core.mjs", "sha256": "ac1edfc667372f6ac7b414e033023da201f195ea68b410bef3e599b5306d286d" },
-        { "path": "scripts/refactor/comparator-core.d.mts", "sha256": "4ba8f89f5df3a3b54a52d1dc680bfd2724d5b12053be07bd3bd886e450916524" },
+        { "path": "scripts/refactor/comparator-core.d.mts", "sha256": "010bf018202ba80b34fcabc5b22b7423e34a073b6435e4160a53682b3f2e3d62" },
         { "path": "scripts/refactor/database-evidence.mjs", "sha256": "80e6a9322c3a2e282c25499bb5198b43cecdc15febad72062e1a37b098cfb8ee" },
         { "path": "scripts/refactor/run-behavior-comparator.mjs", "sha256": "dad289efbc93ff4f33b7e2933466b8ff9d5671c6bcbf48f4d21c3babaac2b457" },
         { "path": "tests/refactor-comparator/comparator-core.test.ts", "sha256": "cd3544acf6f444f26af65d3cc1494a7604a3659f93fe7d4b21b1700f23061301" },
@@ -467,7 +467,7 @@
       "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
       "inputFiles": [
         { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "193995ea2d9eba96059e6edafbff6d3d533bcb87d1741879e93473907dde4a48" },
-        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "c9337267176b991c8b1b36ddafbcc7dc4a61dfc70ef788311730aaa2ce1fefae" }
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "17c7f1e392df9182e44938dfba78f4d9585ca81badf926c0b633efa7725ac208" }
       ]
     }
   ]

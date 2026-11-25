@@ -7,7 +7,7 @@ import bodyMapUiBaseline from "../fixtures/refactor-comparator/body-map-ui-basel
 
 function sha256File(path: string): string {
   const bytes = readFileSync(resolve(process.cwd(), path));
-  const textExtensions = new Set([".css", ".js", ".json", ".md", ".mjs", ".sql", ".test.ts", ".ts", ".tsx", ".txt"]);
+  const textExtensions = new Set([".css", ".js", ".json", ".md", ".mjs", ".mts", ".sql", ".test.ts", ".ts", ".tsx", ".txt"]);
   if (textExtensions.has(extname(path).toLowerCase())) {
     return createHash("sha256").update(bytes.toString("utf8").replaceAll("\r\n", "\n"), "utf8").digest("hex");
   }

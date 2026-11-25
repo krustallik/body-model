@@ -14,7 +14,8 @@ const trainingRepository = new TrainingRepository(prisma);
 const profileA = 991001;
 const profileB = 991002;
 const profileSeed = 991003;
-const profileFixtures = [profileA, profileB, profileSeed, profileSeed + 1];
+const profileExisting = profileSeed + 2;
+const profileFixtures = [profileA, profileB, profileSeed, profileSeed + 1, profileExisting];
 const profilesCreatedBySuite: number[] = [];
 
 async function clean(profileIds: number[] = profileFixtures): Promise<void> {
@@ -81,6 +82,41 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
         await prisma.exerciseCatalog.deleteMany({ where: { profileId: 1, id: { in: insertedIds } } });
       }
     }
+  });
+
+  it("extends an existing non-owner profile with all newly supported canonical exercises", async () => {
+    await clean([profileExisting]);
+    const additions = new Set<string>(ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.map(({ stableKey }) => stableKey));
+    const previouslySupported = CANONICAL_EXERCISE_IDENTITIES.filter(({ stableKey }) => !additions.has(stableKey));
+    await prisma.exerciseCatalog.createMany({
+      data: previouslySupported.map(({ displayName, stableKey }) => ({
+        profileId: profileExisting,
+        name: displayName,
+        stableKey,
+        isActive: true,
+      })),
+    });
+    const before = await prisma.exerciseCatalog.findMany({
+      where: { profileId: profileExisting },
+      orderBy: { id: "asc" },
+      select: { id: true, name: true, stableKey: true, isActive: true },
+    });
+
+    const firstRead = await trainingRepository.listCatalog({ profileId: profileExisting, activeOnly: false });
+    const secondRead = await trainingRepository.listCatalog({ profileId: profileExisting, activeOnly: false });
+
+    expect(firstRead).toHaveLength(CANONICAL_EXERCISE_IDENTITIES.length);
+    expect(firstRead.filter(({ stableKey }) => additions.has(stableKey!))).toHaveLength(
+      ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES.length,
+    );
+    expect(firstRead
+      .filter(({ id }) => before.some((row) => row.id === id))
+      .map(({ id, name, stableKey, isActive }) => ({ id, name, stableKey, isActive }))
+      .sort((left, right) => left.id - right.id))
+      .toEqual(before);
+    expect(secondRead.map(({ id, stableKey }) => [id, stableKey])).toEqual(
+      firstRead.map(({ id, stableKey }) => [id, stableKey]),
+    );
   });
 
   it("fails closed when a Profile 1 catalog name conflicts with a new stable identity", async () => {

@@ -957,7 +957,7 @@ export class TrainingRepository {
     activeOnly?: boolean;
   }): Promise<ExerciseCatalogDto[]> {
     const profileId = requireProfileId(options.profileId);
-    await this.ensureProfileOneExerciseCatalogExtensions(profileId);
+    await this.ensureProfileExerciseCatalogExtensions(profileId);
     const activeOnly = options.activeOnly ?? true;
     const rows = await this.db.exerciseCatalog.findMany({
       where: {
@@ -971,14 +971,11 @@ export class TrainingRepository {
   }
 
   /**
-   * Profile 1 predates authenticated profile provisioning. Add only the new,
-   * canonical catalog rows on its first catalog read without a schema/data
-   * migration. Existing rows are never re-keyed, renamed, reactivated, or
-   * otherwise rewritten; conflicting names/keys fail closed.
+   * Add newly supported canonical rows on a profile's first catalog read
+   * without a schema/data migration. Existing rows are never re-keyed, renamed,
+   * reactivated, or otherwise rewritten; conflicting names/keys fail closed.
    */
-  private async ensureProfileOneExerciseCatalogExtensions(profileId: number): Promise<void> {
-    if (profileId !== 1) return;
-
+  private async ensureProfileExerciseCatalogExtensions(profileId: number): Promise<void> {
     const identities = ADDITIONAL_CANONICAL_EXERCISE_IDENTITIES;
     const where = {
       profileId,

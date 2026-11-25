@@ -214,6 +214,89 @@ jobs:
             -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" 'bash -s' > "$DIAGNOSTIC_OUTPUT"
           node scripts/production-stepper-shadow-diagnostic.mjs "$DIAGNOSTIC_OUTPUT"
 
+      - name: Inspect production database schema read-only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$TIP" == "$RELEASE_SHA" && "$GITHUB_SHA" == "$RELEASE_SHA" ]] || {
+            echo "::error::Canonical main moved immediately before the read-only database diagnostic."; exit 1;
+          }
+          [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* && "$DEPLOY_PATH" != *$'\r'* \
+            && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
+            && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* && "$CADDY_ROUTES_PATH" != *$'\r'* ]] || {
+            echo "::error::Read-only database diagnostic inputs are malformed."; exit 1;
+          }
+          DB_REPORT="$RUNNER_TEMP/bodycast-read-only-db-report.json"
+          DB_RESULT="$RUNNER_TEMP/bodycast-read-only-db-result.json"
+          umask 077
+          : > "$DB_REPORT"
+          : > "$DB_RESULT"
+          chmod 600 "$DB_REPORT" "$DB_RESULT"
+          trap 'rm -f -- "$DB_REPORT" "$DB_RESULT"' EXIT
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
+          set -Eeuo pipefail
+          export GIT_OPTIONAL_LOCKS=0
+          deploy_path="$(printf '%s' "$1" | base64 --decode)"
+          app_host="$(printf '%s' "$2" | base64 --decode)"
+          routes_path="$(printf '%s' "$3" | base64 --decode)"
+          release_sha="$4"
+          [[ "$deploy_path" == /* && -d "$deploy_path" && ! -L "$deploy_path" \
+            && "$(git -C "$deploy_path" rev-parse --show-toplevel)" == "$deploy_path" \
+            && "$(git -C "$deploy_path" rev-parse HEAD)" == "$release_sha" \
+            && -z "$(git -C "$deploy_path" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Production checkout is not the exact clean diagnostic SHA." >&2; exit 1;
+          }
+          cd -- "$deploy_path"
+          APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" \
+            bash scripts/production-writer-drain.sh --assert
+          APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
+            bash scripts/production-db-target.sh --preflight bodycast-db-prod
+          REMOTE
+          )"
+          REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RELEASE_SHA'"
+          timeout 5m ssh -T -p "$SSH_PORT" \
+            -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/known_hosts" \
+            -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" > "$DB_REPORT"
+          if node scripts/production-migration-preflight.mjs --preflight --manifest training-session-context-v1 \
+            --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$DB_REPORT" > "$DB_RESULT"; then
+            echo "### Read-only Training schema diagnostic: checks passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "The exact production database report passes the manifest checks. This diagnostic grants no migration or deployment authorization." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Read-only Training schema diagnostic blockers"
+              echo "The full production report and fingerprints remain in the private ephemeral runner directory and are not uploaded. Only bounded escaped blocker messages follow. This diagnostic grants no migration or deployment authorization."
+              node --input-type=module - "$DB_RESULT" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!Array.isArray(result.blockers) || result.blockers.some((item) => typeof item !== "string")) {
+            throw new Error("Read-only database diagnostic result has no valid blocker list.");
+          }
+          const escapeMarkdown = (value) => value.slice(0, 500)
+            .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (character) => `\\u${character.codePointAt(0).toString(16).padStart(4, "0")}`)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/([\\`*_{}[\]()#+.!|])/g, "\\$1");
+          process.stdout.write(`Blocker count: ${result.blockers.length}\n`);
+          for (const blocker of result.blockers.slice(0, 100)) process.stdout.write(`- ${escapeMarkdown(blocker)}\n`);
+          if (result.blockers.length > 100) process.stdout.write(`- ${result.blockers.length - 100} additional blockers omitted.\n`);
+          NODE
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Remove temporary SSH credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh"

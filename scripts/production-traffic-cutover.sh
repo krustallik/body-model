@@ -1161,7 +1161,8 @@ NODE
   chmod 0600 "$report_path"
   trap 'rm -f -- "$report_path"' EXIT
   node "$ROOT_DIR/scripts/production-db-preflight.mjs" --manifest "$manifest_id" \
-    | bash "$ROOT_DIR/scripts/production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod > "$report_path"
+    | BODYCAST_DB_PREFLIGHT_MANIFEST="$manifest_id" bash "$ROOT_DIR/scripts/production-db-target.sh" \
+      --pre-maintenance-snapshot bodycast-db-prod > "$report_path"
   if ! node "$ROOT_DIR/scripts/production-migration-preflight.mjs" --pre-maintenance \
     --manifest "$manifest_id" --release-sha "$target_sha" --repository "$ROOT_DIR" --report "$report_path" \
     "${source_marker_args[@]}" > "$result_path"; then

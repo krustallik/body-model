@@ -1176,7 +1176,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(target).toContain('COMPOSE_FILE="${BODYCAST_PRODUCTION_COMPOSE_FILE:-$ROOT_DIR/docker-compose.prod.yml}"');
     expect(target).not.toContain("compose -f \"$COMPOSE_FILE\" --profile tools run --rm");
     expect(target).toContain("  --pre-maintenance-snapshot)");
-    expect(cutover).toContain('production-db-target.sh" --pre-maintenance-snapshot bodycast-db-prod');
+    expect(cutover).toMatch(
+      /BODYCAST_DB_PREFLIGHT_MANIFEST="\$manifest_id" bash "\$ROOT_DIR\/scripts\/production-db-target\.sh" \\\s+--pre-maintenance-snapshot bodycast-db-prod/,
+    );
     expect(target).toContain("BODYCAST_TOPOLOGY_BEFORE");
     expect(target).toContain("production-db-target-url.mjs");
     expect(target).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');

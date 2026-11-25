@@ -69,6 +69,14 @@ describe("merged unit coverage gate", () => {
     })).toMatchObject({ baselineFilesChecked: 2, totalFilesChecked: 2, newFilesChecked: [] });
   });
 
+  it("accepts exact frozen counters when decimal percentage arithmetic would round above them", () => {
+    const manifest = makeManifest();
+    const paths = manifest.files.map(({ path }) => path);
+    const summary = reportFor(paths, (filePath) => filePath.endsWith("/a.ts") ? 5 : 6, 6);
+    expect(verifyModuleCoverage({ manifest, trackedPaths: paths, coverageSummary: summary, repoRoot: "D:\\repo" }))
+      .toMatchObject({ baselineFilesChecked: 2, totalFilesChecked: 2, newFilesChecked: [] });
+  });
+
   it("fails a per-file regression even when the combined report remains high", () => {
     const manifest = makeManifest();
     const paths = manifest.files.map(({ path }) => path);

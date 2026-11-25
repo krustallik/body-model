@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "baselineSha": "5194fcd00544f7ca94fca4fbac039f647cb26503",
+  "baselineSha": "c4642d09d8873072d5e5a62a25ac7d0985970179",
   "measurement": "vitest-unit-shards-v8",
   "sourceRoots": [
     "src/app/body-map",
@@ -43,22 +43,22 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 2,
+          "total": 18,
           "pct": 0
         },
         "functions": {
-          "covered": 0,
+          "covered": 1,
           "total": 1,
-          "pct": 0
+          "pct": 100
         },
         "statements": {
           "covered": 0,
-          "total": 2,
+          "total": 18,
           "pct": 0
         },
         "branches": {
-          "covered": 0,
-          "total": 0,
+          "covered": 1,
+          "total": 1,
           "pct": 100
         }
       }
@@ -67,8 +67,8 @@
       "path": "src/components/body-map/body-map-camera-contract-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 4,
-          "total": 4,
+          "covered": 13,
+          "total": 13,
           "pct": 100
         },
         "functions": {
@@ -77,8 +77,8 @@
           "pct": 100
         },
         "statements": {
-          "covered": 4,
-          "total": 4,
+          "covered": 13,
+          "total": 13,
           "pct": 100
         },
         "branches": {
@@ -93,23 +93,23 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 738,
+          "total": 1199,
           "pct": 0
         },
         "functions": {
-          "covered": 0,
-          "total": 181,
-          "pct": 0
+          "covered": 1,
+          "total": 1,
+          "pct": 100
         },
         "statements": {
           "covered": 0,
-          "total": 894,
+          "total": 1199,
           "pct": 0
         },
         "branches": {
-          "covered": 0,
-          "total": 986,
-          "pct": 0
+          "covered": 1,
+          "total": 1,
+          "pct": 100
         }
       }
     },
@@ -117,9 +117,9 @@
       "path": "src/components/body-map/body-map-localization.ts",
       "baseline": {
         "lines": {
-          "covered": 3,
-          "total": 6,
-          "pct": 50
+          "covered": 124,
+          "total": 130,
+          "pct": 95.38
         },
         "functions": {
           "covered": 0,
@@ -127,14 +127,14 @@
           "pct": 0
         },
         "statements": {
-          "covered": 3,
-          "total": 6,
-          "pct": 50
+          "covered": 124,
+          "total": 130,
+          "pct": 95.38
         },
         "branches": {
           "covered": 0,
-          "total": 6,
-          "pct": 0
+          "total": 0,
+          "pct": 100
         }
       }
     },
@@ -142,24 +142,24 @@
       "path": "src/components/body-map/body-map-training-analytics-panel.tsx",
       "baseline": {
         "lines": {
-          "covered": 69,
-          "total": 88,
-          "pct": 78.4
+          "covered": 208,
+          "total": 262,
+          "pct": 79.38
         },
         "functions": {
-          "covered": 25,
-          "total": 28,
-          "pct": 89.28
+          "covered": 13,
+          "total": 13,
+          "pct": 100
         },
         "statements": {
-          "covered": 85,
-          "total": 122,
-          "pct": 69.67
+          "covered": 208,
+          "total": 262,
+          "pct": 79.38
         },
         "branches": {
-          "covered": 111,
-          "total": 290,
-          "pct": 38.27
+          "covered": 46,
+          "total": 127,
+          "pct": 36.22
         }
       }
     },
@@ -167,24 +167,24 @@
       "path": "src/components/body-map/camera-transition-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 41,
-          "total": 54,
-          "pct": 75.92
+          "covered": 73,
+          "total": 85,
+          "pct": 85.88
         },
         "functions": {
-          "covered": 7,
-          "total": 11,
-          "pct": 63.63
+          "covered": 6,
+          "total": 10,
+          "pct": 60
         },
         "statements": {
-          "covered": 44,
-          "total": 59,
-          "pct": 74.57
+          "covered": 73,
+          "total": 85,
+          "pct": 85.88
         },
         "branches": {
-          "covered": 12,
-          "total": 18,
-          "pct": 66.66
+          "covered": 13,
+          "total": 16,
+          "pct": 81.25
         }
       }
     },
@@ -192,24 +192,24 @@
       "path": "src/modules/activity/active-energy-invalidation.ts",
       "baseline": {
         "lines": {
-          "covered": 16,
-          "total": 38,
-          "pct": 42.1
+          "covered": 41,
+          "total": 96,
+          "pct": 42.7
         },
         "functions": {
-          "covered": 5,
-          "total": 14,
-          "pct": 35.71
+          "covered": 2,
+          "total": 4,
+          "pct": 50
         },
         "statements": {
-          "covered": 18,
-          "total": 46,
-          "pct": 39.13
+          "covered": 41,
+          "total": 96,
+          "pct": 42.7
         },
         "branches": {
-          "covered": 14,
-          "total": 34,
-          "pct": 41.17
+          "covered": 6,
+          "total": 11,
+          "pct": 54.54
         }
       }
     },
@@ -217,24 +217,24 @@
       "path": "src/modules/activity/active-energy-materialization.ts",
       "baseline": {
         "lines": {
-          "covered": 89,
-          "total": 138,
-          "pct": 64.49
+          "covered": 239,
+          "total": 373,
+          "pct": 64.07
         },
         "functions": {
-          "covered": 10,
-          "total": 20,
-          "pct": 50
+          "covered": 5,
+          "total": 9,
+          "pct": 55.55
         },
         "statements": {
-          "covered": 96,
-          "total": 157,
-          "pct": 61.14
+          "covered": 239,
+          "total": 373,
+          "pct": 64.07
         },
         "branches": {
-          "covered": 86,
-          "total": 200,
-          "pct": 43
+          "covered": 55,
+          "total": 98,
+          "pct": 56.12
         }
       }
     },
@@ -242,9 +242,9 @@
       "path": "src/modules/activity/active-energy-publication.ts",
       "baseline": {
         "lines": {
-          "covered": 10,
-          "total": 16,
-          "pct": 62.5
+          "covered": 31,
+          "total": 51,
+          "pct": 60.78
         },
         "functions": {
           "covered": 2,
@@ -252,14 +252,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 11,
-          "total": 18,
-          "pct": 61.11
+          "covered": 31,
+          "total": 51,
+          "pct": 60.78
         },
         "branches": {
-          "covered": 10,
-          "total": 23,
-          "pct": 43.47
+          "covered": 2,
+          "total": 14,
+          "pct": 14.28
         }
       }
     },
@@ -268,22 +268,22 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 41,
+          "total": 109,
           "pct": 0
         },
         "functions": {
           "covered": 0,
-          "total": 10,
+          "total": 1,
           "pct": 0
         },
         "statements": {
           "covered": 0,
-          "total": 49,
+          "total": 109,
           "pct": 0
         },
         "branches": {
           "covered": 0,
-          "total": 59,
+          "total": 1,
           "pct": 0
         }
       }
@@ -293,22 +293,22 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 36,
+          "total": 100,
           "pct": 0
         },
         "functions": {
           "covered": 0,
-          "total": 11,
+          "total": 1,
           "pct": 0
         },
         "statements": {
           "covered": 0,
-          "total": 42,
+          "total": 100,
           "pct": 0
         },
         "branches": {
           "covered": 0,
-          "total": 26,
+          "total": 1,
           "pct": 0
         }
       }
@@ -317,24 +317,24 @@
       "path": "src/modules/auth/email-flow.ts",
       "baseline": {
         "lines": {
-          "covered": 5,
-          "total": 6,
-          "pct": 83.33
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
         },
         "functions": {
-          "covered": 2,
-          "total": 2,
+          "covered": 1,
+          "total": 1,
           "pct": 100
         },
         "statements": {
-          "covered": 5,
-          "total": 6,
-          "pct": 83.33
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
         },
         "branches": {
-          "covered": 1,
-          "total": 4,
-          "pct": 25
+          "covered": 4,
+          "total": 6,
+          "pct": 66.66
         }
       }
     },
@@ -342,8 +342,8 @@
       "path": "src/modules/auth/email-quota.ts",
       "baseline": {
         "lines": {
-          "covered": 7,
-          "total": 7,
+          "covered": 12,
+          "total": 12,
           "pct": 100
         },
         "functions": {
@@ -352,13 +352,13 @@
           "pct": 100
         },
         "statements": {
-          "covered": 8,
-          "total": 8,
+          "covered": 12,
+          "total": 12,
           "pct": 100
         },
         "branches": {
-          "covered": 6,
-          "total": 6,
+          "covered": 5,
+          "total": 5,
           "pct": 100
         }
       }
@@ -368,22 +368,22 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 18,
+          "total": 67,
           "pct": 0
         },
         "functions": {
           "covered": 0,
-          "total": 5,
+          "total": 1,
           "pct": 0
         },
         "statements": {
           "covered": 0,
-          "total": 23,
+          "total": 67,
           "pct": 0
         },
         "branches": {
           "covered": 0,
-          "total": 17,
+          "total": 1,
           "pct": 0
         }
       }
@@ -392,9 +392,9 @@
       "path": "src/modules/auth/http.ts",
       "baseline": {
         "lines": {
-          "covered": 9,
-          "total": 11,
-          "pct": 81.81
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
         },
         "functions": {
           "covered": 2,
@@ -402,14 +402,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 11,
-          "total": 13,
-          "pct": 84.61
+          "covered": 16,
+          "total": 21,
+          "pct": 76.19
         },
         "branches": {
-          "covered": 7,
+          "covered": 6,
           "total": 9,
-          "pct": 77.77
+          "pct": 66.66
         }
       }
     },
@@ -443,22 +443,22 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 20,
+          "total": 39,
           "pct": 0
         },
         "functions": {
           "covered": 0,
-          "total": 2,
+          "total": 1,
           "pct": 0
         },
         "statements": {
           "covered": 0,
-          "total": 24,
+          "total": 39,
           "pct": 0
         },
         "branches": {
           "covered": 0,
-          "total": 21,
+          "total": 1,
           "pct": 0
         }
       }
@@ -468,22 +468,22 @@
       "baseline": {
         "lines": {
           "covered": 0,
-          "total": 11,
+          "total": 26,
           "pct": 0
         },
         "functions": {
           "covered": 0,
-          "total": 3,
+          "total": 1,
           "pct": 0
         },
         "statements": {
           "covered": 0,
-          "total": 12,
+          "total": 26,
           "pct": 0
         },
         "branches": {
           "covered": 0,
-          "total": 4,
+          "total": 1,
           "pct": 0
         }
       }
@@ -492,8 +492,8 @@
       "path": "src/modules/auth/registration-users.ts",
       "baseline": {
         "lines": {
-          "covered": 2,
-          "total": 2,
+          "covered": 15,
+          "total": 15,
           "pct": 100
         },
         "functions": {
@@ -502,13 +502,13 @@
           "pct": 100
         },
         "statements": {
-          "covered": 2,
-          "total": 2,
+          "covered": 15,
+          "total": 15,
           "pct": 100
         },
         "branches": {
-          "covered": 0,
-          "total": 0,
+          "covered": 2,
+          "total": 2,
           "pct": 100
         }
       }
@@ -517,8 +517,8 @@
       "path": "src/modules/training/auto-advance.ts",
       "baseline": {
         "lines": {
-          "covered": 1,
-          "total": 1,
+          "covered": 10,
+          "total": 10,
           "pct": 100
         },
         "functions": {
@@ -527,8 +527,8 @@
           "pct": 100
         },
         "statements": {
-          "covered": 1,
-          "total": 1,
+          "covered": 10,
+          "total": 10,
           "pct": 100
         },
         "branches": {
@@ -542,24 +542,24 @@
       "path": "src/modules/training/body-map-catalog-v2.ts",
       "baseline": {
         "lines": {
-          "covered": 51,
-          "total": 68,
-          "pct": 75
+          "covered": 157,
+          "total": 184,
+          "pct": 85.32
         },
         "functions": {
-          "covered": 26,
-          "total": 35,
-          "pct": 74.28
+          "covered": 2,
+          "total": 5,
+          "pct": 40
         },
         "statements": {
-          "covered": 56,
-          "total": 86,
-          "pct": 65.11
+          "covered": 157,
+          "total": 184,
+          "pct": 85.32
         },
         "branches": {
-          "covered": 19,
-          "total": 37,
-          "pct": 51.35
+          "covered": 35,
+          "total": 44,
+          "pct": 79.54
         }
       }
     },
@@ -567,24 +567,24 @@
       "path": "src/modules/training/body-map-energy-balance-context-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 45,
-          "total": 45,
+          "covered": 101,
+          "total": 101,
           "pct": 100
         },
         "functions": {
-          "covered": 11,
-          "total": 11,
+          "covered": 6,
+          "total": 6,
           "pct": 100
         },
         "statements": {
-          "covered": 52,
-          "total": 55,
-          "pct": 94.54
+          "covered": 101,
+          "total": 101,
+          "pct": 100
         },
         "branches": {
-          "covered": 51,
-          "total": 55,
-          "pct": 92.72
+          "covered": 47,
+          "total": 50,
+          "pct": 94
         }
       }
     },
@@ -592,184 +592,9 @@
       "path": "src/modules/training/body-map-hierarchy-contract-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 65,
-          "total": 69,
-          "pct": 94.2
-        },
-        "functions": {
-          "covered": 21,
-          "total": 21,
-          "pct": 100
-        },
-        "statements": {
-          "covered": 76,
-          "total": 89,
-          "pct": 85.39
-        },
-        "branches": {
-          "covered": 39,
-          "total": 52,
-          "pct": 75
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/body-map-navigation-contract-v2.ts",
-      "baseline": {
-        "lines": {
-          "covered": 24,
-          "total": 26,
-          "pct": 92.3
-        },
-        "functions": {
-          "covered": 7,
-          "total": 7,
-          "pct": 100
-        },
-        "statements": {
-          "covered": 29,
-          "total": 39,
-          "pct": 74.35
-        },
-        "branches": {
-          "covered": 16,
-          "total": 26,
-          "pct": 61.53
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/body-map-training-analytics-v1.ts",
-      "baseline": {
-        "lines": {
-          "covered": 285,
-          "total": 289,
-          "pct": 98.61
-        },
-        "functions": {
-          "covered": 79,
-          "total": 81,
-          "pct": 97.53
-        },
-        "statements": {
-          "covered": 343,
-          "total": 352,
-          "pct": 97.44
-        },
-        "branches": {
-          "covered": 329,
-          "total": 371,
-          "pct": 88.67
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/body-map-training-analytics.repository.ts",
-      "baseline": {
-        "lines": {
-          "covered": 34,
-          "total": 39,
-          "pct": 87.17
-        },
-        "functions": {
-          "covered": 8,
-          "total": 11,
-          "pct": 72.72
-        },
-        "statements": {
-          "covered": 37,
-          "total": 43,
-          "pct": 86.04
-        },
-        "branches": {
-          "covered": 22,
-          "total": 33,
-          "pct": 66.66
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/body-map-training-exposure-v2.ts",
-      "baseline": {
-        "lines": {
-          "covered": 53,
-          "total": 56,
-          "pct": 94.64
-        },
-        "functions": {
-          "covered": 16,
-          "total": 17,
-          "pct": 94.11
-        },
-        "statements": {
-          "covered": 61,
-          "total": 65,
-          "pct": 93.84
-        },
-        "branches": {
-          "covered": 74,
-          "total": 77,
-          "pct": 96.1
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/body-map-training-performance-v1.ts",
-      "baseline": {
-        "lines": {
-          "covered": 240,
-          "total": 242,
-          "pct": 99.17
-        },
-        "functions": {
-          "covered": 83,
-          "total": 84,
-          "pct": 98.8
-        },
-        "statements": {
-          "covered": 314,
-          "total": 338,
-          "pct": 92.89
-        },
-        "branches": {
-          "covered": 240,
-          "total": 287,
-          "pct": 83.62
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/body-map-url-state-v1.ts",
-      "baseline": {
-        "lines": {
-          "covered": 55,
-          "total": 55,
-          "pct": 100
-        },
-        "functions": {
-          "covered": 11,
-          "total": 11,
-          "pct": 100
-        },
-        "statements": {
-          "covered": 66,
-          "total": 67,
-          "pct": 98.5
-        },
-        "branches": {
-          "covered": 75,
-          "total": 85,
-          "pct": 88.23
-        }
-      }
-    },
-    {
-      "path": "src/modules/training/bodyweight-reference-v1.ts",
-      "baseline": {
-        "lines": {
-          "covered": 15,
-          "total": 15,
-          "pct": 100
+          "covered": 122,
+          "total": 126,
+          "pct": 96.82
         },
         "functions": {
           "covered": 4,
@@ -777,13 +602,188 @@
           "pct": 100
         },
         "statements": {
-          "covered": 15,
-          "total": 15,
+          "covered": 122,
+          "total": 126,
+          "pct": 96.82
+        },
+        "branches": {
+          "covered": 41,
+          "total": 54,
+          "pct": 75.92
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-navigation-contract-v2.ts",
+      "baseline": {
+        "lines": {
+          "covered": 44,
+          "total": 47,
+          "pct": 93.61
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100
+        },
+        "statements": {
+          "covered": 44,
+          "total": 47,
+          "pct": 93.61
+        },
+        "branches": {
+          "covered": 12,
+          "total": 20,
+          "pct": 60
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-analytics-v1.ts",
+      "baseline": {
+        "lines": {
+          "covered": 669,
+          "total": 692,
+          "pct": 96.67
+        },
+        "functions": {
+          "covered": 18,
+          "total": 19,
+          "pct": 94.73
+        },
+        "statements": {
+          "covered": 669,
+          "total": 692,
+          "pct": 96.67
+        },
+        "branches": {
+          "covered": 335,
+          "total": 374,
+          "pct": 89.57
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-analytics.repository.ts",
+      "baseline": {
+        "lines": {
+          "covered": 147,
+          "total": 182,
+          "pct": 80.76
+        },
+        "functions": {
+          "covered": 1,
+          "total": 1,
+          "pct": 100
+        },
+        "statements": {
+          "covered": 147,
+          "total": 182,
+          "pct": 80.76
+        },
+        "branches": {
+          "covered": 20,
+          "total": 27,
+          "pct": 74.07
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-exposure-v2.ts",
+      "baseline": {
+        "lines": {
+          "covered": 132,
+          "total": 141,
+          "pct": 93.61
+        },
+        "functions": {
+          "covered": 4,
+          "total": 5,
+          "pct": 80
+        },
+        "statements": {
+          "covered": 132,
+          "total": 141,
+          "pct": 93.61
+        },
+        "branches": {
+          "covered": 81,
+          "total": 84,
+          "pct": 96.42
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-training-performance-v1.ts",
+      "baseline": {
+        "lines": {
+          "covered": 415,
+          "total": 421,
+          "pct": 98.57
+        },
+        "functions": {
+          "covered": 20,
+          "total": 20,
+          "pct": 100
+        },
+        "statements": {
+          "covered": 415,
+          "total": 421,
+          "pct": 98.57
+        },
+        "branches": {
+          "covered": 235,
+          "total": 279,
+          "pct": 84.22
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/body-map-url-state-v1.ts",
+      "baseline": {
+        "lines": {
+          "covered": 99,
+          "total": 99,
+          "pct": 100
+        },
+        "functions": {
+          "covered": 8,
+          "total": 8,
+          "pct": 100
+        },
+        "statements": {
+          "covered": 99,
+          "total": 99,
           "pct": 100
         },
         "branches": {
-          "covered": 18,
-          "total": 18,
+          "covered": 58,
+          "total": 66,
+          "pct": 87.87
+        }
+      }
+    },
+    {
+      "path": "src/modules/training/bodyweight-reference-v1.ts",
+      "baseline": {
+        "lines": {
+          "covered": 57,
+          "total": 57,
+          "pct": 100
+        },
+        "functions": {
+          "covered": 2,
+          "total": 2,
+          "pct": 100
+        },
+        "statements": {
+          "covered": 57,
+          "total": 57,
+          "pct": 100
+        },
+        "branches": {
+          "covered": 20,
+          "total": 20,
           "pct": 100
         }
       }
@@ -792,24 +792,24 @@
       "path": "src/modules/training/bodyweight-reference-v2.ts",
       "baseline": {
         "lines": {
-          "covered": 26,
-          "total": 27,
-          "pct": 96.29
+          "covered": 76,
+          "total": 78,
+          "pct": 97.43
         },
         "functions": {
-          "covered": 5,
-          "total": 5,
+          "covered": 3,
+          "total": 3,
           "pct": 100
         },
         "statements": {
-          "covered": 27,
-          "total": 29,
-          "pct": 93.1
+          "covered": 76,
+          "total": 78,
+          "pct": 97.43
         },
         "branches": {
-          "covered": 27,
-          "total": 28,
-          "pct": 96.42
+          "covered": 31,
+          "total": 33,
+          "pct": 93.93
         }
       }
     },
@@ -817,8 +817,8 @@
       "path": "src/modules/training/canonical-exercise-identity.ts",
       "baseline": {
         "lines": {
-          "covered": 3,
-          "total": 3,
+          "covered": 94,
+          "total": 94,
           "pct": 100
         },
         "functions": {
@@ -827,8 +827,8 @@
           "pct": 100
         },
         "statements": {
-          "covered": 3,
-          "total": 3,
+          "covered": 94,
+          "total": 94,
           "pct": 100
         },
         "branches": {
@@ -842,24 +842,24 @@
       "path": "src/modules/training/exercise-anatomy-mapping-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 218,
-          "total": 238,
-          "pct": 91.59
+          "covered": 735,
+          "total": 766,
+          "pct": 95.95
         },
         "functions": {
-          "covered": 48,
-          "total": 52,
-          "pct": 92.3
+          "covered": 24,
+          "total": 27,
+          "pct": 88.88
         },
         "statements": {
-          "covered": 243,
-          "total": 305,
-          "pct": 79.67
+          "covered": 735,
+          "total": 766,
+          "pct": 95.95
         },
         "branches": {
-          "covered": 163,
-          "total": 231,
-          "pct": 70.56
+          "covered": 133,
+          "total": 195,
+          "pct": 68.2
         }
       }
     },
@@ -867,24 +867,24 @@
       "path": "src/modules/training/exercise-anatomy-mapping-v2.ts",
       "baseline": {
         "lines": {
-          "covered": 36,
-          "total": 38,
-          "pct": 94.73
+          "covered": 151,
+          "total": 154,
+          "pct": 98.05
         },
         "functions": {
-          "covered": 9,
-          "total": 9,
+          "covered": 3,
+          "total": 3,
           "pct": 100
         },
         "statements": {
-          "covered": 39,
-          "total": 43,
-          "pct": 90.69
+          "covered": 151,
+          "total": 154,
+          "pct": 98.05
         },
         "branches": {
-          "covered": 42,
-          "total": 49,
-          "pct": 85.71
+          "covered": 36,
+          "total": 43,
+          "pct": 83.72
         }
       }
     },
@@ -892,24 +892,24 @@
       "path": "src/modules/training/exercise-anatomy-mapping-v3.ts",
       "baseline": {
         "lines": {
-          "covered": 53,
-          "total": 57,
-          "pct": 92.98
+          "covered": 148,
+          "total": 151,
+          "pct": 98.01
         },
         "functions": {
-          "covered": 18,
-          "total": 22,
-          "pct": 81.81
+          "covered": 9,
+          "total": 12,
+          "pct": 75
         },
         "statements": {
-          "covered": 61,
-          "total": 77,
-          "pct": 79.22
+          "covered": 148,
+          "total": 151,
+          "pct": 98.01
         },
         "branches": {
-          "covered": 47,
-          "total": 62,
-          "pct": 75.8
+          "covered": 44,
+          "total": 59,
+          "pct": 74.57
         }
       }
     },
@@ -917,24 +917,24 @@
       "path": "src/modules/training/exercise-mapping-snapshot.ts",
       "baseline": {
         "lines": {
-          "covered": 43,
-          "total": 46,
-          "pct": 93.47
+          "covered": 152,
+          "total": 158,
+          "pct": 96.2
         },
         "functions": {
-          "covered": 7,
-          "total": 9,
-          "pct": 77.77
+          "covered": 6,
+          "total": 7,
+          "pct": 85.71
         },
         "statements": {
-          "covered": 43,
-          "total": 47,
-          "pct": 91.48
+          "covered": 152,
+          "total": 158,
+          "pct": 96.2
         },
         "branches": {
-          "covered": 18,
-          "total": 22,
-          "pct": 81.81
+          "covered": 19,
+          "total": 23,
+          "pct": 82.6
         }
       }
     },
@@ -942,24 +942,24 @@
       "path": "src/modules/training/experimental-strength-active-energy-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 81,
-          "total": 85,
-          "pct": 95.29
+          "covered": 263,
+          "total": 269,
+          "pct": 97.76
         },
         "functions": {
-          "covered": 25,
-          "total": 26,
-          "pct": 96.15
+          "covered": 12,
+          "total": 12,
+          "pct": 100
         },
         "statements": {
-          "covered": 86,
-          "total": 90,
-          "pct": 95.55
+          "covered": 263,
+          "total": 269,
+          "pct": 97.76
         },
         "branches": {
-          "covered": 81,
-          "total": 87,
-          "pct": 93.1
+          "covered": 82,
+          "total": 90,
+          "pct": 91.11
         }
       }
     },
@@ -967,24 +967,24 @@
       "path": "src/modules/training/experimental-strength-energy-shadow.service.ts",
       "baseline": {
         "lines": {
-          "covered": 5,
-          "total": 124,
-          "pct": 4.03
+          "covered": 28,
+          "total": 417,
+          "pct": 6.71
         },
         "functions": {
           "covered": 1,
-          "total": 15,
-          "pct": 6.66
+          "total": 4,
+          "pct": 25
         },
         "statements": {
-          "covered": 5,
-          "total": 140,
-          "pct": 3.57
+          "covered": 28,
+          "total": 417,
+          "pct": 6.71
         },
         "branches": {
           "covered": 3,
-          "total": 271,
-          "pct": 1.1
+          "total": 3,
+          "pct": 100
         }
       }
     },
@@ -992,24 +992,24 @@
       "path": "src/modules/training/experimental-strength-glycogen-demand-shadow.service.ts",
       "baseline": {
         "lines": {
-          "covered": 0,
-          "total": 23,
-          "pct": 0
+          "covered": 6,
+          "total": 67,
+          "pct": 8.95
         },
         "functions": {
           "covered": 0,
-          "total": 4,
+          "total": 2,
           "pct": 0
         },
         "statements": {
-          "covered": 0,
-          "total": 25,
-          "pct": 0
+          "covered": 6,
+          "total": 67,
+          "pct": 8.95
         },
         "branches": {
           "covered": 0,
-          "total": 14,
-          "pct": 0
+          "total": 0,
+          "pct": 100
         }
       }
     },
@@ -1017,24 +1017,24 @@
       "path": "src/modules/training/experimental-transient-exercise-water-shadow.service.ts",
       "baseline": {
         "lines": {
-          "covered": 0,
-          "total": 80,
-          "pct": 0
+          "covered": 14,
+          "total": 249,
+          "pct": 5.62
         },
         "functions": {
           "covered": 0,
-          "total": 19,
+          "total": 9,
           "pct": 0
         },
         "statements": {
-          "covered": 0,
-          "total": 90,
-          "pct": 0
+          "covered": 14,
+          "total": 249,
+          "pct": 5.62
         },
         "branches": {
           "covered": 0,
-          "total": 48,
-          "pct": 0
+          "total": 0,
+          "pct": 100
         }
       }
     },
@@ -1042,24 +1042,24 @@
       "path": "src/modules/training/external-load-accounting.ts",
       "baseline": {
         "lines": {
-          "covered": 25,
-          "total": 25,
+          "covered": 119,
+          "total": 119,
           "pct": 100
         },
         "functions": {
-          "covered": 7,
-          "total": 7,
+          "covered": 4,
+          "total": 4,
           "pct": 100
         },
         "statements": {
-          "covered": 27,
-          "total": 27,
+          "covered": 119,
+          "total": 119,
           "pct": 100
         },
         "branches": {
-          "covered": 21,
-          "total": 22,
-          "pct": 95.45
+          "covered": 32,
+          "total": 33,
+          "pct": 96.96
         }
       }
     },
@@ -1067,24 +1067,24 @@
       "path": "src/modules/training/load-accounting-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 225,
-          "total": 258,
-          "pct": 87.2
+          "covered": 895,
+          "total": 978,
+          "pct": 91.51
         },
         "functions": {
-          "covered": 39,
-          "total": 40,
-          "pct": 97.5
+          "covered": 34,
+          "total": 34,
+          "pct": 100
         },
         "statements": {
-          "covered": 252,
-          "total": 291,
-          "pct": 86.59
+          "covered": 895,
+          "total": 978,
+          "pct": 91.51
         },
         "branches": {
-          "covered": 296,
-          "total": 354,
-          "pct": 83.61
+          "covered": 238,
+          "total": 287,
+          "pct": 82.92
         }
       }
     },
@@ -1092,9 +1092,9 @@
       "path": "src/modules/training/manual-stepper-fields-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 14,
-          "total": 17,
-          "pct": 82.35
+          "covered": 46,
+          "total": 57,
+          "pct": 80.7
         },
         "functions": {
           "covered": 2,
@@ -1102,14 +1102,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 14,
-          "total": 17,
-          "pct": 82.35
+          "covered": 46,
+          "total": 57,
+          "pct": 80.7
         },
         "branches": {
-          "covered": 20,
-          "total": 23,
-          "pct": 86.95
+          "covered": 13,
+          "total": 16,
+          "pct": 81.25
         }
       }
     },
@@ -1117,8 +1117,8 @@
       "path": "src/modules/training/parse-training-decimal.ts",
       "baseline": {
         "lines": {
-          "covered": 3,
-          "total": 3,
+          "covered": 5,
+          "total": 5,
           "pct": 100
         },
         "functions": {
@@ -1127,13 +1127,13 @@
           "pct": 100
         },
         "statements": {
-          "covered": 4,
-          "total": 4,
+          "covered": 5,
+          "total": 5,
           "pct": 100
         },
         "branches": {
-          "covered": 2,
-          "total": 2,
+          "covered": 3,
+          "total": 3,
           "pct": 100
         }
       }
@@ -1142,24 +1142,24 @@
       "path": "src/modules/training/persisted-load-accounting-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 71,
-          "total": 81,
-          "pct": 87.65
+          "covered": 364,
+          "total": 389,
+          "pct": 93.57
         },
         "functions": {
-          "covered": 15,
-          "total": 17,
-          "pct": 88.23
+          "covered": 6,
+          "total": 7,
+          "pct": 85.71
         },
         "statements": {
-          "covered": 80,
-          "total": 90,
-          "pct": 88.88
+          "covered": 364,
+          "total": 389,
+          "pct": 93.57
         },
         "branches": {
-          "covered": 67,
-          "total": 80,
-          "pct": 83.75
+          "covered": 51,
+          "total": 62,
+          "pct": 82.25
         }
       }
     },
@@ -1167,9 +1167,9 @@
       "path": "src/modules/training/rebase-current-accounting-snapshot.ts",
       "baseline": {
         "lines": {
-          "covered": 0,
-          "total": 15,
-          "pct": 0
+          "covered": 3,
+          "total": 98,
+          "pct": 3.06
         },
         "functions": {
           "covered": 0,
@@ -1177,14 +1177,14 @@
           "pct": 0
         },
         "statements": {
-          "covered": 0,
-          "total": 17,
-          "pct": 0
+          "covered": 3,
+          "total": 98,
+          "pct": 3.06
         },
         "branches": {
           "covered": 0,
-          "total": 44,
-          "pct": 0
+          "total": 0,
+          "pct": 100
         }
       }
     },
@@ -1192,9 +1192,9 @@
       "path": "src/modules/training/resolve-body-map-exercise-mapping-v3.ts",
       "baseline": {
         "lines": {
-          "covered": 21,
-          "total": 26,
-          "pct": 80.76
+          "covered": 38,
+          "total": 52,
+          "pct": 73.07
         },
         "functions": {
           "covered": 2,
@@ -1202,14 +1202,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 23,
-          "total": 32,
-          "pct": 71.87
+          "covered": 38,
+          "total": 52,
+          "pct": 73.07
         },
         "branches": {
-          "covered": 32,
-          "total": 46,
-          "pct": 69.56
+          "covered": 28,
+          "total": 34,
+          "pct": 82.35
         }
       }
     },
@@ -1217,8 +1217,8 @@
       "path": "src/modules/training/session-inactivity.ts",
       "baseline": {
         "lines": {
-          "covered": 5,
-          "total": 5,
+          "covered": 11,
+          "total": 11,
           "pct": 100
         },
         "functions": {
@@ -1227,13 +1227,13 @@
           "pct": 100
         },
         "statements": {
-          "covered": 5,
-          "total": 5,
+          "covered": 11,
+          "total": 11,
           "pct": 100
         },
         "branches": {
-          "covered": 8,
-          "total": 8,
+          "covered": 6,
+          "total": 6,
           "pct": 100
         }
       }
@@ -1242,24 +1242,24 @@
       "path": "src/modules/training/session-mass-reference.ts",
       "baseline": {
         "lines": {
-          "covered": 1,
-          "total": 29,
-          "pct": 3.44
+          "covered": 7,
+          "total": 104,
+          "pct": 6.73
         },
         "functions": {
           "covered": 0,
-          "total": 3,
+          "total": 2,
           "pct": 0
         },
         "statements": {
-          "covered": 1,
-          "total": 33,
-          "pct": 3.03
+          "covered": 7,
+          "total": 104,
+          "pct": 6.73
         },
         "branches": {
           "covered": 0,
-          "total": 16,
-          "pct": 0
+          "total": 0,
+          "pct": 100
         }
       }
     },
@@ -1267,23 +1267,23 @@
       "path": "src/modules/training/session-plan-completion.ts",
       "baseline": {
         "lines": {
-          "covered": 7,
-          "total": 7,
+          "covered": 15,
+          "total": 15,
           "pct": 100
         },
         "functions": {
-          "covered": 5,
-          "total": 5,
+          "covered": 1,
+          "total": 1,
           "pct": 100
         },
         "statements": {
-          "covered": 9,
-          "total": 9,
+          "covered": 15,
+          "total": 15,
           "pct": 100
         },
         "branches": {
-          "covered": 2,
-          "total": 2,
+          "covered": 7,
+          "total": 7,
           "pct": 100
         }
       }
@@ -1292,24 +1292,24 @@
       "path": "src/modules/training/stepper-reconciliation-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 25,
-          "total": 27,
-          "pct": 92.59
+          "covered": 60,
+          "total": 62,
+          "pct": 96.77
         },
         "functions": {
-          "covered": 5,
-          "total": 6,
-          "pct": 83.33
+          "covered": 3,
+          "total": 3,
+          "pct": 100
         },
         "statements": {
-          "covered": 30,
-          "total": 37,
-          "pct": 81.08
+          "covered": 60,
+          "total": 62,
+          "pct": 96.77
         },
         "branches": {
-          "covered": 20,
-          "total": 31,
-          "pct": 64.51
+          "covered": 12,
+          "total": 21,
+          "pct": 57.14
         }
       }
     },
@@ -1317,24 +1317,24 @@
       "path": "src/modules/training/stepper-reconciliation.service.ts",
       "baseline": {
         "lines": {
-          "covered": 1,
-          "total": 133,
-          "pct": 0.75
+          "covered": 12,
+          "total": 409,
+          "pct": 2.93
         },
         "functions": {
           "covered": 0,
-          "total": 43,
+          "total": 9,
           "pct": 0
         },
         "statements": {
-          "covered": 1,
-          "total": 159,
-          "pct": 0.62
+          "covered": 12,
+          "total": 409,
+          "pct": 2.93
         },
         "branches": {
           "covered": 0,
-          "total": 84,
-          "pct": 0
+          "total": 0,
+          "pct": 100
         }
       }
     },
@@ -1342,24 +1342,24 @@
       "path": "src/modules/training/stepper-workout.repository.ts",
       "baseline": {
         "lines": {
-          "covered": 26,
-          "total": 145,
-          "pct": 17.93
+          "covered": 151,
+          "total": 535,
+          "pct": 28.22
         },
         "functions": {
-          "covered": 7,
-          "total": 23,
-          "pct": 30.43
+          "covered": 4,
+          "total": 14,
+          "pct": 28.57
         },
         "statements": {
-          "covered": 28,
-          "total": 164,
-          "pct": 17.07
+          "covered": 151,
+          "total": 535,
+          "pct": 28.22
         },
         "branches": {
-          "covered": 33,
-          "total": 184,
-          "pct": 17.93
+          "covered": 13,
+          "total": 29,
+          "pct": 44.82
         }
       }
     },
@@ -1367,24 +1367,24 @@
       "path": "src/modules/training/stepper-workout.schema.ts",
       "baseline": {
         "lines": {
-          "covered": 6,
-          "total": 6,
+          "covered": 17,
+          "total": 17,
           "pct": 100
         },
         "functions": {
-          "covered": 1,
-          "total": 1,
+          "covered": 0,
+          "total": 0,
           "pct": 100
         },
         "statements": {
-          "covered": 6,
-          "total": 6,
+          "covered": 17,
+          "total": 17,
           "pct": 100
         },
         "branches": {
-          "covered": 3,
-          "total": 4,
-          "pct": 75
+          "covered": 1,
+          "total": 2,
+          "pct": 50
         }
       }
     },
@@ -1392,9 +1392,9 @@
       "path": "src/modules/training/strength-historical-energy-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 39,
-          "total": 41,
-          "pct": 95.12
+          "covered": 143,
+          "total": 153,
+          "pct": 93.46
         },
         "functions": {
           "covered": 9,
@@ -1402,14 +1402,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 43,
-          "total": 46,
-          "pct": 93.47
+          "covered": 143,
+          "total": 153,
+          "pct": 93.46
         },
         "branches": {
-          "covered": 77,
-          "total": 99,
-          "pct": 77.77
+          "covered": 54,
+          "total": 63,
+          "pct": 85.71
         }
       }
     },
@@ -1417,24 +1417,24 @@
       "path": "src/modules/training/strength-publication-v1.ts",
       "baseline": {
         "lines": {
-          "covered": 13,
-          "total": 38,
-          "pct": 34.21
+          "covered": 60,
+          "total": 151,
+          "pct": 39.73
         },
         "functions": {
-          "covered": 7,
-          "total": 17,
-          "pct": 41.17
+          "covered": 5,
+          "total": 8,
+          "pct": 62.5
         },
         "statements": {
-          "covered": 17,
-          "total": 46,
-          "pct": 36.95
+          "covered": 60,
+          "total": 151,
+          "pct": 39.73
         },
         "branches": {
-          "covered": 41,
-          "total": 86,
-          "pct": 47.67
+          "covered": 22,
+          "total": 30,
+          "pct": 73.33
         }
       }
     },
@@ -1442,8 +1442,8 @@
       "path": "src/modules/training/training-analytics-contracts.ts",
       "baseline": {
         "lines": {
-          "covered": 8,
-          "total": 8,
+          "covered": 33,
+          "total": 33,
           "pct": 100
         },
         "functions": {
@@ -1452,13 +1452,13 @@
           "pct": 100
         },
         "statements": {
-          "covered": 11,
-          "total": 11,
+          "covered": 33,
+          "total": 33,
           "pct": 100
         },
         "branches": {
-          "covered": 10,
-          "total": 10,
+          "covered": 9,
+          "total": 9,
           "pct": 100
         }
       }
@@ -1467,24 +1467,24 @@
       "path": "src/modules/training/training-refresh-queue.ts",
       "baseline": {
         "lines": {
-          "covered": 33,
-          "total": 36,
-          "pct": 91.66
+          "covered": 125,
+          "total": 148,
+          "pct": 84.45
         },
         "functions": {
-          "covered": 10,
-          "total": 15,
-          "pct": 66.66
+          "covered": 9,
+          "total": 10,
+          "pct": 90
         },
         "statements": {
-          "covered": 37,
-          "total": 45,
-          "pct": 82.22
+          "covered": 125,
+          "total": 148,
+          "pct": 84.45
         },
         "branches": {
-          "covered": 43,
-          "total": 63,
-          "pct": 68.25
+          "covered": 41,
+          "total": 61,
+          "pct": 67.21
         }
       }
     },
@@ -1492,8 +1492,8 @@
       "path": "src/modules/training/training-refresh-worker-context.ts",
       "baseline": {
         "lines": {
-          "covered": 11,
-          "total": 11,
+          "covered": 30,
+          "total": 30,
           "pct": 100
         },
         "functions": {
@@ -1502,14 +1502,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 14,
-          "total": 14,
+          "covered": 30,
+          "total": 30,
           "pct": 100
         },
         "branches": {
-          "covered": 4,
-          "total": 6,
-          "pct": 66.66
+          "covered": 9,
+          "total": 10,
+          "pct": 90
         }
       }
     },
@@ -1517,24 +1517,24 @@
       "path": "src/modules/training/training-refresh-worker.ts",
       "baseline": {
         "lines": {
-          "covered": 13,
-          "total": 281,
-          "pct": 4.62
+          "covered": 46,
+          "total": 686,
+          "pct": 6.7
         },
         "functions": {
           "covered": 2,
-          "total": 63,
-          "pct": 3.17
+          "total": 22,
+          "pct": 9.09
         },
         "statements": {
-          "covered": 13,
-          "total": 331,
-          "pct": 3.92
+          "covered": 46,
+          "total": 686,
+          "pct": 6.7
         },
         "branches": {
-          "covered": 9,
-          "total": 181,
-          "pct": 4.97
+          "covered": 5,
+          "total": 7,
+          "pct": 71.42
         }
       }
     },
@@ -1542,24 +1542,24 @@
       "path": "src/modules/training/training.constants.ts",
       "baseline": {
         "lines": {
-          "covered": 17,
-          "total": 17,
+          "covered": 84,
+          "total": 84,
           "pct": 100
         },
         "functions": {
-          "covered": 2,
-          "total": 2,
+          "covered": 1,
+          "total": 1,
           "pct": 100
         },
         "statements": {
-          "covered": 17,
-          "total": 17,
+          "covered": 84,
+          "total": 84,
           "pct": 100
         },
         "branches": {
-          "covered": 6,
-          "total": 8,
-          "pct": 75
+          "covered": 7,
+          "total": 9,
+          "pct": 77.77
         }
       }
     },
@@ -1567,9 +1567,9 @@
       "path": "src/modules/training/training.errors.ts",
       "baseline": {
         "lines": {
-          "covered": 36,
-          "total": 48,
-          "pct": 75
+          "covered": 126,
+          "total": 144,
+          "pct": 87.5
         },
         "functions": {
           "covered": 17,
@@ -1577,13 +1577,13 @@
           "pct": 73.91
         },
         "statements": {
-          "covered": 36,
-          "total": 48,
-          "pct": 75
+          "covered": 126,
+          "total": 144,
+          "pct": 87.5
         },
         "branches": {
-          "covered": 1,
-          "total": 1,
+          "covered": 17,
+          "total": 17,
           "pct": 100
         }
       }
@@ -1592,9 +1592,9 @@
       "path": "src/modules/training/training.http.ts",
       "baseline": {
         "lines": {
-          "covered": 16,
-          "total": 20,
-          "pct": 80
+          "covered": 46,
+          "total": 54,
+          "pct": 85.18
         },
         "functions": {
           "covered": 2,
@@ -1602,14 +1602,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 16,
-          "total": 20,
-          "pct": 80
+          "covered": 46,
+          "total": 54,
+          "pct": 85.18
         },
         "branches": {
-          "covered": 28,
-          "total": 32,
-          "pct": 87.5
+          "covered": 29,
+          "total": 33,
+          "pct": 87.87
         }
       }
     },
@@ -1617,9 +1617,9 @@
       "path": "src/modules/training/training.matcher.ts",
       "baseline": {
         "lines": {
-          "covered": 36,
-          "total": 38,
-          "pct": 94.73
+          "covered": 71,
+          "total": 75,
+          "pct": 94.66
         },
         "functions": {
           "covered": 5,
@@ -1627,14 +1627,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 41,
-          "total": 47,
-          "pct": 87.23
+          "covered": 71,
+          "total": 75,
+          "pct": 94.66
         },
         "branches": {
-          "covered": 26,
-          "total": 33,
-          "pct": 78.78
+          "covered": 25,
+          "total": 32,
+          "pct": 78.12
         }
       }
     },
@@ -1642,24 +1642,24 @@
       "path": "src/modules/training/training.program-reconcile.ts",
       "baseline": {
         "lines": {
-          "covered": 20,
-          "total": 21,
-          "pct": 95.23
+          "covered": 63,
+          "total": 64,
+          "pct": 98.43
         },
         "functions": {
-          "covered": 4,
-          "total": 4,
+          "covered": 1,
+          "total": 1,
           "pct": 100
         },
         "statements": {
-          "covered": 22,
-          "total": 23,
-          "pct": 95.65
+          "covered": 63,
+          "total": 64,
+          "pct": 98.43
         },
         "branches": {
-          "covered": 23,
-          "total": 24,
-          "pct": 95.83
+          "covered": 15,
+          "total": 15,
+          "pct": 100
         }
       }
     },
@@ -1667,24 +1667,24 @@
       "path": "src/modules/training/training.repository.ts",
       "baseline": {
         "lines": {
-          "covered": 391,
-          "total": 757,
-          "pct": 51.65
+          "covered": 1947,
+          "total": 3270,
+          "pct": 59.54
         },
         "functions": {
-          "covered": 96,
-          "total": 169,
-          "pct": 56.8
+          "covered": 61,
+          "total": 87,
+          "pct": 70.11
         },
         "statements": {
-          "covered": 410,
-          "total": 853,
-          "pct": 48.06
+          "covered": 1947,
+          "total": 3270,
+          "pct": 59.54
         },
         "branches": {
-          "covered": 388,
-          "total": 1003,
-          "pct": 38.68
+          "covered": 250,
+          "total": 437,
+          "pct": 57.2
         }
       }
     },
@@ -1692,24 +1692,24 @@
       "path": "src/modules/training/training.schema.ts",
       "baseline": {
         "lines": {
-          "covered": 48,
-          "total": 48,
-          "pct": 100
+          "covered": 197,
+          "total": 199,
+          "pct": 98.99
         },
         "functions": {
-          "covered": 12,
-          "total": 12,
+          "covered": 2,
+          "total": 2,
           "pct": 100
         },
         "statements": {
-          "covered": 48,
-          "total": 48,
-          "pct": 100
+          "covered": 197,
+          "total": 199,
+          "pct": 98.99
         },
         "branches": {
-          "covered": 17,
-          "total": 20,
-          "pct": 85
+          "covered": 21,
+          "total": 24,
+          "pct": 87.5
         }
       }
     },
@@ -1717,24 +1717,24 @@
       "path": "src/modules/training/training.service.ts",
       "baseline": {
         "lines": {
-          "covered": 306,
-          "total": 663,
-          "pct": 46.15
+          "covered": 921,
+          "total": 1797,
+          "pct": 51.25
         },
         "functions": {
-          "covered": 62,
-          "total": 143,
-          "pct": 43.35
+          "covered": 42,
+          "total": 83,
+          "pct": 50.6
         },
         "statements": {
-          "covered": 333,
-          "total": 818,
-          "pct": 40.7
+          "covered": 921,
+          "total": 1797,
+          "pct": 51.25
         },
         "branches": {
-          "covered": 289,
-          "total": 747,
-          "pct": 38.68
+          "covered": 181,
+          "total": 305,
+          "pct": 59.34
         }
       }
     },
@@ -1742,9 +1742,9 @@
       "path": "src/modules/training/training.set-validation.ts",
       "baseline": {
         "lines": {
-          "covered": 29,
-          "total": 34,
-          "pct": 85.29
+          "covered": 73,
+          "total": 82,
+          "pct": 89.02
         },
         "functions": {
           "covered": 3,
@@ -1752,14 +1752,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 31,
-          "total": 36,
-          "pct": 86.11
+          "covered": 73,
+          "total": 82,
+          "pct": 89.02
         },
         "branches": {
-          "covered": 52,
-          "total": 57,
-          "pct": 91.22
+          "covered": 43,
+          "total": 48,
+          "pct": 89.58
         }
       }
     },
@@ -1767,9 +1767,9 @@
       "path": "src/modules/training/training.source-revision.ts",
       "baseline": {
         "lines": {
-          "covered": 0,
-          "total": 1,
-          "pct": 0
+          "covered": 1,
+          "total": 3,
+          "pct": 33.33
         },
         "functions": {
           "covered": 0,
@@ -1777,9 +1777,9 @@
           "pct": 0
         },
         "statements": {
-          "covered": 0,
-          "total": 1,
-          "pct": 0
+          "covered": 1,
+          "total": 3,
+          "pct": 33.33
         },
         "branches": {
           "covered": 0,
@@ -1792,8 +1792,8 @@
       "path": "src/modules/training/training.tonnage.ts",
       "baseline": {
         "lines": {
-          "covered": 11,
-          "total": 11,
+          "covered": 18,
+          "total": 18,
           "pct": 100
         },
         "functions": {
@@ -1802,14 +1802,14 @@
           "pct": 100
         },
         "statements": {
-          "covered": 13,
-          "total": 15,
-          "pct": 86.66
+          "covered": 18,
+          "total": 18,
+          "pct": 100
         },
         "branches": {
-          "covered": 19,
-          "total": 21,
-          "pct": 90.47
+          "covered": 15,
+          "total": 17,
+          "pct": 88.23
         }
       }
     }

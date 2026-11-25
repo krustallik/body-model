@@ -208,13 +208,16 @@ function requirePathCoverage(filePath, metrics, baselineMetrics, minimumForNewFi
     throw new Error(`${filePath} has no instrumented lines or statements; merged coverage cannot verify executable code.`);
   }
   for (const metric of METRICS) {
-    const floor = isNewFile || baselineMetrics[metric].total === 0
-      ? minimumForNewFiles[metric]
-      : pct(baselineMetrics[metric]);
+    const hasFrozenObservations = !isNewFile && baselineMetrics[metric].total > 0;
     if (!isNewFile && baselineMetrics[metric].total > 0 && metrics[metric].total === 0) {
       throw new Error(`${filePath} ${metric} coverage has no instrumented points; frozen baseline had ${baselineMetrics[metric].total}.`);
     }
-    if (!atLeast(metrics[metric], floor)) {
+    const meetsFloor = hasFrozenObservations
+      ? BigInt(metrics[metric].covered) * BigInt(baselineMetrics[metric].total)
+        >= BigInt(baselineMetrics[metric].covered) * BigInt(metrics[metric].total)
+      : atLeast(metrics[metric], minimumForNewFiles[metric]);
+    if (!meetsFloor) {
+      const floor = hasFrozenObservations ? pct(baselineMetrics[metric]) : minimumForNewFiles[metric];
       throw new Error(`${filePath} ${metric} coverage ${pct(metrics[metric]).toFixed(2)}% is below frozen floor ${floor.toFixed(2)}%.`);
     }
   }

@@ -138,9 +138,23 @@ async function clean(): Promise<void> {
     },
     select: { eventId: true },
   });
-  if (fixtureAliases.length > 0) {
+  const fixtureWorkoutEventKeys = [...new Set([
+    ...fixtureWorkouts.map(({ id }) => `workout:${id}`),
+    ...[...deletedFixtureStepperSourceKeys].map((id) => `workout:${id}`),
+  ])];
+  const fixtureWorkoutEvents = fixtureWorkoutEventKeys.length === 0
+    ? []
+    : await prisma.activeEnergyCanonicalEvent.findMany({
+      where: { profileId, logicalEventKey: { in: fixtureWorkoutEventKeys } },
+      select: { id: true },
+    });
+  const fixtureEventIds = [...new Set([
+    ...fixtureAliases.map(({ eventId }) => eventId),
+    ...fixtureWorkoutEvents.map(({ id }) => id),
+  ])];
+  if (fixtureEventIds.length > 0) {
     await prisma.activeEnergyCanonicalEvent.deleteMany({
-      where: { id: { in: [...new Set(fixtureAliases.map(({ eventId }) => eventId))] } },
+      where: { id: { in: fixtureEventIds } },
     });
   }
   const fixturePublicationBlocks = await prisma.unifiedPublicationBlock.findMany({
@@ -570,6 +584,90 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
           expectedFromDate: token.fromDate,
         });
       }
+    }
+  });
+
+  it("cleans fixture workout energy history by exact key when its alias is gone", async () => {
+    await prisma.profile.upsert({
+      where: { id: profileId },
+      create: { id: profileId, sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"), heightCm: 180 },
+      update: {},
+    });
+    const day = await prisma.dailyHealthData.create({
+      data: { profileId, date: dates[0]!, rawPayload: { __bodycastFixture: healthSnapshotFixtureTag } },
+      select: { id: true },
+    });
+    const workout = await prisma.workout.create({
+      data: {
+        profileId,
+        dailyHealthDataId: day.id,
+        sourceIdentity: `${fixtureMethod}-active-energy-cleanup`,
+        type: "Stair Climbing",
+        startAt: new Date(`${dates[0]}T08:00:00.000Z`),
+        endAt: new Date(`${dates[0]}T08:20:00.000Z`),
+        manualStepCount: 1_000,
+      },
+      select: { id: true },
+    });
+    const fixtureEventKey = `workout:${workout.id}`;
+    const unrelatedEventKey = "workout:unrelated-active-energy-cleanup-sentinel";
+    const createEvent = (logicalEventKey: string, modelDate: string) => prisma.activeEnergyCanonicalEvent.create({
+      data: {
+        profileId,
+        logicalEventKey,
+        eventKind: "stepper",
+        occurrenceAt: new Date(`${modelDate}T08:00:00.000Z`),
+        modelDate,
+        modelTimeZone: "Europe/Bratislava",
+        inputFingerprint: "a".repeat(64),
+        isStale: false,
+      },
+      select: { id: true },
+    });
+
+    try {
+      const fixtureEvent = await createEvent(fixtureEventKey, dates[0]!);
+      const fixtureCandidate = await prisma.activeEnergyCandidate.create({
+        data: {
+          profileId,
+          eventId: fixtureEvent.id,
+          source: "bodycast-stepper-mechanical",
+          sourceIdentity: `stepper-manual-steps:${workout.id}`,
+          sourceFingerprint: "b".repeat(64),
+          availability: "available",
+          valueKcal: 100,
+          provenance: { fixture: true },
+        },
+        select: { id: true },
+      });
+      const fixtureRevision = await prisma.activeEnergyResolutionRevision.create({
+        data: {
+          profileId,
+          eventId: fixtureEvent.id,
+          revision: 1,
+          resolutionFingerprint: "c".repeat(64),
+          source: "bodycast-stepper-mechanical",
+          valueKcal: 100,
+          provenance: { fixture: true },
+        },
+        select: { id: true },
+      });
+      const unrelatedEvent = await createEvent(unrelatedEventKey, "2069-01-01");
+
+      deletedFixtureStepperSourceKeys.add(String(workout.id));
+      await prisma.workout.delete({ where: { id: workout.id } });
+      await clean();
+
+      await expect(prisma.activeEnergyCanonicalEvent.findUnique({ where: { id: fixtureEvent.id } })).resolves.toBeNull();
+      await expect(prisma.activeEnergyCandidate.findUnique({ where: { id: fixtureCandidate.id } })).resolves.toBeNull();
+      await expect(prisma.activeEnergyResolutionRevision.findUnique({ where: { id: fixtureRevision.id } })).resolves.toBeNull();
+      await expect(prisma.activeEnergyCanonicalEvent.findUnique({ where: { id: unrelatedEvent.id } }))
+        .resolves.toMatchObject({ logicalEventKey: unrelatedEventKey });
+    } finally {
+      await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { logicalEventKey: unrelatedEventKey } });
+      await prisma.workout.deleteMany({ where: { id: workout.id } });
+      await prisma.dailyHealthData.deleteMany({ where: { id: day.id } });
+      deletedFixtureStepperSourceKeys.delete(String(workout.id));
     }
   });
 
@@ -2284,6 +2382,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({ where: { workoutId: stepper.id } }))
         .not.toBeNull();
       const stepperRepository = new StepperWorkoutRepository();
+      deletedFixtureStepperSourceKeys.add(String(stepper.id));
       await expect(stepperRepository.delete(profileId, stepper.id)).resolves.toMatchObject({ deleted: true });
       await runTrainingRefreshToCompletion(profileId);
       expect(await prisma.experimentalStepperGlycogenDemandShadow.findUnique({ where: { workoutId: stepper.id } }))

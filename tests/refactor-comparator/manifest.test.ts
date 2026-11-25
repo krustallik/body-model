@@ -66,6 +66,7 @@ describe("frozen refactor comparator manifest", () => {
       "TX-CONCURRENCY-01", "FORECAST-CALENDAR-01", "BODYMAP-UI-01", "BODYMAP-ANALYTICS-01",
       "BODYMAP-PERFORMANCE-01", "BODYMAP-ENERGY-01", "BODYMAP-MAPPING-V3-01", "TRAIN-LOAD-ASSESS-01",
       "COMPARATOR-CLOCK-01", "TRAIN-HISTORY-BOOTSTRAP-01", "COMPARATOR-CLOCK-02", "COMPARATOR-UNIFIED-DB-01",
+      "COMPARATOR-UNIFIED-CLEANUP-01",
     ];
     expect(manifest.caseGroups.map(({ id }) => id)).toEqual(requiredGroups);
 
@@ -160,6 +161,14 @@ describe("frozen refactor comparator manifest", () => {
     expect(comparatorUnifiedDatabase?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
       "src/modules/training/testing/require-isolated-database.ts",
       "tests/integration/database-safety.test.ts",
+      "tests/integration/unified-experimental-physiology-state.integration.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
+
+    const comparatorUnifiedCleanup = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-UNIFIED-CLEANUP-01");
+    expect(comparatorUnifiedCleanup?.integrationSuiteIds).toEqual(["postgres-unified-physiology-state"]);
+    expect(comparatorUnifiedCleanup?.databaseStateSuiteIds).toEqual(["postgres-unified-physiology-state"]);
+    expect(comparatorUnifiedCleanup?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
       "tests/integration/unified-experimental-physiology-state.integration.test.ts",
       "tests/refactor-comparator/manifest.test.ts",
     ]));

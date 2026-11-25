@@ -469,6 +469,17 @@
         { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "53d7400a560bb8e42ac07db63713f00d3a9d9ab1c77c20fcbccbea609ed34cd0" },
         { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "b0a4338840d41884968ffae94ffd9912ff3cdf2adce0d8bf517a9c570ff2bb59" }
       ]
+    },
+    {
+      "id": "COMPARATOR-UNIFIED-CLEANUP-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-unified-physiology-state"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
+      "inputFiles": [
+        { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "193995ea2d9eba96059e6edafbff6d3d533bcb87d1741879e93473907dde4a48" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "97c8a834a9e2ddefbfe9242e77205820e8e8d80789a618a1d816cc4fc8f1d454" }
+      ]
     }
   ]
 }

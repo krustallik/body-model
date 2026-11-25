@@ -1,31 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "baselineSha": "5194fcd00544f7ca94fca4fbac039f647cb26503",
-  "measurement": {
-    "provider": "v8",
-    "selection": "related",
-    "nodeMajor": 24,
-    "nodeVersion": "v24.19.0",
-    "v8Version": "13.6.233.17-node.51",
-    "profile": "exact-tracked-paths-v8-ast-aware-single-worker-v1",
-    "coverageAll": true,
-    "ci": true,
-    "nodeEnv": "test",
-    "maxWorkers": 1,
-    "minWorkers": 1,
-    "vitestVersion": "3.2.7",
-    "reportSha256": "4fd42406c50c20523f0f44620516fc1af12e1831ed5c003764b129cbae6056b3",
-    "logSha256": "f9aaa3666e8d710e71d78ff905ea59f05444dffa7d28207c02b6037439d62150",
-    "confirmationReportSha256": "4fd42406c50c20523f0f44620516fc1af12e1831ed5c003764b129cbae6056b3",
-    "confirmationLogSha256": "5f926d444aef7a4a42113c4c72765d93ca8db61e134e58c183990e1ba4ab2dfa",
-    "repeatedRunCount": 2,
-    "sourceFileCount": 71,
-    "testFileCount": 172,
-    "testsPassed": 1580,
-    "coverageProviderVersion": "3.2.7",
-    "baselineTestInputFingerprintSha256": "a2a28e16661b0a629c13ad9a6bd7c885c6e458806f8e11b383e61d1d8dd02bef",
-    "baselineTestSelectionFingerprintSha256": "9bead6a63efb28d8aa85cc7af8995d56f2d4b13d659b72ec53d8324481aa6d22"
-  },
+  "measurement": "vitest-unit-shards-v8",
   "sourceRoots": [
     "src/app/body-map",
     "src/components/body-map",
@@ -42,34 +18,28 @@
   "excludedPaths": [
     {
       "path": "src/modules/training/experimental-strength-energy.ts",
-      "gitBlobSha": "b01d24061961eb6a6595b1fdf0afdc7c72415b6d",
-      "reason": "Deprecated V1 compatibility re-export; an explicit import probe at baseline 725f6f684d8693d174d940f673e01efd1646b518 under Node v24.19.0 / V8 13.6.233.17-node.51 and Vitest 3.2.7 @vitest/coverage-v8 with AST-aware remapping produced zero line/function/statement/branch counters (probe source SHA-256 fff424c66e4bd17135fa0e07eeaf5f69dc4323ebe78a4dd5e5c8d64f092febf8; invocation SHA-256 73c6bc3889bf40aa057be3d016678aa7f8f65571c4f7aba119950ae235306a8d; summary SHA-256 c53676b76e288e65df295a3ce561ffbb36831d18f33c9ed4d46afce73d3105fe); the exact baseline blob is frozen and any candidate edit fails closed."
+      "reason": "Deprecated V1 compatibility re-export; this re-export has no executable coverage counters."
     },
     {
       "path": "src/modules/training/index.ts",
-      "gitBlobSha": "9fccab5c994052ad067e7b1647a28d601c997a5e",
-      "reason": "Public training re-export barrel; the same baseline import probe with the recorded source and invocation hashes produced zero line/function/statement/branch counters (summary SHA-256 c53676b76e288e65df295a3ce561ffbb36831d18f33c9ed4d46afce73d3105fe); the exact baseline blob is frozen and any candidate edit fails closed."
+      "reason": "Public training re-export barrel; this re-export has no executable coverage counters."
     },
     {
       "path": "src/modules/training/testing/require-isolated-database.ts",
-      "gitBlobSha": "bbe085bab2703adddc1cc71b4b5ff218b9a60265",
-      "reason": "Test-support utility imported only by PostgreSQL integration tests; it is not a product/runtime module and remains covered by integration behavior checks rather than this production-source coverage gate."
+      "reason": "Test-support utility used by PostgreSQL integration tests; it is not a production module."
     },
     {
       "path": "src/modules/training/testing/stage01-persistence.ts",
-      "gitBlobSha": "e1253756e0f634311196fd7cab017179c23a3571",
-      "reason": "Test-support utility imported only by PostgreSQL integration tests; it is not a product/runtime module and remains covered by integration behavior checks rather than this production-source coverage gate."
+      "reason": "Test-support utility used by PostgreSQL integration tests; it is not a production module."
     },
     {
       "path": "src/modules/training/training.types.ts",
-      "gitBlobSha": "88378af67f08da42c24a13ea930bb599a0b7eda2",
-      "reason": "Type-only DTO contracts are erased before runtime instrumentation; exact baseline blob is frozen and TypeScript checking remains the relevant gate."
+      "reason": "Type-only DTO contract is erased before runtime instrumentation."
     }
   ],
   "files": [
     {
       "path": "src/app/body-map/page.tsx",
-      "gitBlobSha": "b44c35c66b7f91136c32becc68c59be090013076",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -95,7 +65,6 @@
     },
     {
       "path": "src/components/body-map/body-map-camera-contract-v1.ts",
-      "gitBlobSha": "73f8be320bd0c3c7c5aaaf04bd5213c27e93fa31",
       "baseline": {
         "lines": {
           "covered": 4,
@@ -121,7 +90,6 @@
     },
     {
       "path": "src/components/body-map/body-map-experience.tsx",
-      "gitBlobSha": "ced95d4d0d8bd316cf052943cbc3dcbba1cb1bec",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -147,7 +115,6 @@
     },
     {
       "path": "src/components/body-map/body-map-localization.ts",
-      "gitBlobSha": "fb0c21372bf624cffc807a73ae2d557f04b37bf5",
       "baseline": {
         "lines": {
           "covered": 3,
@@ -173,7 +140,6 @@
     },
     {
       "path": "src/components/body-map/body-map-training-analytics-panel.tsx",
-      "gitBlobSha": "63c0dcc0393ef53e313845aed2adce3f34c1b274",
       "baseline": {
         "lines": {
           "covered": 69,
@@ -199,7 +165,6 @@
     },
     {
       "path": "src/components/body-map/camera-transition-v1.ts",
-      "gitBlobSha": "45a40463d58bf32ffa44826fd210780cd7d583f7",
       "baseline": {
         "lines": {
           "covered": 41,
@@ -225,7 +190,6 @@
     },
     {
       "path": "src/modules/activity/active-energy-invalidation.ts",
-      "gitBlobSha": "00b666f49ce7ef5e15f28793d798157a4ec2ad8c",
       "baseline": {
         "lines": {
           "covered": 16,
@@ -251,7 +215,6 @@
     },
     {
       "path": "src/modules/activity/active-energy-materialization.ts",
-      "gitBlobSha": "0b8c4496e903b8c32c96583b2021bbdf3a82c330",
       "baseline": {
         "lines": {
           "covered": 89,
@@ -277,7 +240,6 @@
     },
     {
       "path": "src/modules/activity/active-energy-publication.ts",
-      "gitBlobSha": "5c3e9707ebbebbc476b04f33f591497dbd2824fb",
       "baseline": {
         "lines": {
           "covered": 10,
@@ -303,7 +265,6 @@
     },
     {
       "path": "src/modules/auth/access.ts",
-      "gitBlobSha": "7c753448e8ac10789e08c54571bf634c63743a56",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -329,7 +290,6 @@
     },
     {
       "path": "src/modules/auth/api-keys.ts",
-      "gitBlobSha": "38b2f9950f56f286c992e42a377e03da0e874854",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -355,7 +315,6 @@
     },
     {
       "path": "src/modules/auth/email-flow.ts",
-      "gitBlobSha": "edbe02c8de76ad4e4372003735ebc208fb9f90bb",
       "baseline": {
         "lines": {
           "covered": 5,
@@ -381,7 +340,6 @@
     },
     {
       "path": "src/modules/auth/email-quota.ts",
-      "gitBlobSha": "b6c8f494f167e77ca4a4df42f0c83de43e1749e5",
       "baseline": {
         "lines": {
           "covered": 7,
@@ -407,7 +365,6 @@
     },
     {
       "path": "src/modules/auth/email.ts",
-      "gitBlobSha": "b6b1459ea3e3ed51631ea8abea84f9d0056355e3",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -433,7 +390,6 @@
     },
     {
       "path": "src/modules/auth/http.ts",
-      "gitBlobSha": "4c362e99a1f3e6d4ed1f174164f566473d13cae3",
       "baseline": {
         "lines": {
           "covered": 9,
@@ -459,7 +415,6 @@
     },
     {
       "path": "src/modules/auth/policy.ts",
-      "gitBlobSha": "f92e8b18e493dbdfe16c81275f56eccadb57608c",
       "baseline": {
         "lines": {
           "covered": 2,
@@ -485,7 +440,6 @@
     },
     {
       "path": "src/modules/auth/profile-provisioning.ts",
-      "gitBlobSha": "d18f0a0431c65694d1655ef24da82b45d7037dee",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -511,7 +465,6 @@
     },
     {
       "path": "src/modules/auth/rate-limit.ts",
-      "gitBlobSha": "8d5886dbaef80811593f3a51ca12c470207fc73d",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -537,7 +490,6 @@
     },
     {
       "path": "src/modules/auth/registration-users.ts",
-      "gitBlobSha": "f3d70949fda81052014235d27f1cf88c79f02493",
       "baseline": {
         "lines": {
           "covered": 2,
@@ -563,7 +515,6 @@
     },
     {
       "path": "src/modules/training/auto-advance.ts",
-      "gitBlobSha": "9a255e6fce79b374d0ef71b8426253a35ceb8ad4",
       "baseline": {
         "lines": {
           "covered": 1,
@@ -589,7 +540,6 @@
     },
     {
       "path": "src/modules/training/body-map-catalog-v2.ts",
-      "gitBlobSha": "676e07b8e4caa6b27b5380cbb2ec060b7990c733",
       "baseline": {
         "lines": {
           "covered": 51,
@@ -615,7 +565,6 @@
     },
     {
       "path": "src/modules/training/body-map-energy-balance-context-v1.ts",
-      "gitBlobSha": "58da6451f5d039ebb42cc49e108bff368d29311f",
       "baseline": {
         "lines": {
           "covered": 45,
@@ -641,7 +590,6 @@
     },
     {
       "path": "src/modules/training/body-map-hierarchy-contract-v1.ts",
-      "gitBlobSha": "6a35ac356c3d79f5c41faa5c6d2216b5ec896f61",
       "baseline": {
         "lines": {
           "covered": 65,
@@ -667,7 +615,6 @@
     },
     {
       "path": "src/modules/training/body-map-navigation-contract-v2.ts",
-      "gitBlobSha": "1c01be8f7c4c91d22a913b18668df177001cdf05",
       "baseline": {
         "lines": {
           "covered": 24,
@@ -693,7 +640,6 @@
     },
     {
       "path": "src/modules/training/body-map-training-analytics-v1.ts",
-      "gitBlobSha": "d346a16a5c8fa081708b51d8ad1018ea8242870c",
       "baseline": {
         "lines": {
           "covered": 285,
@@ -719,7 +665,6 @@
     },
     {
       "path": "src/modules/training/body-map-training-analytics.repository.ts",
-      "gitBlobSha": "953d8e366119e34c27581f889706769628b523f5",
       "baseline": {
         "lines": {
           "covered": 34,
@@ -745,7 +690,6 @@
     },
     {
       "path": "src/modules/training/body-map-training-exposure-v2.ts",
-      "gitBlobSha": "0b89fb97151c846a653619a2b380ee8c1eb1b8c2",
       "baseline": {
         "lines": {
           "covered": 53,
@@ -771,7 +715,6 @@
     },
     {
       "path": "src/modules/training/body-map-training-performance-v1.ts",
-      "gitBlobSha": "65828ee62aeb80845389b16a58545fdabd1f1a86",
       "baseline": {
         "lines": {
           "covered": 240,
@@ -797,7 +740,6 @@
     },
     {
       "path": "src/modules/training/body-map-url-state-v1.ts",
-      "gitBlobSha": "78d70637086e507402c99eb2549b8c8c3e9e2b7b",
       "baseline": {
         "lines": {
           "covered": 55,
@@ -823,7 +765,6 @@
     },
     {
       "path": "src/modules/training/bodyweight-reference-v1.ts",
-      "gitBlobSha": "aa9d5c86309322e42a9361a6e9c7bddbed98e047",
       "baseline": {
         "lines": {
           "covered": 15,
@@ -849,7 +790,6 @@
     },
     {
       "path": "src/modules/training/bodyweight-reference-v2.ts",
-      "gitBlobSha": "da1188aabff3c97579a8246c97d06a406deb3691",
       "baseline": {
         "lines": {
           "covered": 26,
@@ -875,7 +815,6 @@
     },
     {
       "path": "src/modules/training/canonical-exercise-identity.ts",
-      "gitBlobSha": "44b2f7fb215500a26004ceed76a98e9107e33863",
       "baseline": {
         "lines": {
           "covered": 3,
@@ -901,7 +840,6 @@
     },
     {
       "path": "src/modules/training/exercise-anatomy-mapping-v1.ts",
-      "gitBlobSha": "173cef0521a78cbc6c29ec21ad3e97f1c95add12",
       "baseline": {
         "lines": {
           "covered": 218,
@@ -927,7 +865,6 @@
     },
     {
       "path": "src/modules/training/exercise-anatomy-mapping-v2.ts",
-      "gitBlobSha": "70288bb07be76c3aee835327aa0584cc089425cb",
       "baseline": {
         "lines": {
           "covered": 36,
@@ -953,7 +890,6 @@
     },
     {
       "path": "src/modules/training/exercise-anatomy-mapping-v3.ts",
-      "gitBlobSha": "d1efd6f47fa0720a5d62c54c6bf11cf48a745338",
       "baseline": {
         "lines": {
           "covered": 53,
@@ -979,7 +915,6 @@
     },
     {
       "path": "src/modules/training/exercise-mapping-snapshot.ts",
-      "gitBlobSha": "58bb3145fe00593433fc48dd901f01d7e80c1daa",
       "baseline": {
         "lines": {
           "covered": 43,
@@ -1005,7 +940,6 @@
     },
     {
       "path": "src/modules/training/experimental-strength-active-energy-v1.ts",
-      "gitBlobSha": "c67e0309fd12e406bf13e92f69c94de0fed7e343",
       "baseline": {
         "lines": {
           "covered": 81,
@@ -1031,7 +965,6 @@
     },
     {
       "path": "src/modules/training/experimental-strength-energy-shadow.service.ts",
-      "gitBlobSha": "48451a0a9e2326670d55dc74a20baf3d54f95e6a",
       "baseline": {
         "lines": {
           "covered": 5,
@@ -1057,7 +990,6 @@
     },
     {
       "path": "src/modules/training/experimental-strength-glycogen-demand-shadow.service.ts",
-      "gitBlobSha": "9cd1152c0915bff171c76224b1583c7c86544179",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -1083,7 +1015,6 @@
     },
     {
       "path": "src/modules/training/experimental-transient-exercise-water-shadow.service.ts",
-      "gitBlobSha": "ffff507338e682d308a6225dd67f84621cc78c45",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -1109,7 +1040,6 @@
     },
     {
       "path": "src/modules/training/external-load-accounting.ts",
-      "gitBlobSha": "a835068c69a3e5e8d0079291223c540122fe0596",
       "baseline": {
         "lines": {
           "covered": 25,
@@ -1135,7 +1065,6 @@
     },
     {
       "path": "src/modules/training/load-accounting-v1.ts",
-      "gitBlobSha": "19698c9d45bbf24ffa884572b3952043d2c19216",
       "baseline": {
         "lines": {
           "covered": 225,
@@ -1161,7 +1090,6 @@
     },
     {
       "path": "src/modules/training/manual-stepper-fields-v1.ts",
-      "gitBlobSha": "81e044e8a2c9904978317e73567569708674794a",
       "baseline": {
         "lines": {
           "covered": 14,
@@ -1187,7 +1115,6 @@
     },
     {
       "path": "src/modules/training/parse-training-decimal.ts",
-      "gitBlobSha": "c9163c5e47c0801b7bcdaa77630b200d75444871",
       "baseline": {
         "lines": {
           "covered": 3,
@@ -1213,7 +1140,6 @@
     },
     {
       "path": "src/modules/training/persisted-load-accounting-v1.ts",
-      "gitBlobSha": "2010e0943bdfe5f4289852c63e04c005b6378530",
       "baseline": {
         "lines": {
           "covered": 71,
@@ -1239,7 +1165,6 @@
     },
     {
       "path": "src/modules/training/rebase-current-accounting-snapshot.ts",
-      "gitBlobSha": "cb52c47cc398b285cf110f0eb1f4e885fab06f24",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -1265,7 +1190,6 @@
     },
     {
       "path": "src/modules/training/resolve-body-map-exercise-mapping-v3.ts",
-      "gitBlobSha": "7760f551c522dc386aaf2eb8e0ab769891e3f79b",
       "baseline": {
         "lines": {
           "covered": 21,
@@ -1291,7 +1215,6 @@
     },
     {
       "path": "src/modules/training/session-inactivity.ts",
-      "gitBlobSha": "c1df2c324ca9c3ca359f6e767b5fff4131869cef",
       "baseline": {
         "lines": {
           "covered": 5,
@@ -1317,7 +1240,6 @@
     },
     {
       "path": "src/modules/training/session-mass-reference.ts",
-      "gitBlobSha": "7e62675cab130dc773acc3c06f51342a4643512d",
       "baseline": {
         "lines": {
           "covered": 1,
@@ -1343,7 +1265,6 @@
     },
     {
       "path": "src/modules/training/session-plan-completion.ts",
-      "gitBlobSha": "7d40c6f8c192014e7b61747c9693fab5fa4699d7",
       "baseline": {
         "lines": {
           "covered": 7,
@@ -1369,7 +1290,6 @@
     },
     {
       "path": "src/modules/training/stepper-reconciliation-v1.ts",
-      "gitBlobSha": "59e4f0adda4c6048071c15d65c191f9dcca45f23",
       "baseline": {
         "lines": {
           "covered": 25,
@@ -1395,7 +1315,6 @@
     },
     {
       "path": "src/modules/training/stepper-reconciliation.service.ts",
-      "gitBlobSha": "41f1b143210d025c0d290d76ba6d908461204da3",
       "baseline": {
         "lines": {
           "covered": 1,
@@ -1421,7 +1340,6 @@
     },
     {
       "path": "src/modules/training/stepper-workout.repository.ts",
-      "gitBlobSha": "e7b27d8639205aa7c66adae0acf9461f6f3a6cc5",
       "baseline": {
         "lines": {
           "covered": 26,
@@ -1447,7 +1365,6 @@
     },
     {
       "path": "src/modules/training/stepper-workout.schema.ts",
-      "gitBlobSha": "738877aa8876423cad9aedf50f2c354e0c82180c",
       "baseline": {
         "lines": {
           "covered": 6,
@@ -1473,7 +1390,6 @@
     },
     {
       "path": "src/modules/training/strength-historical-energy-v1.ts",
-      "gitBlobSha": "c262b947fc810efe5300f584f05c09ebc31aa9a6",
       "baseline": {
         "lines": {
           "covered": 39,
@@ -1499,7 +1415,6 @@
     },
     {
       "path": "src/modules/training/strength-publication-v1.ts",
-      "gitBlobSha": "d5b8eab214d63ac6ccd87ae02c1238100a073d36",
       "baseline": {
         "lines": {
           "covered": 13,
@@ -1525,7 +1440,6 @@
     },
     {
       "path": "src/modules/training/training-analytics-contracts.ts",
-      "gitBlobSha": "413f6eac58275303d71b9046f7869a85991959fb",
       "baseline": {
         "lines": {
           "covered": 8,
@@ -1551,7 +1465,6 @@
     },
     {
       "path": "src/modules/training/training-refresh-queue.ts",
-      "gitBlobSha": "c371b75ffff22ceeb00c5e0d7c594207bda928eb",
       "baseline": {
         "lines": {
           "covered": 33,
@@ -1577,7 +1490,6 @@
     },
     {
       "path": "src/modules/training/training-refresh-worker-context.ts",
-      "gitBlobSha": "8224cf9d3dfe2683eb1c612fcb048990b37fd822",
       "baseline": {
         "lines": {
           "covered": 11,
@@ -1603,7 +1515,6 @@
     },
     {
       "path": "src/modules/training/training-refresh-worker.ts",
-      "gitBlobSha": "d88af3d1faedc279ae69c54ee632d9c041cd654b",
       "baseline": {
         "lines": {
           "covered": 13,
@@ -1629,7 +1540,6 @@
     },
     {
       "path": "src/modules/training/training.constants.ts",
-      "gitBlobSha": "433f450f4cc18e7387361c2ee6e2cafbbceca565",
       "baseline": {
         "lines": {
           "covered": 17,
@@ -1655,7 +1565,6 @@
     },
     {
       "path": "src/modules/training/training.errors.ts",
-      "gitBlobSha": "c957b17357bf9d54b396331bcd991bdf40cb9c20",
       "baseline": {
         "lines": {
           "covered": 36,
@@ -1681,7 +1590,6 @@
     },
     {
       "path": "src/modules/training/training.http.ts",
-      "gitBlobSha": "113a3357176b80560db6d88ccc4b08a4e039952e",
       "baseline": {
         "lines": {
           "covered": 16,
@@ -1707,7 +1615,6 @@
     },
     {
       "path": "src/modules/training/training.matcher.ts",
-      "gitBlobSha": "c2950816857250c6216611c8fc2fbeedbe8d48c2",
       "baseline": {
         "lines": {
           "covered": 36,
@@ -1733,7 +1640,6 @@
     },
     {
       "path": "src/modules/training/training.program-reconcile.ts",
-      "gitBlobSha": "e84efe201862558fecba97d4c5c12b04315f196e",
       "baseline": {
         "lines": {
           "covered": 20,
@@ -1759,7 +1665,6 @@
     },
     {
       "path": "src/modules/training/training.repository.ts",
-      "gitBlobSha": "28e86ed06d166f0b2ac8823ade22b946f07100c9",
       "baseline": {
         "lines": {
           "covered": 391,
@@ -1785,7 +1690,6 @@
     },
     {
       "path": "src/modules/training/training.schema.ts",
-      "gitBlobSha": "82f1239f775b166a1595cf6ba4047247ab4ccd64",
       "baseline": {
         "lines": {
           "covered": 48,
@@ -1811,7 +1715,6 @@
     },
     {
       "path": "src/modules/training/training.service.ts",
-      "gitBlobSha": "93ff5f17f93dfb46c13cf16e895da895cafc2107",
       "baseline": {
         "lines": {
           "covered": 306,
@@ -1837,7 +1740,6 @@
     },
     {
       "path": "src/modules/training/training.set-validation.ts",
-      "gitBlobSha": "b3a05fb19262eac201bfbcdf1ed4cbff508cb1a3",
       "baseline": {
         "lines": {
           "covered": 29,
@@ -1863,7 +1765,6 @@
     },
     {
       "path": "src/modules/training/training.source-revision.ts",
-      "gitBlobSha": "e0be300d51b7c75ba302c8284880ece5e8493f9d",
       "baseline": {
         "lines": {
           "covered": 0,
@@ -1889,7 +1790,6 @@
     },
     {
       "path": "src/modules/training/training.tonnage.ts",
-      "gitBlobSha": "ee6554517d0917926901f412ade7fde0cc552dee",
       "baseline": {
         "lines": {
           "covered": 11,

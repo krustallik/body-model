@@ -496,6 +496,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "e84ce0ab584052bbeadee2a5a08f93d524d7ee23",
       "2e86ab1f4d9cd25db2b6e96f326151f9b7a25ae9",
       "5ce1ee1318989351c6685cb5500ad33b961c9978",
+      "b0f26cf89fc8c843b497d2f9440afb733cd55be0",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({

@@ -575,6 +575,7 @@ describe("maintenance-first deploy fail-closed checks", () => {
     const { record: oldRecord, recordPath } = seedCapturedPreviousRelease(fixture);
     const oldRecordBytes = readFileSync(recordPath, "utf8");
     const { appImageId, appContainerId } = replaceCurrentAppAndDatabase(fixture);
+    writeFileSync(path.join(fixture.root, "active-route"), "serving\n");
     const runId = "38002000010";
     const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
       BODYCAST_DEPLOY_SHA: fixture.advanceSha,
@@ -600,6 +601,8 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(refreshed.preDdlDatabaseCompatibilityDigest).not.toBe(oldRecord.preDdlDatabaseCompatibilityDigest);
     expect(readFileSync(path.join(fixture.root, `image-rollback-preflight-${runId}-1`), "utf8").trim()).toBe(appImageId);
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    expect(events.indexOf("live-route-mutation:maintenance")).toBeGreaterThan(-1);
+    expect(events.indexOf("live-route-mutation:maintenance")).toBeLessThan(events.indexOf("capture-and-pin-verified-before-stop"));
     expect(events.indexOf("capture-and-pin-verified-before-stop")).toBeGreaterThan(-1);
     expect(events.indexOf("compose-stop-app")).toBeGreaterThan(events.indexOf("capture-and-pin-verified-before-stop"));
     expect(events).toContain("writer-drain-topology-check");

@@ -232,9 +232,6 @@ refresh_pre_ddl_previous_release() {
   marker_status=1
   if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
   [[ "$marker_status" -eq 1 ]] || { echo "A release marker is present or unreadable; fresh capture refresh is blocked." >&2; return 1; }
-  bodycast_verify_exact_maintenance_route || return 1
-  maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
-  bodycast_probe_public_maintenance "$maintenance_marker" || return 1
   [[ -f "$record_path" && ! -L "$record_path" ]] || { echo "The existing previous-app capture is not a regular file." >&2; return 1; }
   old_meta="$(cat -- "$record_path" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)" || {
     echo "The existing previous-app capture is invalid and cannot be safely archived." >&2; return 1;
@@ -252,6 +249,19 @@ refresh_pre_ddl_previous_release() {
     echo "Docker app state inspection failed; capture refresh is blocked." >&2; return 1;
   fi
   [[ "$app_status" == "running|healthy" ]] || { echo "Capture refresh requires the current app to be running and healthy." >&2; return 1; }
+
+  if bodycast_verify_exact_maintenance_route; then
+    maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
+    bodycast_probe_public_maintenance "$maintenance_marker" || return 1
+  else
+    bodycast_verify_exact_serving_route || {
+      echo "Capture refresh requires an exact serving route or verified maintenance." >&2; return 1;
+    }
+    bodycast_assert_current_main_sha "$target_sha" || return 1
+    publish_maintenance_route || return 1
+    maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
+    bodycast_probe_public_maintenance "$maintenance_marker" || return 1
+  fi
 
   new_pin="bodycast-app:rollback-preflight-${current_run_id}-${current_attempt}"
   capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha" "$new_pin")" || {

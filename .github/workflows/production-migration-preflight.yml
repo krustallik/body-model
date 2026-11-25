@@ -828,7 +828,8 @@ jobs:
           MANIFEST_ID="$(printf '%s' "${14}" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" ]] || exit 2
+            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" \
+            || "$MANIFEST_ID" == "training-session-context-v1" ]] || exit 2
           export BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID="$MANIFEST_ID"
           if [[ -n "$RESUME_SOURCE_SHA" ]]; then
             [[ "$RESUME_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \

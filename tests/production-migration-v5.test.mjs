@@ -796,6 +796,7 @@ describe("V5 closed migration manifest and full pending set", () => {
       readFile(new URL("../scripts/production-db-data-fingerprint.sh", import.meta.url), "utf8"),
       readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8"),
     ]);
+    const normalizedPreflightWorkflow = preflightWorkflow.replaceAll("\r\n", "\n");
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations).toHaveLength(65);
     expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(9);
     expect(AUTH_MULTIUSER_MANIFEST.migrationOriginSha).toBe("0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
@@ -852,6 +853,17 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
     expect(preflightWorkflow).toContain("auth-multiuser-v1");
     expect(preflightWorkflow).toContain("training-session-context-v1");
+    const maintenanceStepStart = normalizedPreflightWorkflow.indexOf("- name: Enter maintenance and drain the old app before backup");
+    const maintenanceStepEnd = normalizedPreflightWorkflow.indexOf("\n      - name:", maintenanceStepStart);
+    expect(maintenanceStepStart).toBeGreaterThanOrEqual(0);
+    expect(maintenanceStepEnd).toBeGreaterThan(maintenanceStepStart);
+    const maintenanceStep = normalizedPreflightWorkflow.slice(maintenanceStepStart, maintenanceStepEnd);
+    const remoteMaintenanceScriptStart = maintenanceStep.indexOf('REMOTE_SCRIPT="$(cat <<\'REMOTE\'');
+    const remoteMaintenanceScriptEnd = maintenanceStep.indexOf("\n          REMOTE\n", remoteMaintenanceScriptStart);
+    expect(remoteMaintenanceScriptStart).toBeGreaterThanOrEqual(0);
+    expect(remoteMaintenanceScriptEnd).toBeGreaterThan(remoteMaintenanceScriptStart);
+    const remoteMaintenanceScript = maintenanceStep.slice(remoteMaintenanceScriptStart, remoteMaintenanceScriptEnd);
+    expect(remoteMaintenanceScript).toContain('|| "$MANIFEST_ID" == "training-session-context-v1"');
     expect(deployMigrateScript).toContain("training-session-context-v1");
     expect(preflightWorkflow).toContain("Auth resume requires an exact failed-restore source alone or the complete source/migration-failure/blocked-preflight tuple");
     const authResumeGuardStart = preflightWorkflow.indexOf('if [[ "$MANIFEST_ID" == "auth-multiuser-v1"');

@@ -3,6 +3,7 @@ import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
 import type { ComparatorClockFieldPolicy } from "../../scripts/refactor/comparator-core.mjs";
 import {
   aggregateSuiteCases,
+  assertAdditiveManifestExtension,
   canonicalizeJson,
   deriveDatabaseClockTransitions,
   diffJson,
@@ -39,7 +40,7 @@ type MutableComparatorManifest = {
   };
   unitSuites: Array<{ paths: string[] }>;
   observations: Array<{ path: string }>;
-  integrationSuites: Array<{ clockMode: string }>;
+  integrationSuites: Array<{ id: string; clockMode: string }>;
 };
 
 function cloneManifestForMutation(): MutableComparatorManifest {
@@ -130,9 +131,83 @@ describe("refactor comparator core", () => {
     expect(() => validateManifest(invalidClockMode)).toThrow(/clockMode must be frozen or native/);
 
     const frozenAuthClock = cloneManifestForMutation();
-    frozenAuthClock.integrationSuites.at(-1)!.clockMode = "frozen";
+    frozenAuthClock.integrationSuites.find(({ id }) => id === "postgres-auth-multiuser")!.clockMode = "frozen";
     expect(() => validateManifest(frozenAuthClock)).toThrow(/retain native endpoint time/);
 
+  });
+
+  it("allows only additive comparator corpus growth and retains every prior manifest invariant", () => {
+    const base = structuredClone(manifest);
+    const candidate = structuredClone(manifest);
+    const addedPath = "tests/new-frozen-case.test.ts";
+    candidate.unitSuites[0]!.paths.push(addedPath);
+    candidate.observations.push({
+      id: "NEW-CASE-01/exact-output",
+      path: addedPath,
+      testName: "captures a newly frozen output",
+    });
+    expect(assertAdditiveManifestExtension(base, candidate)).toMatchObject({
+      additive: true,
+      addedUnitPaths: [addedPath],
+      addedObservations: ["NEW-CASE-01/exact-output"],
+    });
+
+    const removedObservation = structuredClone(candidate);
+    removedObservation.observations = removedObservation.observations.filter(({ id }) => id !== "V7-01/state-contract");
+    const v7Group = removedObservation.caseGroups.find(({ id }) => id === "V7-01")!;
+    v7Group.observationIds = v7Group.observationIds.filter((id) => id !== "V7-01/state-contract");
+    expect(() => assertAdditiveManifestExtension(base, removedObservation)).toThrow(/changed or reordered frozen observations/);
+
+    const changedSafety = structuredClone(candidate);
+    changedSafety.postgres.before.port += 1;
+    expect(() => assertAdditiveManifestExtension(base, changedSafety)).toThrow(/exact allowlisted/);
+
+    const reorderedPaths = structuredClone(candidate);
+    reorderedPaths.unitSuites[0]!.paths.reverse();
+    expect(() => assertAdditiveManifestExtension(base, reorderedPaths)).toThrow(/changed or reordered frozen unit paths/);
+
+    const reorderedObservations = structuredClone(candidate);
+    reorderedObservations.observations.reverse();
+    expect(() => assertAdditiveManifestExtension(base, reorderedObservations)).toThrow(/changed or reordered frozen observations/);
+
+    const reorderedSuites = structuredClone(candidate);
+    reorderedSuites.integrationSuites.reverse();
+    expect(() => assertAdditiveManifestExtension(base, reorderedSuites)).toThrow(/changed or reordered frozen integration suite order/);
+
+    const reorderedGroups = structuredClone(candidate);
+    reorderedGroups.caseGroups.reverse();
+    expect(() => assertAdditiveManifestExtension(base, reorderedGroups)).toThrow(/changed or reordered frozen case groups/);
+
+    const legacyClockPolicy = cloneManifestForMutation();
+    legacyClockPolicy.postgres.databaseClockFields = {
+      PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      UnifiedPublicationBlock: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      Profile: { updatedAt: "local-timestamp" },
+    };
+    expect(validateManifest(legacyClockPolicy)).toBe(legacyClockPolicy);
+    expect(assertAdditiveManifestExtension(legacyClockPolicy, manifest)).toMatchObject({ additive: true });
+
+    const widenedClockPolicy = cloneManifestForMutation();
+    widenedClockPolicy.postgres.databaseClockFields.PhysiologyV7DailyResult = {
+      createdAt: "zoned-timestamp",
+      updatedAt: "zoned-timestamp",
+      computedAt: "zoned-timestamp",
+    };
+    expect(() => validateManifest(widenedClockPolicy)).toThrow(/exact reviewed clock-field policy/);
+
+    const previousClockPolicy = cloneManifestForMutation();
+    previousClockPolicy.postgres.databaseClockFields = {
+      PhysiologyV7Lifecycle: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      UnifiedPublicationBlock: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      PhysiologyV7DailyResult: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      PhysiologyV7ShadowDiagnostic: { createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" },
+      Profile: { updatedAt: "local-timestamp" },
+    };
+    expect(validateManifest(previousClockPolicy)).toBe(previousClockPolicy);
+    expect(assertAdditiveManifestExtension(previousClockPolicy, manifest)).toMatchObject({ additive: true });
+
+    expect(() => assertAdditiveManifestExtension(manifest, previousClockPolicy))
+      .toThrow(/exact reviewed database clock-field policy/);
   });
 
   it("accepts only the exact isolated before and after PostgreSQL identities", () => {

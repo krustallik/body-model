@@ -1,0 +1,41 @@
+{
+  "activeIssueCount": 4,
+  "activeBadgeText": "4 Issues",
+  "rawBadgeText": "34 Issues",
+  "exitingCountText": "3",
+  "countReconciliation": "The badge animates the previous count out while the current count enters; raw textContent can concatenate both counts (for example, 3 + 4). The active count is read from data-issues-count-enter/data-issues-count.",
+  "expectedWebglConsoleCount": 4,
+  "matchesExpectedWebglConsoleCount": true,
+  "issueSignatures": [
+    "THREE.WebGLRenderer: A WebGL context could not be created",
+    "THREE.WebGLRenderer: A WebGL context could not be created",
+    "THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.",
+    "THREE.WebGLRenderer: Error creating WebGL context."
+  ],
+  "webglConsoleSignatures": [
+    "THREE.WebGLRenderer: A WebGL context could not be created",
+    "THREE.WebGLRenderer: A WebGL context could not be created",
+    "THREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.",
+    "THREE.WebGLRenderer: Error creating WebGL context."
+  ],
+  "matchesWebglConsoleSignaturesOneToOne": true,
+  "entries": [
+    {
+      "ordinal": 1,
+      "text": "Console ErrorTHREE.WebGLRenderer: A WebGL context could not be created. Reason: \"disabled by enterprise policy or commandline switch\"src/components/body-map/body-map-experience.tsx (596:15) @ BodyMapExperience 594 | > 595 | {assetError ? <TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} /> : <SceneErrorBoundary fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}>> 596 | <Canvas | ^ 597 | frameloop=\"demand\" 598 | camera={{ fov: 35, near: 0.01, far: 100, position: [0, 0, 4.5] }} 599 | dpr={renderDpr}Call Stack 53Show 51 ignore-listed frame(s)BodyMapExperiencesrc/components/body-map/body-map-experience.tsx (596:15)BodyMapPagesrc\\app\\body-map\\page.tsx (19:7)"
+    },
+    {
+      "ordinal": 2,
+      "text": "Console ErrorTHREE.WebGLRenderer: A WebGL context could not be created. Reason: \"disabled by enterprise policy or commandline switch\"src/components/body-map/body-map-experience.tsx (596:15) @ BodyMapExperience 594 | > 595 | {assetError ? <TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} /> : <SceneErrorBoundary fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}>> 596 | <Canvas | ^ 597 | frameloop=\"demand\" 598 | camera={{ fov: 35, near: 0.01, far: 100, position: [0, 0, 4.5] }} 599 | dpr={renderDpr}Call Stack 53Show 51 ignore-listed frame(s)BodyMapExperiencesrc/components/body-map/body-map-experience.tsx (596:15)BodyMapPagesrc\\app\\body-map\\page.tsx (19:7)"
+    },
+    {
+      "ordinal": 3,
+      "text": "Console ErrorTHREE.WebGLRenderer: THREE.WebGLRenderer: Error creating WebGL context.src/components/body-map/body-map-experience.tsx (596:15) @ BodyMapExperience 594 | > 595 | {assetError ? <TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} /> : <SceneErrorBoundary fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}>> 596 | <Canvas | ^ 597 | frameloop=\"demand\" 598 | camera={{ fov: 35, near: 0.01, far: 100, position: [0, 0, 4.5] }} 599 | dpr={renderDpr}Call Stack 53Show 51 ignore-listed frame(s)BodyMapExperiencesrc/components/body-map/body-map-experience.tsx (596:15)BodyMapPagesrc\\app\\body-map\\page.tsx (19:7)"
+    },
+    {
+      "ordinal": 4,
+      "text": "Runtime ErrorTHREE.WebGLRenderer: Error creating WebGL context.src/components/body-map/body-map-experience.tsx (596:15) @ BodyMapExperience 594 | > 595 | {assetError ? <TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} /> : <SceneErrorBoundary fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} locale={locale} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}>> 596 | <Canvas | ^ 597 | frameloop=\"demand\" 598 | camera={{ fov: 35, near: 0.01, far: 100, position: [0, 0, 4.5] }} 599 | dpr={renderDpr}Call Stack 53Show 51 ignore-listed frame(s)BodyMapExperiencesrc/components/body-map/body-map-experience.tsx (596:15)BodyMapPagesrc\\app\\body-map\\page.tsx (19:7)"
+    }
+  ],
+  "rationale": "All captured issues are the expected isolated Chromium --disable-webgl Canvas creation errors handled by the SceneErrorBoundary; no unrelated development issue is accepted."
+}

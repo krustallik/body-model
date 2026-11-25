@@ -1,7 +1,24 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { extname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import manifest from "../fixtures/refactor-comparator/invariants-v1.json";
+import bodyMapUiBaseline from "../fixtures/refactor-comparator/body-map-ui-baseline-v1.json";
+
+function sha256File(path: string): string {
+  const bytes = readFileSync(resolve(process.cwd(), path));
+  const textExtensions = new Set([".css", ".js", ".json", ".md", ".mjs", ".mts", ".sql", ".test.ts", ".ts", ".tsx", ".txt"]);
+  if (textExtensions.has(extname(path).toLowerCase())) {
+    return createHash("sha256").update(bytes.toString("utf8").replaceAll("\r\n", "\n"), "utf8").digest("hex");
+  }
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function expectArtifactHash(path: string, expected: string, label: string): void {
+  const fullPath = resolve(process.cwd(), path);
+  expect(existsSync(fullPath), `${label}: ${path}`).toBe(true);
+  expect(sha256File(path), label).toBe(expected);
+}
 
 describe("frozen refactor comparator manifest", () => {
   it("pins one exact deterministic clock and random seed", () => {
@@ -31,7 +48,166 @@ describe("frozen refactor comparator manifest", () => {
     }
     for (const observation of manifest.observations) {
       expect(existsSync(resolve(process.cwd(), observation.path)), observation.path).toBe(true);
-      expect(manifest.unitSuites.some(({ paths }) => paths.includes(observation.path))).toBe(true);
+      if (observation.integrationSuiteId === undefined) {
+        expect(manifest.unitSuites.some(({ paths }) => paths.includes(observation.path))).toBe(true);
+      } else {
+        expect(manifest.integrationSuites.find(({ id }) => id === observation.integrationSuiteId)?.args)
+          .toContain(observation.path);
+      }
+    }
+    for (const suite of manifest.integrationSuites) {
+      for (const path of suite.args) expect(existsSync(resolve(process.cwd(), path)), path).toBe(true);
+    }
+  });
+
+  it("pins complete historical and UI case groups to executable suites and exact input hashes", () => {
+    const requiredGroups = [
+      "RAW-01", "TRAIN-HIST-01", "ENERGY-01", "TRAIN-02", "V7-01", "UNIFIED-01",
+      "TX-CONCURRENCY-01", "FORECAST-CALENDAR-01", "BODYMAP-UI-01", "BODYMAP-ANALYTICS-01",
+      "BODYMAP-PERFORMANCE-01", "BODYMAP-ENERGY-01", "BODYMAP-MAPPING-V3-01", "TRAIN-LOAD-ASSESS-01",
+      "COMPARATOR-CLOCK-01", "TRAIN-HISTORY-BOOTSTRAP-01", "COMPARATOR-CLOCK-02", "COMPARATOR-UNIFIED-DB-01",
+      "COMPARATOR-UNIFIED-CLEANUP-01",
+    ];
+    expect(manifest.caseGroups.map(({ id }) => id)).toEqual(requiredGroups);
+
+    const unitPaths = new Set(manifest.unitSuites.flatMap(({ paths }) => paths));
+    expect([...unitPaths].filter((path) => path.startsWith("tests/refactor-comparator/"))).toEqual([]);
+    const suiteIds = new Set(manifest.integrationSuites.map(({ id }) => id));
+    const observationIds = new Set(manifest.observations.map(({ id }) => id));
+    const latestInputHashes = new Map<string, string>();
+    const expectedGroupMembers: Record<string, string[]> = {
+      "ENERGY-01": ["tests/distance-ledger-v1.test.ts", "tests/workout-feed-coverage.test.ts"],
+      "TRAIN-02": [
+        "tests/model-occupational-activity.test.ts",
+        "tests/training-day-fact-currentness.test.ts",
+        "tests/session-set-time-and-strength-energy.test.ts",
+        "tests/strength-training-input-v7.test.ts",
+      ],
+      "BODYMAP-UI-01": ["tests/body-map-training-analytics-panel.test.tsx"],
+      "BODYMAP-ANALYTICS-01": ["tests/body-map-analytics-period-v1.test.ts"],
+      "BODYMAP-PERFORMANCE-01": ["tests/body-map-training-analytics-panel.test.tsx"],
+    };
+    for (const [groupId, paths] of Object.entries(expectedGroupMembers)) {
+      const group = manifest.caseGroups.find(({ id }) => id === groupId);
+      expect(group, groupId).toBeDefined();
+      for (const path of paths) expect(group?.unitPaths, `${groupId}:${path}`).toContain(path);
+    }
+    for (const group of manifest.caseGroups) {
+      for (const path of group.unitPaths) expect(unitPaths.has(path), `${group.id}:${path}`).toBe(true);
+      for (const id of group.integrationSuiteIds) expect(suiteIds.has(id), `${group.id}:${id}`).toBe(true);
+      for (const id of group.databaseStateSuiteIds) expect(group.integrationSuiteIds).toContain(id);
+      for (const id of group.observationIds) expect(observationIds.has(id), `${group.id}:${id}`).toBe(true);
+      for (const input of group.inputFiles) {
+        expect(existsSync(resolve(process.cwd(), input.path)), `${group.id}:${input.path}`).toBe(true);
+        expect(input.sha256, `${group.id}:${input.path}`).toMatch(/^[a-f0-9]{64}$/);
+        latestInputHashes.set(input.path, input.sha256);
+      }
+      if (group.uiEvidence) {
+        expect(sha256File(group.uiEvidence.path), `${group.id}:uiEvidence`).toBe(group.uiEvidence.sha256);
+        expect(group.id).toBe("BODYMAP-UI-01");
+      }
+      expect(group.unitPaths.length + group.integrationSuiteIds.length + group.observationIds.length
+        + group.databaseStateSuiteIds.length + Number(Boolean(group.uiEvidence))).toBeGreaterThan(0);
+    }
+    for (const [path, expected] of latestInputHashes) {
+      expect(sha256File(path), `latest frozen input ${path}`).toBe(expected);
+    }
+
+    const comparatorClock = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-CLOCK-01");
+    expect(comparatorClock?.integrationSuiteIds).toEqual([
+      "postgres-health-sync-contracts",
+      "postgres-physiology-v7-persistence",
+    ]);
+    expect(comparatorClock?.databaseStateSuiteIds).toEqual(comparatorClock?.integrationSuiteIds);
+    expect(comparatorClock?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "scripts/refactor/comparator-core.mjs",
+      "scripts/refactor/database-evidence.mjs",
+      "scripts/refactor/run-behavior-comparator.mjs",
+      "tests/integration/health-sync.integration.test.ts",
+      "tests/integration/physiology-v7-persistence.integration.test.ts",
+      "tests/refactor-comparator/comparator-core.test.ts",
+      "tests/refactor-comparator/database-evidence.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
+
+    const trainingHistoryBootstrap = manifest.caseGroups.find(({ id }) => id === "TRAIN-HISTORY-BOOTSTRAP-01");
+    expect(trainingHistoryBootstrap?.integrationSuiteIds).toEqual(["postgres-training-history-stage01"]);
+    expect(trainingHistoryBootstrap?.databaseStateSuiteIds).toEqual(["postgres-training-history-stage01"]);
+    expect(trainingHistoryBootstrap?.inputFiles.map(({ path }) => path)).toEqual([
+      "tests/integration/training-history-stage01.integration.test.ts",
+      "src/modules/training/testing/stage01-persistence.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]);
+
+    const comparatorClockTrainingHistory = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-CLOCK-02");
+    expect(comparatorClockTrainingHistory?.integrationSuiteIds).toEqual(["postgres-training-history-stage01"]);
+    expect(comparatorClockTrainingHistory?.databaseStateSuiteIds).toEqual(["postgres-training-history-stage01"]);
+    expect(comparatorClockTrainingHistory?.unitPaths).toEqual([]);
+    expect(comparatorClockTrainingHistory?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "tests/refactor-comparator/comparator-core.test.ts",
+      "tests/refactor-comparator/database-evidence.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
+    expect(comparatorClockTrainingHistory?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "scripts/refactor/comparator-core.mjs",
+      "scripts/refactor/database-evidence.mjs",
+      "tests/integration/training-history-stage01.integration.test.ts",
+      "tests/refactor-comparator/comparator-core.test.ts",
+      "tests/refactor-comparator/database-evidence.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
+
+    const comparatorUnifiedDatabase = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-UNIFIED-DB-01");
+    expect(comparatorUnifiedDatabase?.integrationSuiteIds).toEqual(["postgres-unified-physiology-state"]);
+    expect(comparatorUnifiedDatabase?.databaseStateSuiteIds).toEqual(["postgres-unified-physiology-state"]);
+    expect(comparatorUnifiedDatabase?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "src/modules/training/testing/require-isolated-database.ts",
+      "tests/integration/database-safety.test.ts",
+      "tests/integration/unified-experimental-physiology-state.integration.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
+
+    const comparatorUnifiedCleanup = manifest.caseGroups.find(({ id }) => id === "COMPARATOR-UNIFIED-CLEANUP-01");
+    expect(comparatorUnifiedCleanup?.integrationSuiteIds).toEqual(["postgres-unified-physiology-state"]);
+    expect(comparatorUnifiedCleanup?.databaseStateSuiteIds).toEqual(["postgres-unified-physiology-state"]);
+    expect(comparatorUnifiedCleanup?.inputFiles.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      "tests/integration/unified-experimental-physiology-state.integration.test.ts",
+      "tests/refactor-comparator/manifest.test.ts",
+    ]));
+  });
+
+  it("retains and verifies the exact BodyMap and Training UI characterization evidence", () => {
+    const runnerCommitSha = "381021b362a4c82f48d722b14d5fbf8e5f3508cc";
+    for (const runner of [bodyMapUiBaseline.bodyMap, bodyMapUiBaseline.training]) {
+      expect(runner.runnerCommitSha).toBe(runnerCommitSha);
+      expect(runner.runnerHashBasis).toBe("exact-git-blob-bytes");
+      expect(runner.runnerPath).toMatch(/^scripts\/qa\/[a-z0-9-]+\.ts$/);
+      expectArtifactHash(runner.runnerPath, runner.runnerSha256, `UI characterization runner ${runner.runnerPath}`);
+    }
+
+    const bodyMap = bodyMapUiBaseline.bodyMap;
+    expectArtifactHash(bodyMap.reportPath, bodyMap.reportSha256, "BodyMap QA report");
+    expectArtifactHash(bodyMap.issuesEvidencePath, bodyMap.issuesEvidenceSha256, "BodyMap Next/WebGL issue evidence");
+    expectArtifactHash(bodyMap.contractTestOutputPath, bodyMap.contractTestOutputSha256, "BodyMap contract test output");
+    expectArtifactHash(bodyMap.manifestPath, bodyMap.manifestSha256, "BodyMap public manifest");
+    expectArtifactHash(bodyMap.bodyParts3dGlbPath, bodyMap.bodyParts3dGlbSha256, "BodyMap model asset");
+    expectArtifactHash(bodyMap.profilePayloadPath, bodyMap.profilePayloadSha256, "BodyMap profile API payload");
+    for (const [file, sha256] of Object.entries(bodyMap.screenshotsSha256)) {
+      expectArtifactHash(`${bodyMap.artifactRoot}/${file}`, sha256, `BodyMap screenshot ${file}`);
+    }
+    expect(Object.keys(bodyMap.analyticsPayloadPaths).sort()).toEqual(Object.keys(bodyMap.analyticsPayloadSha256).sort());
+    for (const [window, path] of Object.entries(bodyMap.analyticsPayloadPaths)) {
+      expectArtifactHash(path, bodyMap.analyticsPayloadSha256[window as keyof typeof bodyMap.analyticsPayloadSha256], `BodyMap ${window} API payload`);
+    }
+
+    const training = bodyMapUiBaseline.training;
+    expectArtifactHash(training.reportPath, training.reportSha256, "Training QA report");
+    expectArtifactHash(training.interactionTracePath, training.interactionTraceSha256, "Training interaction trace");
+    for (const [file, sha256] of Object.entries(training.screenshotsSha256)) {
+      expectArtifactHash(`${training.artifactRoot}/${file}`, sha256, `Training screenshot ${file}`);
+    }
+    for (const [file, sha256] of Object.entries(training.fixtureSha256)) {
+      expectArtifactHash(`${training.artifactRoot}/${file}`, sha256, `Training API fixture ${file}`);
     }
   });
 

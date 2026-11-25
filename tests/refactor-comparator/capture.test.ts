@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Prisma } from "@prisma/client";
 import { toCanonicalEvidence } from "./capture";
 
 describe("refactor comparator evidence serialization", () => {
@@ -17,7 +18,7 @@ describe("refactor comparator evidence serialization", () => {
   });
 
   it("preserves special numeric, date, bigint, decimal, and byte values", () => {
-    const decimal = { constructor: { name: "Decimal" }, toString: () => "1.2300" };
+    const decimal = new Prisma.Decimal("1.2300");
     expect(toCanonicalEvidence({
       negativeZero: -0,
       notANumber: Number.NaN,
@@ -28,13 +29,18 @@ describe("refactor comparator evidence serialization", () => {
       bytes: new Uint8Array([1, 2, 3]),
     })).toEqual({
       bytes: { $type: "uint8array", value: "AQID" },
-      decimal: { $type: "decimal", value: "1.2300" },
+      decimal: { $type: "decimal", value: "1.23" },
       instant: { $type: "date", value: "2026-01-02T03:04:05.000Z" },
       integer: { $type: "bigint", value: "9007199254740993" },
       negativeZero: { $type: "number", value: "-0" },
       notANumber: { $type: "number", value: "NaN" },
       positiveInfinity: { $type: "number", value: "Infinity" },
     });
+  });
+
+  it("rejects objects that only imitate a Decimal constructor", () => {
+    const decimalLike = new (class Decimal { toString() { return "1.23"; } })();
+    expect(() => toCanonicalEvidence(decimalLike)).toThrow(/cannot serialize Decimal objects/);
   });
 
   it("does not conflate sparse array holes with null values", () => {

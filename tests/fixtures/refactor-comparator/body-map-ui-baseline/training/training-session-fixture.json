@@ -1,0 +1,58 @@
+{
+  "id": 42,
+  "status": "ACTIVE",
+  "entryMode": "LIVE",
+  "revision": 1,
+  "programId": 7,
+  "programName": "ТИСНИ",
+  "programVersionId": 11,
+  "programVersionNumber": 1,
+  "webStartedAt": "2026-09-17T16:00:00.000Z",
+  "webEndedAt": null,
+  "matchStatus": "PENDING",
+  "matchMethod": null,
+  "matchedAt": null,
+  "matchedWorkoutId": null,
+  "matchedWorkout": null,
+  "ordinaryTonnageKg": null,
+  "createdAt": "2026-09-17T16:00:00.000Z",
+  "updatedAt": "2026-09-17T16:00:00.000Z",
+  "exercises": [
+    {
+      "id": 1,
+      "sourceExerciseCatalogId": 3,
+      "stableKey": null,
+      "snapshotExerciseName": "Жим гантелей на похилій лаві вгору (30°)",
+      "order": 0,
+      "plannedSets": 4,
+      "resistanceType": "EXTERNAL_WEIGHT",
+      "origin": "PLANNED",
+      "muscleMappingSnapshot": null,
+      "sets": []
+    },
+    {
+      "id": 2,
+      "sourceExerciseCatalogId": 4,
+      "stableKey": null,
+      "snapshotExerciseName": "Розведення гантелей на горизонтальній лаві",
+      "order": 1,
+      "plannedSets": 3,
+      "resistanceType": "RESISTANCE_BAND",
+      "origin": "PLANNED",
+      "muscleMappingSnapshot": null,
+      "sets": []
+    },
+    {
+      "id": 3,
+      "sourceExerciseCatalogId": 5,
+      "stableKey": null,
+      "snapshotExerciseName": "Віджимання від ручок",
+      "order": 2,
+      "plannedSets": 3,
+      "resistanceType": "BODYWEIGHT",
+      "origin": "PLANNED",
+      "muscleMappingSnapshot": null,
+      "sets": []
+    }
+  ]
+}

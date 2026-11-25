@@ -46,8 +46,8 @@ function deferred() {
 }
 
 async function waitForProfileInvalidationLockWait(profileId: number): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  const deadline = process.hrtime.bigint() + BigInt(10_000_000_000);
+  while (process.hrtime.bigint() < deadline) {
     const rows = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
       SELECT EXISTS (
         SELECT 1

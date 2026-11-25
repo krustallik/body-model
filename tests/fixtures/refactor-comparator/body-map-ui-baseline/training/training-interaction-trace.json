@@ -1,0 +1,134 @@
+{
+  "apiRequests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/3/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/exercises/1/sets",
+      "status": 201,
+      "requestBodySha256": "0d39e9a4134db7d1e9e2e28f2e4acf7e6f294b60eeea42c9593b60e1f275718b",
+      "responseBodySha256": "7678a2bca73e7e9bffc006a82057a27a21adef2dc5c079f6be8684fb833feb46",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001"
+    }
+  ],
+  "interactionEvidence": {
+    "blankValidation": {
+      "addDisabled": true
+    },
+    "keyboardFocus": {
+      "nextButtonFocused": true,
+      "enterNext": true,
+      "arrowRight": true,
+      "arrowLeft": true,
+      "enterPrevious": true
+    },
+    "setCreate": {
+      "status": 201,
+      "requestCount": 1,
+      "payload": {
+        "reps": 12,
+        "comment": null,
+        "rir": null,
+        "weightKg": 30,
+        "bandNominalResistanceKg": null
+      },
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001"
+    },
+    "editCancel": {
+      "canceled": true,
+      "patchCount": 0
+    },
+    "emptyHistoryAndSets": {
+      "historyResponse": {
+        "entries": []
+      },
+      "initialSets": 0
+    }
+  }
+}

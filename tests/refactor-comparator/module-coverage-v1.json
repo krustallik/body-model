@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "baselineSha": "725f6f684d8693d174d940f673e01efd1646b518",
+  "baselineSha": "5194fcd00544f7ca94fca4fbac039f647cb26503",
   "measurement": {
     "provider": "v8",
     "selection": "related",
@@ -14,17 +14,17 @@
     "maxWorkers": 1,
     "minWorkers": 1,
     "vitestVersion": "3.2.7",
-    "reportSha256": "e7562bff23f17e386b42d6b2b97fc867db63f541bcaad679fc4fb47777d84897",
-    "logSha256": "91a2baba5f698a7303e693bdd7253e959197a00ebd6dc717c837adfba400dd1e",
-    "confirmationReportSha256": "e7562bff23f17e386b42d6b2b97fc867db63f541bcaad679fc4fb47777d84897",
-    "confirmationLogSha256": "2d4eb275c8bebeb6bd9899692ae0c190081282b9093340d3647f593d977df700",
+    "reportSha256": "4fd42406c50c20523f0f44620516fc1af12e1831ed5c003764b129cbae6056b3",
+    "logSha256": "f9aaa3666e8d710e71d78ff905ea59f05444dffa7d28207c02b6037439d62150",
+    "confirmationReportSha256": "4fd42406c50c20523f0f44620516fc1af12e1831ed5c003764b129cbae6056b3",
+    "confirmationLogSha256": "5f926d444aef7a4a42113c4c72765d93ca8db61e134e58c183990e1ba4ab2dfa",
     "repeatedRunCount": 2,
     "sourceFileCount": 71,
     "testFileCount": 172,
-    "testsPassed": 1579,
+    "testsPassed": 1580,
     "coverageProviderVersion": "3.2.7",
-    "baselineTestInputFingerprintSha256": "7dff5ecc36b573a50b4a7f67918144887d780a2623f438a1396d3570980856db",
-    "baselineTestSelectionFingerprintSha256": "0929793ea95d7b268f0edbc25260ccf7303abfb81cc9ec4c54872ffc7d13de21"
+    "baselineTestInputFingerprintSha256": "a2a28e16661b0a629c13ad9a6bd7c885c6e458806f8e11b383e61d1d8dd02bef",
+    "baselineTestSelectionFingerprintSha256": "9bead6a63efb28d8aa85cc7af8995d56f2d4b13d659b72ec53d8324481aa6d22"
   },
   "sourceRoots": [
     "src/app/body-map",
@@ -57,7 +57,7 @@
     },
     {
       "path": "src/modules/training/testing/stage01-persistence.ts",
-      "gitBlobSha": "90fe8d71f3f488693dcc6eb222a952e620c23ef1",
+      "gitBlobSha": "e1253756e0f634311196fd7cab017179c23a3571",
       "reason": "Test-support utility imported only by PostgreSQL integration tests; it is not a product/runtime module and remains covered by integration behavior checks rather than this production-source coverage gate."
     },
     {

@@ -38,11 +38,28 @@ const ALLOWLISTED_DATABASES = Object.freeze([
   REQUIRED_DATABASES.auth.after,
 ]);
 const PINNED_POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
-const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
+const LEGACY_DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
   PhysiologyV7Lifecycle: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
   Profile: Object.freeze({ updatedAt: "local-timestamp" }),
 });
+const PREVIOUS_DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
+  PhysiologyV7Lifecycle: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  UnifiedPublicationBlock: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  PhysiologyV7DailyResult: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  PhysiologyV7ShadowDiagnostic: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  Profile: Object.freeze({ updatedAt: "local-timestamp" }),
+});
+const DATABASE_CLOCK_FIELD_POLICY = Object.freeze({
+  ...PREVIOUS_DATABASE_CLOCK_FIELD_POLICY,
+  ExerciseCatalog: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+  TrainingSetCreateOperation: Object.freeze({ createdAt: "zoned-timestamp", updatedAt: "zoned-timestamp" }),
+});
+const REVIEWED_DATABASE_CLOCK_FIELD_POLICIES = Object.freeze([
+  LEGACY_DATABASE_CLOCK_FIELD_POLICY,
+  PREVIOUS_DATABASE_CLOCK_FIELD_POLICY,
+  DATABASE_CLOCK_FIELD_POLICY,
+]);
 
 function requireObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -52,6 +69,11 @@ function requireObject(value, label) {
 
 function requireUnique(values, label) {
   if (new Set(values).size !== values.length) throw new Error(`${label} contains duplicates.`);
+}
+
+function requireExactKeys(value, allowed, label) {
+  const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unexpected.length > 0) throw new Error(`${label} contains unsupported fields: ${unexpected.join(", ")}.`);
 }
 
 export function parseComparatorArgs(argv) {
@@ -157,8 +179,9 @@ export function validateManifest(value) {
       ].includes(kind)) throw new Error(`Unsupported database clock field kind for ${table}.${field}.`);
     }
   }
-  if (stableJson(database.databaseClockFields) !== stableJson(DATABASE_CLOCK_FIELD_POLICY)) {
-    throw new Error("Manifest databaseClockFields must match the exact reviewed clock-field policy.");
+  if (!REVIEWED_DATABASE_CLOCK_FIELD_POLICIES.some((policy) =>
+    stableJson(database.databaseClockFields) === stableJson(policy))) {
+    throw new Error("Manifest databaseClockFields must match an exact reviewed clock-field policy.");
   }
   requireObject(database.auth, "Manifest postgres.auth");
   for (const side of ["before", "after"]) {
@@ -179,6 +202,7 @@ export function validateManifest(value) {
   const unitPaths = [];
   for (const [index, suite] of value.unitSuites.entries()) {
     requireObject(suite, `Manifest unitSuites[${index}]`);
+    requireExactKeys(suite, ["id", "paths"], `Manifest unitSuites[${index}]`);
     if (typeof suite.id !== "string" || suite.id.length === 0) throw new Error(`Manifest unitSuites[${index}].id is invalid.`);
     if (!Array.isArray(suite.paths) || suite.paths.length === 0) throw new Error(`Manifest unitSuites[${index}].paths are required.`);
     suiteIds.push(suite.id);
@@ -190,11 +214,18 @@ export function validateManifest(value) {
   const observationIds = [];
   for (const [index, observation] of value.observations.entries()) {
     requireObject(observation, `Manifest observations[${index}]`);
+    requireExactKeys(observation, ["id", "path", "testName", "integrationSuiteId"], `Manifest observations[${index}]`);
     if (typeof observation.id !== "string" || !/^[A-Z0-9][A-Za-z0-9._/-]{1,180}$/.test(observation.id)) {
       throw new Error(`Manifest observations[${index}].id is invalid.`);
     }
     const source = validateRelativePath(observation.path, `Manifest observations[${index}].path`);
-    if (!unitPaths.includes(source)) throw new Error(`Observation ${observation.id} is not covered by a unit suite.`);
+    const integrationSuiteId = observation.integrationSuiteId;
+    if (integrationSuiteId !== undefined && (typeof integrationSuiteId !== "string" || integrationSuiteId.length === 0)) {
+      throw new Error(`Observation ${observation.id} has an invalid integrationSuiteId.`);
+    }
+    if (integrationSuiteId === undefined && !unitPaths.includes(source)) {
+      throw new Error(`Observation ${observation.id} is not covered by a unit suite.`);
+    }
     if (typeof observation.testName !== "string" || observation.testName.length === 0) {
       throw new Error(`Manifest observations[${index}].testName is invalid.`);
     }
@@ -204,9 +235,16 @@ export function validateManifest(value) {
 
   for (const [index, suite] of value.integrationSuites.entries()) {
     requireObject(suite, `Manifest integrationSuites[${index}]`);
+    requireExactKeys(suite, ["id", "args", "databaseProfile", "authEnvironment", "clockMode"], `Manifest integrationSuites[${index}]`);
     if (typeof suite.id !== "string" || suite.id.length === 0) throw new Error(`Manifest integrationSuites[${index}].id is invalid.`);
     if (!Array.isArray(suite.args) || suite.args.some((arg) => typeof arg !== "string" || arg.length === 0)) {
       throw new Error(`Manifest integrationSuites[${index}].args are invalid.`);
+    }
+    for (const [argIndex, arg] of suite.args.entries()) {
+      validateRelativePath(arg, `Manifest integrationSuites[${index}].args[${argIndex}]`);
+      if (!arg.startsWith("tests/integration/") || !arg.endsWith(".integration.test.ts")) {
+        throw new Error(`Manifest integrationSuites[${index}] may run only explicit integration test files.`);
+      }
     }
     if (suite.databaseProfile !== undefined && !["primary", "auth"].includes(suite.databaseProfile)) {
       throw new Error("Manifest integrationSuites[" + index + "].databaseProfile is invalid.");
@@ -228,7 +266,156 @@ export function validateManifest(value) {
   requireUnique(suiteIds, "Manifest suite IDs");
   const authSuites = value.integrationSuites.filter((suite) => suite.databaseProfile === "auth" && suite.authEnvironment === true);
   if (authSuites.length !== 1) throw new Error("Manifest must contain exactly one isolated Auth integration suite.");
+
+  const integrationById = new Map(value.integrationSuites.map((suite) => [suite.id, suite]));
+  for (const observation of value.observations) {
+    if (observation.integrationSuiteId === undefined) continue;
+    const suite = integrationById.get(observation.integrationSuiteId);
+    if (!suite || !suite.args.includes(observation.path)) {
+      throw new Error(`Integration observation ${observation.id} is not covered by its declared suite.`);
+    }
+  }
+
+  if (value.caseGroups !== undefined) {
+    if (!Array.isArray(value.caseGroups) || value.caseGroups.length === 0) {
+      throw new Error("Manifest caseGroups must be a non-empty array when present.");
+    }
+    const groupIds = [];
+    for (const [index, group] of value.caseGroups.entries()) {
+      requireObject(group, `Manifest caseGroups[${index}]`);
+      requireExactKeys(group, ["id", "unitPaths", "integrationSuiteIds", "observationIds", "databaseStateSuiteIds", "inputFiles", "uiEvidence"], `Manifest caseGroups[${index}]`);
+      if (typeof group.id !== "string" || !/^[A-Z0-9][A-Za-z0-9._/-]{1,120}$/.test(group.id)) {
+        throw new Error(`Manifest caseGroups[${index}].id is invalid.`);
+      }
+      groupIds.push(group.id);
+      for (const key of ["unitPaths", "integrationSuiteIds", "observationIds", "databaseStateSuiteIds", "inputFiles"]) {
+        if (!Array.isArray(group[key])) throw new Error(`Manifest case group ${group.id}.${key} must be an array.`);
+      }
+      if (group.unitPaths.length === 0 && group.integrationSuiteIds.length === 0
+        && group.observationIds.length === 0 && group.databaseStateSuiteIds.length === 0
+        && group.uiEvidence === undefined) {
+        throw new Error(`Manifest case group ${group.id} has no executable or frozen output evidence.`);
+      }
+      for (const file of group.unitPaths) {
+        validateRelativePath(file, `Manifest case group ${group.id} unit path`);
+        if (!unitPaths.includes(file)) throw new Error(`Manifest case group ${group.id} references an unfrozen unit path.`);
+      }
+      for (const suiteId of group.integrationSuiteIds) {
+        if (!integrationById.has(suiteId)) throw new Error(`Manifest case group ${group.id} references an unknown integration suite.`);
+      }
+      for (const suiteId of group.databaseStateSuiteIds) {
+        if (!integrationById.has(suiteId) || !group.integrationSuiteIds.includes(suiteId)) {
+          throw new Error(`Manifest case group ${group.id} database projection is not backed by an included integration suite.`);
+        }
+      }
+      for (const observationId of group.observationIds) {
+        if (!observationIds.includes(observationId)) throw new Error(`Manifest case group ${group.id} references an unknown observation.`);
+      }
+      if (group.inputFiles.length === 0) throw new Error(`Manifest case group ${group.id} must pin at least one input fixture or frozen evidence file.`);
+      for (const [fileIndex, input] of group.inputFiles.entries()) {
+        requireObject(input, `Manifest case group ${group.id}.inputFiles[${fileIndex}]`);
+        requireExactKeys(input, ["path", "sha256"], `Manifest case group ${group.id}.inputFiles[${fileIndex}]`);
+        validateRelativePath(input.path, `Manifest case group ${group.id} input path`);
+        if (typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+          throw new Error(`Manifest case group ${group.id} input SHA-256 is invalid.`);
+        }
+      }
+      if (group.uiEvidence !== undefined) {
+        requireObject(group.uiEvidence, `Manifest case group ${group.id}.uiEvidence`);
+        requireExactKeys(group.uiEvidence, ["path", "sha256"], `Manifest case group ${group.id}.uiEvidence`);
+        validateRelativePath(group.uiEvidence.path, `Manifest case group ${group.id} UI evidence path`);
+        if (typeof group.uiEvidence.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(group.uiEvidence.sha256)) {
+          throw new Error(`Manifest case group ${group.id} UI evidence SHA-256 is invalid.`);
+        }
+      }
+    }
+    requireUnique(groupIds, "Manifest case group IDs");
+  }
   return value;
+}
+
+function assertPrefixExtension(before, after, label) {
+  if (!Array.isArray(before) || !Array.isArray(after) || after.length < before.length
+    || stableJson(after.slice(0, before.length)) !== stableJson(before)) {
+    throw new Error(`Comparator manifest extension changed or reordered frozen ${label}.`);
+  }
+}
+
+/**
+ * A stage may enlarge the frozen corpus, but may not weaken or rewrite any
+ * contract already accepted on its base. The candidate harness is then
+ * overlaid byte-for-byte onto both source trees for the comparison.
+ */
+export function assertAdditiveManifestExtension(baseValue, candidateValue) {
+  const base = validateManifest(baseValue);
+  const candidate = validateManifest(candidateValue);
+  const stableFields = (value) => {
+    const { unitSuites: _unitSuites, integrationSuites: _integrationSuites, observations: _observations,
+      caseGroups: _caseGroups, ...stable } = value;
+    const { databaseClockFields: _databaseClockFields, ...stablePostgres } = stable.postgres;
+    return { ...stable, postgres: stablePostgres };
+  };
+  if (stableJson(stableFields(base)) !== stableJson(stableFields(candidate))) {
+    throw new Error("Comparator manifest extension changed a frozen runtime, fixture, database, schema, or safety contract.");
+  }
+  const baseClockPolicy = stableJson(base.postgres.databaseClockFields);
+  const candidateClockPolicy = stableJson(candidate.postgres.databaseClockFields);
+  const exactClockPolicyExtension = [
+    [LEGACY_DATABASE_CLOCK_FIELD_POLICY, PREVIOUS_DATABASE_CLOCK_FIELD_POLICY],
+    [PREVIOUS_DATABASE_CLOCK_FIELD_POLICY, DATABASE_CLOCK_FIELD_POLICY],
+    [LEGACY_DATABASE_CLOCK_FIELD_POLICY, DATABASE_CLOCK_FIELD_POLICY],
+  ].some(([basePolicy, candidatePolicy]) =>
+    baseClockPolicy === stableJson(basePolicy) && candidateClockPolicy === stableJson(candidatePolicy));
+  if (baseClockPolicy !== candidateClockPolicy && !exactClockPolicyExtension) {
+    throw new Error("Comparator manifest extension changed the exact reviewed database clock-field policy.");
+  }
+  assertPrefixExtension(base.unitSuites.map(({ id }) => id), candidate.unitSuites.map(({ id }) => id), "unit suite order");
+  assertPrefixExtension(base.integrationSuites.map(({ id }) => id), candidate.integrationSuites.map(({ id }) => id), "integration suite order");
+  assertPrefixExtension(base.observations, candidate.observations, "observations");
+  const baseGroups = base.caseGroups ?? [];
+  const candidateGroups = candidate.caseGroups ?? [];
+  assertPrefixExtension(baseGroups, candidateGroups, "case groups");
+
+  const candidateUnits = new Map(candidate.unitSuites.map((suite) => [suite.id, suite]));
+  for (const suite of base.unitSuites) {
+    const extended = candidateUnits.get(suite.id);
+    if (!extended) throw new Error(`Comparator manifest extension removed frozen unit suite ${suite.id}.`);
+    const { paths: _paths, ...beforeMetadata } = suite;
+    const { paths: _extendedPaths, ...afterMetadata } = extended;
+    if (stableJson(beforeMetadata) !== stableJson(afterMetadata)) {
+      throw new Error(`Comparator manifest extension changed frozen unit suite metadata for ${suite.id}.`);
+    }
+    assertPrefixExtension(suite.paths, extended.paths, `unit paths in ${suite.id}`);
+  }
+
+  const candidateIntegrations = new Map(candidate.integrationSuites.map((suite) => [suite.id, suite]));
+  for (const suite of base.integrationSuites) {
+    const extended = candidateIntegrations.get(suite.id);
+    if (!extended) throw new Error(`Comparator manifest extension removed frozen integration suite ${suite.id}.`);
+    const { args: _args, ...beforeMetadata } = suite;
+    const { args: _extendedArgs, ...afterMetadata } = extended;
+    if (stableJson(beforeMetadata) !== stableJson(afterMetadata)) {
+      throw new Error(`Comparator manifest extension changed frozen integration suite metadata for ${suite.id}.`);
+    }
+    assertPrefixExtension(suite.args, extended.args, `integration args in ${suite.id}`);
+  }
+
+  const baseObservationIds = new Set(base.observations.map(({ id }) => id));
+  return {
+    additive: stableJson(base) !== stableJson(candidate),
+    addedUnitSuites: candidate.unitSuites.filter(({ id }) => !base.unitSuites.some((item) => item.id === id)).map(({ id }) => id),
+    addedIntegrationSuites: candidate.integrationSuites.filter(({ id }) => !base.integrationSuites.some((item) => item.id === id)).map(({ id }) => id),
+    addedUnitPaths: candidate.unitSuites.flatMap(({ id, paths }) => {
+      const old = base.unitSuites.find((item) => item.id === id)?.paths ?? [];
+      return paths.filter((item) => !old.includes(item));
+    }),
+    addedIntegrationArgs: candidate.integrationSuites.flatMap(({ id, args }) => {
+      const old = base.integrationSuites.find((item) => item.id === id)?.args ?? [];
+      return args.filter((item) => !old.includes(item));
+    }),
+    addedObservations: candidate.observations.filter(({ id }) => !baseObservationIds.has(id)).map(({ id }) => id),
+    addedCaseGroups: candidateGroups.filter(({ id }) => !baseGroups.some((item) => item.id === id)).map(({ id }) => id),
+  };
 }
 
 export function validateComparatorDatabaseUrl(databaseUrl, expected, mode) {
@@ -350,10 +537,93 @@ export function diffJson(before, after, currentPath = "$") {
   return differences;
 }
 
+const CLOCK_COLUMN_METADATA_KEYS = Object.freeze(["table", "field", "dataType", "datetimePrecision", "nullable"]);
+
+function expectedClockColumnMetadata(table, field, kind) {
+  if (kind === "zoned-timestamp") {
+    return { table, field, dataType: "timestamp with time zone", datetimePrecision: 3, nullable: false };
+  }
+  if (kind === "local-timestamp") {
+    return { table, field, dataType: "timestamp without time zone", datetimePrecision: 3, nullable: false };
+  }
+  if (kind === "epoch-seconds") {
+    return { table, field, dataType: "integer", datetimePrecision: null, nullable: false };
+  }
+  throw new Error("Unsupported persisted clock field kind for " + table + "." + field + ".");
+}
+
+export function validateDatabaseClockColumnMetadata(metadata, databaseClockFields) {
+  if (!Array.isArray(metadata)) throw new Error("Persisted state is missing database clock column metadata.");
+  requireObject(databaseClockFields, "Persisted clock field policy");
+  const expected = Object.entries(databaseClockFields).flatMap(([table, fields]) =>
+    Object.entries(fields).map(([field, kind]) => expectedClockColumnMetadata(table, field, kind)))
+    .sort((left, right) => {
+      const leftKey = left.table + "\0" + left.field;
+      const rightKey = right.table + "\0" + right.field;
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+  const actual = metadata.map((item, index) => {
+    requireObject(item, "Database clock column metadata " + index);
+    requireExactKeys(item, CLOCK_COLUMN_METADATA_KEYS, "Database clock column metadata " + index);
+    if (item.nullable !== true && item.nullable !== false && item.nullable !== "YES" && item.nullable !== "NO") {
+      throw new Error("PostgreSQL clock column nullability must be the exact YES/NO catalog value.");
+    }
+    return { ...item, nullable: item.nullable === true || item.nullable === "YES" };
+  });
+  if (stableJson(actual) !== stableJson(expected)) {
+    throw new Error("PostgreSQL clock column type, precision, or nullability differs from the exact reviewed policy.");
+  }
+  return actual;
+}
+
+function parseUtcTimestampMicroseconds(value, kind, label, { anchor = false } = {}) {
+  const match = typeof value === "string"
+    ? value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|\+00:00)?$/)
+    : null;
+  const validSuffix = anchor ? match?.[8] === "Z"
+    : kind === "zoned-timestamp" ? match?.[8] === "Z" || match?.[8] === "+00:00"
+      : kind === "local-timestamp" ? match?.[8] === undefined
+        : false;
+  const fraction = match?.[7] ?? "";
+  if (!match || !validSuffix || (anchor ? fraction.length !== 6 : fraction.length > 3)) {
+    throw new Error(label + " must have the reviewed UTC timestamp format and precision.");
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fractionMicros = BigInt(fraction.padEnd(6, "0"));
+  const milliseconds = Number(fractionMicros / 1000n);
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, milliseconds);
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31
+    || hour > 23 || minute > 59 || second > 59
+    || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day
+    || date.getUTCHours() !== hour || date.getUTCMinutes() !== minute || date.getUTCSeconds() !== second
+    || date.getUTCMilliseconds() !== milliseconds) {
+    throw new Error(label + " must be a valid UTC timestamp.");
+  }
+  return BigInt(date.getTime()) * 1000n + (fractionMicros % 1000n);
+}
+
+function clockValueMicroseconds(value, kind, label) {
+  if (kind === "epoch-seconds") {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(label + " must be a non-negative integer epoch timestamp.");
+    }
+    return BigInt(value) * 1_000_000n;
+  }
+  return parseUtcTimestampMicroseconds(value, kind, label);
+}
+
 export function projectPersistedStateForComparison(persisted, databaseClockFields) {
   requireObject(persisted, "Persisted database state");
   requireObject(persisted.tables, "Persisted database tables");
   requireObject(databaseClockFields, "Persisted clock field policy");
+  validateDatabaseClockColumnMetadata(persisted.clockColumnMetadata, databaseClockFields);
   const comparable = structuredClone(persisted);
   const clockEvidence = [];
 
@@ -378,32 +648,22 @@ export function projectPersistedStateForComparison(persisted, databaseClockField
       }
 
       const timestampValues = {};
+      const parsedTimestampValues = {};
       for (const [field, kind] of Object.entries(fields)) {
         const value = row[field];
-        if (kind === "zoned-timestamp") {
-          if (typeof value !== "string"
-            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-            || !Number.isFinite(Date.parse(value))) {
-            throw new Error(`Persisted ${tableName}.${field} must be a valid zoned timestamp.`);
-          }
-        } else if (kind === "local-timestamp") {
-          if (typeof value !== "string"
-            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
-            || !Number.isFinite(Date.parse(value))) {
-            throw new Error(`Persisted ${tableName}.${field} must be a valid local timestamp.`);
-          }
-        } else if (kind === "epoch-seconds") {
-          if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-            throw new Error(`Persisted ${tableName}.${field} must be a non-negative integer epoch timestamp.`);
-          }
-        } else {
+        if (!["zoned-timestamp", "local-timestamp", "epoch-seconds"].includes(kind)) {
           throw new Error(`Unsupported persisted clock field kind for ${tableName}.${field}.`);
         }
+        parsedTimestampValues[field] = clockValueMicroseconds(
+          value,
+          kind,
+          "Persisted " + tableName + "." + field,
+        );
         timestampValues[field] = value;
         delete row[field];
       }
-      if (typeof timestampValues.createdAt === "string" && typeof timestampValues.updatedAt === "string"
-        && Date.parse(timestampValues.createdAt) > Date.parse(timestampValues.updatedAt)) {
+      if (parsedTimestampValues.createdAt !== undefined && parsedTimestampValues.updatedAt !== undefined
+        && parsedTimestampValues.createdAt > parsedTimestampValues.updatedAt) {
         throw new Error(`Persisted ${tableName} createdAt must not be after updatedAt.`);
       }
       clockEvidence.push({ table: tableName, primaryKey, fields: timestampValues });
@@ -453,6 +713,170 @@ export function deriveDatabaseClockTransitions(initialEvidence, finalEvidence, d
     }
   }
   return result;
+}
+
+function databaseClockEvidenceMap(evidence, label) {
+  if (!Array.isArray(evidence)) throw new TypeError(label + " must be an array.");
+  const result = new Map();
+  for (const entry of evidence) {
+    if (!entry || typeof entry.table !== "string" || !entry.primaryKey
+      || typeof entry.primaryKey !== "object" || Array.isArray(entry.primaryKey)
+      || !entry.fields || typeof entry.fields !== "object" || Array.isArray(entry.fields)) {
+      throw new Error(label + " contains malformed database clock evidence.");
+    }
+    const key = entry.table + "\0" + stableJson(entry.primaryKey);
+    if (result.has(key)) throw new Error(label + " contains duplicate primary keys.");
+    result.set(key, entry);
+  }
+  return result;
+}
+
+function unchangedDatabaseClockValues(finalEvidence, transitions) {
+  const finalMap = databaseClockEvidenceMap(finalEvidence, "Final database clock evidence");
+  const values = [];
+  for (const transition of transitions) {
+    const rowKey = transition.table + "\0" + stableJson(transition.primaryKey);
+    const row = finalMap.get(rowKey);
+    for (const [field, status] of Object.entries(transition.fields)) {
+      if (status !== "unchanged") continue;
+      if (!row || !Object.hasOwn(row.fields, field)) {
+        throw new Error("Unchanged database clock field is missing from final evidence.");
+      }
+      values.push({
+        table: transition.table,
+        primaryKey: transition.primaryKey,
+        field,
+        value: row.fields[field],
+      });
+    }
+  }
+  return values.sort((left, right) => {
+    const leftKey = stableJson([left.table, left.primaryKey, left.field]);
+    const rightKey = stableJson([right.table, right.primaryKey, right.field]);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
+function changedDatabaseClockEvents(side, sideName, databaseClockFields, transitions) {
+  const startMicros = parseUtcTimestampMicroseconds(
+    side.startAnchor,
+    "zoned-timestamp",
+    sideName + " operation start anchor",
+    { anchor: true },
+  );
+  const endMicros = parseUtcTimestampMicroseconds(
+    side.endAnchor,
+    "zoned-timestamp",
+    sideName + " operation end anchor",
+    { anchor: true },
+  );
+  if (startMicros > endMicros) throw new Error(sideName + " operation clock window is inverted.");
+  const finalMap = databaseClockEvidenceMap(side.finalEvidence, sideName + " final database clock evidence");
+  const events = [];
+
+  for (const transition of transitions) {
+    const rowKey = transition.table + "\0" + stableJson(transition.primaryKey);
+    const finalRow = finalMap.get(rowKey);
+    const policy = databaseClockFields[transition.table];
+    if (!policy) throw new Error(sideName + " clock transition references an unconfigured table.");
+    for (const [field, status] of Object.entries(transition.fields)) {
+      if (!Object.hasOwn(policy, field) || !["created", "deleted", "unchanged", "updated"].includes(status)) {
+        throw new Error(sideName + " clock transition contains an unconfigured field or status.");
+      }
+      if (status !== "created" && status !== "updated") continue;
+      if (!finalRow || !Object.hasOwn(finalRow.fields, field)) {
+        throw new Error(sideName + " changed database clock field is missing from final evidence.");
+      }
+      const value = finalRow.fields[field];
+      const valueMicros = clockValueMicroseconds(
+        value,
+        policy[field],
+        sideName + " persisted " + transition.table + "." + field,
+      );
+      if (valueMicros < startMicros || valueMicros > endMicros) {
+        throw new Error(sideName + " changed database clock field is outside its recorded operation window.");
+      }
+      events.push({
+        eventKey: stableJson([transition.table, transition.primaryKey, field]),
+        table: transition.table,
+        primaryKey: transition.primaryKey,
+        field,
+        rawValue: value,
+        valueMicros,
+      });
+    }
+  }
+
+  const ordered = [...events].sort((left, right) => {
+    if (left.valueMicros !== right.valueMicros) return left.valueMicros < right.valueMicros ? -1 : 1;
+    return left.eventKey < right.eventKey ? -1 : left.eventKey > right.eventKey ? 1 : 0;
+  });
+  let orderGroup = -1;
+  let previousValue;
+  for (const event of ordered) {
+    if (previousValue === undefined || event.valueMicros !== previousValue) orderGroup += 1;
+    event.orderGroup = orderGroup;
+    previousValue = event.valueMicros;
+  }
+  return {
+    startAnchor: side.startAnchor,
+    endAnchor: side.endAnchor,
+    anchorPrecision: "microsecond",
+    events: events.map((event) => ({
+      eventKey: event.eventKey,
+      table: event.table,
+      primaryKey: event.primaryKey,
+      field: event.field,
+      rawValue: event.rawValue,
+      offsetFromStartMicroseconds: (event.valueMicros - startMicros).toString(),
+      offsetFromEndMicroseconds: (event.valueMicros - endMicros).toString(),
+      orderGroup: event.orderGroup,
+    })).sort((left, right) => left.eventKey < right.eventKey ? -1 : left.eventKey > right.eventKey ? 1 : 0),
+  };
+}
+
+export function compareDatabaseClockOperationWindows({ before, after, databaseClockFields }) {
+  requireObject(before, "Before database clock comparison input");
+  requireObject(after, "After database clock comparison input");
+  requireObject(databaseClockFields, "Database clock comparison policy");
+  const beforeTransitions = deriveDatabaseClockTransitions(
+    before.initialEvidence,
+    before.finalEvidence,
+    databaseClockFields,
+  );
+  const afterTransitions = deriveDatabaseClockTransitions(
+    after.initialEvidence,
+    after.finalEvidence,
+    databaseClockFields,
+  );
+  const beforeWindow = changedDatabaseClockEvents(before, "Before", databaseClockFields, beforeTransitions);
+  const afterWindow = changedDatabaseClockEvents(after, "After", databaseClockFields, afterTransitions);
+  const initialValueDifferences = diffJson(before.initialEvidence, after.initialEvidence, "$.initialClockEvidence");
+  const transitionDifferences = diffJson(beforeTransitions, afterTransitions, "$.transitions");
+  const unchangedValueDifferences = diffJson(
+    unchangedDatabaseClockValues(before.finalEvidence, beforeTransitions),
+    unchangedDatabaseClockValues(after.finalEvidence, afterTransitions),
+    "$.unchangedClockValues",
+  );
+  const beforeOrder = beforeWindow.events.map(({ eventKey, orderGroup }) => ({ eventKey, orderGroup }));
+  const afterOrder = afterWindow.events.map(({ eventKey, orderGroup }) => ({ eventKey, orderGroup }));
+  const eventOrderingDifferences = diffJson(beforeOrder, afterOrder, "$.eventOrderingAndTies");
+  const differences = [
+    ...initialValueDifferences,
+    ...transitionDifferences,
+    ...unchangedValueDifferences,
+    ...eventOrderingDifferences,
+  ];
+  return {
+    equal: differences.length === 0,
+    differences,
+    initialValueDifferences,
+    transitionDifferences,
+    unchangedValueDifferences,
+    eventOrderingDifferences,
+    transitions: { before: beforeTransitions, after: afterTransitions },
+    evidence: { before: beforeWindow, after: afterWindow },
+  };
 }
 
 export function sortObservationsByCaseId(observations) {

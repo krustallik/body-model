@@ -12,7 +12,7 @@ const { TrainingService } = await import("@/modules/training/training.service");
 const { enqueueTrainingSourceChangeInTransaction } = await import("@/modules/training/training-refresh-queue");
 const { RESISTANCE } = await import("@/modules/training/training.constants");
 const { sha256Canonical } = await import("@/modules/training/persisted-load-accounting-v1");
-const profileId = 1;
+const profileId = 991_401;
 const repository = new TrainingRepository(prisma);
 const failedPublication = vi.fn(async () => { throw new Error("injected dependent refresh failure"); });
 const training = new TrainingService(prisma, repository, failedPublication);
@@ -22,39 +22,46 @@ let profileCreated = false;
 describe("Training post-commit publication recovery on isolated PostgreSQL", () => {
   beforeAll(async () => {
     await prisma.$connect();
-    const databaseIdentity = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()`;
+    const databaseIdentity = await prisma.$queryRaw<Array<{ currentDatabase: string; currentUser: string }>>`
+      SELECT current_database() AS "currentDatabase", current_user AS "currentUser"
+    `;
     const expectedDatabase = decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
-    if (databaseIdentity[0]?.current_database !== expectedDatabase) {
+    const expectedRole = decodeURIComponent(new URL(databaseUrl).username);
+    if (databaseIdentity[0]?.currentDatabase !== expectedDatabase || databaseIdentity[0]?.currentUser !== expectedRole) {
       throw new Error("Application Prisma singleton is not connected to the guarded test database.");
     }
     const existingProfile = await prisma.profile.findUnique({ where: { id: profileId }, select: { id: true } });
-    if (!existingProfile) {
-      await prisma.profile.create({
-        data: {
-          id: profileId,
-          sex: "female",
-          dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
-          heightCm: 170,
-        },
-      });
-      profileCreated = true;
-    } else if (await prisma.strengthDiarySession.count({ where: { profileId, status: "ACTIVE" } }) > 0) {
-      throw new Error("The isolated test database has an active profile session; refusing to mutate it.");
-    }
+    if (existingProfile) throw new Error("Reserved post-commit fixture profile ID is occupied; refusing to reuse it.");
+    await prisma.profile.create({
+      data: {
+        id: profileId,
+        sex: "female",
+        dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
+        heightCm: 170,
+      },
+    });
+    profileCreated = true;
   });
 
   afterAll(async () => {
-    if (sessionId !== null) {
-      await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId, profileId } });
+    try {
+      if (profileCreated) {
+        await prisma.$transaction(async (tx) => {
+          if (sessionId !== null) {
+            await tx.strengthDiarySession.deleteMany({ where: { id: sessionId, profileId } });
+          }
+          await tx.trainingRefreshJob.deleteMany({ where: { profileId } });
+          await tx.trainingSourceChange.deleteMany({ where: { profileId } });
+          await tx.trainingSetCreateOperation.deleteMany({ where: { profileId } });
+          await tx.unifiedPublicationBlock.deleteMany({ where: { profileId } });
+          await tx.physiologyV7DailyResult.deleteMany({ where: { profileId } });
+          await tx.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+          await tx.profile.deleteMany({ where: { id: profileId } });
+        });
+      }
+    } finally {
+      await prisma.$disconnect();
     }
-    if (profileCreated) {
-      await prisma.$transaction([
-        prisma.trainingSourceChange.deleteMany({ where: { profileId } }),
-        prisma.trainingSetCreateOperation.deleteMany({ where: { profileId } }),
-        prisma.profile.deleteMany({ where: { id: profileId } }),
-      ]);
-    }
-    await prisma.$disconnect();
   });
 
   it("commits finish and completed-set edits while persisting durable dependent work", async () => {

@@ -1,0 +1,857 @@
+{
+  "status": "PASS",
+  "baseSha": "725f6f684d8693d174d940f673e01efd1646b518",
+  "runnerSha256": "b3d2743f60b32f714d0fc287edc1b36473de96d64d73d2eeca7d40f62ec9de34",
+  "fixtureSource": "independent deterministic synthetic fixture embedded in this QA runner; not imported from a unit-test fixture",
+  "fixtureBuilder": "scripts/qa/training-session-viewer-v1.ts :: buildSession()",
+  "fixtureInputSha256": "9bf382a566fc1d7bb59c7d34f24b349a1879c620604b8a987d17ec365071146e",
+  "appSourceSha256": {
+    "sessionClient": "3939d7f8846a2594047fc4ac03a5b786d40ba3c58fe4a7bf9aa65387b305f437",
+    "exerciseWorkspace": "986c818b39d5ff3efc4cc0a12f3bd0331b8111b7cf6130b799d79138b8efb727",
+    "exercisePane": "c73ebd83f4a49ea7a108d5fe70c2735c1727c72af63a6bf83d893d7be0085f15"
+  },
+  "route": "http://127.0.0.1:3002/training/sessions/42",
+  "dataAccess": "all /api/** requests were intercepted; fixture responses are local only; no database, filesystem-backed mutation API, or production endpoint was accessed",
+  "runtime": {
+    "clock": "2026-11-22T23:59:59.999Z",
+    "timezone": "UTC",
+    "locale": "uk-UA",
+    "uuidSequence": "deterministic per page context"
+  },
+  "viewportResults": [
+    {
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "bodyWidth": 360,
+      "activePaneWidth": 339.203125,
+      "domStateSha256": "ed083122d31420a23d4f7f131b7bb97090a4f42b117f0c34dfd33192a07ec225",
+      "screenshotSha256": "949b92210c2c3081c97142d28f2414a27ec7a27ddc31370063d295115074eeb4",
+      "repeatSha256": "949b92210c2c3081c97142d28f2414a27ec7a27ddc31370063d295115074eeb4",
+      "rasterDiff": {
+        "differentPixels": 0,
+        "maxChannelDelta": 0,
+        "bounds": null
+      }
+    },
+    {
+      "viewportWidth": 390,
+      "documentWidth": 390,
+      "bodyWidth": 390,
+      "activePaneWidth": 369.203125,
+      "domStateSha256": "ed083122d31420a23d4f7f131b7bb97090a4f42b117f0c34dfd33192a07ec225",
+      "screenshotSha256": "3005a7599ff2f640399fe3b41d8c8132c55ee5ba29b16ea1bb985862705439ec",
+      "repeatSha256": "3005a7599ff2f640399fe3b41d8c8132c55ee5ba29b16ea1bb985862705439ec",
+      "rasterDiff": {
+        "differentPixels": 0,
+        "maxChannelDelta": 0,
+        "bounds": null
+      }
+    },
+    {
+      "viewportWidth": 768,
+      "documentWidth": 768,
+      "bodyWidth": 768,
+      "activePaneWidth": 727.984375,
+      "domStateSha256": "ed083122d31420a23d4f7f131b7bb97090a4f42b117f0c34dfd33192a07ec225",
+      "screenshotSha256": "c042814ea3e23f623b747ffeaf5c5e4e22537d3bd39c1d1c76788e86834b05ba",
+      "repeatSha256": "c042814ea3e23f623b747ffeaf5c5e4e22537d3bd39c1d1c76788e86834b05ba",
+      "rasterDiff": {
+        "differentPixels": 0,
+        "maxChannelDelta": 0,
+        "bounds": null
+      }
+    },
+    {
+      "viewportWidth": 1280,
+      "documentWidth": 1280,
+      "bodyWidth": 1280,
+      "activePaneWidth": 1131.203125,
+      "domStateSha256": "d9cea22522564451d562ac59342e1a21db06556a4f50fe7c18b7021cc6650805",
+      "screenshotSha256": "db7ef8aae4faa836d034628874bb4cfa1b342572fa992bcd9a64e31a7339bb50",
+      "repeatSha256": "db7ef8aae4faa836d034628874bb4cfa1b342572fa992bcd9a64e31a7339bb50",
+      "rasterDiff": {
+        "differentPixels": 0,
+        "maxChannelDelta": 0,
+        "bounds": null
+      }
+    }
+  ],
+  "reducedMotion": true,
+  "screenshotExcludedNonProductOverlay": "Next development portal only; BodyCast UI content is unmasked.",
+  "interaction": {
+    "blankValidation": {
+      "addDisabled": true
+    },
+    "keyboardFocus": {
+      "nextButtonFocused": true,
+      "enterNext": true,
+      "arrowRight": true,
+      "arrowLeft": true,
+      "enterPrevious": true
+    },
+    "setCreate": {
+      "status": 201,
+      "requestCount": 1,
+      "payload": {
+        "reps": 12,
+        "comment": null,
+        "rir": null,
+        "weightKg": 30,
+        "bandNominalResistanceKg": null
+      },
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001"
+    },
+    "editCancel": {
+      "canceled": true,
+      "patchCount": 0
+    },
+    "emptyHistoryAndSets": {
+      "historyResponse": {
+        "entries": []
+      },
+      "initialSets": 0
+    }
+  },
+  "retry": {
+    "firstStatus": 409,
+    "automaticRetries": 0,
+    "explicitAction": "Створити знову",
+    "secondStatus": 201,
+    "idempotencyKeys": [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002"
+    ],
+    "keysDiffer": true
+  },
+  "loading": {
+    "observed": true,
+    "fixedClock": "2026-11-22T23:59:59.999Z"
+  },
+  "loadError": {
+    "status": 503,
+    "visibleBodyText": "BodyCast\nОгляд\nІсторія\nТренування\nКарта тіла\nПрогноз\nЦіль\nСтан моделі\nПрофіль\ninternal_error\nДо тренувань",
+    "retryControl": false
+  },
+  "cancellation": {
+    "postCount": 1,
+    "resultingSessionState": "CANCELLED",
+    "browserConfirmationAccepted": true
+  },
+  "completion": {
+    "completedSetCount": 1,
+    "finishOfferCanceled": true,
+    "finishConfirmationAccepted": true,
+    "finishRequestCount": 1,
+    "resultingSessionState": "COMPLETED",
+    "finishResponseSha256": "15179240d95b0276d2348f8e0856dcadd374de70fb66b8971166528a2e67ed93"
+  },
+  "apiRequests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/3/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/exercises/1/sets",
+      "status": 201,
+      "requestBodySha256": "0d39e9a4134db7d1e9e2e28f2e4acf7e6f294b60eeea42c9593b60e1f275718b",
+      "responseBodySha256": "7678a2bca73e7e9bffc006a82057a27a21adef2dc5c079f6be8684fb833feb46",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/exercises/1/sets",
+      "status": 409,
+      "requestBodySha256": "0d39e9a4134db7d1e9e2e28f2e4acf7e6f294b60eeea42c9593b60e1f275718b",
+      "responseBodySha256": "881aa6ed3bcb4f7202bf13b652c3f0cede5c28c20b42e2a009aec3665ada38b8",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/exercises/1/sets",
+      "status": 201,
+      "requestBodySha256": "0d39e9a4134db7d1e9e2e28f2e4acf7e6f294b60eeea42c9593b60e1f275718b",
+      "responseBodySha256": "3b4aa607a2a4ffd406407174da394c11f8f7c6aa68e6149919d4d639538346d4",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000002"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/set-create-operations/00000000-0000-4000-8000-000000000002?digest=dab8cd61d2293efe5ea9a21a2a7258048e424505638b77a79531d3bacb44ccd5",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "3b4aa607a2a4ffd406407174da394c11f8f7c6aa68e6149919d4d639538346d4",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 503,
+      "requestBodySha256": null,
+      "responseBodySha256": "b1fd618132befbb9c0fa6847793b9a066f5b17444df3d01fe2e43699f8c1eb08",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/1/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/2/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "2c4c755ed65f77c7ac158a9b89a82ca39c7ea862c5241e78add68904c99469c6",
+      "idempotencyKey": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/cancel",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/profile",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "98ee3482435be6b5222eafa849a14bb91f90c57e39cfb7152fdb4ff2b00c6a78",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "742e420af4451ab3ee9b0fb5257c424abff1812716c77338a2645f638918c0e2",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/3/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/exercises/3/history",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "d801aa1fb7ddcc330a5e3173372ea6af4a3d08ec58074478e85aa5603e926658",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "742e420af4451ab3ee9b0fb5257c424abff1812716c77338a2645f638918c0e2",
+      "idempotencyKey": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/exercises/3/sets",
+      "status": 201,
+      "requestBodySha256": "b42bb33d4aaa2d0a9465c1a038e32f9bed778e174605012f76ce82be5c833c8f",
+      "responseBodySha256": "688398979a55695406f31f3e1871542f1f1e821a8e8ea2ffa3bbc7fa1a3b57a3",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/sessions/42/finish",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "15179240d95b0276d2348f8e0856dcadd374de70fb66b8971166528a2e67ed93",
+      "idempotencyKey": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/sessions/42/match-candidates",
+      "status": 200,
+      "requestBodySha256": null,
+      "responseBodySha256": "1cdacf60b6a3fc50d2cc990d9b8c94ab37ee0fb47d7c36e95146aa695553e887",
+      "idempotencyKey": null
+    }
+  ],
+  "browserErrors": {
+    "page": [],
+    "console": [
+      {
+        "page": "explicit-retry",
+        "message": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+      },
+      {
+        "page": "session-load-error",
+        "message": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      }
+    ],
+    "request": [],
+    "http": [],
+    "apiResponses": [
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/3/history",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "baseline-interactions-and-views",
+        "method": "POST",
+        "path": "/api/v1/training/sessions/42/exercises/1/sets",
+        "status": 201
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "POST",
+        "path": "/api/v1/training/sessions/42/exercises/1/sets",
+        "status": 409
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "explicit-retry",
+        "method": "POST",
+        "path": "/api/v1/training/sessions/42/exercises/1/sets",
+        "status": 201
+      },
+      {
+        "page": "explicit-retry",
+        "method": "GET",
+        "path": "/api/v1/training/set-create-operations/00000000-0000-4000-8000-000000000002?digest=dab8cd61d2293efe5ea9a21a2a7258048e424505638b77a79531d3bacb44ccd5",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "session-loading",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "session-load-error",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "session-load-error",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "session-load-error",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 503
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/1/history",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/2/history",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "workout-cancellation",
+        "method": "POST",
+        "path": "/api/v1/training/sessions/42/cancel",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "GET",
+        "path": "/api/v1/profile",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/3/history",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42/exercises/3/history",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "GET",
+        "path": "/api/v1/training/sessions/42",
+        "status": 200
+      },
+      {
+        "page": "workout-completion",
+        "method": "POST",
+        "path": "/api/v1/training/sessions/42/exercises/3/sets",
+        "status": 201
+      },
+      {
+        "page": "workout-completion",
+        "method": "POST",
+        "path": "/api/v1/training/sessions/42/finish",
+        "status": 200
+      }
+    ]
+  },
+  "expectedConsole": [
+    {
+      "page": "explicit-retry",
+      "message": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+    },
+    {
+      "page": "session-load-error",
+      "message": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    }
+  ],
+  "unexpectedConsole": [],
+  "postFinishRequests": [],
+  "adjacentUiScope": {
+    "calendar": "No Calendar UI change is in the Stage 1B Training characterization scope; existing calendar-range unit characterization remains the gate before any later UI-affecting change.",
+    "forecast": "No Forecast UI change is in the Stage 1B Training characterization scope; existing forecast UI/client tests remain the gate before any later UI-affecting change."
+  },
+  "screenshots": [
+    "training-session-360.png",
+    "training-session-390.png",
+    "training-session-768.png",
+    "training-session-1280.png",
+    "training-loading.png",
+    "training-load-error.png"
+  ]
+}

@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import net from "node:net";
-import { validateComparatorDatabaseUrl } from "./comparator-core.mjs";
+import { performance } from "node:perf_hooks";
+import { validateComparatorDatabaseUrl, validateDatabaseClockColumnMetadata } from "./comparator-core.mjs";
 
 export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {}) {
   if (host !== "127.0.0.1" || !Number.isSafeInteger(port) || port < 1 || port > 65_535
@@ -8,16 +9,18 @@ export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {
     throw new Error("Comparator PostgreSQL readiness requires an exact loopback endpoint and bounded timeout.");
   }
 
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let lastError;
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) break;
     try {
       await new Promise((resolve, reject) => {
         const socket = net.createConnection({ host, port });
         const timer = setTimeout(() => {
           socket.destroy();
           reject(new Error("Comparator PostgreSQL loopback connection attempt timed out."));
-        }, Math.min(1_000, timeoutMs));
+        }, Math.min(1_000, remaining));
         socket.once("connect", () => {
           clearTimeout(timer);
           socket.destroy();
@@ -31,7 +34,9 @@ export async function waitForLoopbackPort(host, port, { timeoutMs = 30_000 } = {
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      const retryDelay = Math.min(200, deadline - performance.now());
+      if (retryDelay <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
     }
   }
   throw new Error(`Comparator PostgreSQL loopback endpoint ${host}:${port} did not become reachable: ${lastError?.message ?? "timeout"}`);
@@ -54,7 +59,7 @@ export async function waitForPostgresConnection(check, {
     `Can't reach database server at \`${host}:${port}\``,
     "FATAL: the database system is starting up",
   ];
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let lastError;
   do {
     try {
@@ -63,11 +68,11 @@ export async function waitForPostgresConnection(check, {
       const message = error instanceof Error ? error.message : String(error);
       if (!transientReadinessErrors.some((expected) => message.includes(expected))) throw error;
       lastError = error;
-      const remaining = deadline - Date.now();
+      const remaining = deadline - performance.now();
       if (remaining <= 0) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(retryDelayMs, remaining)));
     }
-  } while (Date.now() < deadline);
+  } while (performance.now() < deadline);
 
   throw new Error(`Comparator PostgreSQL host identity query did not become ready at ${host}:${port} within ${timeoutMs}ms: ${lastError instanceof Error ? lastError.message : "timeout"}`);
 }
@@ -101,11 +106,15 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
              inet_server_port() AS server_port,
              current_setting('server_version') AS server_version,
              current_setting('TimeZone') AS timezone,
+             to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS operation_anchor,
              pg_is_in_recovery() AS in_recovery
     `);
     const row = rows[0];
     if (!row || row.database !== configured.database || row.role !== configured.role
-      || Number(row.server_port) !== 5432 || row.in_recovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)) {
+      || Number(row.server_port) !== 5432 || row.in_recovery !== false || !["UTC", "Etc/UTC"].includes(row.timezone)
+      || typeof row.operation_anchor !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(row.operation_anchor)
+      || !Number.isFinite(Date.parse(row.operation_anchor))) {
       throw new Error(`Comparator PostgreSQL identity attestation failed: ${JSON.stringify({
         expected: { database: configured.database, role: configured.role, serverPort: 5432, timezone: "UTC", inRecovery: false },
         actual: row ? toPlain(row) : null,
@@ -128,6 +137,7 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
       serverPort: Number(row.server_port),
       serverVersion: row.server_version,
       timezone: row.timezone,
+      operationAnchor: row.operation_anchor,
       inRecovery: row.in_recovery,
       containerId: dockerIdentity.containerId,
       imageId: dockerIdentity.imageId,
@@ -140,7 +150,39 @@ export async function withAttestedDatabase({ databaseUrl, expected, mode = "test
   }
 }
 
-export async function capturePersistedState(client, tableNames) {
+async function captureDatabaseClockColumnMetadata(client, databaseClockFields) {
+  const metadata = [];
+  for (const [tableName, fields] of Object.entries(databaseClockFields)) {
+    quoteIdentifier(tableName);
+    for (const field of Object.keys(fields)) {
+      quoteIdentifier(field);
+      const rows = await client.$queryRawUnsafe(
+        "SELECT table_name AS \"table\", column_name AS field, data_type AS \"dataType\", "
+        + "datetime_precision AS \"datetimePrecision\", is_nullable AS nullable "
+        + "FROM information_schema.columns WHERE table_schema = 'public' "
+        + "AND table_name = '" + tableName + "' AND column_name = '" + field + "'",
+      );
+      if (rows.length !== 1) {
+        throw new Error("Comparator expected exactly one database clock column for " + tableName + "." + field + ".");
+      }
+      metadata.push({
+        table: rows[0].table,
+        field: rows[0].field,
+        dataType: rows[0].dataType,
+        datetimePrecision: rows[0].datetimePrecision === null ? null : Number(rows[0].datetimePrecision),
+        nullable: rows[0].nullable,
+      });
+    }
+  }
+  metadata.sort((left, right) => {
+    const leftKey = left.table + "\0" + left.field;
+    const rightKey = right.table + "\0" + right.field;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+  return validateDatabaseClockColumnMetadata(metadata, databaseClockFields);
+}
+
+export async function capturePersistedState(client, tableNames, databaseClockFields) {
   const tables = {};
   for (const tableName of tableNames) {
     const table = quoteIdentifier(tableName);
@@ -198,9 +240,11 @@ export async function capturePersistedState(client, tableNames) {
     ORDER BY migration_name
   `);
 
+  const clockColumnMetadata = await captureDatabaseClockColumnMetadata(client, databaseClockFields);
   return {
     tables,
     sequences,
     migrationLedger: toPlain(migrations),
+    clockColumnMetadata,
   };
 }

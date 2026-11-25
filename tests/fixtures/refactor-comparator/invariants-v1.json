@@ -95,6 +95,10 @@
     "databaseClockFields": {
       "PhysiologyV7Lifecycle": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "UnifiedPublicationBlock": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "PhysiologyV7DailyResult": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "PhysiologyV7ShadowDiagnostic": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "ExerciseCatalog": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
+      "TrainingSetCreateOperation": { "createdAt": "zoned-timestamp", "updatedAt": "zoned-timestamp" },
       "Profile": { "updatedAt": "local-timestamp" }
     }
   },
@@ -110,7 +114,10 @@
     { "id": "BODYMAP-ENERGY-01/observed-windows", "path": "tests/body-map-energy-balance-context-v1.test.ts", "testName": "compares only highly covered, observed early and late windows" },
     { "id": "BODYMAP-MAPPING-V3-01/legacy-projection", "path": "tests/exercise-anatomy-mapping-v3.test.ts", "testName": "projects existing hyperextension history through the current mapping without rewriting its legacy snapshot" },
     { "id": "BODYMAP-ANALYTICS-01/authenticated-api", "path": "tests/body-map-training-analytics-route.test.ts", "testName": "reads only the authenticated profile and requested supported window" },
-    { "id": "TRAIN-LOAD-ASSESS-01/first-answer-api", "path": "tests/body-map-training-load-assessment-route.test.ts", "testName": "stores a user-confirmed lighter assessment separately from pre-session intent" }
+    { "id": "TRAIN-LOAD-ASSESS-01/first-answer-api", "path": "tests/body-map-training-load-assessment-route.test.ts", "testName": "stores a user-confirmed lighter assessment separately from pre-session intent" },
+    { "id": "BODYMAP-ANALYTICS-01/postgres-projection", "path": "tests/integration/body-map-training-analytics.integration.test.ts", "testName": "projects observed model energy through the authenticated profile's isolated PostgreSQL rows", "integrationSuiteId": "postgres-bodymap-training-analytics" },
+    { "id": "TRAIN-LOAD-ASSESS-01/first-write-persistence", "path": "tests/integration/body-map-training-analytics.integration.test.ts", "testName": "persists the first completed-session load answer and keeps retries idempotent", "integrationSuiteId": "postgres-bodymap-training-analytics" },
+    { "id": "RAW-01/raw-inventory-fingerprint", "path": "tests/integration/full-history-raw-input-inventory.integration.test.ts", "testName": "pages through more than 250 PostgreSQL rows and detects a second-page value change", "integrationSuiteId": "postgres-full-history-raw-input-inventory" }
   ],
   "unitSuites": [
     {
@@ -151,7 +158,20 @@
         "tests/body-map-training-analytics-panel.test.tsx",
         "tests/body-map-training-load-assessment-route.test.ts",
         "tests/bodyparts3d-v3-delivery.test.ts",
-        "tests/body-map-catalog-v2.test.ts"
+        "tests/body-map-catalog-v2.test.ts",
+        "tests/training-history-stage01-fixture.test.ts",
+        "tests/exercise-anatomy-mapping-v1.test.ts",
+        "tests/exercise-anatomy-mapping-v2.test.ts",
+        "tests/exercise-mapping-snapshot-backfill.test.ts",
+        "tests/body-map-camera-transition-v1.test.ts",
+        "tests/body-map-hierarchy-contract-v1.test.ts",
+        "tests/body-map-manifest-source.test.ts",
+        "tests/body-map-static-public-manifest-adapter-v1.test.ts",
+        "tests/body-map-url-state-v1.test.ts",
+        "tests/body-map-visual-region-resolver-v1.test.ts",
+        "tests/body-map-visual-selection-v1.test.ts",
+        "tests/body-map-cache-policy.test.ts",
+        "tests/body-map-dev-asset-route.test.ts"
       ]
     }
   ],
@@ -174,6 +194,281 @@
       "databaseProfile": "auth",
       "authEnvironment": true,
       "clockMode": "native"
+    },
+    {
+      "id": "postgres-full-history-raw-input-inventory",
+      "args": ["tests/integration/full-history-raw-input-inventory.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-health-sync-contracts",
+      "args": ["tests/integration/health-sync.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-training-history-stage01",
+      "args": ["tests/integration/training-history-stage01.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-physiology-v7-persistence",
+      "args": ["tests/integration/physiology-v7-persistence.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-unified-physiology-state",
+      "args": ["tests/integration/unified-experimental-physiology-state.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-model-episode-history-forecast",
+      "args": ["tests/integration/model-episode.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-exercise-mapping-snapshots",
+      "args": ["tests/integration/exercise-muscle-mapping-snapshot.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-bodymap-training-analytics",
+      "args": ["tests/integration/body-map-training-analytics.integration.test.ts"],
+      "clockMode": "frozen"
+    },
+    {
+      "id": "postgres-training-postcommit-publication",
+      "args": ["tests/integration/training-postcommit-publication.integration.test.ts"],
+      "clockMode": "frozen"
+    }
+  ],
+  "caseGroups": [
+    {
+      "id": "RAW-01",
+      "unitPaths": ["tests/health-sync-training-workouts.test.ts", "tests/workout-feed-coverage.test.ts"],
+      "integrationSuiteIds": ["postgres-full-history-raw-input-inventory", "postgres-health-sync-contracts"],
+      "observationIds": ["RAW-01/raw-inventory-fingerprint"],
+      "databaseStateSuiteIds": ["postgres-full-history-raw-input-inventory", "postgres-health-sync-contracts"],
+      "inputFiles": [
+        { "path": "tests/integration/full-history-raw-input-inventory.integration.test.ts", "sha256": "c45e973f2374b6550c52203e0d0ec010cde9badf09e4200b6b83e7d776a79169" },
+        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "a729ab848503ff5c70cb1e1cd8a08ec8ec75c8cab3e9445843972f1ac92a5cff" }
+      ]
+    },
+    {
+      "id": "TRAIN-HIST-01",
+      "unitPaths": ["tests/training-history-stage01-fixture.test.ts", "tests/training-load-accounting-v1.test.ts"],
+      "integrationSuiteIds": ["postgres-training-history-stage01"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-training-history-stage01"],
+      "inputFiles": [
+        { "path": "tests/fixtures/training-history-stage01/fixture-v1.ts", "sha256": "08f45e8e21e36cd2184cb5e3f5db9b01dc5ba28f6a33ae4b4fc49aaba159a92a" },
+        { "path": "tests/fixtures/training-history-stage01/expected-v1.ts", "sha256": "236467bbe7ab7e6b432887dc542b67d3a0b88d6598706609b7932929efedd054" },
+        { "path": "tests/fixtures/training-load-accounting-stage01-golden-v1.ts", "sha256": "c4e6142d47f7bd2fc4fd355d452f99d072c666c3bab70c9f091a24e3fc498076" },
+        { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "e19146206a94581abf2b37ce5cc751f4a01159bb50002ce3eafc888c88a3376b" }
+      ]
+    },
+    {
+      "id": "ENERGY-01",
+      "unitPaths": ["tests/workout-activity-v6-e2e-oracle.test.ts", "tests/workout-activity-v6-regression.test.ts", "tests/distance-ledger-v1.test.ts", "tests/workout-feed-coverage.test.ts"],
+      "integrationSuiteIds": ["postgres-model-episode-history-forecast"],
+      "observationIds": ["ENERGY-01/activity-known-number"],
+      "databaseStateSuiteIds": ["postgres-model-episode-history-forecast"],
+      "inputFiles": [
+        { "path": "tests/workout-activity-v6-e2e-oracle.test.ts", "sha256": "b153381e183853707e7c9caab617848a0a1f09b408eb11770c32c6e69379076c" },
+        { "path": "tests/integration/model-episode.integration.test.ts", "sha256": "5dc868b83d3c63d7a3941440edbfbbfeba41de0e2e9a54cafd544b33c8641338" }
+      ]
+    },
+    {
+      "id": "TRAIN-02",
+      "unitPaths": ["tests/training-load-accounting-v1.test.ts", "tests/training-accounting-routes.test.ts", "tests/training-session-accounting-ui.test.tsx", "tests/model-occupational-activity.test.ts", "tests/training-day-fact-currentness.test.ts", "tests/session-set-time-and-strength-energy.test.ts", "tests/strength-training-input-v7.test.ts"],
+      "integrationSuiteIds": ["postgres-training-history-stage01"],
+      "observationIds": ["TRAIN-02/bodyweight-load-accounting"],
+      "databaseStateSuiteIds": ["postgres-training-history-stage01"],
+      "inputFiles": [
+        { "path": "tests/fixtures/training-load-accounting-stage01-golden-v1.ts", "sha256": "c4e6142d47f7bd2fc4fd355d452f99d072c666c3bab70c9f091a24e3fc498076" },
+        { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "e19146206a94581abf2b37ce5cc751f4a01159bb50002ce3eafc888c88a3376b" }
+      ]
+    },
+    {
+      "id": "V7-01",
+      "unitPaths": ["tests/physiology-v7-contract.test.ts", "tests/physiology-v7-persistence.test.ts", "tests/staged-physiology-v1.test.ts"],
+      "integrationSuiteIds": ["postgres-physiology-v7-persistence"],
+      "observationIds": ["V7-01/state-contract", "V7-01/state-fingerprint"],
+      "databaseStateSuiteIds": ["postgres-physiology-v7-persistence"],
+      "inputFiles": [
+        { "path": "tests/physiology-v7-contract.test.ts", "sha256": "4046dac7a22547b79282065e8ac3ed5328e9ff287400269033dda8cca48ea9ba" },
+        { "path": "tests/integration/physiology-v7-persistence.integration.test.ts", "sha256": "5f78d410347c98bcd44d5961ae3afc5f74d94a5ff0dc39148d4d4fd0d0388ecc" }
+      ]
+    },
+    {
+      "id": "UNIFIED-01",
+      "unitPaths": ["tests/unified-experimental-physiology-transition-v1.test.ts", "tests/unified-energy-ledger-v1.test.ts"],
+      "integrationSuiteIds": ["postgres-unified-physiology-state"],
+      "observationIds": ["UNIFIED-01/pure-transition"],
+      "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
+      "inputFiles": [
+        { "path": "tests/unified-experimental-physiology-transition-v1.test.ts", "sha256": "58ba3f84e53327683eb9e6427916d921b20ad59a981f39d57b35121b10a32f54" },
+        { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "02860260146a7a7fa82817bb16e94848e91c041d41c6b9ee2e73523dbe68eadf" }
+      ]
+    },
+    {
+      "id": "TX-CONCURRENCY-01",
+      "unitPaths": ["tests/training-refresh-queue-convergence-fence.test.ts", "tests/training-refresh-worker-liveness.test.ts"],
+      "integrationSuiteIds": ["postgres-health-sync-contracts", "postgres-auth-multiuser", "postgres-training-postcommit-publication"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-health-sync-contracts", "postgres-auth-multiuser", "postgres-training-postcommit-publication"],
+      "inputFiles": [
+        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "a729ab848503ff5c70cb1e1cd8a08ec8ec75c8cab3e9445843972f1ac92a5cff" },
+        { "path": "tests/integration/training-postcommit-publication.integration.test.ts", "sha256": "a0307d8643a0a17b2a632a85a2e5ed1156d81603a529ceef91aa4c52ee801fd8" }
+      ]
+    },
+    {
+      "id": "FORECAST-CALENDAR-01",
+      "unitPaths": ["tests/model-forecast-service.test.ts", "tests/model-forecast-schema.test.ts", "tests/model-forecast-routes.test.ts", "tests/calendar-range.test.ts", "tests/model-calendar.test.ts"],
+      "integrationSuiteIds": ["postgres-model-episode-history-forecast"],
+      "observationIds": ["FORECAST-01/resolved-history", "CALENDAR-01/spring-dst-range"],
+      "databaseStateSuiteIds": ["postgres-model-episode-history-forecast"],
+      "inputFiles": [
+        { "path": "tests/model-forecast-service.test.ts", "sha256": "f98f8730efb16e691cb1630425ae8d28eb5b06f0251cd0e9de39bf5026dabc08" },
+        { "path": "tests/calendar-range.test.ts", "sha256": "dd68375caf224bcc3a69b8af928c51ab75fc4bf541398b1624a0d33db2a6bc9e" },
+        { "path": "tests/integration/model-episode.integration.test.ts", "sha256": "5dc868b83d3c63d7a3941440edbfbbfeba41de0e2e9a54cafd544b33c8641338" }
+      ]
+    },
+    {
+      "id": "BODYMAP-UI-01",
+      "unitPaths": ["tests/body-map-camera-transition-v1.test.ts", "tests/body-map-hierarchy-contract-v1.test.ts", "tests/body-map-manifest-source.test.ts", "tests/body-map-static-public-manifest-adapter-v1.test.ts", "tests/body-map-url-state-v1.test.ts", "tests/body-map-visual-region-resolver-v1.test.ts", "tests/body-map-visual-selection-v1.test.ts", "tests/body-map-cache-policy.test.ts", "tests/body-map-dev-asset-route.test.ts", "tests/bodyparts3d-v3-delivery.test.ts", "tests/body-map-catalog-v2.test.ts", "tests/body-map-training-analytics-panel.test.tsx"],
+      "integrationSuiteIds": [],
+      "observationIds": [],
+      "databaseStateSuiteIds": [],
+      "inputFiles": [
+        { "path": "tests/fixtures/refactor-comparator/body-map-ui-baseline-v1.json", "sha256": "12d280dd333e8a4130b98cc514eaea341fecdb26b40b573f05bf074c369c3ddb" }
+      ],
+      "uiEvidence": { "path": "tests/fixtures/refactor-comparator/body-map-ui-baseline-v1.json", "sha256": "12d280dd333e8a4130b98cc514eaea341fecdb26b40b573f05bf074c369c3ddb" }
+    },
+    {
+      "id": "BODYMAP-ANALYTICS-01",
+      "unitPaths": ["tests/body-map-training-analytics-v1.test.ts", "tests/body-map-training-analytics.repository.test.ts", "tests/body-map-training-analytics-route.test.ts", "tests/body-map-training-analytics-panel.test.tsx", "tests/body-map-analytics-period-v1.test.ts"],
+      "integrationSuiteIds": ["postgres-bodymap-training-analytics"],
+      "observationIds": ["BODYMAP-ANALYTICS-01/authenticated-api", "BODYMAP-ANALYTICS-01/postgres-projection"],
+      "databaseStateSuiteIds": ["postgres-bodymap-training-analytics"],
+      "inputFiles": [
+        { "path": "tests/body-map-training-analytics.repository.test.ts", "sha256": "8fd3743e6b1ac019cf3fe3e90812c2e4db77f1cbcb1fd7adff76663bc435e2ad" },
+        { "path": "tests/integration/body-map-training-analytics.integration.test.ts", "sha256": "4004b0e0dc2c2b89e8a53097f74749de1e72718168751341041c2d35e7841a98" }
+      ]
+    },
+    {
+      "id": "BODYMAP-PERFORMANCE-01",
+      "unitPaths": ["tests/body-map-training-performance-v1.test.ts", "tests/body-map-training-analytics-v1.test.ts", "tests/body-map-training-analytics-panel.test.tsx"],
+      "integrationSuiteIds": [],
+      "observationIds": ["BODYMAP-PERFORMANCE-01/repeated-progress"],
+      "databaseStateSuiteIds": [],
+      "inputFiles": [
+        { "path": "tests/body-map-training-performance-v1.test.ts", "sha256": "40ad8d47fe6f6e06693f89f446a9583dc1d3794761e7080c8a72e2d0ec9561a1" }
+      ]
+    },
+    {
+      "id": "BODYMAP-ENERGY-01",
+      "unitPaths": ["tests/body-map-energy-balance-context-v1.test.ts", "tests/body-map-training-analytics.repository.test.ts"],
+      "integrationSuiteIds": ["postgres-bodymap-training-analytics"],
+      "observationIds": ["BODYMAP-ENERGY-01/observed-windows", "BODYMAP-ANALYTICS-01/postgres-projection"],
+      "databaseStateSuiteIds": ["postgres-bodymap-training-analytics"],
+      "inputFiles": [
+        { "path": "tests/body-map-energy-balance-context-v1.test.ts", "sha256": "686c7e1c51122cfd116b7cb14989964f43b9009c14b22af1ba172be0960b498d" },
+        { "path": "tests/integration/body-map-training-analytics.integration.test.ts", "sha256": "4004b0e0dc2c2b89e8a53097f74749de1e72718168751341041c2d35e7841a98" }
+      ]
+    },
+    {
+      "id": "BODYMAP-MAPPING-V3-01",
+      "unitPaths": ["tests/exercise-anatomy-mapping-v1.test.ts", "tests/exercise-anatomy-mapping-v2.test.ts", "tests/exercise-anatomy-mapping-v3.test.ts", "tests/exercise-mapping-snapshot-backfill.test.ts"],
+      "integrationSuiteIds": ["postgres-exercise-mapping-snapshots"],
+      "observationIds": ["BODYMAP-MAPPING-V3-01/legacy-projection"],
+      "databaseStateSuiteIds": ["postgres-exercise-mapping-snapshots"],
+      "inputFiles": [
+        { "path": "tests/exercise-anatomy-mapping-v1.test.ts", "sha256": "ce8a291674421d30be8af4c1b9be5100b2758e68215d0592c402bc126324a69f" },
+        { "path": "tests/exercise-anatomy-mapping-v2.test.ts", "sha256": "23f75cab5b892457c98965481a31608dfee90258021f1e4ab8499d6448af937a" },
+        { "path": "tests/exercise-anatomy-mapping-v3.test.ts", "sha256": "94c43cda685828e1bf04a4d3d33b394ac0959cc5711e1c86d6c7914dac05e831" },
+        { "path": "tests/integration/exercise-muscle-mapping-snapshot.integration.test.ts", "sha256": "940566079bc1160f904f950df9e668302d9f598feae3ea824f90bed7e83d7d0d" }
+      ]
+    },
+    {
+      "id": "TRAIN-LOAD-ASSESS-01",
+      "unitPaths": ["tests/body-map-training-load-assessment-route.test.ts", "tests/body-map-training-analytics-v1.test.ts"],
+      "integrationSuiteIds": ["postgres-bodymap-training-analytics"],
+      "observationIds": ["TRAIN-LOAD-ASSESS-01/first-answer-api", "TRAIN-LOAD-ASSESS-01/first-write-persistence"],
+      "databaseStateSuiteIds": ["postgres-bodymap-training-analytics"],
+      "inputFiles": [
+        { "path": "tests/body-map-training-load-assessment-route.test.ts", "sha256": "2db4cc1a4400a45c664f28b054554f7cd3ac248f95b0bea71cae199c038c24b2" },
+        { "path": "tests/integration/body-map-training-analytics.integration.test.ts", "sha256": "4004b0e0dc2c2b89e8a53097f74749de1e72718168751341041c2d35e7841a98" }
+      ]
+    },
+    {
+      "id": "COMPARATOR-CLOCK-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-health-sync-contracts", "postgres-physiology-v7-persistence"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-health-sync-contracts", "postgres-physiology-v7-persistence"],
+      "inputFiles": [
+        { "path": "tests/integration/health-sync.integration.test.ts", "sha256": "f16e47a8f15212b53f4895cf24331be4240a025ecb0a09f9c349ba2b24639025" },
+        { "path": "tests/integration/physiology-v7-persistence.integration.test.ts", "sha256": "4cea70828bc950803a89d1283785662bd8270036e506982712450c16408682c8" },
+        { "path": "scripts/refactor/comparator-core.mjs", "sha256": "ac1edfc667372f6ac7b414e033023da201f195ea68b410bef3e599b5306d286d" },
+        { "path": "scripts/refactor/comparator-core.d.mts", "sha256": "010bf018202ba80b34fcabc5b22b7423e34a073b6435e4160a53682b3f2e3d62" },
+        { "path": "scripts/refactor/database-evidence.mjs", "sha256": "80e6a9322c3a2e282c25499bb5198b43cecdc15febad72062e1a37b098cfb8ee" },
+        { "path": "scripts/refactor/run-behavior-comparator.mjs", "sha256": "dad289efbc93ff4f33b7e2933466b8ff9d5671c6bcbf48f4d21c3babaac2b457" },
+        { "path": "tests/refactor-comparator/comparator-core.test.ts", "sha256": "cd3544acf6f444f26af65d3cc1494a7604a3659f93fe7d4b21b1700f23061301" },
+        { "path": "tests/refactor-comparator/database-evidence.test.ts", "sha256": "21493975738f7c0817aa353d635e6933f8918e8e6aa6ac0bdc4b22d15fb534f1" },
+        { "path": "tests/refactor-comparator/runner-preflight.test.ts", "sha256": "d41c8586940d18ebdb187a686f1b76817ef087b11a235ce8678cf5282720e97c" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "d2eb09b29b934e53923c99bdfe9976c80a18ac1acd8529e7432cb937ce00efd1" }
+      ]
+    },
+    {
+      "id": "TRAIN-HISTORY-BOOTSTRAP-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-training-history-stage01"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-training-history-stage01"],
+      "inputFiles": [
+        { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "9f4b203b60c63160b31db26ef689a28066373cdcea8887c0b60215abe315605d" },
+        { "path": "src/modules/training/testing/stage01-persistence.ts", "sha256": "06bde385e0551a5068f7bfdeebbcde78fde1af56fa4d75080f12f96f35589e72" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "08ff2adb3d4c79cfce96305af1f70a91ec84de668e045804c7db41bf33c326ec" }
+      ]
+    },
+    {
+      "id": "COMPARATOR-CLOCK-02",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-training-history-stage01"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-training-history-stage01"],
+      "inputFiles": [
+        { "path": "scripts/refactor/comparator-core.mjs", "sha256": "5d456c25e4bd94b3586490f44ad69cf603972c5078f4a9684802662e8da1ba9d" },
+        { "path": "scripts/refactor/database-evidence.mjs", "sha256": "80e6a9322c3a2e282c25499bb5198b43cecdc15febad72062e1a37b098cfb8ee" },
+        { "path": "tests/integration/training-history-stage01.integration.test.ts", "sha256": "9f4b203b60c63160b31db26ef689a28066373cdcea8887c0b60215abe315605d" },
+        { "path": "tests/refactor-comparator/comparator-core.test.ts", "sha256": "2ec1fa11fab99902731d5a8dd93cc179c22fab2bdda908fd93321846a555a2ba" },
+        { "path": "tests/refactor-comparator/database-evidence.test.ts", "sha256": "ba9b861a652225d1c1a68d815835589e8cd8126646bfbb7b3e3eacc595314202" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "69c1bfebdafc61e63c5f8ccb4fb8a7df9a8736e327efb3b9ad493ee4dad62e61" }
+      ]
+    },
+    {
+      "id": "COMPARATOR-UNIFIED-DB-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-unified-physiology-state"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
+      "inputFiles": [
+        { "path": "src/modules/training/testing/require-isolated-database.ts", "sha256": "0b04b4094493e8fb249cc8923d8feffe51edcf25ba82d3052a2c80b2aa04c725" },
+        { "path": "tests/integration/database-safety.test.ts", "sha256": "b9d50a7a8748536c8534fbd8c310646157e8f1f29c172135be9671a7c82f2233" },
+        { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "53d7400a560bb8e42ac07db63713f00d3a9d9ab1c77c20fcbccbea609ed34cd0" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "b0a4338840d41884968ffae94ffd9912ff3cdf2adce0d8bf517a9c570ff2bb59" }
+      ]
+    },
+    {
+      "id": "COMPARATOR-UNIFIED-CLEANUP-01",
+      "unitPaths": [],
+      "integrationSuiteIds": ["postgres-unified-physiology-state"],
+      "observationIds": [],
+      "databaseStateSuiteIds": ["postgres-unified-physiology-state"],
+      "inputFiles": [
+        { "path": "tests/integration/unified-experimental-physiology-state.integration.test.ts", "sha256": "193995ea2d9eba96059e6edafbff6d3d533bcb87d1741879e93473907dde4a48" },
+        { "path": "tests/refactor-comparator/manifest.test.ts", "sha256": "17c7f1e392df9182e44938dfba78f4d9585ca81badf926c0b633efa7725ac208" }
+      ]
     }
   ]
 }

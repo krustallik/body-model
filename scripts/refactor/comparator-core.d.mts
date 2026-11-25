@@ -31,6 +31,15 @@ export function parseComparatorArgs(argv: string[]): ComparatorArguments;
 export function validateRelativePath(value: unknown, label: string): string;
 export function validateResolvedPostgresImage(image: string, repoDigests: unknown): string;
 export function validateManifest(value: unknown): Record<string, unknown>;
+export function assertAdditiveManifestExtension(baseValue: unknown, candidateValue: unknown): {
+  additive: boolean;
+  addedUnitSuites: string[];
+  addedIntegrationSuites: string[];
+  addedUnitPaths: string[];
+  addedIntegrationArgs: string[];
+  addedObservations: string[];
+  addedCaseGroups: string[];
+};
 export function validateComparatorDatabaseUrl(
   databaseUrl: string,
   expected: DatabaseTarget,
@@ -46,6 +55,17 @@ export interface PersistedStateClockEvidence {
 }
 export type ComparatorClockFieldKind = "zoned-timestamp" | "local-timestamp" | "epoch-seconds";
 export type ComparatorClockFieldPolicy = Record<string, Record<string, ComparatorClockFieldKind>>;
+export interface DatabaseClockColumnMetadata {
+  table: string;
+  field: string;
+  dataType: string;
+  datetimePrecision: number | null;
+  nullable: boolean;
+}
+export function validateDatabaseClockColumnMetadata(
+  metadata: unknown,
+  databaseClockFields: ComparatorClockFieldPolicy,
+): DatabaseClockColumnMetadata[];
 export function projectPersistedStateForComparison(
   persisted: unknown,
   databaseClockFields: ComparatorClockFieldPolicy,
@@ -55,6 +75,32 @@ export function deriveDatabaseClockTransitions(
   finalEvidence: PersistedStateClockEvidence[],
   databaseClockFields: ComparatorClockFieldPolicy,
 ): Array<{ table: string; primaryKey: Record<string, unknown>; fields: Record<string, "created" | "deleted" | "unchanged" | "updated"> }>;
+export interface DatabaseClockOperationWindowInput {
+  initialEvidence: PersistedStateClockEvidence[];
+  finalEvidence: PersistedStateClockEvidence[];
+  startAnchor: string;
+  endAnchor: string;
+}
+export function compareDatabaseClockOperationWindows(input: {
+  before: DatabaseClockOperationWindowInput;
+  after: DatabaseClockOperationWindowInput;
+  databaseClockFields: ComparatorClockFieldPolicy;
+}): {
+  equal: boolean;
+  differences: JsonDifference[];
+  initialValueDifferences: JsonDifference[];
+  transitionDifferences: JsonDifference[];
+  unchangedValueDifferences: JsonDifference[];
+  eventOrderingDifferences: JsonDifference[];
+  transitions: {
+    before: Array<{ table: string; primaryKey: Record<string, unknown>; fields: Record<string, "created" | "deleted" | "unchanged" | "updated"> }>;
+    after: Array<{ table: string; primaryKey: Record<string, unknown>; fields: Record<string, "created" | "deleted" | "unchanged" | "updated"> }>;
+  };
+  evidence: {
+    before: { startAnchor: string; endAnchor: string; anchorPrecision: "microsecond"; events: Array<Record<string, unknown>> };
+    after: { startAnchor: string; endAnchor: string; anchorPrecision: "microsecond"; events: Array<Record<string, unknown>> };
+  };
+};
 export function sortObservationsByCaseId<T extends { caseId: string }>(observations: readonly T[]): T[];
 export interface ComparatorCaseRun {
   suiteId: string;

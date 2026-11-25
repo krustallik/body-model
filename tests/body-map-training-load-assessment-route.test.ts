@@ -61,6 +61,21 @@ describe("PUT /api/v1/training/sessions/[id]/load-assessment", () => {
     expect(trainingService.recordCompletedSessionLoadAssessment).not.toHaveBeenCalled();
   });
 
+  it("rejects unauthenticated requests before checking the origin or writing", async () => {
+    authAccess.getSessionPrincipal.mockResolvedValue(null);
+
+    const response = await PUT(new Request(url, {
+      method: "PUT",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ status: "lighter" }),
+    }), context);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+    expect(authAccess.isTrustedOrigin).not.toHaveBeenCalled();
+    expect(trainingService.recordCompletedSessionLoadAssessment).not.toHaveBeenCalled();
+  });
+
   it("validates answer values for a trusted origin before writing", async () => {
     authAccess.getSessionPrincipal.mockResolvedValue({ profileId: 41, userId: "u41", method: "session" });
     authAccess.isTrustedOrigin.mockReturnValue(true);

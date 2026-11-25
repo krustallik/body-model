@@ -63,27 +63,30 @@ async function waitForWorkerBarrier<T>(barrier: Promise<T>, worker: Promise<unkn
 }
 
 async function waitForProfileAdvisoryLockWaiter(pid?: number): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
+  await waitForProfileAdvisoryLockWaiters(1, pid);
+}
+
+async function waitForProfileAdvisoryLockWaiters(expectedWaiters: number, pid?: number): Promise<void> {
+  if (!Number.isSafeInteger(expectedWaiters) || expectedWaiters < 1) {
+    throw new Error("Expected at least one profile advisory-lock waiter.");
+  }
+  const deadline = process.hrtime.bigint() + BigInt(5_000_000_000);
+  while (process.hrtime.bigint() < deadline) {
     const waiter = pid === undefined
-      ? await prisma.$queryRaw<Array<{ waiting: boolean }>>`
-        SELECT EXISTS (
-          SELECT 1 FROM pg_locks
-          WHERE locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
-            AND objid = 1::oid AND objsubid = 2 AND granted = false
-        ) AS waiting
+      ? await prisma.$queryRaw<Array<{ waiterCount: number }>>`
+        SELECT count(*)::integer AS "waiterCount" FROM pg_locks
+        WHERE locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
+          AND objid = 1::oid AND objsubid = 2 AND granted = false
       `
-      : await prisma.$queryRaw<Array<{ waiting: boolean }>>`
-        SELECT EXISTS (
-          SELECT 1 FROM pg_locks
-          WHERE pid = ${pid} AND locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
-            AND objid = 1::oid AND objsubid = 2 AND granted = false
-        ) AS waiting
+      : await prisma.$queryRaw<Array<{ waiterCount: number }>>`
+        SELECT count(*)::integer AS "waiterCount" FROM pg_locks
+        WHERE pid = ${pid} AND locktype = 'advisory' AND classid = ${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE}::oid
+          AND objid = 1::oid AND objsubid = 2 AND granted = false
       `;
-    if (waiter[0]?.waiting) return;
+    if ((waiter[0]?.waiterCount ?? 0) >= expectedWaiters) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("Expected transaction did not wait for the profile advisory lock.");
+  throw new Error(`Expected ${expectedWaiters} transaction(s) to wait for the profile advisory lock.`);
 }
 
 async function saveHealthState(profileId = 1) {
@@ -360,8 +363,20 @@ async function cleanTestRows(): Promise<void> {
   await deleteDailyHealthRows(prisma, testDates);
 }
 
-async function runWorkerStartupUntilAuditPruneEvidence(): Promise<{ code: number | null; stdout: string; stderr: string }> {
+async function runWorkerStartupUntilAuditPruneEvidence(referenceAt: Date): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const childCode = `
+    const referenceAtText = process.env.BODYCAST_HEALTH_SYNC_TEST_REFERENCE_AT;
+    if (!referenceAtText) throw new Error("Health sync startup test clock is missing.");
+    const NativeDate = globalThis.Date;
+    const referenceAtMs = NativeDate.parse(referenceAtText);
+    if (!Number.isFinite(referenceAtMs) || new NativeDate(referenceAtMs).toISOString() !== referenceAtText) {
+      throw new Error("Health sync startup test clock is malformed.");
+    }
+    class HealthSyncTestDate extends NativeDate {
+      constructor(...args) { super(...(args.length === 0 ? [referenceAtMs] : args)); }
+      static now() { return referenceAtMs; }
+    }
+    globalThis.Date = HealthSyncTestDate;
     const prismaModule = await import("./src/lib/db/prisma.ts");
     const { prisma } = prismaModule.default ?? prismaModule;
     const workerModule = await import("./src/modules/health/health-sync-refresh-worker.ts");
@@ -374,8 +389,8 @@ async function runWorkerStartupUntilAuditPruneEvidence(): Promise<{ code: number
       return write(chunk, ...args);
     };
     startHealthSyncRefreshWorker();
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline && !pruneEvidenceSeen) await new Promise((resolve) => setTimeout(resolve, 10));
+    const deadline = process.hrtime.bigint() + 15_000_000_000n;
+    while (process.hrtime.bigint() < deadline && !pruneEvidenceSeen) await new Promise((resolve) => setTimeout(resolve, 10));
     if (!pruneEvidenceSeen) {
       process.stderr.write("Worker startup did not emit HealthSyncAudit cleanup evidence.\\n");
       process.exit(2);
@@ -384,7 +399,11 @@ async function runWorkerStartupUntilAuditPruneEvidence(): Promise<{ code: number
   `;
   const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", childCode], {
     cwd: process.cwd(),
-    env: { ...process.env, NODE_ENV: "production" },
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      BODYCAST_HEALTH_SYNC_TEST_REFERENCE_AT: referenceAt.toISOString(),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -1018,16 +1037,110 @@ describe("Apple Health sync with PostgreSQL", () => {
     });
   });
 
-  it("does not create duplicate rows during concurrent retries", async () => {
+  it("serializes conflicting concurrent Health syncs with a deterministic winner", async () => {
+    const date = testDates[3]!;
+    await deleteDailyHealthRows(prisma, date);
+    const lastAuditId = (await prisma.healthSyncAudit.aggregate({ _max: { id: true } }))._max.id ?? 0;
+    // Keep earlier immutable observations for this date out of this race assertion.
+    const lastSnapshotId = (await prisma.healthSyncSnapshot.aggregate({
+      where: { profileId: 1, date },
+      _max: { id: true },
+    }))._max.id ?? 0;
+    const firstDay = { date, steps: 111 };
+    const secondDay = { date, steps: 222 };
+    const profileLockHeld = deferred<void>();
+    const releaseProfileLock = deferred<void>();
+    let profileLockHolder: Promise<void> | null = null;
+    const inFlightResponses: Promise<Response>[] = [];
+
+    try {
+      profileLockHolder = prisma.$transaction(async (transaction) => {
+        await transaction.$executeRaw`SELECT pg_advisory_xact_lock(
+          CAST(${PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE} AS integer), 1::integer
+        )`;
+        profileLockHeld.resolve();
+        await releaseProfileLock.promise;
+      }, { maxWait: 5_000, timeout: 30_000 });
+      await waitForWorkerBarrier(profileLockHeld.promise, profileLockHolder, "the Health profile advisory lock");
+
+      const firstResponse = POST(syncRequest([firstDay]));
+      inFlightResponses.push(firstResponse);
+      await waitForProfileAdvisoryLockWaiter();
+
+      const secondResponse = POST(syncRequest([secondDay]));
+      inFlightResponses.push(secondResponse);
+      await waitForProfileAdvisoryLockWaiters(2);
+
+      releaseProfileLock.resolve();
+      const responses = await Promise.all([firstResponse, secondResponse]);
+      expect(responses.map(({ status }) => status)).toEqual([200, 200]);
+      const responseBodies = await Promise.all(responses.map((response) => response.json()));
+      expect(responseBodies[0]).toMatchObject({ status: "ok", created: 1, updated: 0 });
+      expect(responseBodies[1]).toMatchObject({ status: "ok", created: 0, updated: 1 });
+
+      await expect(prisma.dailyHealthData.findUniqueOrThrow({
+        where: { profileId_date: { profileId: 1, date } },
+      })).resolves.toMatchObject({ steps: 222, rawPayload: secondDay });
+      const snapshots = await prisma.healthSyncSnapshot.findMany({
+        where: { profileId: 1, date, id: { gt: lastSnapshotId } },
+        orderBy: { id: "asc" },
+        select: { steps: true, rawPayload: true },
+      });
+      expect(snapshots).toEqual([
+        { steps: 111, rawPayload: firstDay },
+        { steps: 222, rawPayload: secondDay },
+      ]);
+
+      const expectedRawBodies = [firstDay, secondDay].map((day) => JSON.stringify({ days: [day] }));
+      const audits = await prisma.healthSyncAudit.findMany({
+        where: { id: { gt: lastAuditId }, profileId: 1, rawBody: { in: expectedRawBodies } },
+        orderBy: { id: "asc" },
+        select: { rawBody: true, outcome: true, httpStatus: true },
+      });
+      expect(audits).toHaveLength(2);
+      expect(audits.map(({ rawBody, outcome, httpStatus }) => ({ rawBody, outcome, httpStatus }))
+        .sort((left, right) => (left.rawBody ?? "").localeCompare(right.rawBody ?? "")))
+        .toEqual(expectedRawBodies.sort((left, right) => left.localeCompare(right)).map((rawBody) => ({
+          rawBody, outcome: "success", httpStatus: 200,
+        })));
+    } finally {
+      releaseProfileLock.resolve();
+      await Promise.allSettled([
+        ...inFlightResponses,
+        ...(profileLockHolder ? [profileLockHolder] : []),
+      ]);
+      await prisma.healthSyncAudit.deleteMany({
+        where: {
+          id: { gt: lastAuditId },
+          profileId: 1,
+          rawBody: { in: [firstDay, secondDay].map((day) => JSON.stringify({ days: [day] })) },
+        },
+      });
+    }
+  });
+
+  it("does not create duplicate rows during concurrent identical retries", async () => {
     const date = testDates[3];
     await deleteDailyHealthRows(prisma, date!);
+    const days = [{ date, steps: 111 }];
+    const lastAuditId = (await prisma.healthSyncAudit.aggregate({ _max: { id: true } }))._max.id ?? 0;
     const responses = await Promise.all([
-      POST(syncRequest([{ date, steps: 111 }])),
-      POST(syncRequest([{ date, steps: 222 }])),
+      POST(syncRequest(days)),
+      POST(syncRequest(days)),
     ]);
     expect(responses.every(({ status }) => status === 200)).toBe(true);
     expect(await prisma.dailyHealthData.count({ where: { profileId: 1, date } })).toBe(1);
-    expect([111, 222]).toContain((await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date: date } } }))?.steps);
+    expect((await prisma.dailyHealthData.findUnique({ where: { profileId_date: { profileId: 1, date } } }))?.steps).toBe(111);
+    const retryAudits = await prisma.healthSyncAudit.findMany({
+      where: { id: { gt: lastAuditId } },
+      orderBy: { id: "asc" },
+      select: { rawBody: true, outcome: true, httpStatus: true },
+    });
+    const expectedRawBody = JSON.stringify({ days });
+    expect(retryAudits).toEqual([
+      { rawBody: expectedRawBody, outcome: "success", httpStatus: 200 },
+      { rawBody: expectedRawBody, outcome: "success", httpStatus: 200 },
+    ]);
   });
 
   it("preserves observed walking zero and workout-feed coverage when a later payload omits the feed", async () => {
@@ -2463,7 +2576,10 @@ describe("Apple Health sync with PostgreSQL", () => {
       const startupBaseline = startupBaselineEvidence.healthSyncAuditRetentionBaseline;
       if (!startupBaseline) throw new Error("Startup HealthSyncAudit baseline was not produced.");
 
-      const startupResult = await runWorkerStartupUntilAuditPruneEvidence();
+      // The startup worker is a separate production-mode process. Pass it the
+      // exact captured baseline time so its retention evidence uses the same
+      // deterministic clock as this integration test.
+      const startupResult = await runWorkerStartupUntilAuditPruneEvidence(startupBaselineCapturedAt);
       expect(startupResult.code, startupResult.stderr).toBe(0);
       expect(startupResult.stdout).toContain(HEALTH_SYNC_AUDIT_PRUNE_EVIDENCE_PREFIX);
       expect(await prisma.healthSyncAudit.findUnique({ where: { id: startup.id } })).toBeNull();

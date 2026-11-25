@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs";
+import { Prisma } from "@prisma/client";
 
 export type EvidenceValue =
   | null
@@ -43,7 +44,7 @@ function toEvidenceValue(value: unknown, seen: Set<object>): EvidenceValue {
     }
 
     const constructorName = value.constructor?.name;
-    if (constructorName === "Decimal" && "toString" in value && typeof value.toString === "function") {
+    if (value instanceof Prisma.Decimal) {
       return { $type: "decimal", value: value.toString() };
     }
 

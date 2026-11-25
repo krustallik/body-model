@@ -16,7 +16,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
 } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, TRAINING_SESSION_CONTEXT_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { getExpectedSchemaObjectNames, renderProductionDbPreflightSql } from "../scripts/production-db-preflight.mjs";
 import {
@@ -406,6 +406,9 @@ describe("production migration preflight evaluator", () => {
       ...AUTH_MULTIUSER_MANIFEST.requiredObjectsBefore,
       ...AUTH_MULTIUSER_MANIFEST.postflightObjects,
       ...AUTH_MULTIUSER_MANIFEST.partialObjects,
+      ...TRAINING_SESSION_CONTEXT_MANIFEST.requiredObjectsBefore,
+      ...TRAINING_SESSION_CONTEXT_MANIFEST.postflightObjects,
+      ...TRAINING_SESSION_CONTEXT_MANIFEST.partialObjects,
     ])].sort());
   });
 

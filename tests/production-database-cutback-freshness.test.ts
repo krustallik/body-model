@@ -13,7 +13,10 @@ describe("production database cutback final freshness fence", () => {
       'node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-live-identity',
       firstPromotion,
     );
-    const finalLivePreflight = cutbackScript.lastIndexOf('APP_HOST=', finalIdentityGate);
+    const finalLivePreflight = cutbackScript.lastIndexOf(
+      'bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"',
+      finalIdentityGate,
+    );
     const freshnessFence = cutbackScript.indexOf(
       'bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"',
       finalIdentityGate,

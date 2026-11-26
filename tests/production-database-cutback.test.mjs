@@ -178,6 +178,12 @@ describe("production database cutback gates", () => {
       preflightEvidence: { ...evidence, previousAppProvenance: { ...previousAppProvenance, recordDigest: "5".repeat(64) } },
       preflightReport: report, preflightResult, restoreResult, allowlist,
       expectedFailedRunId: "5001", expectedFailedSha: evidence.releaseSha, backupFileBytes: backup })).toThrow(/preflight evidence is unsigned/);
+    expect(() => verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence: evidence,
+      preflightReport: report, preflightResult, restoreResult, allowlist,
+      expectedFailedRunId: "5001", expectedFailedSha: evidence.releaseSha })).toThrow(/ciphertext digest/);
+    expect(verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence: evidence,
+      preflightReport: report, preflightResult, restoreResult, allowlist,
+      expectedFailedRunId: "5001", expectedFailedSha: evidence.releaseSha, requireBackupBytes: false }).verified).toBe(true);
   });
 
   it("requires the exact signed database identity and an empty writer drain", () => {
@@ -279,7 +285,7 @@ describe("production database cutback gates", () => {
       envelope: fixture.envelope, artifactMetadata: fixture.artifactMetadata,
       preflightEvidence: fixture.preflightEvidence, preflightReport: fixture.preflightReport,
       preflightResult: fixture.preflightResult, restoreResult: fixture.restoreResult, allowlist: fixture.allowlist,
-      expectedFailedRunId: "5001", expectedFailedSha: fixture.failedSha, backupFileBytes: fixture.encryptedBackup,
+      expectedFailedRunId: "5001", expectedFailedSha: fixture.failedSha,
       liveReport: fixture.liveReport, recordText: fixture.previousRecordText, markerText: fixture.markerText,
       repositoryPath: fixture.repositoryPath, ...overrides,
     });

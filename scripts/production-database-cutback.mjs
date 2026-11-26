@@ -48,7 +48,7 @@ function fail(message) { throw new Error(`Production database cutback blocked: $
 
 export function verifyCutbackEvidenceBundle({
   envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult,
-  allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes,
+  allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes, requireBackupBytes = true,
 }) {
   const historical = verifyHistoricalMigrationAuthorizationEnvelope(envelope, {
     allowlist,
@@ -93,8 +93,10 @@ export function verifyCutbackEvidenceBundle({
     || artifactMetadata?.expired === true) {
     fail("encrypted backup artifact identity, digest, run, or retention state differs from the signed claim.");
   }
-  if (!Buffer.isBuffer(backupFileBytes)
-    || createHash("sha256").update(backupFileBytes).digest("hex") !== preflightEvidence.backupFileDigest) {
+  // Source-app-only recovery still validates the signed restore rehearsal and
+  // artifact identity; it does not read or transfer the dump it will not use.
+  if (requireBackupBytes && (!Buffer.isBuffer(backupFileBytes)
+    || createHash("sha256").update(backupFileBytes).digest("hex") !== preflightEvidence.backupFileDigest)) {
     fail("encrypted backup ciphertext digest differs from the signed preflight evidence.");
   }
   if (!Array.isArray(preflightEvidence.pendingMigrationNames)
@@ -285,10 +287,10 @@ export function verifyPreviousAppMigrationCompatibility({
 
 export function verifyPreDdlSourceAppRecovery({
   envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult, allowlist,
-  expectedFailedRunId, expectedFailedSha, backupFileBytes, liveReport, recordText, markerText, repositoryPath,
+  expectedFailedRunId, expectedFailedSha, liveReport, recordText, markerText, repositoryPath,
 }) {
   const context = verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence, preflightReport,
-    preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
+    preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, requireBackupBytes: false });
   const manifest = getProductionMigrationManifest(context.claims.manifestId);
   if (manifest.id !== "training-session-context-v1") {
     fail("source-app recovery is only supported for the exact Training migration preflight contract.");
@@ -390,13 +392,16 @@ async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "--verify-context") {
     const [directory, expectedFailedRunId, expectedFailedSha, backupPath] = args;
-    if (!directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "") || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath) {
-      fail("usage: --verify-context <bundle-dir> <failed-run-id> <failed-release-sha> <encrypted-backup-file>.");
+    const sourceAppOnly = backupPath === "--source-app-only";
+    if (args.length !== 4 || !directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "")
+      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || (!sourceAppOnly && !backupPath)) {
+      fail("usage: --verify-context <bundle-dir> <failed-run-id> <failed-release-sha> <encrypted-backup-file|--source-app-only>.");
     }
     const bundle = await readCutbackEvidenceBundle(directory);
-    const backupFileBytes = await readFile(backupPath);
+    const backupFileBytes = sourceAppOnly ? undefined : await readFile(backupPath);
     const allowlist = await readJson(path.resolve("scripts/production-migration-verification-keys.json"));
-    const result = verifyCutbackEvidenceBundle({ ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
+    const result = verifyCutbackEvidenceBundle({ ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes,
+      requireBackupBytes: !sourceAppOnly });
     process.stdout.write(JSON.stringify({ verified: result.verified, releaseSha: result.claims.releaseSha,
       preflightRunId: result.claims.preflightRunId, preflightRunAttempt: result.claims.preflightRunAttempt,
       backupArtifactId: result.claims.backupArtifactId, backupArtifactDigest: result.claims.backupArtifactDigest,
@@ -405,17 +410,17 @@ async function main() {
     return;
   }
   if (mode === "--verify-pre-ddl-source-app-recovery") {
-    const [directory, expectedFailedRunId, expectedFailedSha, backupPath, liveReportPath, capturePath, markerPath] = args;
+    const [directory, expectedFailedRunId, expectedFailedSha, liveReportPath, capturePath, markerPath] = args;
     if (!directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "")
-      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath || !liveReportPath || !capturePath || !markerPath) {
-      fail("usage: --verify-pre-ddl-source-app-recovery <bundle-dir> <failed-run-id> <failed-sha> <encrypted-backup> <live-report> <capture-record> <source-marker>.");
+      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !liveReportPath || !capturePath || !markerPath) {
+      fail("usage: --verify-pre-ddl-source-app-recovery <bundle-dir> <failed-run-id> <failed-sha> <live-report> <capture-record> <source-marker>.");
     }
-    const [bundle, backupFileBytes, liveReport, recordText, markerText, allowlist] = await Promise.all([
-      readCutbackEvidenceBundle(directory), readFile(backupPath), readJson(liveReportPath), readFile(capturePath, "utf8"), readFile(markerPath, "utf8"),
+    const [bundle, liveReport, recordText, markerText, allowlist] = await Promise.all([
+      readCutbackEvidenceBundle(directory), readJson(liveReportPath), readFile(capturePath, "utf8"), readFile(markerPath, "utf8"),
       readJson(path.resolve("scripts/production-migration-verification-keys.json")),
     ]);
     const result = verifyPreDdlSourceAppRecovery({
-      ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes, liveReport, recordText, markerText,
+      ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, liveReport, recordText, markerText,
       repositoryPath: process.cwd(),
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);

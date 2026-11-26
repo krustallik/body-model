@@ -586,6 +586,12 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("source-app-only");
     expect(workflow).toContain("RECOVER_PRE_DDL_SOURCE_APP");
     expect(workflow).toContain('manifest?.id === "training-session-context-v1"');
+    expect(workflow).toContain('if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then');
+    expect(workflow).toContain("--source-app-only");
+    expect(workflow).toContain('FILES+=(production-backup.pgdump.enc)');
+    expect(workflow).toMatch(/if \[\[ "\$RECOVERY_MODE" == "database-and-app" \]\]; then\s+gh run download "\$PREFLIGHT_RUN_ID"/);
+    expect(workflow).not.toContain('if (run.status !== "completed" || run.conclusion !== "failure")');
+    expect(workflow).not.toContain('assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,\n            workflowPath: ".github/workflows/production-migration-preflight.yml"');
     expect(workflow).toContain('flock -n 9');
     const originCheck = workflow.indexOf('ORIGIN_URL="$(git remote get-url origin)"');
     const deployKey = workflow.indexOf('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"', originCheck);
@@ -610,13 +616,13 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain('current_main_safety_ci_url: ${{ steps.ci_gate.outputs.current_main_safety_ci_url }}');
     expect(workflow).toContain('run.head_sha === expectedSha && run.head_branch === "main" && run.event === "push"');
 
-    const recoveryStart = cutback.indexOf('if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then');
+    const recoveryStart = cutback.lastIndexOf('if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then');
     const normalDatabasePath = cutback.indexOf("# No production database mutation occurs until the complete plaintext archive", recoveryStart);
     expect(recoveryStart).toBeGreaterThan(-1);
     expect(normalDatabasePath).toBeGreaterThan(recoveryStart);
+    expect(cutback.indexOf('bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert')).toBeLessThan(recoveryStart);
     const recovery = cutback.slice(recoveryStart, normalDatabasePath);
     const ordered = [
-      'bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert',
       'BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1',
       '--verify-pre-ddl-source-app-recovery',
       'docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest',
@@ -627,6 +633,7 @@ describe("active production release entrypoints", () => {
     ].map((fragment) => recovery.indexOf(fragment));
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+    expect(recovery).not.toContain('APP_HOST="$APP_HOST"');
     expect(recovery).toContain('"$record_path" "$BODYCAST_MARKER_FILE_PATH"');
     expect(recovery).toContain('"$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk \'{print $1}\')" == "$marker_digest_before"');
     expect(recovery).not.toMatch(/write_bodycast_release_marker|clear_bodycast_release_marker|admin_sql|prisma migrate deploy|CREATE DATABASE|ALTER DATABASE/);

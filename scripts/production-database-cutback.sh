@@ -53,15 +53,21 @@ esac
 for name in authorization-envelope.json artifact-metadata.json preflight-evidence.json preflight-report.json preflight-result.json restore-result.json; do
   [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "signed cutback provenance is missing or unsafe: $name"
 done
+if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then
+  [[ -f "$CONTEXT_DIR/production-backup.pgdump.enc" && ! -L "$CONTEXT_DIR/production-backup.pgdump.enc" ]] \
+    || fail "the encrypted pre-DDL backup is missing or unsafe."
+fi
 
 bodycast_acquire_production_release_lock
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" && "$(git rev-parse HEAD)" == "$CURRENT_MAIN_SHA" ]] || fail "the host checkout is not the exact cutback tooling SHA."
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || fail "the production checkout is dirty."
 bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
 
-node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-context \
-  "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$CONTEXT_DIR/production-backup.pgdump.enc" \
-  > "$CONTEXT_DIR/cutback-context-verification.json"
+if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then
+  node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-context \
+    "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$CONTEXT_DIR/production-backup.pgdump.enc" \
+    > "$CONTEXT_DIR/cutback-context-verification.json"
+fi
 record_path="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
 [[ -f "$record_path" && ! -L "$record_path" ]] || fail "the immutable pre-DDL previous-app capture is missing."
 record_lines="$(wc -l < "$record_path" | tr -d ' ')"
@@ -182,20 +188,19 @@ if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
   record_digest_before="$(sha256sum "$record_path" | awk '{print $1}')"
   [[ "$record_digest_before" =~ ^[a-f0-9]{64}$ ]] || fail "the immutable previous-app capture digest is unavailable."
 
-  bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
-  bodycast_verify_exact_maintenance_route
-  bodycast_probe_public_maintenance "$maintenance_marker"
-  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
-  [[ "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$DB_CONTAINER_ID" \
-    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" == "healthy" ]] \
-    || fail "the exact production PostgreSQL container is not healthy immediately before source-app recovery."
-
   LIVE_REPORT="$CONTEXT_DIR/live-report.json"
-  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
+  BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
     bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
   node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-pre-ddl-source-app-recovery \
-    "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$CONTEXT_DIR/production-backup.pgdump.enc" \
+    "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" \
     "$LIVE_REPORT" "$record_path" "$BODYCAST_MARKER_FILE_PATH" > "$TMP_DIR/source-app-recovery-verification.json"
+
+  bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
+  [[ "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$DB_CONTAINER_ID" \
+    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" == "healthy" ]] \
+    || fail "the verified production PostgreSQL container changed before source-app recovery."
+  bodycast_verify_exact_maintenance_route
+  bodycast_probe_public_maintenance "$maintenance_marker"
 
   docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest
   [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$PREVIOUS_IMAGE_ID" ]] \
@@ -238,8 +243,6 @@ if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
     && "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest_before" \
     && "$(sha256sum "$record_path" | awk '{print $1}')" == "$record_digest_before" ]] \
     || fail "source app, database, source marker, or immutable recovery capture changed before serving commit."
-  docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-database-cutback.mjs" \
-    --verify-previous-app-runtime "$record_path" > /dev/null
   bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
   bodycast_publish_staged_route "$route_stage" || fail "source-app serving route replacement failed before the commit."
   route_committed=true
@@ -262,8 +265,7 @@ docker run --rm --volume "$ARCHIVE:/restore/pre-ddl.pgdump:ro" "$POSTGRES_IMAGE"
   pg_restore --list /restore/pre-ddl.pgdump >/dev/null
 
 # Recheck the exact signed target immediately before staging the restore.
-APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
-  bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
+bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-live-identity "$CONTEXT_DIR" "$LIVE_REPORT" >/dev/null
 stage_exists="$(admin_sql "SELECT count(*) FROM pg_database WHERE datname='${stage_db}';" | tr -d '[:space:]')"
 failed_exists="$(admin_sql "SELECT count(*) FROM pg_database WHERE datname='${failed_db}';" | tr -d '[:space:]')"

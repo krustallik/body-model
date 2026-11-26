@@ -330,6 +330,8 @@ describe("active production release entrypoints", () => {
     expect(cutback).toContain("bodycast_failed_${FAILED_MIGRATION_RUN_ID}");
     expect(cutback).toContain("bodycast-production-pre-ddl-release");
     expect(cutback).toContain('record_lines" == "12" || "$record_lines" == "13"');
+    expect(cutback).toContain('mapfile -t record < "$record_path"');
+    expect(cutback).not.toContain('mapfile -t record= < "$record_path"');
     expect(cutback).toContain('docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest');
     expect(workflow).toContain('echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"');
     expect(workflow).toContain('flock -n 9');

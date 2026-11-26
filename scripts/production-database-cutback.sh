@@ -66,7 +66,7 @@ record_path="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-rel
 [[ -f "$record_path" && ! -L "$record_path" ]] || fail "the immutable pre-DDL previous-app capture is missing."
 record_lines="$(wc -l < "$record_path" | tr -d ' ')"
 [[ "$record_lines" == "12" || "$record_lines" == "13" ]] || fail "the previous-app capture has an unsupported provenance schema."
-mapfile -t record= < "$record_path"
+mapfile -t record < "$record_path"
 PREVIOUS_PROVENANCE_KIND="${record[2]#provenanceKind=}"
 PREVIOUS_SHA="${record[3]#previousSha=}"
 PREVIOUS_IMAGE_ID="${record[4]#previousImageId=}"

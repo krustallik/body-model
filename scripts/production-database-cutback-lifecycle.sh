@@ -22,6 +22,5 @@ bodycast_cutback_failure_cleanup() {
     :
   fi
   if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" && ! -L "$TMP_DIR" ]]; then rm -rf -- "$TMP_DIR"; fi
-  if [[ "${route_committed:-false}" == "true" ]]; then return 0; fi
   return "$original_status"
 }

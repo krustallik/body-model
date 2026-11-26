@@ -535,23 +535,26 @@ describe("active production release entrypoints", () => {
     const promotion = readFileSync(resolve("scripts/production-database-cutback-promotion.sh"), "utf8");
     const promotionInvocation = 'if bodycast_cutback_promote_databases "$stage_db" "$failed_db"; then';
     const promotionIndex = cutback.indexOf(promotionInvocation);
+    const restoreStart = cutback.indexOf("# No production database mutation occurs until the complete plaintext archive");
     const ordered = [
       "--verify-context",
       "bodycast_verify_exact_maintenance_route",
       "production-writer-drain.sh\" --assert",
-      "pg_restore --list",
-      "--verify-live-identity",
-      "CREATE DATABASE ${stage_db}",
-      "--verify-restored",
-      "--verify-previous-app",
+      restoreStart,
+      cutback.indexOf("pg_restore --list", restoreStart),
+      cutback.indexOf("--verify-live-identity", restoreStart),
+      cutback.indexOf("CREATE DATABASE ${stage_db}", restoreStart),
+      cutback.indexOf("--verify-restored", restoreStart),
+      cutback.indexOf("--verify-previous-app", restoreStart),
       promotionIndex,
       cutback.indexOf("--verify-restored-identity", promotionIndex),
       "promoted-previous-app-compatibility",
       'write_bodycast_release_marker "$FAILED_RELEASE_SHA" database-restored',
-      "compose up -d --no-deps --no-build app",
-      "bodycast_publish_staged_route",
+      cutback.indexOf("compose up -d --no-deps --no-build app", restoreStart),
+      cutback.indexOf("bodycast_publish_staged_route", restoreStart),
       "clear_bodycast_release_marker",
-    ].map((fragment) => typeof fragment === "number" ? fragment : cutback.indexOf(fragment));
+    ].map((fragment, index) => typeof fragment === "number" ? fragment
+      : cutback.indexOf(fragment, index < 3 ? 0 : restoreStart));
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
     expect(cutback).toContain("RESTORE_PRE_DDL_DATABASE");
@@ -572,5 +575,49 @@ describe("active production release entrypoints", () => {
     expect(preflight).toContain("bodycast-production-pre-ddl-release");
     expect(readFileSync(resolve("scripts/production-database-cutback.mjs"), "utf8"))
       .toContain("assertPreviousAppProvenanceBoundToPreflight(record, preflightResult)");
+  });
+
+  it("recovers the captured source app without restoring or mutating the pre-DDL database", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-database-cutback.yml"), "utf8");
+    const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
+    const lifecycle = readFileSync(resolve("scripts/production-database-cutback-lifecycle.sh"), "utf8");
+    expect(workflow).toContain("source-app-only");
+    expect(workflow).toContain("RECOVER_PRE_DDL_SOURCE_APP");
+    expect(workflow).toContain('manifest?.id === "training-session-context-v1"');
+    expect(workflow).toContain('flock -n 9');
+    expect(workflow).toContain('git checkout --detach "$CURRENT_MAIN_SHA"');
+    expect(workflow).toContain('if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then');
+    expect(workflow).toContain('timeout 30m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" </dev/null');
+    expect(workflow).toContain('"repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100"');
+    expect(workflow).toContain('"repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?branch=main&event=push&per_page=100"');
+    expect(workflow).toContain('current_main_safety_ci_url=$SAFETY_CI_URL');
+    expect(workflow).toContain('id: ci_gate');
+    expect(workflow).toContain('current_main_ci_url: ${{ steps.ci_gate.outputs.current_main_ci_url }}');
+    expect(workflow).toContain('current_main_safety_ci_url: ${{ steps.ci_gate.outputs.current_main_safety_ci_url }}');
+    expect(workflow).toContain('run.head_sha === expectedSha && run.head_branch === "main" && run.event === "push"');
+
+    const recoveryStart = cutback.indexOf('if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then');
+    const normalDatabasePath = cutback.indexOf("# No production database mutation occurs until the complete plaintext archive", recoveryStart);
+    expect(recoveryStart).toBeGreaterThan(-1);
+    expect(normalDatabasePath).toBeGreaterThan(recoveryStart);
+    const recovery = cutback.slice(recoveryStart, normalDatabasePath);
+    const ordered = [
+      'bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert',
+      'BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1',
+      '--verify-pre-ddl-source-app-recovery',
+      'docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest',
+      'compose up -d --no-deps --no-build app',
+      '--verify-previous-app-runtime',
+      'bodycast_publish_staged_route',
+      'bodycast_probe_public_candidate_observational',
+    ].map((fragment) => recovery.indexOf(fragment));
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+    expect(recovery).toContain('"$record_path" "$BODYCAST_MARKER_FILE_PATH"');
+    expect(recovery).toContain('"$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk \'{print $1}\')" == "$marker_digest_before"');
+    expect(recovery).not.toMatch(/write_bodycast_release_marker|clear_bodycast_release_marker|admin_sql|prisma migrate deploy|CREATE DATABASE|ALTER DATABASE/);
+    expect(lifecycle).toContain('if [[ "${app_started:-false}" == "true" && "${route_committed:-false}" == "false" ]]; then');
+    expect(lifecycle).toContain('return "$original_status"');
+    expect(lifecycle).not.toContain('if [[ "${route_committed:-false}" == "true" ]]; then return 0; fi');
   });
 });

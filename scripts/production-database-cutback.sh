@@ -19,6 +19,7 @@ readonly CUTBACK_RUN_ATTEMPT="${BODYCAST_CUTBACK_RUN_ATTEMPT:-}"
 readonly CONTEXT_DIR="${BODYCAST_CUTBACK_CONTEXT_DIR:-}"
 readonly ARCHIVE_SHA256="${BODYCAST_CUTBACK_ARCHIVE_SHA256:-}"
 readonly CONFIRMATION="${BODYCAST_CUTBACK_CONFIRMATION:-}"
+readonly RECOVERY_MODE="${BODYCAST_CUTBACK_MODE:-database-and-app}"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 source "$ROOT_DIR/scripts/production-route-path.sh"
@@ -40,11 +41,14 @@ admin_sql() {
     _ "$1"
 }
 
-[[ "$CONFIRMATION" == "RESTORE_PRE_DDL_DATABASE" ]] || fail "the owner-only workflow confirmation is missing."
+case "$RECOVERY_MODE:$CONFIRMATION" in
+  database-and-app:RESTORE_PRE_DDL_DATABASE) [[ "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || fail "authenticated decrypted archive digest is missing." ;;
+  source-app-only:RECOVER_PRE_DDL_SOURCE_APP) [[ "$ARCHIVE_SHA256" == "-" ]] || fail "source-app recovery must not receive plaintext backup bytes." ;;
+  *) fail "the owner-only confirmation does not match the recovery mode." ;;
+esac
 [[ "$CURRENT_MAIN_SHA" =~ ^[a-f0-9]{40}$ && "$FAILED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || fail "current-main and failed-release SHA values must be full commits."
 [[ "$FAILED_MIGRATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$CUTBACK_RUN_ID" =~ ^[1-9][0-9]*$ \
   && "$CUTBACK_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || fail "workflow run IDs or attempt are invalid."
-[[ "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || fail "authenticated decrypted archive digest is missing."
 [[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-cutback-context-[1-9][0-9]*-[1-9][0-9]*$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || fail "the fixed signed-context directory is unavailable."
 for name in authorization-envelope.json artifact-metadata.json preflight-evidence.json preflight-report.json preflight-result.json restore-result.json; do
   [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "signed cutback provenance is missing or unsafe: $name"
@@ -115,8 +119,17 @@ fi
 
 marker_status=1
 if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
-[[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_RELEASE_SHA" == "$FAILED_RELEASE_SHA" \
-  && "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ ]] || fail "the exact failed-release marker is absent, conflicting, or outside the reviewed cutback states."
+if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
+  [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
+    && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" && "$BODYCAST_MARKER_STATE" == "app-ready" \
+    && "$BODYCAST_MARKER_RELEASE_SHA" == "$PREVIOUS_SHA" \
+    && "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" ]] \
+    || fail "source-app recovery requires the exact retained Auth app-ready marker and its captured release SHA."
+else
+  [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_RELEASE_SHA" == "$FAILED_RELEASE_SHA" \
+    && "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ ]] \
+    || fail "the exact failed-release marker is absent, conflicting, or outside the reviewed cutback states."
+fi
 SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
 [[ "$SOURCE_MARKER_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "the failed-release marker digest is unavailable."
 bodycast_verify_exact_maintenance_route
@@ -126,6 +139,8 @@ app_names="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Na
 [[ -z "$app_names" ]] || fail "an app container exists; remove/stop it under the reviewed maintenance procedure before cutback."
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 [[ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" == "healthy" ]] || fail "the existing PostgreSQL container is not healthy."
+DB_CONTAINER_ID="$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")"
+[[ "$DB_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]] || fail "the production PostgreSQL container identity is unavailable."
 
 TMP_DIR="$(mktemp -d "/dev/shm/bodycast-cutback-${CUTBACK_RUN_ID}.XXXXXX")" || fail "a private tmpfs staging directory is unavailable."
 chmod 700 "$TMP_DIR"
@@ -159,6 +174,83 @@ cleanup_cutback() {
   exit $?
 }
 trap cleanup_cutback EXIT
+
+if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
+  [[ "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ && "$PREVIOUS_SHA" == "$BODYCAST_MARKER_RELEASE_SHA" ]] \
+    || fail "source-app recovery cannot select an unproven or non-marker app SHA."
+  marker_digest_before="$SOURCE_MARKER_DIGEST"
+  record_digest_before="$(sha256sum "$record_path" | awk '{print $1}')"
+  [[ "$record_digest_before" =~ ^[a-f0-9]{64}$ ]] || fail "the immutable previous-app capture digest is unavailable."
+
+  bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
+  bodycast_verify_exact_maintenance_route
+  bodycast_probe_public_maintenance "$maintenance_marker"
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+  [[ "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$DB_CONTAINER_ID" \
+    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" == "healthy" ]] \
+    || fail "the exact production PostgreSQL container is not healthy immediately before source-app recovery."
+
+  LIVE_REPORT="$CONTEXT_DIR/live-report.json"
+  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
+    bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
+  node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-pre-ddl-source-app-recovery \
+    "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$CONTEXT_DIR/production-backup.pgdump.enc" \
+    "$LIVE_REPORT" "$record_path" "$BODYCAST_MARKER_FILE_PATH" > "$TMP_DIR/source-app-recovery-verification.json"
+
+  docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest
+  [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$PREVIOUS_IMAGE_ID" ]] \
+    || fail "source app tag differs from the captured immutable image ID."
+  app_started=true
+  BODYCAST_DEPLOY_SHA="$PREVIOUS_SHA" compose up -d --no-deps --no-build app
+  app_started_container_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")"
+  [[ "$app_started_container_id" =~ ^[a-f0-9]{64}$ && "$app_started_container_id" != "$PREVIOUS_CONTAINER_ID" ]] \
+    || fail "source app was not recreated as a new container."
+  app_ready=false
+  for attempt in $(seq 1 60); do
+    app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    app_image="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    app_container_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    app_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    if [[ "$app_sha" == "$PREVIOUS_SHA" && "$app_image" == "$PREVIOUS_IMAGE_ID" \
+      && "$app_container_id" == "$app_started_container_id" && "$app_health" == "healthy" ]]; then
+      app_ready=true
+      break
+    fi
+    [[ "$attempt" == "60" ]] || sleep 5
+  done
+  [[ "$app_ready" == "true" ]] || fail "the captured source app did not become healthy on its unchanged live schema."
+  docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-database-cutback.mjs" \
+    --verify-previous-app-runtime "$record_path" > /dev/null
+  docker exec "$APP_CONTAINER" wget --quiet --tries=1 --output-document=- http://127.0.0.1:3000/api/health \
+    | grep -q '"status":"ok"' || fail "the source app local health endpoint failed."
+  bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
+  bodycast_verify_exact_maintenance_route
+  bodycast_probe_public_maintenance "$maintenance_marker"
+  bodycast_assert_safe_routes_location
+  bodycast_stage_serving_route_config
+  route_stage="$BODYCAST_ROUTE_STAGE_PATH"
+  docker exec -i "$CADDY_CONTAINER" caddy validate --adapter caddyfile --config - < "$route_stage"
+  [[ "$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" == "$PREVIOUS_SHA" \
+    && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$PREVIOUS_IMAGE_ID" \
+    && "$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")" == "$app_started_container_id" \
+    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" \
+    && "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$DB_CONTAINER_ID" \
+    && "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest_before" \
+    && "$(sha256sum "$record_path" | awk '{print $1}')" == "$record_digest_before" ]] \
+    || fail "source app, database, source marker, or immutable recovery capture changed before serving commit."
+  docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-database-cutback.mjs" \
+    --verify-previous-app-runtime "$record_path" > /dev/null
+  bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
+  bodycast_publish_staged_route "$route_stage" || fail "source-app serving route replacement failed before the commit."
+  route_committed=true
+  route_stage=""
+  docker exec "$CADDY_CONTAINER" caddy reload --address unix//run/caddy-admin/admin.sock --config /etc/caddy/Caddyfile \
+    || fail "serving route was committed but Caddy reload failed; the healthy app was retained for recovery."
+  bodycast_probe_public_candidate_observational \
+    || fail "serving route was committed but the public app probe failed; the healthy app and route were retained for recovery."
+  echo "SOURCE_APP_RECOVERY_VERIFIED: restored the captured source app on unchanged PostgreSQL; marker and capture are unchanged."
+  exit 0
+fi
 
 # No production database mutation occurs until the complete plaintext archive
 # has arrived over the authenticated SSH stream and its digest is verified.

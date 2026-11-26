@@ -1,5 +1,5 @@
 name: Owner-authorized production database cutback
-run-name: Restore pre-DDL database for failed migration ${{ inputs.failed_migration_run_id }}
+run-name: Recover ${{ inputs.recovery_mode }} after migration ${{ inputs.failed_migration_run_id }}
 
 on:
   workflow_dispatch:
@@ -12,8 +12,16 @@ on:
         description: Failed owner-dispatched production-migrate run whose signed pre-DDL backup is to be restored
         required: true
         type: string
+      recovery_mode:
+        description: Recover the exact source app on the unchanged database, or restore the signed pre-DDL database and source app
+        required: true
+        type: choice
+        options:
+          - source-app-only
+          - database-and-app
+        default: database-and-app
       confirmation:
-        description: Type RESTORE_PRE_DDL_DATABASE to authorize the verified manual cutback
+        description: Type RECOVER_PRE_DDL_SOURCE_APP or RESTORE_PRE_DDL_DATABASE to match the selected recovery mode
         required: true
         type: string
 
@@ -33,6 +41,8 @@ jobs:
     timeout-minutes: 20
     outputs:
       current_main_sha: ${{ steps.gate.outputs.current_main_sha }}
+      current_main_ci_url: ${{ steps.ci_gate.outputs.current_main_ci_url }}
+      current_main_safety_ci_url: ${{ steps.ci_gate.outputs.current_main_safety_ci_url }}
       failed_release_sha: ${{ steps.gate.outputs.failed_release_sha }}
       manifest_id: ${{ steps.gate.outputs.manifest_id }}
       failed_attempt: ${{ steps.gate.outputs.failed_attempt }}
@@ -42,6 +52,7 @@ jobs:
       backup_artifact_digest: ${{ steps.gate.outputs.backup_artifact_digest }}
       backup_artifact_name: ${{ steps.gate.outputs.backup_artifact_name }}
       backup_file_digest: ${{ steps.gate.outputs.backup_file_digest }}
+      recovery_mode: ${{ steps.gate.outputs.recovery_mode }}
     steps:
       - name: Checkout exact current main verification tools
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -50,17 +61,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Verify current owner dispatch, exact current main, and green CI
+        id: ci_gate
         env:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           CURRENT_MAIN_SHA: ${{ inputs.current_main_sha }}
+          RECOVERY_MODE: ${{ inputs.recovery_mode }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == "refs/heads/main" \
-            && "$DISPATCH_ACTOR_ID" == "126446430" && "$CONFIRMATION" == "RESTORE_PRE_DDL_DATABASE" ]] || {
+            && "$DISPATCH_ACTOR_ID" == "126446430" ]] || {
             echo "::error::Only the pinned owner may dispatch the explicitly confirmed cutback from canonical main."; exit 1;
           }
+          case "$RECOVERY_MODE:$CONFIRMATION" in
+            source-app-only:RECOVER_PRE_DDL_SOURCE_APP|database-and-app:RESTORE_PRE_DDL_DATABASE) ;;
+            *) echo "::error::Confirmation must match the selected recovery mode."; exit 1 ;;
+          esac
           [[ "$CURRENT_MAIN_SHA" =~ ^[0-9a-f]{40}$ && "$CURRENT_MAIN_SHA" == "$GITHUB_SHA" ]] || {
             echo "::error::Cutback tooling SHA must equal this workflow's exact main SHA."; exit 1;
           }
@@ -79,20 +96,36 @@ jobs:
             && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$CURRENT_MAIN_SHA" ]] || {
             echo "::error::Canonical main advanced; no cutback credentials have been accessed."; exit 1;
           }
-          echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"
           gh api --paginate --jq '.workflow_runs[] | @json' \
             "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" > "$RUNNER_TEMP/ci-runs.ndjson"
-          CI_URL="$(EXPECTED_SHA="$CURRENT_MAIN_SHA" node --input-type=module -e '
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?branch=main&event=push&per_page=100" > "$RUNNER_TEMP/safety-ci-runs.ndjson"
+          CI_URLS="$(node --input-type=module - "$RUNNER_TEMP/ci-runs.ndjson" "$RUNNER_TEMP/safety-ci-runs.ndjson" "$CURRENT_MAIN_SHA" <<'NODE'
           import { readFileSync } from "node:fs";
-          const runs = readFileSync(process.argv[1], "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse)
-            .filter((run) => run.head_sha === process.env.EXPECTED_SHA && run.head_branch === "main" && run.event === "push");
-          runs.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
-          const run = runs[0];
-          if (!run || run.status !== "completed" || run.conclusion !== "success") throw new Error("Exact current-main CI is not complete and successful.");
-          process.stdout.write(run.html_url);
-          ' "$RUNNER_TEMP/ci-runs.ndjson")"
+          const expectedSha = process.argv[4];
+          const paths = process.argv.slice(2, 4);
+          const urls = paths.map((path, index) => {
+            const runs = readFileSync(path, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse)
+              .filter((run) => run.head_sha === expectedSha && run.head_branch === "main" && run.event === "push");
+            runs.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
+            const run = runs[0];
+            if (!run || run.status !== "completed" || run.conclusion !== "success") {
+              throw new Error(`Exact current-main ${index === 0 ? "App CI" : "migration-safety CI"} is not complete and successful.`);
+            }
+            return run.html_url;
+          });
+          process.stdout.write(urls.join("\n"));
+          NODE
+          )"
+          APP_CI_URL="${CI_URLS%%$'\n'*}"
+          SAFETY_CI_URL="${CI_URLS#*$'\n'}"
+          [[ "$APP_CI_URL" =~ ^https://github.com/krustallik/body-model/actions/runs/[1-9][0-9]*$ \
+            && "$SAFETY_CI_URL" =~ ^https://github.com/krustallik/body-model/actions/runs/[1-9][0-9]*$ ]] || {
+            echo "::error::Exact-main CI evidence URLs are malformed."; exit 1;
+          }
           echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"
-          echo "current_main_ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
+          echo "current_main_ci_url=$APP_CI_URL" >> "$GITHUB_OUTPUT"
+          echo "current_main_safety_ci_url=$SAFETY_CI_URL" >> "$GITHUB_OUTPUT"
       - name: Validate failed migration run identity and resolve its signed preflight artifacts
         id: gate
         env:
@@ -100,6 +133,7 @@ jobs:
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           CURRENT_MAIN_SHA: ${{ inputs.current_main_sha }}
           FAILED_MIGRATION_RUN_ID: ${{ inputs.failed_migration_run_id }}
+          RECOVERY_MODE: ${{ inputs.recovery_mode }}
         run: |
           set -Eeuo pipefail
           [[ "$FAILED_MIGRATION_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Failed migration run ID must be numeric."; exit 1; }
@@ -136,9 +170,13 @@ jobs:
           const envelope = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const { getProductionMigrationManifest } = await import("./scripts/production-migration-manifests.mjs");
           const claims = envelope?.payload;
-          if (envelope?.algorithm !== "Ed25519" || !claims || claims.releaseSha !== process.env.FAILED_SHA
+          const mode = process.env.RECOVERY_MODE;
+          const manifest = claims ? getProductionMigrationManifest(claims.manifestId) : null;
+          const supported = mode === "database-and-app" ? manifest?.cutbackSupported === true
+            : mode === "source-app-only" && manifest?.id === "training-session-context-v1";
+          if (!supported || envelope?.algorithm !== "Ed25519" || !claims || claims.releaseSha !== process.env.FAILED_SHA
             || claims.workflowRunId !== process.env.FAILED_MIGRATION_RUN_ID || claims.workflowRunAttempt !== Number(process.env.FAILED_ATTEMPT)
-            || !getProductionMigrationManifest(claims.manifestId).cutbackSupported || !/^[1-9][0-9]*$/.test(claims.preflightRunId)
+            || !/^[1-9][0-9]*$/.test(claims.preflightRunId)
             || !Number.isSafeInteger(claims.preflightRunAttempt) || !/^[1-9][0-9]*$/.test(claims.backupArtifactId)) {
             throw new Error("Migration envelope does not select the failed migration and its fixed reviewed backup context.");
           }
@@ -191,9 +229,10 @@ jobs:
           echo "backup_artifact_digest=$(jq -r '.backupArtifactDigest' "$RUNNER_TEMP/verified-cutback-context.json")" >> "$GITHUB_OUTPUT"
           echo "backup_artifact_name=$BACKUP_NAME" >> "$GITHUB_OUTPUT"
           echo "backup_file_digest=$(jq -r '.backupFileDigest' "$RUNNER_TEMP/verified-cutback-context.json")" >> "$GITHUB_OUTPUT"
+          echo "recovery_mode=$RECOVERY_MODE" >> "$GITHUB_OUTPUT"
 
   restore:
-    name: Restore verified pre-DDL backup and exact previous app under maintenance
+    name: Recover exact previous app or restore verified pre-DDL database
     needs: authorize
     if: needs.authorize.outputs.current_main_sha != ''
     runs-on: ubuntu-latest
@@ -295,11 +334,14 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
-          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          RECOVERY_MODE: ${{ needs.authorize.outputs.recovery_mode }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ needs.authorize.outputs.recovery_mode == 'database-and-app' && secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY || '' }}
         run: |
           set -Eeuo pipefail
           : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
-          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
+          if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then
+            node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
+          fi
           [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid protected SSH host/user."; exit 1; }
           [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH port."; exit 1; }
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ && "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::Invalid pinned production host/path."; exit 1; }
@@ -313,6 +355,7 @@ jobs:
           echo "BODYCAST_CUTBACK_SSH_KEY=$RUNNER_TEMP/bodycast-cutback-ssh/id" >> "$GITHUB_ENV"
           echo "BODYCAST_CUTBACK_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-cutback-ssh/known_hosts" >> "$GITHUB_ENV"
       - name: Authenticate encrypted backup before any production database change
+        if: needs.authorize.outputs.recovery_mode == 'database-and-app'
         env:
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
         run: |
@@ -359,7 +402,8 @@ jobs:
           FAILED_RELEASE_SHA: ${{ needs.authorize.outputs.failed_release_sha }}
           FAILED_MIGRATION_RUN_ID: ${{ inputs.failed_migration_run_id }}
           CONFIRMATION: ${{ inputs.confirmation }}
-          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          RECOVERY_MODE: ${{ needs.authorize.outputs.recovery_mode }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ needs.authorize.outputs.recovery_mode == 'database-and-app' && secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY || '' }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
@@ -373,13 +417,17 @@ jobs:
           APP_HOST="$(printf '%s' "$7" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$8" | base64 --decode)"
           CONTEXT_DIR="$(printf '%s' "$9" | base64 --decode)"
-          CONFIRMATION="${10}"; ARCHIVE_SHA256="${11}"
+          CONFIRMATION="${10}"; ARCHIVE_SHA256="${11}"; RECOVERY_MODE="${12}"
           [[ "$CURRENT_MAIN_SHA" =~ ^[a-f0-9]{40}$ && "$FAILED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ \
             && "$FAILED_RUN_ID" =~ ^[1-9][0-9]*$ && "$CUTBACK_RUN_ID" =~ ^[1-9][0-9]*$ \
             && "$CUTBACK_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ \
             && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
-            && "$CADDY_ROUTES_PATH" == /* && "$CONFIRMATION" == RESTORE_PRE_DDL_DATABASE \
-            && "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid fixed cutback request." >&2; exit 2; }
+            && "$CADDY_ROUTES_PATH" == /* ]] || { echo "Invalid fixed cutback request." >&2; exit 2; }
+          case "$RECOVERY_MODE:$CONFIRMATION" in
+            source-app-only:RECOVER_PRE_DDL_SOURCE_APP) [[ "$ARCHIVE_SHA256" == "-" ]] || exit 2 ;;
+            database-and-app:RESTORE_PRE_DDL_DATABASE) [[ "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || exit 2 ;;
+            *) echo "Invalid fixed recovery mode or confirmation." >&2; exit 2 ;;
+          esac
           [[ "$CONTEXT_DIR" == "/tmp/bodycast-cutback-context-$CUTBACK_RUN_ID-$CUTBACK_RUN_ATTEMPT" && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
@@ -403,19 +451,26 @@ jobs:
           export BODYCAST_CUTBACK_CONTEXT_DIR="$CONTEXT_DIR"
           export BODYCAST_CUTBACK_ARCHIVE_SHA256="$ARCHIVE_SHA256"
           export BODYCAST_CUTBACK_CONFIRMATION="$CONFIRMATION"
+          export BODYCAST_CUTBACK_MODE="$RECOVERY_MODE"
           export APP_HOST CADDY_ROUTES_PATH
           bash scripts/production-database-cutback.sh
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$CURRENT_MAIN_SHA' '$FAILED_RELEASE_SHA' '$FAILED_MIGRATION_RUN_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$CONTEXT_B64' '$CONFIRMATION' '$BODYCAST_CUTBACK_PLAINTEXT_SHA256'"
+          ARCHIVE_SHA256="-"
+          if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then ARCHIVE_SHA256="$BODYCAST_CUTBACK_PLAINTEXT_SHA256"; fi
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$CURRENT_MAIN_SHA' '$FAILED_RELEASE_SHA' '$FAILED_MIGRATION_RUN_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$CONTEXT_B64' '$CONFIRMATION' '$ARCHIVE_SHA256' '$RECOVERY_MODE'"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_CUTBACK_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_CUTBACK_KNOWN_HOSTS" -o ConnectTimeout=10)
-          node --input-type=module - "$BODYCAST_CUTBACK_BUNDLE/production-backup.pgdump.enc" <<'NODE' | timeout 120m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
+          if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then
+            node --input-type=module - "$BODYCAST_CUTBACK_BUNDLE/production-backup.pgdump.enc" <<'NODE' | timeout 120m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
           import { decodeBackupKey, decryptBackupToWritable } from "./scripts/production-backup-envelope.mjs";
           const key = decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);
           await decryptBackupToWritable(process.argv[2], process.stdout, key);
           key.fill(0);
           NODE
+          else
+            timeout 30m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" </dev/null
+          fi
       - name: Remove temporary plaintext backup and SSH material
         if: always()
         run: |

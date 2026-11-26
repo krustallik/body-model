@@ -4,10 +4,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalSha256, verifyHistoricalMigrationAuthorizationEnvelope } from "./production-migration-authorization.mjs";
-import { verifyRestoredBackup } from "./production-migration-preflight.mjs";
+import { assertProductionDatabaseIdentityMatches, verifyRestoredBackup } from "./production-migration-preflight.mjs";
 import { getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { assertRollbackAppCanReadProgramlessSessions } from "./production-app-capabilities.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
+import { validateAuthMarkerForTrainingMigrationHandoff } from "./production-schema-deploy-handoff.mjs";
 import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity,
   matchesPostgresDatabaseIdentityDigest, postgresDatabaseIdentityHostProjection, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 import {
@@ -182,11 +183,35 @@ export function verifyPreviousReleaseMigrationCompatibility({ repositoryPath, pr
     || !row.finishedAt || row.rolledBackAt)) {
     fail("restored Prisma migration history is not the exact completed migration tree of the previous app SHA.");
   }
-  for (const row of rows) {
-    const relative = `prisma/migrations/${row.name}/migration.sql`;
-    const bytes = execFileSync("git", ["cat-file", "blob", `${previousSha}:${relative}`], {
-      cwd: repositoryPath, encoding: "buffer", stdio: ["ignore", "pipe", "pipe"],
+  let blobs;
+  try {
+    const requests = names.map((name) => `${previousSha}:prisma/migrations/${name}/migration.sql`).join("\n");
+    const output = execFileSync("git", ["cat-file", "--batch"], {
+      cwd: repositoryPath, input: `${requests}\n`, maxBuffer: 64 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    blobs = [];
+    let offset = 0;
+    for (const name of names) {
+      const headerEnd = output.indexOf(0x0a, offset);
+      const header = headerEnd < 0 ? "" : output.toString("ascii", offset, headerEnd);
+      const match = /^[a-f0-9]{40,64} blob ([0-9]+)$/.exec(header);
+      const size = match ? Number(match[1]) : NaN;
+      const start = headerEnd + 1;
+      const end = start + size;
+      if (!Number.isSafeInteger(size) || size < 0 || end >= output.length || output[end] !== 0x0a) {
+        fail(`previous app migration SQL is unavailable or malformed: ${name}.`);
+      }
+      blobs.push(output.subarray(start, end));
+      offset = end + 1;
+    }
+    if (offset !== output.length) fail("previous app migration SQL batch contains unexpected trailing output.");
+  } catch (error) {
+    if (error.message.startsWith("Production database cutback blocked:")) throw error;
+    fail(`could not read the previous app migration SQL batch (${error.message}).`);
+  }
+  for (const [index, row] of rows.entries()) {
+    const bytes = blobs[index];
     const checksum = createHash("sha256").update(bytes).digest("hex");
     if (checksum !== row.checksum) fail(`restored migration checksum differs from previous app source: ${row.name}.`);
   }
@@ -243,6 +268,83 @@ export function verifyPreviousAppMigrationCompatibility({
     migrationHistoryDigest: sourceDigests.migrationHistoryDigest };
 }
 
+export function verifyPreDdlSourceAppRecovery({
+  envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult, allowlist,
+  expectedFailedRunId, expectedFailedSha, backupFileBytes, liveReport, recordText, markerText, repositoryPath,
+}) {
+  const context = verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence, preflightReport,
+    preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
+  const manifest = getProductionMigrationManifest(context.claims.manifestId);
+  if (manifest.id !== "training-session-context-v1") {
+    fail("source-app recovery is only supported for the exact Training migration preflight contract.");
+  }
+
+  const sourceMarker = preflightResult?.sourceReleaseMarker;
+  if (!sourceMarker || sourceMarker.schemaVersion !== 3 || sourceMarker.manifestId !== "auth-multiuser-v1"
+    || sourceMarker.state !== "app-ready" || sourceMarker.deploySha !== sourceMarker.liveAppSha
+    || !/^[a-f0-9]{40}$/.test(String(sourceMarker.deploySha ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(sourceMarker.digest ?? "")) || typeof markerText !== "string") {
+    fail("the signed preflight does not contain a valid Auth app-ready source marker witness.");
+  }
+  if (createHash("sha256").update(markerText).digest("hex") !== sourceMarker.digest) {
+    fail("the current durable Auth marker bytes differ from the exact marker captured by the signed preflight.");
+  }
+  let validatedMarker;
+  try {
+    validatedMarker = validateAuthMarkerForTrainingMigrationHandoff(markerText, {
+      liveAppSha: sourceMarker.liveAppSha, repositoryPath,
+    });
+  } catch (error) {
+    fail(`the captured Auth source marker is not compatible with the current repository: ${error.message}`);
+  }
+  const currentWitness = { ...validatedMarker, liveAppSha: sourceMarker.liveAppSha };
+  if (canonicalSha256(currentWitness) !== canonicalSha256(sourceMarker)) {
+    fail("the durable Auth marker fields differ from the signed preflight source witness.");
+  }
+
+  try { assertProductionDatabaseIdentityMatches(preflightResult.identity, liveReport?.identity); }
+  catch (error) { fail(`live PostgreSQL identity differs from the exact pre-DDL source: ${error.message}`); }
+  if (canonicalSha256(liveReport?.identity) !== context.claims.productionIdentityDigest
+    || liveReport?.logicalDataFingerprint !== preflightResult.logicalDataFingerprint
+    || liveReport?.programlessSessionCount !== preflightResult.programlessSessionCount) {
+    fail("live database identity, full data/sequence fingerprint, or programless-session count changed after preflight.");
+  }
+  const baseline = verifyRestoredBackup(preflightReport, liveReport);
+  if (!baseline.verified) fail(`live schema, migration history, or readable baseline differs from the signed pre-DDL snapshot: ${baseline.blockers.join(" ")}`);
+  if (liveReport?.writerDrain?.activeClientBackends?.length !== 0
+    || liveReport?.writerDrain?.topology?.ready !== true
+    || !Array.isArray(liveReport?.conflictingLocks) || liveReport.conflictingLocks.length !== 0
+    || !Array.isArray(liveReport?.preparedTransactions) || liveReport.preparedTransactions.length !== 0) {
+    fail("live production has a database writer, conflicting lock, prepared transaction, or incomplete topology observation.");
+  }
+
+  let previousApp;
+  let previousRecord;
+  try {
+    previousRecord = parsePreviousAppProvenance(recordText);
+    previousApp = verifyPreviousAppMigrationCompatibility({
+      recordText, targetSha: expectedFailedSha, contextVerified: context.verified,
+      preflightResultDigest: context.preflightResultDigest, preflightResult,
+      restoredReport: liveReport, restoreResult, readabilityReport: liveReport, repositoryPath,
+    });
+  } catch (error) {
+    fail(`the captured previous app is not compatible with the unchanged live database: ${error.message}`);
+  }
+  if (previousRecord.previousSha !== sourceMarker.deploySha) {
+    fail("the immutable previous app SHA differs from the signed Auth marker and live app witness.");
+  }
+  return {
+    verified: true,
+    manifestId: manifest.id,
+    productionIdentityDigest: context.claims.productionIdentityDigest,
+    liveDataFingerprint: liveReport.logicalDataFingerprint,
+    sourceMarkerDigest: sourceMarker.digest,
+    previousAppSha: previousRecord.previousSha,
+    previousImageId: previousRecord.previousImageId,
+    migrationCount: previousApp.migrationCount ?? previousApp.restoredMigrationCount,
+  };
+}
+
 export function verifyRecreatedPreviousAppRuntime({ recordText, container }) {
   const record = parsePreviousAppProvenance(recordText);
   const labels = container?.Config?.Labels;
@@ -287,6 +389,26 @@ async function main() {
       backupArtifactId: result.claims.backupArtifactId, backupArtifactDigest: result.claims.backupArtifactDigest,
       backupFileDigest: result.backupFileDigest, productionIdentityDigest: result.claims.productionIdentityDigest,
       preflightResultDigest: result.preflightResultDigest }) + "\n");
+    return;
+  }
+  if (mode === "--verify-pre-ddl-source-app-recovery") {
+    const [directory, expectedFailedRunId, expectedFailedSha, backupPath, liveReportPath, capturePath, markerPath] = args;
+    if (!directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "")
+      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath || !liveReportPath || !capturePath || !markerPath) {
+      fail("usage: --verify-pre-ddl-source-app-recovery <bundle-dir> <failed-run-id> <failed-sha> <encrypted-backup> <live-report> <capture-record> <source-marker>.");
+    }
+    const values = await Promise.all(BUNDLE_FILES.map((name) => readFile(path.join(directory, name), "utf8")));
+    const [envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.map(JSON.parse);
+    const [backupFileBytes, liveReport, recordText, markerText, allowlist] = await Promise.all([
+      readFile(backupPath), readJson(liveReportPath), readFile(capturePath, "utf8"), readFile(markerPath, "utf8"),
+      readJson(path.resolve("scripts/production-migration-verification-keys.json")),
+    ]);
+    const result = verifyPreDdlSourceAppRecovery({
+      envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult, allowlist,
+      expectedFailedRunId, expectedFailedSha, backupFileBytes, liveReport, recordText, markerText,
+      repositoryPath: process.cwd(),
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
   if (mode === "--verify-live-identity") {

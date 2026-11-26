@@ -260,7 +260,7 @@ jobs:
           }
           cd -- "$deploy_path"
           APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" \
-            bash scripts/production-writer-drain.sh --assert
+            bash scripts/production-writer-drain.sh --assert >/dev/null
           APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
             bash scripts/production-db-target.sh --preflight bodycast-db-prod
           REMOTE

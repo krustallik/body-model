@@ -81,7 +81,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");
     expect(workflow).toContain("export GIT_OPTIONAL_LOCKS=0");
     expect(workflow).toContain("BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1");
-    expect(workflow).toContain("bash scripts/production-writer-drain.sh --assert");
+    expect(workflow).toContain("bash scripts/production-writer-drain.sh --assert >/dev/null");
     expect(workflow).toContain("bash scripts/production-db-target.sh --preflight bodycast-db-prod");
     const databaseDiagnostic = workflow.slice(workflow.indexOf("      - name: Inspect production database schema read-only"), workflow.indexOf("      - name: Remove temporary SSH credentials"));
     const writerDrainGateIndex = databaseDiagnostic.indexOf("bash scripts/production-writer-drain.sh --assert");

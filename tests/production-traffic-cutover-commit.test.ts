@@ -272,7 +272,7 @@ describe("serving-route commit boundary", () => {
     expect(retainedMarker).toContain(`deploySha=${trainingReleaseSha}`);
     expect(retainedMarker).toContain("state=app-ready");
     expect(result.stdout).toContain("Auth schema handoff retained at app-ready");
-    expect(result.stdout).toContain("Exact Auth 77-migration SHA is serving");
+    expect(result.stdout).toContain("Exact Auth app-ready SHA is serving");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
     expect(events).toContain("unified-v4-raw-fingerprint-assertion");
     expect(events).toContain("training-refresh-generations-current");

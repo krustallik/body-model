@@ -123,6 +123,11 @@ describe("canonical PostgreSQL endpoint identity", () => {
     expect(targetStep).toContain('[[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ &&');
     expect(targetStep).toContain("DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}");
     expect(targetStep).toContain('DEPLOY_PATH_B64="$(printf \'%s\' "$DEPLOY_PATH" | base64 -w0)"');
+    const releaseCheckout = workflow.indexOf('git checkout --detach "$RELEASE_SHA"', maintenanceStart);
+    const enterMaintenance = workflow.indexOf('exec bash scripts/production-traffic-cutover.sh maintenance', maintenanceStart);
+    expect(releaseCheckout).toBeGreaterThan(maintenanceStart);
+    expect(releaseCheckout).toBeLessThan(enterMaintenance);
+    expect(workflow.slice(maintenanceStart, enterMaintenance)).not.toContain('getProductionMigrationManifest(');
     expect(targetStep).toContain('"docker exec \'$CONTAINER_ID\' pg_dump --version"');
     expect(targetStep).toContain("RUNNER_DOCKER_ROOT=\"$(docker info --format '{{.DockerRootDir}}')\"");
     expect(targetStep).toContain("RUNNER_DOCKER_FREE_BYTES");

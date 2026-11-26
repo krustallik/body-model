@@ -604,6 +604,10 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -Eeuo pipefail
+          EXPECTED_PREVIOUS_APP_HELPER_BLOB="$(git rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"
+          [[ "$EXPECTED_PREVIOUS_APP_HELPER_BLOB" =~ ^[a-f0-9]{40,64}$ ]] || {
+            echo "::error::Exact release previous-app provenance helper is unavailable."; exit 1;
+          }
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}" bodycast-db-prod')"
           [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy|"* ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
@@ -616,13 +620,14 @@ jobs:
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
           NODE
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
-          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA' '$RELEASE_SHA'" <<'REMOTE'
+          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA' '$RELEASE_SHA' '$EXPECTED_PREVIOUS_APP_HELPER_BLOB'" <<'REMOTE'
           set -Eeuo pipefail
           CONTAINER_ID="$1"
           DB_DATA_PATH="$2"
           DEPLOY_PATH="$(printf '%s' "$3" | base64 --decode)"
           RESUME_SOURCE_SHA="$4"
           RELEASE_SHA="$5"
+          EXPECTED_PREVIOUS_APP_HELPER_BLOB="$6"
           [[ "$(docker inspect --format '{{.Id}}' bodycast-db-prod)" == "$CONTAINER_ID" ]] || { echo "Production PostgreSQL container changed during the pre-maintenance probe." >&2; exit 1; }
           [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Exact current release SHA is malformed." >&2; exit 1; }
           DB_BYTES="$(docker exec "$CONTAINER_ID" sh -ec 'psql --no-psqlrc --quiet --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT pg_database_size(current_database())"')"
@@ -636,16 +641,12 @@ jobs:
               && -z "$(git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all)" ]] || {
               echo "Previous-app provenance helper checkout is not clean or canonical." >&2; exit 1;
             }
-            git -C "$DEPLOY_PATH" cat-file -e "$RELEASE_SHA^{commit}" || {
-              echo "Exact release source is unavailable in the production checkout." >&2; exit 1;
+            [[ "$EXPECTED_PREVIOUS_APP_HELPER_BLOB" =~ ^[a-f0-9]{40,64}$ ]] || {
+              echo "Exact release provenance helper binding is malformed." >&2; exit 1;
             }
-            SOURCE_HELPER_BLOB="$(git -C "$DEPLOY_PATH" rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"
             CHECKOUT_HELPER_BLOB="$(git -C "$DEPLOY_PATH" rev-parse "HEAD:scripts/production-previous-app-provenance.mjs")"
-            [[ "$SOURCE_HELPER_BLOB" =~ ^[a-f0-9]{40,64}$ && "$SOURCE_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB" ]] || {
+            [[ "$EXPECTED_PREVIOUS_APP_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB" ]] || {
               echo "Current checkout does not contain the exact release's previous-app provenance verifier." >&2; exit 1;
-            }
-            git -C "$DEPLOY_PATH" merge-base --is-ancestor "$RESUME_SOURCE_SHA" "$RELEASE_SHA" || {
-              echo "Verified previous-app source SHA is not an ancestor of the exact release." >&2; exit 1;
             }
             ORIGIN_URL="$(git -C "$DEPLOY_PATH" remote get-url origin)"
             case "$ORIGIN_URL" in

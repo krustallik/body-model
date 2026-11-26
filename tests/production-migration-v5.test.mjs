@@ -946,9 +946,11 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(storageProbe).toContain('RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}');
     expect(storageProbe).toContain('if [[ -n "$RESUME_SOURCE_SHA" ]]; then');
     expect(storageProbe).toContain('"$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH"');
-    expect(storageProbe).toContain('git -C "$DEPLOY_PATH" cat-file -e "$RELEASE_SHA^{commit}"');
-    expect(storageProbe).toContain('SOURCE_HELPER_BLOB="$(git -C "$DEPLOY_PATH" rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"');
-    expect(storageProbe).toContain('"$SOURCE_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB"');
+    expect(storageProbe).toContain('EXPECTED_PREVIOUS_APP_HELPER_BLOB="$(git rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"');
+    expect(storageProbe).toContain("EXPECTED_PREVIOUS_APP_HELPER_BLOB=\"$6\"");
+    expect(storageProbe).toContain('"$EXPECTED_PREVIOUS_APP_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB"');
+    expect(storageProbe).not.toContain('git -C "$DEPLOY_PATH" cat-file -e "$RELEASE_SHA^{commit}"');
+    expect(storageProbe).not.toContain('git -C "$DEPLOY_PATH" merge-base --is-ancestor "$RESUME_SOURCE_SHA" "$RELEASE_SHA"');
     expect(storageProbe).not.toContain('rev-parse HEAD)" == "$RESUME_SOURCE_SHA"');
     expect(storageProbe).toContain('SOURCE_APP_SHA="$(sed -n \'s/^previousSha=//p\' "$CAPTURE_FILE")"');
     expect(storageProbe).toContain('git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all');

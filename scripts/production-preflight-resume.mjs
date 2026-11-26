@@ -267,16 +267,29 @@ function hasExactTrainingAuthMarkerWitnessFailure(logRecords, normalizedLog) {
     .includes(TRAINING_AUTH_MARKER_WITNESS_FAILURE));
   const wrapperErrors = logRecords.filter((record) => normalizeActionLog(record.text)
     .includes(TRAINING_AUTH_MARKER_FAILURE_WRAPPER));
-  const runtimeErrors = logRecords.filter((record) => /(?:^|\s)Error:/.test(normalizeActionLog(record.text)));
+  const migrationStepRecords = logRecords.filter((record) =>
+    record.job === MIGRATION_FAILURE_JOB && record.step === MIGRATION_FAILURE_STEP);
+  const runtimeErrors = migrationStepRecords.filter((record) => /(?:^|\s)Error:/.test(normalizeActionLog(record.text)));
+  const markerErrorIndex = migrationStepRecords.indexOf(markerErrors[0]);
+  const errorTailIsExpected = markerErrorIndex >= 0 && migrationStepRecords.slice(markerErrorIndex + 1).every((record) => {
+    const text = normalizeActionLog(record.text);
+    return text === "" || text === TRAINING_AUTH_MARKER_FAILURE_WRAPPER
+      || text === "##[error]Process completed with exit code 1."
+      || /^at .+/.test(text) || /^Node\.js v[0-9.*]+$/.test(text);
+  });
+  const ddlStarted = migrationStepRecords.some((record) =>
+    /\b(?:ddl-start(?:ed|ing)?|schema-applied)\b|\bprisma\s+(?:migrate|migration|ddl)\s+(?:started|starting|applied|spawned)\b|\bmigrate deploy\b/i
+      .test(normalizeActionLog(record.text)));
   return findAllOccurrences(normalizedLog, TRAINING_AUTH_MARKER_WITNESS_FAILURE).length === 1
     && findAllOccurrences(normalizedLog, TRAINING_AUTH_MARKER_FAILURE_WRAPPER).length === 1
     && markerErrors.length === 1 && wrapperErrors.length === 1
     && runtimeErrors.length === 1 && runtimeErrors[0] === markerErrors[0]
+    && normalizeActionLog(markerErrors[0].text) === TRAINING_AUTH_MARKER_WITNESS_FAILURE
     && markerErrors[0].job === MIGRATION_FAILURE_JOB && markerErrors[0].step === MIGRATION_FAILURE_STEP
     && wrapperErrors[0].job === MIGRATION_FAILURE_JOB && wrapperErrors[0].step === MIGRATION_FAILURE_STEP
-    && normalizeActionLog(markerErrors[0].text).startsWith(TRAINING_AUTH_MARKER_WITNESS_FAILURE)
     && logRecords.indexOf(markerErrors[0]) < logRecords.indexOf(wrapperErrors[0])
-    && normalizeActionLog(wrapperErrors[0].text) === TRAINING_AUTH_MARKER_FAILURE_WRAPPER;
+    && normalizeActionLog(wrapperErrors[0].text) === TRAINING_AUTH_MARKER_FAILURE_WRAPPER
+    && errorTailIsExpected && !ddlStarted;
 }
 
 function workflowPath(run) {

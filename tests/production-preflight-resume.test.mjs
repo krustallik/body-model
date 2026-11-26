@@ -256,8 +256,21 @@ const releaseMarkerSerializationLog = [
   "Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:11.0000000Z refusing malformed release marker values",
 ].join("\n");
 const trainingAuthMarkerWitnessLog = [
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5062907Z file://***/[eval1]:10`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5064201Z if (JSON.stringify(current) !== JSON.stringify(witness)) throw new Error("Current Auth marker differs from the signed preflight witness.");`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5065125Z                                                               ^`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5065434Z `,
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5065849Z Error: Current Auth marker differs from the signed preflight witness.`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5066456Z     at file://***/[eval1]:10:64`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5066996Z     at ModuleJob.run (node:internal/modules/esm/module_job:561:25)`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5068059Z     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5068806Z     at async node:internal/modules/esm/loader:***3:26`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5069506Z     at async ModuleLoader.executeModuleJob (node:internal/modules/esm/loader:***0:20)`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5070348Z     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5070811Z `,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5070960Z Node.js v24.***.1`,
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5248794Z Production migration blocked: the Auth predecessor marker is not the exact signed Training preflight source.`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5361031Z ##[error]Process completed with exit code 1.`,
 ].join("\n");
 const migrationLog = [
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,
@@ -1348,7 +1361,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: `${trainingAuthMarkerWitnessLog}\n${trainingAuthMarkerWitnessLog}` }))
       .toThrow("one exact reviewed pre-DDL failure");
 
-    const wrongStep = trainingAuthMarkerWitnessLog.replace(
+    const wrongStep = trainingAuthMarkerWitnessLog.replaceAll(
       "Run the fixed guarded migration script over SSH",
       "Validate protected production SSH",
     );
@@ -1364,6 +1377,21 @@ describe("verified resume after a migration failed before the DDL marker", () =>
 
     const ddlStarted = `${trainingAuthMarkerWitnessLog}\nPrisma migration started`;
     expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: ddlStarted }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    const separatelyTimedDdlStart = `${trainingAuthMarkerWitnessLog}\nFinal live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5300000Z Prisma migration started`;
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: separatelyTimedDdlStart }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    const markerErrorWithSuffix = trainingAuthMarkerWitnessLog.replace(
+      "Error: Current Auth marker differs from the signed preflight witness.",
+      "Error: Current Auth marker differs from the signed preflight witness. Prisma migration started",
+    );
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: markerErrorWithSuffix }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    const unexpectedRuntimeOutput = `${trainingAuthMarkerWitnessLog}\nFinal live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5300000Z unexpected migration output`;
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: unexpectedRuntimeOutput }))
       .toThrow("one exact reviewed pre-DDL failure");
 
     expect(() => verifyTrainingAuthMarkerResume({

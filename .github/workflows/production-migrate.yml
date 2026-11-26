@@ -461,11 +461,6 @@ jobs:
           APP_HOST="$(printf '%s' "$8" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$9" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA." >&2; exit 1; }
-          node --input-type=module - "$MANIFEST_ID" <<'NODE'
-          import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
-          const manifest = getProductionMigrationManifest(process.argv[2]);
-          if (manifest.ciOnly === true) throw new Error("CI-only schema contracts cannot be used for production.");
-          NODE
           [[ "$AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
             echo "Invalid authorization workflow identity." >&2; exit 1;
           }

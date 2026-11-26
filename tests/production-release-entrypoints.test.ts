@@ -141,11 +141,18 @@ describe("active production release entrypoints", () => {
     const manifests = readFileSync(resolve("scripts/production-migration-manifests.mjs"), "utf8");
     const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
     const dockerfile = readFileSync(resolve("Dockerfile"), "utf8");
+    const remoteScript = migration.match(/REMOTE_SCRIPT="\$\(cat <<'REMOTE'\r?\n([\s\S]*?)\r?\n\s*REMOTE\r?\n\s*\)"/)?.[1] ?? "";
+    const exactCheckoutAt = remoteScript.indexOf('git checkout --detach "$RELEASE_SHA"');
+    const manifestLookupAt = remoteScript.indexOf("getProductionMigrationManifest");
+    const migrateRunnerAt = remoteScript.indexOf("bash scripts/deploy-migrate.sh");
     expect(manifests).toContain('id: "training-session-context-v1"');
     expect(manifests).toContain("dynamicMigrationSet: true");
     expect(manifests).toContain("migrations: Object.freeze([])");
     expect(migration).toContain("pending migrations are discovered from the exact release tree");
     expect(migration).toContain("MIGRATE_PRODUCTION:[0-9a-f]{40}:[0-9a-f]{64}");
+    expect(exactCheckoutAt).toBeGreaterThan(-1);
+    expect(manifestLookupAt === -1 || manifestLookupAt > exactCheckoutAt).toBe(true);
+    expect(migrateRunnerAt).toBeGreaterThan(exactCheckoutAt);
     expect(preflight).toContain("pending migrations are discovered from the exact release tree");
     expect(preflight).not.toContain("type: choice");
     expect(migration).not.toContain("type: choice");

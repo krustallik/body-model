@@ -400,7 +400,7 @@ describe("maintenance-first deploy fail-closed checks", () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("prior app image/runtime or read-only database migration/schema provenance is not verifiable");
+    expect(result.stderr).toContain("prior app image/runtime or read-only database migration/schema/data snapshot could not be verified");
     expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");

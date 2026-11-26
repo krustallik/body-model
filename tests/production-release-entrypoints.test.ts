@@ -585,6 +585,18 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("RECOVER_PRE_DDL_SOURCE_APP");
     expect(workflow).toContain('manifest?.id === "training-session-context-v1"');
     expect(workflow).toContain('flock -n 9');
+    const originCheck = workflow.indexOf('ORIGIN_URL="$(git remote get-url origin)"');
+    const deployKey = workflow.indexOf('GITHUB_DEPLOY_KEY="/root/.ssh/bodycast_github_deploy"', originCheck);
+    const identity = workflow.indexOf('export GIT_SSH_COMMAND=', deployKey);
+    const readProbe = workflow.indexOf('git ls-remote origin refs/heads/main >/dev/null', identity);
+    const canonicalFetch = workflow.indexOf('git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main', readProbe);
+    expect(originCheck).toBeGreaterThan(-1);
+    expect(deployKey).toBeGreaterThan(originCheck);
+    expect(identity).toBeGreaterThan(deployKey);
+    expect(readProbe).toBeGreaterThan(identity);
+    expect(canonicalFetch).toBeGreaterThan(readProbe);
+    expect(workflow).toContain('git@github.com:krustallik/body-model.git|https://github.com/krustallik/body-model.git');
+    expect(workflow).toContain('StrictHostKeyChecking=yes');
     expect(workflow).toContain('git checkout --detach "$CURRENT_MAIN_SHA"');
     expect(workflow).toContain('if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then');
     expect(workflow).toContain('timeout 30m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" </dev/null');

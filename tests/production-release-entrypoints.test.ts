@@ -148,6 +148,12 @@ describe("active production release entrypoints", () => {
     expect(runner).toContain("accepts standard exact-SHA execution only");
   });
 
+  it("compares the retained Auth marker with the complete Training preflight witness", () => {
+    const runner = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
+    expect(runner).toContain("const currentWitness = { ...current, liveAppSha: witness.liveAppSha };");
+    expect(runner).toContain("JSON.stringify(currentWitness) !== JSON.stringify(witness)");
+  });
+
   it("requires pinned owner, exact current main, and shared serialization on every production dispatch", () => {
     for (const name of releaseWorkflows) {
       const source = readFileSync(resolve(workflowDir, name), "utf8");

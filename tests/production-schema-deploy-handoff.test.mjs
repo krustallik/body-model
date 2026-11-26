@@ -443,6 +443,12 @@ describe("schema deploy compatibility handoff", () => {
       }),
       liveAppSha: previousDeploySha,
     };
+    const migrationMarker = validateAuthMarkerForTrainingMigrationHandoff(previousAppReadyMarker, {
+      liveAppSha: sourceMarkerWitness.liveAppSha,
+      repositoryPath: process.cwd(),
+    });
+    expect(JSON.stringify(migrationMarker)).not.toBe(JSON.stringify(sourceMarkerWitness));
+    expect({ ...migrationMarker, liveAppSha: sourceMarkerWitness.liveAppSha }).toEqual(sourceMarkerWitness);
     const capturePreflight = {
       manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
       preflightMode: "pre-maintenance",

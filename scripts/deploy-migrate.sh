@@ -70,7 +70,8 @@ if (!witness || preflight.manifestId !== "training-session-context-v1") throw ne
 const current = validateAuthMarkerForTrainingMigrationHandoff(readFileSync(markerPath, "utf8"), {
   liveAppSha: witness.liveAppSha, repositoryPath,
 });
-if (JSON.stringify(current) !== JSON.stringify(witness)) throw new Error("Current Auth marker differs from the signed preflight witness.");
+const currentWitness = { ...current, liveAppSha: witness.liveAppSha };
+if (JSON.stringify(currentWitness) !== JSON.stringify(witness)) throw new Error("Current Auth marker differs from the signed preflight witness.");
 NODE
     SOURCE_MARKER_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker.digest' "$CONTEXT_DIR/preflight-result.json")"
     [[ "$SOURCE_MARKER_DIGEST" == "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" ]] \

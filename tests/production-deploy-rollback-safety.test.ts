@@ -737,6 +737,94 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("previous-app-compatibility-snapshot");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("resumes a Training pre-DDL capture with only its captured Auth app-ready marker", () => {
+    const fixture = createFixture();
+    const { recordPath } = seedCapturedPreviousRelease(fixture);
+    const markerDirectory = path.join(fixture.repo, ".git", "bodycast-production-release-marker");
+    mkdirSync(markerDirectory, { recursive: true });
+    const markerPath = path.join(markerDirectory, "marker");
+    const markerText = [
+      "schemaVersion=3",
+      "manifestId=auth-multiuser-v1",
+      `migrationOriginSha=${"1".repeat(40)}`,
+      `deploySha=${PREVIOUS_SHA}`,
+      "state=app-ready",
+      "workflowRunId=41545707543",
+      "workflowRunAttempt=1",
+      "authorizationId=auth-marker-test-12345678",
+      `lineageDigest=${"a".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"b".repeat(64)}`,
+      `compatibilityDigest=${"c".repeat(64)}`,
+      "",
+    ].join("\n");
+    writeFileSync(markerPath, markerText, { mode: 0o600 });
+    writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute("training-resume"));
+
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID: "training-session-context-v1",
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.candidateSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: "38000669125",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000017",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(markerPath, "utf8")).toBe(markerText);
+    expect(readFileSync(recordPath, "utf8")).toContain(`targetSha=${fixture.advanceSha}`);
+    expect(appState(fixture)).toMatchObject({ present: "false" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("previous-app-compatibility-snapshot");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("rejects an Auth marker that does not match the captured previous app SHA", () => {
+    const fixture = createFixture();
+    const { recordPath } = seedCapturedPreviousRelease(fixture);
+    const markerDirectory = path.join(fixture.repo, ".git", "bodycast-production-release-marker");
+    mkdirSync(markerDirectory, { recursive: true });
+    const markerPath = path.join(markerDirectory, "marker");
+    writeFileSync(markerPath, [
+      "schemaVersion=3",
+      "manifestId=auth-multiuser-v1",
+      `migrationOriginSha=${"1".repeat(40)}`,
+      `deploySha=${"2".repeat(40)}`,
+      "state=app-ready",
+      "workflowRunId=41545707543",
+      "workflowRunAttempt=1",
+      "authorizationId=auth-marker-test-12345678",
+      `lineageDigest=${"a".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"b".repeat(64)}`,
+      `compatibilityDigest=${"c".repeat(64)}`,
+      "",
+    ].join("\n"), { mode: 0o600 });
+    writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute("training-resume"));
+    const recordBefore = readFileSync(recordPath, "utf8");
+
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID: "training-session-context-v1",
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.candidateSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: "38000669125",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000018",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Only the captured Auth app-ready marker may remain during a Training pre-DDL capture resume");
+    expect(readFileSync(recordPath, "utf8")).toBe(recordBefore);
+    expect(readFileSync(markerPath, "utf8")).toContain(`deploySha=${"2".repeat(40)}`);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(appState(fixture)).toMatchObject({ present: "false" });
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("resumes a schema-v3 capture only through its exact attempt-bound image pin", () => {
     const fixture = createFixture();
     const runId = "38002000013";

@@ -28,6 +28,18 @@ const REQUIRED_SOURCE_STEPS = Object.freeze({
   "Upload immutable preflight and restore evidence artifact": "skipped",
   "Report read-only completion": "skipped",
 });
+const REQUIRED_TRAINING_INSPECTION_FAILURE_STEPS = Object.freeze({
+  "Verify production container, PostgreSQL clients, and storage headroom": "success",
+  "Enter maintenance and drain the old app before backup": "success",
+  "Read-only production identity, full migration set, schema signatures, and locks": "failure",
+  "Capture pg_dump start on production host and create encrypted backup": "skipped",
+  "Restore snapshot, compare source state, and rehearse exact migrations": "skipped",
+  "Bind forward-resume authorization to the fresh live snapshot and rehearsal": "skipped",
+  "Create preflight evidence bundle": "skipped",
+  "Upload encrypted production backup artifact": "skipped",
+  "Upload immutable preflight and restore evidence artifact": "skipped",
+  "Report read-only completion": "skipped",
+});
 const SUCCESSFUL_PREFLIGHT_STEPS = Object.freeze({
   "Enter maintenance and drain the old app before backup": "success",
   "Read-only production identity, full migration set, schema signatures, and locks": "success",
@@ -372,7 +384,8 @@ export function verifyResumablePreflightAttempt({
   } catch (error) {
     reject(error.message);
   }
-  if (!new Set(["active-energy-unified-v2", "unified-v4-republication-v1", "auth-multiuser-v1"]).has(manifestId)
+  if ((manifestId !== "training-session-context-v1"
+      && !new Set(["active-energy-unified-v2", "unified-v4-republication-v1", "auth-multiuser-v1"]).has(manifestId))
     || (sourceRun.display_title ?? sourceRun.name) !== `Preflight ${sourceRun.head_sha} ${manifestId}`) {
     reject("the source preflight manifest does not match the exact current request.");
   }
@@ -389,8 +402,17 @@ export function verifyResumablePreflightAttempt({
     reject("the owner gate or the expected inspection job result does not match.");
   }
   const steps = new Map((inspect.steps ?? []).map((step) => [step.name, step.conclusion]));
-  for (const [name, conclusion] of Object.entries(REQUIRED_SOURCE_STEPS)) {
-    if (steps.get(name) !== conclusion) reject(`step result differs from the verified pre-DDL restore failure (${name}).`);
+  const trainingInspectionFailure = manifestId === "training-session-context-v1"
+    && Object.entries(REQUIRED_TRAINING_INSPECTION_FAILURE_STEPS)
+      .every(([name, conclusion]) => steps.get(name) === conclusion)
+    && !(inspect.steps ?? []).some((step) => ["timed_out", "cancelled", "action_required"].includes(step.conclusion))
+    && (inspect.steps ?? []).filter((step) => step.conclusion === "failure").length === 1
+    && (inspect.steps ?? []).some((step) => step.name === "Read-only production identity, full migration set, schema signatures, and locks"
+      && step.conclusion === "failure");
+  const failedRestore = manifestId !== "training-session-context-v1"
+    && Object.entries(REQUIRED_SOURCE_STEPS).every(([name, conclusion]) => steps.get(name) === conclusion);
+  if (!trainingInspectionFailure && !failedRestore) {
+    reject("source preflight did not stop at the exact admitted pre-DDL failure boundary.");
   }
   if (manifestId === "unified-v4-republication-v1") {
     const failedSourceSteps = (inspect.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
@@ -497,6 +519,7 @@ export function verifyResumablePreflightAttempt({
 
   return Object.freeze({
     schemaVersion: 2,
+    resumeKind: trainingInspectionFailure ? "verified-pre-ddl-inspection-failure" : "verified-failed-restore-rehearsal",
     sourceRunId: String(sourceRun.id),
     sourceRunAttempt: 1,
     sourceSha: sourceRun.head_sha,

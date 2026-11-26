@@ -656,7 +656,8 @@ describe("verified resume of a failed production preflight", () => {
   });
 
   it("admits only the original owner run that stopped after a successful backup and failed isolated restore", () => {
-    expect(verify()).toEqual({ schemaVersion: 2, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha,
+    expect(verify()).toEqual({ schemaVersion: 2, resumeKind: "verified-failed-restore-rehearsal",
+      sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha,
       unverifiedHistoricalDeployRunIds: [], unverifiedHistoricalPreflightRunIds: [], unverifiedHistoricalAuthorizationOnlyPreflightRunIds: [], historicalPreflightEffects: [],
       unverifiedHistoricalRunIds: [] });
   });
@@ -683,6 +684,78 @@ describe("verified resume of a failed production preflight", () => {
       sourceSha: authSourceSha, targetSha, unverifiedHistoricalDeployRunIds: [],
       unverifiedHistoricalPreflightRunIds: [], unverifiedHistoricalAuthorizationOnlyPreflightRunIds: [],
       unverifiedHistoricalRunIds: [] });
+  });
+
+  it("resumes Training only after the read-only inventory failure, before backup or DDL", () => {
+    const trainingSourceSha = "d".repeat(40);
+    const trainingSourceRunId = "38000669125";
+    const trainingCurrentRunId = "38000669126";
+    const jobs = sourceJobs();
+    const inspect = jobs.jobs.find(({ name }) => name.startsWith("Inspect,"));
+    inspect.steps = inspect.steps.map((step) => {
+      if (step.name === "Read-only production identity, full migration set, schema signatures, and locks") {
+        return { ...step, conclusion: "failure" };
+      }
+      if (["Capture pg_dump start on production host and create encrypted backup",
+        "Restore snapshot, compare source state, and rehearse exact migrations"].includes(step.name)) {
+        return { ...step, conclusion: "skipped" };
+      }
+      return step;
+    });
+    const result = verify({
+      sourceRun: sourceRun({ id: Number(trainingSourceRunId), head_sha: trainingSourceSha,
+        display_title: `Preflight ${trainingSourceSha} training-session-context-v1` }),
+      sourceJobs: { ...jobs, jobs: jobs.jobs.map((job) => ({ ...job, head_sha: trainingSourceSha })) },
+      sourceRunId: trainingSourceRunId,
+      currentRunId: trainingCurrentRunId,
+      manifestId: "training-session-context-v1",
+      laterRuns: [{ id: Number(trainingCurrentRunId),
+        path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress" }],
+    });
+    expect(result).toMatchObject({
+      resumeKind: "verified-pre-ddl-inspection-failure",
+      sourceRunId: trainingSourceRunId,
+      sourceSha: trainingSourceSha,
+      targetSha,
+      unverifiedHistoricalDeployRunIds: [],
+    });
+  });
+
+  it.each([
+    ["another failed step", (jobs) => {
+      jobs.jobs[1].steps.find(({ name }) => name === "Enter maintenance and drain the old app before backup").conclusion = "failure";
+    }],
+    ["backup already ran", (jobs) => {
+      jobs.jobs[1].steps.find(({ name }) => name.startsWith("Capture pg_dump start")).conclusion = "success";
+    }],
+    ["restore step already ran", (jobs) => {
+      jobs.jobs[1].steps.find(({ name }) => name.startsWith("Restore snapshot")).conclusion = "success";
+    }],
+    ["another step was cancelled", (jobs) => {
+      jobs.jobs[1].steps.find(({ name }) => name === "Verify production container, PostgreSQL clients, and storage headroom").conclusion = "cancelled";
+    }],
+  ])("rejects Training preflight resume when %s", (_label, corrupt) => {
+    const trainingSourceSha = "d".repeat(40);
+    const jobs = sourceJobs();
+    const inspect = jobs.jobs[1];
+    inspect.steps = inspect.steps.map((step) => {
+      if (step.name === "Read-only production identity, full migration set, schema signatures, and locks") {
+        return { ...step, conclusion: "failure" };
+      }
+      if (["Capture pg_dump start on production host and create encrypted backup",
+        "Restore snapshot, compare source state, and rehearse exact migrations"].includes(step.name)) {
+        return { ...step, conclusion: "skipped" };
+      }
+      return step;
+    });
+    corrupt(jobs);
+    expect(() => verify({
+      sourceRun: sourceRun({ head_sha: trainingSourceSha,
+        display_title: `Preflight ${trainingSourceSha} training-session-context-v1` }),
+      sourceJobs: { ...jobs, jobs: jobs.jobs.map((job) => ({ ...job, head_sha: trainingSourceSha })) },
+      sourceRunId: String(sourceRun().id),
+      manifestId: "training-session-context-v1",
+    })).toThrow("source preflight did not stop at the exact admitted pre-DDL failure boundary");
   });
 
   it("admits only unverified owner V4 capture retry history and ignores prior textual logs", () => {

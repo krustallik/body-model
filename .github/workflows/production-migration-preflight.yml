@@ -429,9 +429,10 @@ jobs:
               > "$RUNNER_TEMP/preflight-resume-proof.json"
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
-            RESUME_KIND="verified-failed-restore-rehearsal"
+            RESUME_KIND="$(jq -r .resumeKind "$RUNNER_TEMP/preflight-resume-proof.json")"
             UNVERIFIED_HISTORICAL_RUNS="$(jq -c '([.unverifiedHistoricalDeployRunIds[]? | {runId: ., kind: "deploy"}] + [.unverifiedHistoricalPreflightRunIds[]? | {runId: ., kind: "capture-blocked-preflight"}] + [.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]? | {runId: ., kind: "authorization-only-preflight"}] + [.unverifiedHistoricalRunIds[]? | {runId: ., kind: "no-app-preparation"}])' "$RUNNER_TEMP/preflight-resume-proof.json")"
             {
+              echo "- verified preflight resume kind: $RESUME_KIND"
               echo "- previous failed preflight run: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
               echo "- failed preflight backup/rehearsal artifacts are not reused; this run must create a fresh current-live backup and pass isolated restore/rehearsal"
               while IFS= read -r safe_deploy_id; do
@@ -615,13 +616,15 @@ jobs:
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
           NODE
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
-          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA'" <<'REMOTE'
+          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA' '$RELEASE_SHA'" <<'REMOTE'
           set -Eeuo pipefail
           CONTAINER_ID="$1"
           DB_DATA_PATH="$2"
           DEPLOY_PATH="$(printf '%s' "$3" | base64 --decode)"
           RESUME_SOURCE_SHA="$4"
+          RELEASE_SHA="$5"
           [[ "$(docker inspect --format '{{.Id}}' bodycast-db-prod)" == "$CONTAINER_ID" ]] || { echo "Production PostgreSQL container changed during the pre-maintenance probe." >&2; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Exact current release SHA is malformed." >&2; exit 1; }
           DB_BYTES="$(docker exec "$CONTAINER_ID" sh -ec 'psql --no-psqlrc --quiet --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT pg_database_size(current_database())"')"
           DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
           if [[ -n "$RESUME_SOURCE_SHA" ]]; then
@@ -630,9 +633,19 @@ jobs:
               echo "Verified previous-app deployment checkout is unavailable or unsafe." >&2; exit 1;
             }
             [[ "$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH" \
-              && "$(git -C "$DEPLOY_PATH" rev-parse HEAD)" == "$RESUME_SOURCE_SHA" \
               && -z "$(git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all)" ]] || {
-              echo "Previous-app provenance helper checkout is not the clean verified source revision." >&2; exit 1;
+              echo "Previous-app provenance helper checkout is not clean or canonical." >&2; exit 1;
+            }
+            git -C "$DEPLOY_PATH" cat-file -e "$RELEASE_SHA^{commit}" || {
+              echo "Exact release source is unavailable in the production checkout." >&2; exit 1;
+            }
+            SOURCE_HELPER_BLOB="$(git -C "$DEPLOY_PATH" rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"
+            CHECKOUT_HELPER_BLOB="$(git -C "$DEPLOY_PATH" rev-parse "HEAD:scripts/production-previous-app-provenance.mjs")"
+            [[ "$SOURCE_HELPER_BLOB" =~ ^[a-f0-9]{40,64}$ && "$SOURCE_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB" ]] || {
+              echo "Current checkout does not contain the exact release's previous-app provenance verifier." >&2; exit 1;
+            }
+            git -C "$DEPLOY_PATH" merge-base --is-ancestor "$RESUME_SOURCE_SHA" "$RELEASE_SHA" || {
+              echo "Verified previous-app source SHA is not an ancestor of the exact release." >&2; exit 1;
             }
             ORIGIN_URL="$(git -C "$DEPLOY_PATH" remote get-url origin)"
             case "$ORIGIN_URL" in
@@ -654,8 +667,15 @@ jobs:
             }
             APP_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$CAPTURE_IMAGE_PIN")"
             [[ "$APP_IMAGE_ID" == "$CAPTURE_IMAGE_ID" ]] || { echo "Pinned previous-app image differs from its durable capture." >&2; exit 1; }
+            CAPTURE_PROVENANCE_KIND="$(sed -n 's/^provenanceKind=//p' "$CAPTURE_FILE")"
+            SOURCE_APP_SHA="$(sed -n 's/^previousSha=//p' "$CAPTURE_FILE")"
+            [[ "$CAPTURE_PROVENANCE_KIND" == "release-sha-v1" && "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "The durable previous-app capture lacks an exact source release SHA." >&2; exit 1;
+            }
           else
             APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
+            SOURCE_APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
+            [[ "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ ]] || SOURCE_APP_SHA="unavailable"
           fi
           APP_IMAGE_BYTES="$(docker image inspect --format '{{.Size}}' "$APP_IMAGE_ID")"
           DB_FREE_BYTES="$(df -B1 --output=avail "$DB_DATA_PATH" | tail -n1 | tr -d '[:space:]')"
@@ -665,10 +685,13 @@ jobs:
           [[ "$DB_BYTES" =~ ^[1-9][0-9]*$ && "$APP_IMAGE_BYTES" =~ ^[1-9][0-9]*$ \
             && "$DB_FREE_BYTES" =~ ^[0-9]+$ && "$DOCKER_FREE_BYTES" =~ ^[0-9]+$ \
             && "$DB_DEVICE" =~ ^[0-9]+$ && "$DOCKER_DEVICE" =~ ^[0-9]+$ ]] || { echo "Production storage measurements are malformed." >&2; exit 1; }
-          printf '%s %s %s %s %s %s\n' "$DB_BYTES" "$DB_FREE_BYTES" "$DOCKER_FREE_BYTES" "$APP_IMAGE_BYTES" "$DB_DEVICE" "$DOCKER_DEVICE"
+          printf '%s %s %s %s %s %s %s\n' "$DB_BYTES" "$DB_FREE_BYTES" "$DOCKER_FREE_BYTES" "$APP_IMAGE_BYTES" "$DB_DEVICE" "$DOCKER_DEVICE" "$SOURCE_APP_SHA"
           REMOTE
           )"
-          read -r DB_BYTES DB_FREE_BYTES DOCKER_FREE_BYTES APP_IMAGE_BYTES DB_DEVICE DOCKER_DEVICE <<< "$HOST_CAPACITY"
+          read -r DB_BYTES DB_FREE_BYTES DOCKER_FREE_BYTES APP_IMAGE_BYTES DB_DEVICE DOCKER_DEVICE SOURCE_APP_SHA <<< "$HOST_CAPACITY"
+          [[ "$SOURCE_APP_SHA" == "unavailable" || "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Previous-app release SHA is malformed." >&2; exit 1;
+          }
           TOOL_ARCHIVE="$RUNNER_TEMP/pre-maintenance-tooling.tar.gz"
           PREFLIGHT_SQL="$RUNNER_TEMP/pre-maintenance.sql"
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" > "$PREFLIGHT_SQL"
@@ -721,6 +744,7 @@ jobs:
           }
           echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
           echo "database_bytes=$DB_BYTES" >> "$GITHUB_OUTPUT"
+          echo "source_app_sha=$SOURCE_APP_SHA" >> "$GITHUB_OUTPUT"
           echo "database_free_bytes=$DB_FREE_BYTES" >> "$GITHUB_OUTPUT"
           echo "docker_free_bytes=$DOCKER_FREE_BYTES" >> "$GITHUB_OUTPUT"
           echo "prior_app_image_bytes=$APP_IMAGE_BYTES" >> "$GITHUB_OUTPUT"
@@ -776,9 +800,10 @@ jobs:
           SOURCE_MARKER_ARGS=()
           if [[ "$MANIFEST_ID" == "training-session-context-v1" ]]; then
             DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
-            SOURCE_MARKER_REPLY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$DEPLOY_PATH_B64'" <<'REMOTE'
+            SOURCE_MARKER_REPLY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$DEPLOY_PATH_B64' '$SOURCE_APP_SHA'" <<'REMOTE'
           set -Eeuo pipefail
           deploy_path="$(printf '%s' "$1" | base64 --decode)"
+          source_app_sha="$2"
           [[ "$deploy_path" == /* && -d "$deploy_path" && ! -L "$deploy_path" \
             && "$(git -C "$deploy_path" rev-parse --show-toplevel)" == "$deploy_path" ]] || {
             echo "Production release-marker checkout is unavailable or unsafe." >&2; exit 1;
@@ -800,9 +825,8 @@ jobs:
           [[ -f "$marker_path" && ! -L "$marker_path" ]] || {
             echo "Production release marker is not a regular file." >&2; exit 1;
           }
-          app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
-          [[ "$app_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Running production app SHA is unavailable." >&2; exit 1; }
-          printf '%s %s\n' "$app_sha" "$(base64 -w0 < "$marker_path")"
+          [[ "$source_app_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Captured production app SHA is unavailable." >&2; exit 1; }
+          printf '%s %s\n' "$source_app_sha" "$(base64 -w0 < "$marker_path")"
           REMOTE
             )"
             if [[ "$SOURCE_MARKER_REPLY" != "absent" ]]; then
@@ -842,6 +866,7 @@ jobs:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
+          SOURCE_APP_SHA: ${{ steps.target.outputs.source_app_sha }}
           RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
           RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
           FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}

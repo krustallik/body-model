@@ -328,7 +328,7 @@ refresh_pre_ddl_previous_release() {
 
 resume_pre_ddl_previous_release() {
   local target_sha="$1" record_path="$2" git_dir="$3"
-  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id previous_image_pin record_verification pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest
+  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id previous_image_pin record_verification pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest capture_provenance_kind capture_previous_sha
   failed_run_id=""; failed_sha=""; failure_proof_digest=""; expected_marker_digest=""
   source_sha="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA:-}"
   source_run_id="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID:-}"
@@ -366,8 +366,7 @@ resume_pre_ddl_previous_release() {
       return 1
     }
   elif read_bodycast_release_marker; then
-    echo "A production release marker exists; ordinary preflight capture resume is blocked." >&2
-    return 1
+    marker_status=0
   else
     marker_status=$?
     [[ "$marker_status" -eq 1 ]] || { echo "Production marker state is unknown; capture resume is blocked." >&2; return 1; }
@@ -401,6 +400,20 @@ resume_pre_ddl_previous_release() {
   [[ "$previous_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Saved immutable prior-app image identity is malformed." >&2; return 1; }
   if ! record_verification="$(printf '%s\n' "$source_record_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)"; then
     echo "Saved previous-app capture is invalid; capture resume is blocked." >&2; return 1;
+  fi
+  if [[ "$forward_resume" != true && "$marker_status" -eq 0 ]]; then
+    capture_provenance_kind="$(printf '%s\n' "$source_record_text" | sed -n 's/^provenanceKind=//p')"
+    capture_previous_sha="$(printf '%s\n' "$source_record_text" | sed -n 's/^previousSha=//p')"
+    [[ "${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}" == "training-session-context-v1" \
+      && "$capture_provenance_kind" == "release-sha-v1" && "$capture_previous_sha" =~ ^[a-f0-9]{40}$ \
+      && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+      && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
+      && "$BODYCAST_MARKER_STATE" == "app-ready" \
+      && "$BODYCAST_MARKER_RELEASE_SHA" == "$capture_previous_sha" \
+      && "$BODYCAST_MARKER_DEPLOY_SHA" == "$capture_previous_sha" ]] || {
+      echo "Only the captured Auth app-ready marker may remain during a Training pre-DDL capture resume." >&2
+      return 1
+    }
   fi
   previous_image_pin="$(printf '%s' "$record_verification" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(r.previousImagePin)')"
   [[ "$previous_image_pin" == "bodycast-app:rollback" \

@@ -118,6 +118,7 @@ describe("active production release entrypoints", () => {
     expect(databaseDiagnostic).toMatch(/timeout 5m ssh -T -p "\$SSH_PORT"[\s\S]*?"\$REMOTE_COMMAND" > "\$DB_REPORT"/);
     expect(workflow).toContain("chmod 600 \"$DB_REPORT\" \"$DB_RESULT\"");
     expect(workflow).toContain("Only bounded escaped blocker messages follow.");
+    expect(workflow).toContain('} | tee -a "$GITHUB_STEP_SUMMARY"');
     expect(workflow).toContain("result.blockers.slice(0, 100)");
     expect(workflow).toContain("value.slice(0, 500)");
     expect(workflow).not.toContain("upload-artifact");

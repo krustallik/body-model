@@ -304,7 +304,7 @@ jobs:
           for (const blocker of result.blockers.slice(0, 100)) process.stdout.write(`- ${escapeMarkdown(blocker)}\n`);
           if (result.blockers.length > 100) process.stdout.write(`- ${result.blockers.length - 100} additional blockers omitted.\n`);
           NODE
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Remove temporary SSH credentials

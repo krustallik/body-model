@@ -109,7 +109,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.authorize.outputs.release_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Recheck owner run identity and current main before production credentials
@@ -168,6 +168,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/known_hosts"
 
       - name: Inspect checkout metadata read-only
+        id: checkout_metadata
         env:
           GH_TOKEN: ${{ github.token }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -213,6 +214,13 @@ jobs:
             -o "UserKnownHostsFile=$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/known_hosts" \
             -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" 'bash -s' > "$DIAGNOSTIC_OUTPUT"
           node scripts/production-stepper-shadow-diagnostic.mjs "$DIAGNOSTIC_OUTPUT"
+          REMOTE_HEAD_SHA="$(awk -F= '$1 == "head_sha" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
+          REMOTE_BRANCH="$(awk -F= '$1 == "branch" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
+          REMOTE_CLEAN="$(awk -F= '$1 == "checkout_clean_as_existing_guard" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
+          [[ "$REMOTE_HEAD_SHA" =~ ^[a-f0-9]{40}$ && "$REMOTE_BRANCH" == "main" && "$REMOTE_CLEAN" == "yes" ]] || {
+            echo "::error::Production checkout is not a clean main commit."; exit 1;
+          }
+          echo "remote_head_sha=$REMOTE_HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Inspect production database schema read-only
         env:
@@ -223,6 +231,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          REMOTE_CHECKOUT_SHA: ${{ steps.checkout_metadata.outputs.remote_head_sha }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
@@ -232,6 +241,11 @@ jobs:
           }
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* && "$DEPLOY_PATH" != *$'\r'* ]] || {
             echo "::error::Read-only database diagnostic inputs are malformed."; exit 1;
+          }
+          [[ "$REMOTE_CHECKOUT_SHA" =~ ^[a-f0-9]{40}$ ]] \
+            && git merge-base --is-ancestor "$REMOTE_CHECKOUT_SHA" "$RELEASE_SHA" \
+            && git diff --quiet "$REMOTE_CHECKOUT_SHA" "$RELEASE_SHA" -- scripts prisma docker-compose.prod.yml || {
+            echo "::error::Production DB diagnostic code or schema differs from the exact current-main tree."; exit 1;
           }
           DB_REPORT="$RUNNER_TEMP/bodycast-read-only-db-report.json"
           DB_RESULT="$RUNNER_TEMP/bodycast-read-only-db-result.json"
@@ -247,14 +261,14 @@ jobs:
           set -Eeuo pipefail
           export GIT_OPTIONAL_LOCKS=0
           deploy_path="$(printf '%s' "$1" | base64 --decode)"
-          release_sha="$2"
+          remote_sha="$2"
           app_host="$(printf '%s' "$3" | base64 --decode)"
           routes_path="$(printf '%s' "$4" | base64 --decode)"
           [[ "$deploy_path" == /* && -d "$deploy_path" && ! -L "$deploy_path" \
             && "$(git -C "$deploy_path" rev-parse --show-toplevel)" == "$deploy_path" \
-            && "$(git -C "$deploy_path" rev-parse HEAD)" == "$release_sha" \
+            && "$(git -C "$deploy_path" rev-parse HEAD)" == "$remote_sha" \
             && -z "$(git -C "$deploy_path" status --porcelain=v1 --untracked-files=all)" ]] || {
-            echo "Production checkout is not the exact clean diagnostic SHA." >&2; exit 1;
+            echo "Production checkout changed since the read-only metadata capture." >&2; exit 1;
           }
           cd -- "$deploy_path"
           APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
@@ -262,7 +276,7 @@ jobs:
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$RELEASE_SHA' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$REMOTE_CHECKOUT_SHA' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
           timeout 5m ssh -T -p "$SSH_PORT" \
             -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

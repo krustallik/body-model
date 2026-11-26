@@ -76,6 +76,9 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("bodycast-checkout-diagnostic-output");
     expect(workflow).toContain("production-stepper-shadow-diagnostic.mjs");
     expect(workflow).toContain('> "$DIAGNOSTIC_OUTPUT"');
+    expect(workflow).toContain("id: checkout_metadata");
+    expect(workflow).toContain('[[ "$REMOTE_HEAD_SHA" =~ ^[a-f0-9]{40}$ && "$REMOTE_BRANCH" == "main" && "$REMOTE_CLEAN" == "yes" ]]');
+    expect(workflow).toContain('echo "remote_head_sha=$REMOTE_HEAD_SHA" >> "$GITHUB_OUTPUT"');
     expect(workflow).toContain("Inspect production database schema read-only");
     expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");
     expect(workflow).toContain("export GIT_OPTIONAL_LOCKS=0");
@@ -88,11 +91,16 @@ describe("active production release entrypoints", () => {
     expect(databaseScanIndex).toBeGreaterThanOrEqual(0);
     expect(databaseDiagnostic).toContain("APP_HOST: ${{ secrets.APP_HOST }}");
     expect(databaseDiagnostic).toContain("CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}");
+    expect(databaseDiagnostic).toContain("REMOTE_CHECKOUT_SHA: ${{ steps.checkout_metadata.outputs.remote_head_sha }}");
+    expect(databaseDiagnostic).toContain('git merge-base --is-ancestor "$REMOTE_CHECKOUT_SHA" "$RELEASE_SHA"');
+    expect(databaseDiagnostic).toContain('git diff --quiet "$REMOTE_CHECKOUT_SHA" "$RELEASE_SHA" -- scripts prisma docker-compose.prod.yml');
     expect(databaseDiagnostic).toContain('APP_HOST_B64="$(printf \'%s\' "$APP_HOST" | base64 -w0)"');
     expect(databaseDiagnostic).toContain('CADDY_ROUTES_PATH_B64="$(printf \'%s\' "$CADDY_ROUTES_PATH" | base64 -w0)"');
     expect(databaseDiagnostic).toContain('app_host="$(printf \'%s\' "$3" | base64 --decode)"');
     expect(databaseDiagnostic).toContain('routes_path="$(printf \'%s\' "$4" | base64 --decode)"');
-    expect(databaseDiagnostic).toMatch(/REMOTE_COMMAND=.*'\$DEPLOY_PATH_B64' '\$RELEASE_SHA' '\$APP_HOST_B64' '\$CADDY_ROUTES_PATH_B64'/);
+    expect(databaseDiagnostic).toContain('remote_sha="$2"');
+    expect(databaseDiagnostic).toContain('rev-parse HEAD)" == "$remote_sha"');
+    expect(databaseDiagnostic).toMatch(/REMOTE_COMMAND=.*'\$DEPLOY_PATH_B64' '\$REMOTE_CHECKOUT_SHA' '\$APP_HOST_B64' '\$CADDY_ROUTES_PATH_B64'/);
     expect(databaseDiagnostic).toContain('APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1');
     const topologyEncodeIndex = databaseDiagnostic.indexOf('APP_HOST_B64="$(printf \'%s\' "$APP_HOST" | base64 -w0)"');
     const routesEncodeIndex = databaseDiagnostic.indexOf('CADDY_ROUTES_PATH_B64="$(printf \'%s\' "$CADDY_ROUTES_PATH" | base64 -w0)"');

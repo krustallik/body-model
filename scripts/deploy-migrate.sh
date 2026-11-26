@@ -162,8 +162,8 @@ IMAGE_RESULT="$(compose --profile tools run --rm --no-deps --entrypoint node mig
 printf '%s\n' "$IMAGE_RESULT"
 
 # Refresh a read-only report only after canonical fetch and image byte verification.
-bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
+BODYCAST_DB_PREFLIGHT_MANIFEST="$MANIFEST_ID" \
+  bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   > "$CONTEXT_DIR/live-report.json"
 
 # Complete slow read-only checks before taking the final freshness-bound writer
@@ -188,8 +188,8 @@ fi
 # The DB report fingerprints all logical rows first, then samples PostgreSQL
 # writers and Docker/Caddy topology for immediate final-guard consumption.
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
-bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
+BODYCAST_DB_PREFLIGHT_MANIFEST="$MANIFEST_ID" \
+  bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   > "$CONTEXT_DIR/live-report-final.json"
 [[ ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a final guard receipt already exists in the private context."
 compose --profile tools run --rm --no-deps \
@@ -273,8 +273,8 @@ read_bodycast_release_marker || fail "the guarded Prisma handoff did not leave a
   && "$BODYCAST_MARKER_SPAWN_STATE" == "started" ]] || fail "Prisma returned without an acknowledged durable spawn marker; maintenance remains active."
 
 # The postflight is read-only and must match the rehearsed encrypted-backup restore.
-bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID") \
+BODYCAST_DB_PREFLIGHT_MANIFEST="$MANIFEST_ID" \
+  bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   > "$CONTEXT_DIR/live-report-postflight.json"
 AUTH_SOURCE_GUARD_ARGS=()
 if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then

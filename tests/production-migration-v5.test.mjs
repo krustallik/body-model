@@ -1186,7 +1186,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     const servingWorkflow = await readFile(new URL("../.github/workflows/deploy-production.yml", import.meta.url), "utf8");
     const writerDrain = await readFile(new URL("../scripts/production-writer-drain.sh", import.meta.url), "utf8");
-    expect(deploy).toContain('production-db-target.sh" --preflight "$DB_CONTAINER"');
+    const normalizedDeploy = deploy.replaceAll("\r\n", "\n");
+    expect(normalizedDeploy.match(/BODYCAST_DB_PREFLIGHT_MANIFEST="\$MANIFEST_ID" \\\n  bash "\$ROOT_DIR\/scripts\/production-db-target\.sh" --preflight "\$DB_CONTAINER"/g)).toHaveLength(3);
+    expect(normalizedDeploy).not.toContain('< <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID")');
     expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools config --format json");
     expect(target).toContain('COMPOSE_FILE="${BODYCAST_PRODUCTION_COMPOSE_FILE:-$ROOT_DIR/docker-compose.prod.yml}"');
     expect(target).not.toContain("compose -f \"$COMPOSE_FILE\" --profile tools run --rm");

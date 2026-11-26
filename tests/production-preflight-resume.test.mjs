@@ -213,6 +213,7 @@ const blockedCaptureRunId = "38000669122";
 const safePreflightRetryRunId = "38000669123";
 const currentResumeRunId = "38000669124";
 const authManifestId = "auth-multiuser-v1";
+const trainingSessionManifestId = "training-session-context-v1";
 const successfulPreflightSteps = [
   "Enter maintenance and drain the old app before backup",
   "Verify production container and PostgreSQL client versions",
@@ -253,6 +254,10 @@ const finalPrismaWriterDrainLog = [
 const releaseMarkerSerializationLog = [
   writerDrainFreshnessLog.split("\n")[0],
   "Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-02T20:43:11.0000000Z refusing malformed release marker values",
+].join("\n");
+const trainingAuthMarkerWitnessLog = [
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5065849Z Error: Current Auth marker differs from the signed preflight witness.`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-11-26T09:47:30.5248794Z Production migration blocked: the Auth predecessor marker is not the exact signed Training preflight source.`,
 ].join("\n");
 const migrationLog = [
   `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,
@@ -295,10 +300,10 @@ function ownerRun({ id, workflowId, path, sha, conclusion, ...overrides }) {
   };
 }
 
-function successfulSourceRun() {
+function successfulSourceRun(manifestId = authManifestId) {
   return ownerRun({ id: successfulSourceRunId, workflowId: preflightWorkflowId,
     path: ".github/workflows/production-migration-preflight.yml", sha: sourceSha, conclusion: "success",
-    display_title: `Preflight ${sourceSha} ${authManifestId}` });
+    display_title: `Preflight ${sourceSha} ${manifestId}` });
 }
 
 function successfulSourceJobs() {
@@ -316,13 +321,13 @@ function successfulSourceJobs() {
   };
 }
 
-function successfulSourceArtifacts() {
+function successfulSourceArtifacts(manifestId = authManifestId) {
   return {
     total_count: 2,
     artifacts: [
-      { name: `bodycast-backup-${sourceSha}-${authManifestId}-${successfulSourceRunId}-1`, expired: false,
+      { name: `bodycast-backup-${sourceSha}-${manifestId}-${successfulSourceRunId}-1`, expired: false,
         size_in_bytes: 58_687_970, digest: `sha256:${"c".repeat(64)}` },
-      { name: `bodycast-preflight-evidence-${sourceSha}-${authManifestId}-${successfulSourceRunId}-1`, expired: false,
+      { name: `bodycast-preflight-evidence-${sourceSha}-${manifestId}-${successfulSourceRunId}-1`, expired: false,
         size_in_bytes: 18_965, digest: `sha256:${"d".repeat(64)}` },
     ],
   };
@@ -345,10 +350,10 @@ function preDdlMigrationJobs() {
   };
 }
 
-function blockedCapturePreflightRun() {
+function blockedCapturePreflightRun(manifestId = authManifestId) {
   return ownerRun({ id: blockedCaptureRunId, workflowId: preflightWorkflowId,
     path: ".github/workflows/production-migration-preflight.yml", sha: blockedCaptureSha, conclusion: "failure",
-    display_title: `Preflight ${blockedCaptureSha} ${authManifestId}` });
+    display_title: `Preflight ${blockedCaptureSha} ${manifestId}` });
 }
 
 function blockedCapturePreflightJobs() {
@@ -571,6 +576,17 @@ function verifyPreDdlResume(overrides = {}) {
     currentRunId: currentResumeRunId, currentMainSha: targetSha,
     preflightWorkflowId, migrationWorkflowId, sourceIsAncestor: true,
     sourceIsAncestorOfBlockedCapture: true, blockedCaptureIsAncestorOfCurrentMain: true,
+    ...overrides,
+  });
+}
+
+function verifyTrainingAuthMarkerResume(overrides = {}) {
+  return verifyPreDdlResume({
+    manifestId: trainingSessionManifestId,
+    sourceRun: successfulSourceRun(trainingSessionManifestId),
+    sourceArtifacts: successfulSourceArtifacts(trainingSessionManifestId),
+    blockedCaptureRun: blockedCapturePreflightRun(trainingSessionManifestId),
+    migrationLogText: trainingAuthMarkerWitnessLog,
     ...overrides,
   });
 }
@@ -1319,6 +1335,40 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     const finalGuardAndMarker = `${finalPrismaWriterDrainLog}\n${releaseMarkerSerializationLog.split("\n")[1]
       .replace("2026-11-02T20:43:11.0000000Z", "2026-11-02T20:43:11.5000000Z")}`;
     expect(() => verifyPreDdlResume({ migrationLogText: finalGuardAndMarker })).toThrow("one exact reviewed pre-DDL failure");
+  });
+
+  it("accepts the exact Training Auth-predecessor witness failure before any DDL transition", () => {
+    expect(verifyTrainingAuthMarkerResume()).toMatchObject({
+      migrationFailureKind: "training-auth-marker-witness",
+      migrationFailureRunId: preDdlMigrationRunId,
+    });
+
+    expect(() => verifyPreDdlResume({ migrationLogText: trainingAuthMarkerWitnessLog }))
+      .toThrow("one exact reviewed pre-DDL failure");
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: `${trainingAuthMarkerWitnessLog}\n${trainingAuthMarkerWitnessLog}` }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    const wrongStep = trainingAuthMarkerWitnessLog.replace(
+      "Run the fixed guarded migration script over SSH",
+      "Validate protected production SSH",
+    );
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: wrongStep }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    const missingWrapper = trainingAuthMarkerWitnessLog.replace(
+      "Production migration blocked: the Auth predecessor marker is not the exact signed Training preflight source.",
+      "Production migration blocked: database connection failed.",
+    );
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: missingWrapper }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    const ddlStarted = `${trainingAuthMarkerWitnessLog}\nPrisma migration started`;
+    expect(() => verifyTrainingAuthMarkerResume({ migrationLogText: ddlStarted }))
+      .toThrow("one exact reviewed pre-DDL failure");
+
+    expect(() => verifyTrainingAuthMarkerResume({
+      migrationLogText: `${trainingAuthMarkerWitnessLog}\n${releaseMarkerSerializationLog.split("\n")[1]}`,
+    })).toThrow("one exact reviewed pre-DDL failure");
   });
 
   it("parses wrapped runner logs while binding failures to the sole failed fixed migration step", () => {

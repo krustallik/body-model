@@ -119,8 +119,10 @@ describe("canonical PostgreSQL endpoint identity", () => {
     expect(backupStart).toBeGreaterThan(maintenanceStart);
     expect(backupStart).toBeGreaterThan(targetStart);
     expect(restoreStart).toBeGreaterThan(backupStart);
-    const targetStep = workflow.slice(targetStart, backupStart);
+    const targetStep = workflow.slice(targetStart, maintenanceStart);
     expect(targetStep).toContain('[[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ &&');
+    expect(targetStep).toContain("DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}");
+    expect(targetStep).toContain('DEPLOY_PATH_B64="$(printf \'%s\' "$DEPLOY_PATH" | base64 -w0)"');
     expect(targetStep).toContain('"docker exec \'$CONTAINER_ID\' pg_dump --version"');
     expect(targetStep).toContain("RUNNER_DOCKER_ROOT=\"$(docker info --format '{{.DockerRootDir}}')\"");
     expect(targetStep).toContain("RUNNER_DOCKER_FREE_BYTES");

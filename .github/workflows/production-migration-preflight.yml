@@ -211,6 +211,7 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
@@ -329,6 +330,7 @@ jobs:
             echo "- Runner temporary filesystem free bytes: $RUNNER_FREE_BYTES"
             echo "- Runner Docker filesystem free bytes: $RUNNER_DOCKER_FREE_BYTES"
           } >> "$GITHUB_STEP_SUMMARY"
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'

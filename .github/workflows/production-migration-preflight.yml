@@ -1049,7 +1049,7 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
-          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
+          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); BODYCAST_DB_PREFLIGHT_MANIFEST=\"$MANIFEST_ID\" APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
             > "$RUNNER_TEMP/preflight-report.json"
           SOURCE_MARKER_ARGS=()

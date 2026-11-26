@@ -89,6 +89,17 @@ describe("canonical PostgreSQL endpoint identity", () => {
     expect(before.compatibilityDigest).toBe(canonicalSha256({ identity: oldIdentity, migrations, objects }));
   });
 
+  it("uses the selected manifest for the post-maintenance database report", async () => {
+    const workflow = (await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+    const preflightStart = workflow.indexOf("      - name: Read-only production identity, full migration set, schema signatures, and locks");
+    const backupStart = workflow.indexOf("      - name: Capture pg_dump start on production host and create encrypted backup", preflightStart);
+    const preflightStep = workflow.slice(preflightStart, backupStart);
+    expect(preflightStart).toBeGreaterThanOrEqual(0);
+    expect(backupStart).toBeGreaterThan(preflightStart);
+    expect(preflightStep).toContain('node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID"');
+    expect(preflightStep).toContain(String.raw`BODYCAST_DB_PREFLIGHT_MANIFEST=\"$MANIFEST_ID\" APP_HOST=`);
+  });
+
   it("keeps the standard encrypted backup tied to the captured container ID", async () => {
     const workflow = (await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
     const targetStart = workflow.indexOf("      - name: Verify production container, PostgreSQL clients, and storage headroom");

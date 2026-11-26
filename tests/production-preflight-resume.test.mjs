@@ -945,6 +945,15 @@ describe("verified resume of a failed production preflight", () => {
     expect(result.unverifiedHistoricalDeployRunIds).toEqual([historicalDeployRunId]);
   });
 
+  it("accepts completed owner-dispatched deploys as unverified historical metadata", () => {
+    const run = deployRun({ event: "workflow_dispatch" });
+    const result = verify({ laterRuns: [run, {
+      id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+    }], historicalDeployRuns: [historicalDeployEvidence({ run })],
+    });
+    expect(result.unverifiedHistoricalDeployRunIds).toEqual([historicalDeployRunId]);
+  });
+
   it("admits completed no-app preparation only as unverified history and never reuses its artifacts", () => {
     const evidence = structuredClone(successfulHistoricalNoAppPreparation);
     evidence.run.display_title = "Historical preparation label changed";
@@ -1065,7 +1074,7 @@ describe("verified resume of a failed production preflight", () => {
     ["run is on a different SHA", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ head_sha: sourceSha }) })] }],
     ["workflow identity differs", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ workflow_id: 999 }) })] }],
     ["branch is not main", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ head_branch: "feature/x" }) })] }],
-    ["event is not the automatic deploy", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ event: "workflow_dispatch" }) })] }],
+    ["event is not an owner or workflow-run deploy", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ event: "schedule" }) })] }],
     ["conclusion is unknown", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ conclusion: "neutral" }) })] }],
     ["run is not on current-main ancestry", { historicalDeployRuns: [historicalDeployEvidence({ shaIsAncestorOfCurrentMain: false })] }],
     ["run attempt is malformed", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ run_attempt: 0 }) })] }],

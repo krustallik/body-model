@@ -317,7 +317,8 @@ function assertHistoricalDeployRun(evidence, { historyRun, deployWorkflowId }) {
     || String(run?.workflow_id) !== String(deployWorkflowId)
     || workflowPath(run) !== DEPLOY_PATH
     || run.status !== "completed" || !["success", "failure", "cancelled", "timed_out"].includes(run.conclusion)
-    || !Number.isSafeInteger(attempt) || attempt < 1 || run.head_branch !== "main" || run.event !== "workflow_run"
+    || !Number.isSafeInteger(attempt) || attempt < 1 || run.head_branch !== "main"
+    || !["workflow_run", "workflow_dispatch"].includes(run.event)
     || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
     || evidence.shaIsAncestorOfCurrentMain !== true) {
     reject("a historical deploy has an invalid owner, workflow, SHA, ancestry, or run boundary.");
@@ -330,7 +331,7 @@ function assertHistoricalDeployRun(evidence, { historyRun, deployWorkflowId }) {
   try {
     assertTrustedOwnerWorkflowRun(run, {
       actorId: BODYCAST_OWNER_ID, workflowPath: DEPLOY_PATH, workflowRunId: runId,
-      workflowRunAttempt: attempt, ref: "refs/heads/main", sha: run.head_sha, event: "workflow_run",
+      workflowRunAttempt: attempt, ref: "refs/heads/main", sha: run.head_sha, event: run.event,
     });
   } catch (error) {
     reject(error.message);

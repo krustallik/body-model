@@ -215,10 +215,10 @@ jobs:
             -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" 'bash -s' > "$DIAGNOSTIC_OUTPUT"
           node scripts/production-stepper-shadow-diagnostic.mjs "$DIAGNOSTIC_OUTPUT"
           REMOTE_HEAD_SHA="$(awk -F= '$1 == "head_sha" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
-          REMOTE_BRANCH="$(awk -F= '$1 == "branch" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
+          REMOTE_ORIGIN_MAIN_SHA="$(awk -F= '$1 == "origin_main_sha" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
           REMOTE_CLEAN="$(awk -F= '$1 == "checkout_clean_as_existing_guard" { print $2 }' "$DIAGNOSTIC_OUTPUT")"
-          [[ "$REMOTE_HEAD_SHA" =~ ^[a-f0-9]{40}$ && "$REMOTE_BRANCH" == "main" && "$REMOTE_CLEAN" == "yes" ]] || {
-            echo "::error::Production checkout is not a clean main commit."; exit 1;
+          [[ "$REMOTE_HEAD_SHA" =~ ^[a-f0-9]{40}$ && "$REMOTE_ORIGIN_MAIN_SHA" == "$REMOTE_HEAD_SHA" && "$REMOTE_CLEAN" == "yes" ]] || {
+            echo "::error::Production checkout is not clean at its captured main SHA."; exit 1;
           }
           echo "remote_head_sha=$REMOTE_HEAD_SHA" >> "$GITHUB_OUTPUT"
 

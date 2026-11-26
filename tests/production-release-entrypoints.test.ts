@@ -77,7 +77,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("production-stepper-shadow-diagnostic.mjs");
     expect(workflow).toContain('> "$DIAGNOSTIC_OUTPUT"');
     expect(workflow).toContain("id: checkout_metadata");
-    expect(workflow).toContain('[[ "$REMOTE_HEAD_SHA" =~ ^[a-f0-9]{40}$ && "$REMOTE_BRANCH" == "main" && "$REMOTE_CLEAN" == "yes" ]]');
+    expect(workflow).toContain('[[ "$REMOTE_HEAD_SHA" =~ ^[a-f0-9]{40}$ && "$REMOTE_ORIGIN_MAIN_SHA" == "$REMOTE_HEAD_SHA" && "$REMOTE_CLEAN" == "yes" ]]');
     expect(workflow).toContain('echo "remote_head_sha=$REMOTE_HEAD_SHA" >> "$GITHUB_OUTPUT"');
     expect(workflow).toContain("Inspect production database schema read-only");
     expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");

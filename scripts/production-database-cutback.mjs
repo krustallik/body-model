@@ -25,6 +25,20 @@ const BUNDLE_FILES = Object.freeze([
   "authorization-envelope.json", "artifact-metadata.json", "preflight-evidence.json",
   "preflight-report.json", "preflight-result.json", "restore-result.json",
 ]);
+
+export function parseCutbackEvidenceBundle(values) {
+  if (!Array.isArray(values) || values.length !== BUNDLE_FILES.length || typeof values[0] !== "string" || values[0].length === 0) {
+    fail("cutback evidence bundle does not contain its canonical authorization envelope and complete JSON evidence.");
+  }
+  const [artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.slice(1).map((value) => JSON.parse(value));
+  return { envelope: values[0], artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult };
+}
+
+async function readCutbackEvidenceBundle(directory) {
+  const values = await Promise.all(BUNDLE_FILES.map((name) => readFile(path.join(directory, name), "utf8")));
+  return parseCutbackEvidenceBundle(values);
+}
+
 const READABILITY_TABLES = Object.freeze([
   "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog",
 ]);
@@ -378,12 +392,10 @@ async function main() {
     if (!directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "") || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath) {
       fail("usage: --verify-context <bundle-dir> <failed-run-id> <failed-release-sha> <encrypted-backup-file>.");
     }
-    const values = await Promise.all(BUNDLE_FILES.map((name) => readFile(path.join(directory, name), "utf8")));
-    const [envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.map(JSON.parse);
+    const bundle = await readCutbackEvidenceBundle(directory);
     const backupFileBytes = await readFile(backupPath);
     const allowlist = await readJson(path.resolve("scripts/production-migration-verification-keys.json"));
-    const result = verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence, preflightReport,
-      preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
+    const result = verifyCutbackEvidenceBundle({ ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
     process.stdout.write(JSON.stringify({ verified: result.verified, releaseSha: result.claims.releaseSha,
       preflightRunId: result.claims.preflightRunId, preflightRunAttempt: result.claims.preflightRunAttempt,
       backupArtifactId: result.claims.backupArtifactId, backupArtifactDigest: result.claims.backupArtifactDigest,
@@ -397,15 +409,12 @@ async function main() {
       || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath || !liveReportPath || !capturePath || !markerPath) {
       fail("usage: --verify-pre-ddl-source-app-recovery <bundle-dir> <failed-run-id> <failed-sha> <encrypted-backup> <live-report> <capture-record> <source-marker>.");
     }
-    const values = await Promise.all(BUNDLE_FILES.map((name) => readFile(path.join(directory, name), "utf8")));
-    const [envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.map(JSON.parse);
-    const [backupFileBytes, liveReport, recordText, markerText, allowlist] = await Promise.all([
-      readFile(backupPath), readJson(liveReportPath), readFile(capturePath, "utf8"), readFile(markerPath, "utf8"),
+    const [bundle, backupFileBytes, liveReport, recordText, markerText, allowlist] = await Promise.all([
+      readCutbackEvidenceBundle(directory), readFile(backupPath), readJson(liveReportPath), readFile(capturePath, "utf8"), readFile(markerPath, "utf8"),
       readJson(path.resolve("scripts/production-migration-verification-keys.json")),
     ]);
     const result = verifyPreDdlSourceAppRecovery({
-      envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult, allowlist,
-      expectedFailedRunId, expectedFailedSha, backupFileBytes, liveReport, recordText, markerText,
+      ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes, liveReport, recordText, markerText,
       repositoryPath: process.cwd(),
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -457,12 +466,9 @@ async function main() {
       || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath || !capturePath || !restoredReportPath || !readabilityPath) {
       fail("usage: --verify-previous-app <bundle-dir> <failed-run-id> <failed-sha> <encrypted-backup> <capture-record> <restored-report> <readability-report>.");
     }
-    const values = await Promise.all(BUNDLE_FILES.map((name) => readFile(path.join(directory, name), "utf8")));
-    const [envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.map(JSON.parse);
-    const backupFileBytes = await readFile(backupPath);
+    const [bundle, backupFileBytes] = await Promise.all([readCutbackEvidenceBundle(directory), readFile(backupPath)]);
     const allowlist = await readJson(path.resolve("scripts/production-migration-verification-keys.json"));
-    const context = verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence, preflightReport,
-      preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
+    const context = verifyCutbackEvidenceBundle({ ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
     const [recordText, restoredReport, readabilityReport] = await Promise.all([
       readFile(capturePath, "utf8"), readJson(restoredReportPath), readJson(readabilityPath),
     ]);

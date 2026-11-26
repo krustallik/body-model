@@ -5,6 +5,7 @@ import { createAuthorizationEnvelope, createClaimsFromPreflight, canonicalSha256
 import {
   assertCutbackLiveDatabaseIdentity,
   assertCutbackRestoredDatabaseIdentity,
+  parseCutbackEvidenceBundle,
   verifyPreDdlSourceAppRecovery,
   verifyCutbackEvidenceBundle,
   verifyCutbackRestoredState,
@@ -246,6 +247,20 @@ describe("production database cutback gates", () => {
 
   it("admits source-app recovery only on the exact signed Auth marker and unchanged Training database", () => {
     const fixture = sourceAppRecoveryFixture();
+    const parsedBundle = parseCutbackEvidenceBundle([
+      fixture.envelope,
+      JSON.stringify(fixture.artifactMetadata),
+      JSON.stringify(fixture.preflightEvidence),
+      JSON.stringify(fixture.preflightReport),
+      JSON.stringify(fixture.preflightResult),
+      JSON.stringify(fixture.restoreResult),
+    ]);
+    expect(typeof parsedBundle.envelope).toBe("string");
+    expect(verifyCutbackEvidenceBundle({
+      ...parsedBundle, allowlist: fixture.allowlist, expectedFailedRunId: "5001", expectedFailedSha: fixture.failedSha,
+      backupFileBytes: fixture.encryptedBackup,
+    })).toMatchObject({ verified: true, claims: { workflowRunId: "5001", manifestId: "training-session-context-v1" } });
+
     const verify = (overrides = {}) => verifyPreDdlSourceAppRecovery({
       envelope: fixture.envelope, artifactMetadata: fixture.artifactMetadata,
       preflightEvidence: fixture.preflightEvidence, preflightReport: fixture.preflightReport,

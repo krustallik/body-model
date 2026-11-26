@@ -145,10 +145,8 @@ CANONICAL_MAIN_SHA="$(git rev-parse --verify 'refs/remotes/bodycast-canonical/ma
 
 # The wrapper makes the last PostgreSQL identity/writer-drain observation, then
 # durably publishes ddl-starting before it attempts to create Prisma. The
-# mounted directory is limited to the marker; Git metadata is not mounted.
+# validated Auth predecessor may be atomically replaced by the wrapper.
 bodycast_prepare_release_marker_directory
-[[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-  || fail "the release-marker directory contains unexpected or interrupted state."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \

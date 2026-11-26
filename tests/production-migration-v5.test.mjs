@@ -2362,6 +2362,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(deployScript).not.toContain("bodycast-production-operation");
     expect(deployScript).not.toContain("docker compose -f docker-compose.prod.yml up -d db");
     expect(deployScript).toContain('bodycast_prepare_release_marker_directory');
+    expect(deployScript).not.toContain("the release-marker directory contains unexpected or interrupted state");
     expect(deployScript).toContain('--volume "$BODYCAST_RELEASE_MARKER_DIRECTORY:/run/bodycast-release-marker:rw"');
     expect(deployScript).toContain('"$BODYCAST_MARKER_STATE" == "ddl-started"');
     expect(deployScript).toContain("--before-ddl");

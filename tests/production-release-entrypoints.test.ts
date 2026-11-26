@@ -361,7 +361,7 @@ describe("active production release entrypoints", () => {
     const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8").replace(/\r\n/g, "\n");
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const captureOrder = [
-      'node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha"',
+      'node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" "${capture_args[@]}"',
       'docker image tag "$previous_image_id" bodycast-app:rollback',
       "stop_old_app",
     ].map((fragment, index) => index === 2 ? capture.lastIndexOf(fragment) : capture.indexOf(fragment));

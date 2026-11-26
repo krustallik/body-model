@@ -148,7 +148,8 @@ publish_maintenance_route() {
 capture_pre_ddl_previous_release() {
   [[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]] || return 0
   local target_sha preflight_result_path existing_app capture_text provenance_kind previous_sha previous_image_id previous_container_id previous_health previous_runtime_digest pinned_id
-  local record_path record_tmp git_dir
+  local record_path record_tmp git_dir existing_image_pin existing_image_id existing_schema normalized_existing_capture existing_capture=false
+  local -a capture_args
   preflight_result_path="${1:-}"
   [[ "$#" -le 1 && ( -z "$preflight_result_path" || ( "$preflight_result_path" == /* && -f "$preflight_result_path" && ! -L "$preflight_result_path" ) ) ]] || {
     echo "Pre-maintenance evidence path is not a private regular file." >&2; return 1;
@@ -157,20 +158,47 @@ capture_pre_ddl_previous_release() {
   [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-DDL recovery capture requires the exact target SHA." >&2; return 1; }
   git_dir="$(git rev-parse --absolute-git-dir)"
   record_path="$git_dir/bodycast-production-pre-ddl-release"
-  if [[ -e "$record_path" || -L "$record_path" ]]; then
-    echo "A pre-DDL recovery capture already exists; recover or review that release before starting another preflight." >&2
-    return 1
-  fi
   existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
   [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "A healthy prior app is required for recoverable migration preflight." >&2; return 1; }
-  if [[ -n "$preflight_result_path" ]]; then
-    if ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha" --pre-maintenance-result "$preflight_result_path")"; then
-      echo "The prior app image/runtime or read-only database migration/schema/data snapshot does not match the fresh pre-maintenance evidence." >&2
+  if [[ -e "$record_path" || -L "$record_path" ]]; then
+    existing_capture=true
+    [[ -f "$record_path" && ! -L "$record_path" ]] || { echo "The existing pre-DDL recovery capture is not a regular file." >&2; return 1; }
+    if ! node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record < "$record_path" >/dev/null; then
+      echo "The existing pre-DDL recovery capture is invalid and was preserved for review." >&2
       return 1
     fi
-  elif ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha")"; then
-    echo "The prior app image/runtime or read-only database migration/schema provenance is not verifiable." >&2
+    existing_schema="$(sed -n 's/^schemaVersion=//p' "$record_path")"
+    existing_image_id="$(sed -n 's/^previousImageId=//p' "$record_path")"
+    case "$existing_schema" in
+      2) existing_image_pin="bodycast-app:rollback" ;;
+      3) existing_image_pin="$(sed -n 's/^previousImagePin=//p' "$record_path")" ;;
+      *) echo "The existing pre-DDL recovery capture has an unsupported schema." >&2; return 1 ;;
+    esac
+    pinned_id="$(docker image inspect --format '{{.Id}}' "$existing_image_pin" 2>/dev/null || true)"
+    [[ "$pinned_id" == "$existing_image_id" ]] || {
+      echo "The existing pre-DDL recovery image pin does not match its captured image; the capture was preserved." >&2
+      return 1
+    }
+    capture_args=(capture "$target_sha")
+    [[ "$existing_schema" != "3" ]] || capture_args+=("$existing_image_pin")
+  else
+    capture_args=(capture "$target_sha")
+  fi
+  [[ -z "$preflight_result_path" ]] || capture_args+=(--pre-maintenance-result "$preflight_result_path")
+  if ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" "${capture_args[@]}")"; then
+    echo "The prior app image/runtime or read-only database migration/schema/data snapshot could not be verified." >&2
     return 1
+  fi
+  if [[ "$existing_capture" == "true" ]]; then
+    previous_container_id="$(printf '%s\n' "$capture_text" | sed -n 's/^previousContainerId=//p')"
+    normalized_existing_capture="$(sed -E \
+      -e "s/^targetSha=[a-f0-9]{40}$/targetSha=$target_sha/" \
+      -e "s/^previousContainerId=[a-f0-9]{64}$/previousContainerId=$previous_container_id/" \
+      "$record_path")"
+    [[ "$normalized_existing_capture" == "$capture_text" ]] || {
+      echo "The existing pre-DDL recovery capture differs from fresh live app or database provenance; it was preserved for review." >&2
+      return 1
+    }
   fi
   provenance_kind="$(printf '%s\n' "$capture_text" | sed -n 's/^provenanceKind=//p')"
   previous_sha="$(printf '%s\n' "$capture_text" | sed -n 's/^previousSha=//p')"
@@ -188,20 +216,26 @@ capture_pre_ddl_previous_release() {
     echo "The prior app immutable image/container, health, or runtime identity is invalid." >&2
     return 1
   }
-  if docker image inspect --format '{{.Id}}' bodycast-app:rollback >/dev/null 2>&1; then
-    echo "A previous-app image pin already exists and will not be overwritten." >&2
-    return 1
+  if [[ "$existing_capture" == "false" ]]; then
+    if docker image inspect --format '{{.Id}}' bodycast-app:rollback >/dev/null 2>&1; then
+      echo "A previous-app image pin already exists without its recovery capture." >&2
+      return 1
+    fi
+    docker image tag "$previous_image_id" bodycast-app:rollback
+    pinned_id="$(docker image inspect --format '{{.Id}}' bodycast-app:rollback)"
+    [[ "$pinned_id" == "$previous_image_id" ]] || { echo "Prior-app image pin does not match the captured immutable image." >&2; return 1; }
   fi
-  docker image tag "$previous_image_id" bodycast-app:rollback
-  pinned_id="$(docker image inspect --format '{{.Id}}' bodycast-app:rollback)"
-  [[ "$pinned_id" == "$previous_image_id" ]] || { echo "Prior-app image pin does not match the captured immutable image." >&2; return 1; }
   record_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release.new.XXXXXX")"
   trap 'rm -f -- "$record_tmp"' RETURN
   chmod 600 "$record_tmp"
   printf '%s\n' "$capture_text" > "$record_tmp"
   sync -f "$record_tmp"
-  ln -- "$record_tmp" "$record_path"
-  rm -- "$record_tmp"
+  if [[ "$existing_capture" == "true" ]]; then
+    mv -f -- "$record_tmp" "$record_path"
+  else
+    ln -- "$record_tmp" "$record_path"
+  fi
+  rm -f -- "$record_tmp"
   sync -f "$git_dir"
   trap - RETURN
   echo "Captured versioned prior-app provenance and read-only pre-DDL database compatibility digests for manual cutback."

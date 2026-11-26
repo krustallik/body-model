@@ -458,6 +458,83 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(result.stdout).toContain("PostgreSQL writers are drained");
   }, 30_000);
 
+  it.skipIf(!bashAvailable).each([
+    { imagePin: null, pinFile: "image-rollback" },
+    { imagePin: "bodycast-app:rollback-preflight-40123456790-1", pinFile: "image-rollback-preflight-40123456790-1" },
+  ])("refreshes an existing pre-DDL capture when current app and database provenance still match ($imagePin)", ({ imagePin, pinFile }) => {
+    const fixture = createFixture();
+    const recordPath = path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release");
+    const report = JSON.parse(readFileSync(path.join(fixture.root, "previous-db-report.json"), "utf8"));
+    const [originalContainer] = JSON.parse(readFileSync(path.join(fixture.root, "app-inspect.json"), "utf8"));
+    const originalRecord = capturePreviousAppProvenance({
+      container: originalContainer,
+      databaseReport: report,
+      targetSha: PREVIOUS_SHA,
+      imagePin,
+    });
+    writeFileSync(recordPath, serializePreviousAppProvenance(originalRecord), { mode: 0o600 });
+    const resumedContainerId = "d".repeat(64);
+    writeFileSync(path.join(fixture.root, "app-container-id"), `${resumedContainerId}\n`);
+    writeFileSync(path.join(fixture.root, "app-inspect.json"), JSON.stringify([{
+      ...originalContainer,
+      Id: resumedContainerId,
+    }]) + "\n");
+    writeFileSync(path.join(fixture.root, pinFile), `${PREVIOUS_IMAGE_ID}\n`);
+
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const refreshed = parsePreviousAppProvenance(readFileSync(recordPath, "utf8"));
+    expect(refreshed).toMatchObject({
+      targetSha: fixture.candidateSha,
+      previousImageId: PREVIOUS_IMAGE_ID,
+      previousContainerId: resumedContainerId,
+      preDdlDatabaseIdentityDigest: originalRecord.preDdlDatabaseIdentityDigest,
+      preDdlMigrationHistoryDigest: originalRecord.preDdlMigrationHistoryDigest,
+      preDdlSchemaInventoryDigest: originalRecord.preDdlSchemaInventoryDigest,
+      preDdlDatabaseCompatibilityDigest: originalRecord.preDdlDatabaseCompatibilityDigest,
+    });
+    expect(readFileSync(path.join(fixture.root, pinFile), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("previous-app-compatibility-snapshot");
+    expect(appState(fixture)).toMatchObject({ status: "exited", present: "false" });
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("preserves an existing pre-DDL capture when fresh database provenance differs", () => {
+    const fixture = createFixture();
+    const recordPath = path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release");
+    const reportPath = path.join(fixture.root, "previous-db-report.json");
+    const originalReport = JSON.parse(readFileSync(reportPath, "utf8"));
+    const [container] = JSON.parse(readFileSync(path.join(fixture.root, "app-inspect.json"), "utf8"));
+    const originalRecord = capturePreviousAppProvenance({
+      container,
+      databaseReport: originalReport,
+      targetSha: PREVIOUS_SHA,
+    });
+    const originalCapture = serializePreviousAppProvenance(originalRecord);
+    writeFileSync(recordPath, originalCapture, { mode: 0o600 });
+    writeFileSync(path.join(fixture.root, "image-rollback"), `${PREVIOUS_IMAGE_ID}\n`);
+    writeFileSync(reportPath, JSON.stringify({
+      ...originalReport,
+      objects: originalReport.objects.map((object: { name: string; [key: string]: unknown }) =>
+        object.name === "DailyModelState" ? { ...object, signature: "changed schema" } : object),
+    }) + "\n");
+
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("differs from fresh live app or database provenance");
+    expect(readFileSync(recordPath, "utf8")).toBe(originalCapture);
+    expect(readFileSync(path.join(fixture.root, "image-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("compose-stop-app");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("keeps the serving app and route untouched when the migration pre-maintenance DB probe fails", () => {
     const fixture = createFixture();
     writeFileSync(path.join(fixture.repo, "scripts", "production-db-target.sh"),

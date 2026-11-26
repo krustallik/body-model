@@ -100,6 +100,20 @@ describe("canonical PostgreSQL endpoint identity", () => {
     expect(preflightStep).toContain(String.raw`BODYCAST_DB_PREFLIGHT_MANIFEST=\"$MANIFEST_ID\" APP_HOST=`);
   });
 
+  it("passes production topology inputs to the read-only database diagnostic", async () => {
+    const workflow = (await readFile(new URL("../.github/workflows/production-checkout-diagnostic.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+    const start = workflow.indexOf("      - name: Inspect production database schema read-only");
+    const end = workflow.indexOf("      - name: Remove temporary SSH credentials", start);
+    const step = workflow.slice(start, end);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(step).toContain("APP_HOST: ${{ secrets.APP_HOST }}");
+    expect(step).toContain("CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}");
+    expect(step).toContain('APP_HOST_B64="$(printf \'%s\' "$APP_HOST" | base64 -w0)"');
+    expect(step).toContain('CADDY_ROUTES_PATH_B64="$(printf \'%s\' "$CADDY_ROUTES_PATH" | base64 -w0)"');
+    expect(step).toContain('APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1');
+  });
+
   it("keeps the standard encrypted backup tied to the captured container ID", async () => {
     const workflow = (await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
     const targetStart = workflow.indexOf("      - name: Verify production container, PostgreSQL clients, and storage headroom");

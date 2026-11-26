@@ -221,6 +221,8 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
@@ -239,11 +241,15 @@ jobs:
           chmod 600 "$DB_REPORT" "$DB_RESULT"
           trap 'rm -f -- "$DB_REPORT" "$DB_RESULT"' EXIT
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           export GIT_OPTIONAL_LOCKS=0
           deploy_path="$(printf '%s' "$1" | base64 --decode)"
           release_sha="$2"
+          app_host="$(printf '%s' "$3" | base64 --decode)"
+          routes_path="$(printf '%s' "$4" | base64 --decode)"
           [[ "$deploy_path" == /* && -d "$deploy_path" && ! -L "$deploy_path" \
             && "$(git -C "$deploy_path" rev-parse --show-toplevel)" == "$deploy_path" \
             && "$(git -C "$deploy_path" rev-parse HEAD)" == "$release_sha" \
@@ -251,12 +257,12 @@ jobs:
             echo "Production checkout is not the exact clean diagnostic SHA." >&2; exit 1;
           }
           cd -- "$deploy_path"
-          BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
+          APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
             bash scripts/production-db-target.sh --preflight bodycast-db-prod
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$RELEASE_SHA'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$RELEASE_SHA' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
           timeout 5m ssh -T -p "$SSH_PORT" \
             -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

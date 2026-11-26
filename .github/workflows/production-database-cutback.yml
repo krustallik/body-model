@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      current_main_sha: ${{ steps.gate.outputs.current_main_sha }}
+      current_main_sha: ${{ steps.ci_gate.outputs.current_main_sha }}
       current_main_ci_url: ${{ steps.ci_gate.outputs.current_main_ci_url }}
       current_main_safety_ci_url: ${{ steps.ci_gate.outputs.current_main_safety_ci_url }}
       failed_release_sha: ${{ inputs.recovery_mode == 'source-app-only' && steps.source_gate.outputs.failed_release_sha || steps.gate.outputs.failed_release_sha }}

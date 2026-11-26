@@ -501,6 +501,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain('"repos/krustallik/body-model/actions/workflows/production-migration-safety-ci.yml/runs?branch=main&event=push&per_page=100"');
     expect(workflow).toContain('current_main_safety_ci_url=$SAFETY_CI_URL');
     expect(workflow).toContain('id: ci_gate');
+    expect(workflow).toContain('current_main_sha: ${{ steps.ci_gate.outputs.current_main_sha }}');
     expect(workflow).toContain('current_main_ci_url: ${{ steps.ci_gate.outputs.current_main_ci_url }}');
     expect(workflow).toContain('current_main_safety_ci_url: ${{ steps.ci_gate.outputs.current_main_safety_ci_url }}');
     expect(workflow).toContain('run.head_sha === expectedSha && run.head_branch === "main" && run.event === "push"');

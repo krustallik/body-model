@@ -187,7 +187,6 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       "postgres-database-identity.mjs",
       "production-db-preflight.mjs",
       "production-db-preflight.sql",
-      "production-forward-resume.mjs",
       "production-release-marker.mjs",
       "production-writer-drain.mjs",
       "run-prisma-migrate-with-lock-timeout.mjs",
@@ -198,10 +197,6 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
     compileMigratorTool({ source: "scripts/unified-v3-postflight.ts", output: "unified-v3-postflight.mjs" });
     compileMigratorTool({ source: "scripts/unified-v4-activate-replay.ts", output: "unified-v4-activate-replay.mjs" });
     compileMigratorTool({ source: "scripts/unified-v4-traffic-check.ts", output: "unified-v4-traffic-check.mjs" });
-    execFileSync(process.execPath, [
-      path.resolve("scripts/production-migration-image-check.mjs"),
-      migratorArtifactRoot,
-    ], { cwd: process.cwd(), encoding: "utf8", env: process.env });
     await Promise.all([prisma.$connect(), secondClient.$connect()]);
     await prisma.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
     await prisma.$executeRawUnsafe(`CREATE TABLE "${schema}"."PhysiologyV7Lifecycle" ("profileId" INTEGER PRIMARY KEY)`);

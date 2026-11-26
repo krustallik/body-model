@@ -628,7 +628,6 @@ describe("pinned PostgreSQL registry consistency", () => {
     const image = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
     const files = [
       "../.github/workflows/ci.yml",
-      "../.github/workflows/production-no-app-preflight.yml",
       "../.github/workflows/production-migration-preflight.yml",
       "../.github/workflows/production-full-history-recalculate.yml",
       "../.github/workflows/production-migration-safety-ci.yml",

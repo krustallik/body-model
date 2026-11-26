@@ -16,7 +16,6 @@ SCHEMA_PREFLIGHT="$ROOT/scripts/deploy-preflight-schema.sh"
 LOCK="$ROOT/scripts/production-release-lock.sh"
 DEPLOY_WORKFLOW="$ROOT/.github/workflows/deploy-production.yml"
 grep -Fq 'fetch --no-tags --prune bodycast-canonical' "$DEPLOY"
-grep -Fq 'active-energy-unified-v2' "$DEPLOY"
 grep -Fq -- '--before-ddl' "$DEPLOY"
 grep -Fq -- '--after-ddl' "$DEPLOY"
 ! grep -Fq 'prisma migrate deploy' "$DEPLOY"
@@ -228,7 +227,6 @@ printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
 if [[ "$1" == "inspect" ]]; then printf 'healthy\n'; exit 0; fi
 if [[ "$1" == "compose" && "$*" == *"config --quiet"* ]]; then exit 47; fi
 if [[ "$1" == "compose" && "$*" == *"production-db-preflight.mjs"* ]]; then printf '{}\n'; exit 0; fi
-if [[ "$1" == "compose" && "$*" == *"production-migration-image-check.mjs"* ]]; then printf 'fixture image checked\n'; exit 0; fi
 if [[ "$1" == "compose" && "$*" == *"--before-ddl"* ]]; then
   [[ "${FAKE_GUARD_MODE:-allow}" == "allow" ]] || { echo "final signed backup/restore guard rejected" >&2; exit 41; }
   printf '{"ready":true}\n'
@@ -319,7 +317,7 @@ if run_fixture_command allow "$NEW_RELEASE_SHA" "$TMP/migration-rerun-blocked.lo
   echo "Expected a second migration attempt to be blocked by the durable marker." >&2
   exit 1
 fi
-grep -Fq 'only an exact verified pre-spawn marker has an owner-authorized forward-resume path' "$TMP/migration-rerun-blocked.log"
+grep -Fq 'existing production marker is not the verified Auth app-ready predecessor' "$TMP/migration-rerun-blocked.log"
 test ! -s "$DOCKER_LOG"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
 [[ "$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')" == "$MARKER_DIGEST" ]]

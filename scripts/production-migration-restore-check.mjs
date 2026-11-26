@@ -2,10 +2,10 @@ import { readFile, readdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST } from "./production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { verifyRestoredBackup, evaluateProductionPostflight, schemaInventoryDigest, schemaInventoryDifferenceSummary, safeBlockerCategories } from "./production-migration-preflight.mjs";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
-import { verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
+import { readCommittedMigrationTree, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 
 export function verifyBaseRestore(sourceReport, restoredReport, readabilityReport) {
@@ -136,10 +136,11 @@ export async function verifyDisposableRehearsalAdmission({
   };
 }
 
-export function verifyDisposablePostflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
+export function verifyDisposablePostflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, migrationChecksums) {
   const evaluation = evaluateProductionPostflight(report, migrationDirectories, manifestId, {
     expectedDatabase: "bodycast_restore",
     expectedRole: "bodycast_restore",
+    migrationChecksums,
   });
   const digest = Array.isArray(report?.objects) ? schemaInventoryDigest(report.objects) : null;
   return { verified: evaluation.ready, postflightReady: evaluation.ready, blockers: evaluation.blockers, pending: evaluation.pending, postSchemaDigest: digest };
@@ -234,7 +235,12 @@ async function main() {
   }
   if (mode === "--postflight") {
     const report = await readJson(value("--report"));
-    const result = verifyDisposablePostflight(report, migrationDirectories, value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
+    const manifestId = value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id;
+    const manifest = getProductionMigrationManifest(manifestId);
+    const migrationChecksums = manifest.dynamicMigrationSet === true
+      ? Object.fromEntries((await readCommittedMigrationTree(repository, value("--release-sha"))).files.map(({ name, sha256 }) => [name, sha256]))
+      : undefined;
+    const result = verifyDisposablePostflight(report, migrationDirectories, manifestId, migrationChecksums);
     writeVerificationResult("Disposable migration postflight", result);
     return;
   }

@@ -23,7 +23,7 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(host).toContain('EXPECTED_CADDY="gymbeam-caddy"');
   });
 
-  it("proves the database and all 74 migration checksums before starting the app or publishing the route", () => {
+  it("proves the database and every exact release migration checksum before serving", () => {
     const emptyDbCheckAt = host.indexOf('public_table_count="$(compose exec');
     const migrateAt = host.indexOf("prisma migrate deploy");
     const verifyAt = host.indexOf("--production-empty-install)");
@@ -34,7 +34,8 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(verifyAt).toBeGreaterThan(migrateAt);
     expect(schemaMarkerAt).toBeGreaterThan(verifyAt);
     expect(appDeployAt).toBeGreaterThan(schemaMarkerAt);
-    expect(host).toContain('"$migration_count" == "74"');
+    expect(host).toContain('"$migration_count" == "$expected_migration_count"');
+    expect(host).not.toContain('"$migration_count" == "74"');
     expect(host).toContain("--production-empty-install");
     expect(host).toContain("BODYCAST_NON_SERVING_DEPLOY=0");
     expect(host).toContain('env BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH"');

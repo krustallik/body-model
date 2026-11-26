@@ -221,8 +221,6 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          APP_HOST: ${{ secrets.APP_HOST }}
-          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
@@ -230,9 +228,7 @@ jobs:
           [[ "$TIP" == "$RELEASE_SHA" && "$GITHUB_SHA" == "$RELEASE_SHA" ]] || {
             echo "::error::Canonical main moved immediately before the read-only database diagnostic."; exit 1;
           }
-          [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* && "$DEPLOY_PATH" != *$'\r'* \
-            && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
-            && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* && "$CADDY_ROUTES_PATH" != *$'\r'* ]] || {
+          [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* && "$DEPLOY_PATH" != *$'\r'* ]] || {
             echo "::error::Read-only database diagnostic inputs are malformed."; exit 1;
           }
           DB_REPORT="$RUNNER_TEMP/bodycast-read-only-db-report.json"
@@ -243,15 +239,11 @@ jobs:
           chmod 600 "$DB_REPORT" "$DB_RESULT"
           trap 'rm -f -- "$DB_REPORT" "$DB_RESULT"' EXIT
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
-          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
-          ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           export GIT_OPTIONAL_LOCKS=0
           deploy_path="$(printf '%s' "$1" | base64 --decode)"
-          app_host="$(printf '%s' "$2" | base64 --decode)"
-          routes_path="$(printf '%s' "$3" | base64 --decode)"
-          release_sha="$4"
+          release_sha="$2"
           [[ "$deploy_path" == /* && -d "$deploy_path" && ! -L "$deploy_path" \
             && "$(git -C "$deploy_path" rev-parse --show-toplevel)" == "$deploy_path" \
             && "$(git -C "$deploy_path" rev-parse HEAD)" == "$release_sha" \
@@ -259,14 +251,12 @@ jobs:
             echo "Production checkout is not the exact clean diagnostic SHA." >&2; exit 1;
           }
           cd -- "$deploy_path"
-          APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" \
-            bash scripts/production-writer-drain.sh --assert >/dev/null
-          APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
+          BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
             bash scripts/production-db-target.sh --preflight bodycast-db-prod
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RELEASE_SHA'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64' '$RELEASE_SHA'"
           timeout 5m ssh -T -p "$SSH_PORT" \
             -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

@@ -5,11 +5,8 @@ import { pathToFileURL } from "node:url";
 import { isBackupFresh, withPrismaLockTimeout } from "./production-migration-release.mjs";
 import { verifyFinalGuardReceipt } from "./production-migration-final-guard.mjs";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
-import { normalizeWorkflowRuns } from "./production-migration-select-preflight.mjs";
-import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
 import { isCanonicalPostgresDatabaseIdentity, matchesPostgresDatabaseIdentityDigest, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
-import { acknowledgePrismaSpawn, readAuthPredecessorMarker, readProductionReleaseMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
-import { ARMED_RETRY_FAILED_RUN_ID, ARMED_RETRY_FAILED_SHA } from "./production-forward-resume.mjs";
+import { acknowledgePrismaSpawn, readAuthPredecessorMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
 
 const AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA = "18e67d53856af1f4742bbe9626abbd005b70e8bf";
 
@@ -89,52 +86,6 @@ export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, no
   ];
   if (checks.some((entry) => !entry.passed)) reject("final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=" + JSON.stringify(checks));
   return true;
-}
-
-export function assertLatestPreflightMatchesExecutionProof(proof, latest) {
-  if (!latest || String(latest.id) !== String(proof.preflightRunId)
-    || Number(latest.runAttempt) !== Number(proof.preflightRunAttempt)
-    || latest.runStartedAt !== proof.preflightRunStartedAt
-    || latest.repository !== proof.repository || latest.workflowPath !== proof.preflightWorkflowPath
-    || latest.headSha !== proof.releaseSha || latest.status !== "completed" || latest.conclusion !== "success") {
-    reject("latest admitted preflight attempt does not match the verified migration authorization.");
-  }
-  return true;
-}
-
-export async function readLatestApplicablePreflightForDdl(proof, fetchImpl = fetch) {
-  if (!/^[a-f0-9]{40}$/.test(String(proof?.releaseSha ?? ""))) reject("verified authorization lacks a valid release SHA.");
-  const workflowFile = "production-migration-preflight.yml";
-  let nextUrl = "https://api.github.com/repos/krustallik/body-model/actions/workflows/" + workflowFile + "/runs?per_page=100";
-  const records = [];
-  let pages = 0;
-  while (nextUrl) {
-    const url = new URL(nextUrl);
-    if (url.origin !== "https://api.github.com" || !url.pathname.endsWith("/actions/workflows/" + workflowFile + "/runs")) {
-      reject("preflight status API returned an unexpected pagination target.");
-    }
-    const response = await fetchImpl(url, {
-      headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "BodyCast-production-migration-guard" },
-      redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000),
-    });
-    if (!response?.ok) reject("live preflight status lookup failed (" + (response?.status ?? "unknown") + ").");
-    const body = await response.json();
-    if (!Array.isArray(body?.workflow_runs)) reject("preflight status response is malformed.");
-    records.push(...body.workflow_runs);
-    const nextLink = response.headers?.get("link")?.split(",").map((part) => part.trim())
-      .find((part) => /;\s*rel="?next"?/.test(part));
-    nextUrl = nextLink?.match(/^<([^>]+)>/)?.[1] ?? null;
-    pages += 1;
-    if (pages > 100) reject("preflight status history exceeds the safe pagination limit.");
-  }
-  const normalized = normalizeWorkflowRuns(records);
-  const workflowIds = [...new Set(normalized.map((run) => String(run.workflowId)))];
-  if (workflowIds.length !== 1 || !/^[1-9][0-9]*$/.test(workflowIds[0])) reject("preflight workflow identity is missing or ambiguous.");
-  const selected = selectLatestApplicablePreflight(normalized, {
-    repository: "krustallik/body-model", workflowId: workflowIds[0], releaseSha: proof.releaseSha, manifestId: proof.manifestId,
-  });
-  assertLatestPreflightMatchesExecutionProof(proof, selected);
-  return selected;
 }
 
 export function assertBackupFreshAtDdlStart(receipt, now = Date.now()) {
@@ -250,49 +201,14 @@ export async function startPrismaMigrationAtDdlBoundary({
   let expectedPriorDigest = null;
   let expectedPriorMarker = null;
   let expectedPriorMode = null;
-  let lineageDigest = receipt.executionMode === "forward-resume" ? receipt.forwardResumeProofDigest : canonicalSha256({
+  let lineageDigest = canonicalSha256({
     authorizationId: receipt.authorizationId,
-    executionMode: receipt.executionMode ?? "standard",
     releaseSha: receipt.releaseSha,
     workflowRunId: String(receipt.workflowRunId),
     workflowRunAttempt: Number(receipt.workflowRunAttempt),
   });
-  if (receipt.executionMode === "forward-resume") {
-    if (!/^[a-f0-9]{64}$/.test(String(receipt.forwardResumeMarkerDigest ?? ""))
-      || !/^[a-f0-9]{64}$/.test(String(lineageDigest ?? ""))) {
-      reject("forward-resume authorization lacks the signed legacy marker and proof lineage.");
-    }
-    const armed = await readProductionReleaseMarker(path.join(markerDirectory, "marker"));
-    const retryArmed = receipt.forwardResumeSourceRunId === ARMED_RETRY_FAILED_RUN_ID;
-    const expectedRunId = retryArmed ? receipt.forwardResumeSourceRunId : String(authorized.currentWorkflowRunId);
-    const expectedAttempt = retryArmed ? Number(receipt.forwardResumeSourceRunAttempt)
-      : Number(authorized.currentWorkflowRunAttempt);
-    const expectedAuthorizationId = retryArmed ? receipt.forwardResumeSourceAuthorizationId : receipt.authorizationId;
-    if (!armed || armed.marker.state !== "forward-resume-armed" || armed.marker.schemaVersion !== 2
-      || armed.marker.releaseSha !== (retryArmed ? receipt.forwardResumeSourceSha : authorized.releaseSha)
-      || armed.marker.spawnState !== "not-started"
-      || armed.marker.workflowRunId !== expectedRunId || armed.marker.workflowRunAttempt !== expectedAttempt
-      || armed.marker.authorizationId !== expectedAuthorizationId
-      || (retryArmed ? (armed.digest !== receipt.forwardResumeMarkerDigest
-        || receipt.forwardResumeSourceSha !== ARMED_RETRY_FAILED_SHA
-        || armed.marker.workflowRunId === String(authorized.currentWorkflowRunId)
-        || armed.marker.authorizationId === receipt.authorizationId)
-        : (armed.digest === receipt.forwardResumeMarkerDigest || armed.marker.lineageDigest !== lineageDigest))) {
-      reject("the armed forward-resume marker is missing or does not match the signed one-time authorization.");
-    }
-    expectedPriorDigest = armed.digest;
-    if (retryArmed) expectedPriorMarker = {
-      releaseSha: receipt.forwardResumeSourceSha,
-      workflowRunId: armed.marker.workflowRunId,
-      workflowRunAttempt: armed.marker.workflowRunAttempt,
-      authorizationId: armed.marker.authorizationId,
-      lineageDigest: armed.marker.lineageDigest,
-    };
-  }
   if (authorized.preflightResult?.sourceReleaseMarker) {
-    if (receipt.executionMode === "forward-resume" || receipt.manifestId !== "training-session-context-v1") {
-      reject("Auth predecessor handoff cannot be combined with another migration resume mode.");
-    }
+    if (receipt.manifestId !== "training-session-context-v1") reject("Auth predecessor handoff is restricted to Training session-context migration.");
     const source = authorized.preflightResult.sourceReleaseMarker;
     if (expectedPriorDigest !== null) reject("multiple prior marker transitions were requested.");
     expectedPriorDigest = source.digest;
@@ -300,7 +216,6 @@ export async function startPrismaMigrationAtDdlBoundary({
     expectedPriorMarker = source;
     lineageDigest = canonicalSha256({
       authorizationId: receipt.authorizationId,
-      executionMode: expectedPriorMode,
       releaseSha: receipt.releaseSha,
       workflowRunId: String(authorized.currentWorkflowRunId),
       workflowRunAttempt: Number(authorized.currentWorkflowRunAttempt),

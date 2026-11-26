@@ -8,7 +8,6 @@ import { assertProductionDatabaseIdentityMatches, verifyRestoredBackup } from ".
 import { getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { assertRollbackAppCanReadProgramlessSessions } from "./production-app-capabilities.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
-import { validateAuthMarkerForTrainingMigrationHandoff } from "./production-schema-deploy-handoff.mjs";
 import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity,
   matchesPostgresDatabaseIdentityDigest, postgresDatabaseIdentityHostProjection, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 import {
@@ -48,7 +47,7 @@ function fail(message) { throw new Error(`Production database cutback blocked: $
 
 export function verifyCutbackEvidenceBundle({
   envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult,
-  allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes, requireBackupBytes = true,
+  allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes,
 }) {
   const historical = verifyHistoricalMigrationAuthorizationEnvelope(envelope, {
     allowlist,
@@ -93,10 +92,8 @@ export function verifyCutbackEvidenceBundle({
     || artifactMetadata?.expired === true) {
     fail("encrypted backup artifact identity, digest, run, or retention state differs from the signed claim.");
   }
-  // Source-app-only recovery still validates the signed restore rehearsal and
-  // artifact identity; it does not read or transfer the dump it will not use.
-  if (requireBackupBytes && (!Buffer.isBuffer(backupFileBytes)
-    || createHash("sha256").update(backupFileBytes).digest("hex") !== preflightEvidence.backupFileDigest)) {
+  if (!Buffer.isBuffer(backupFileBytes)
+    || createHash("sha256").update(backupFileBytes).digest("hex") !== preflightEvidence.backupFileDigest) {
     fail("encrypted backup ciphertext digest differs from the signed preflight evidence.");
   }
   if (!Array.isArray(preflightEvidence.pendingMigrationNames)
@@ -285,81 +282,29 @@ export function verifyPreviousAppMigrationCompatibility({
     migrationHistoryDigest: sourceDigests.migrationHistoryDigest };
 }
 
-export function verifyPreDdlSourceAppRecovery({
-  envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult, allowlist,
-  expectedFailedRunId, expectedFailedSha, liveReport, recordText, markerText, repositoryPath,
-}) {
-  const context = verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence, preflightReport,
-    preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, requireBackupBytes: false });
-  const manifest = getProductionMigrationManifest(context.claims.manifestId);
-  if (manifest.id !== "training-session-context-v1") {
-    fail("source-app recovery is only supported for the exact Training migration preflight contract.");
+export function verifyCapturedPreDdlSourceAppRecovery({ expectedFailedSha, liveReport, recordText }) {
+  const record = parsePreviousAppProvenance(recordText);
+  if (record.targetSha !== expectedFailedSha) fail("the host capture belongs to a different release SHA.");
+  let liveDigests;
+  try { liveDigests = previousAppDatabaseCompatibilityDigests(liveReport); }
+  catch (error) { fail(`live PostgreSQL compatibility evidence is incomplete: ${error.message}`); }
+  if (liveDigests.databaseIdentityDigest !== record.preDdlDatabaseIdentityDigest
+    || liveDigests.migrationHistoryDigest !== record.preDdlMigrationHistoryDigest
+    || liveDigests.schemaDigest !== record.preDdlSchemaInventoryDigest
+    || liveDigests.compatibilityDigest !== record.preDdlDatabaseCompatibilityDigest) {
+    fail("PostgreSQL identity, migration history, or schema differs from the healthy captured app baseline.");
   }
-
-  const sourceMarker = preflightResult?.sourceReleaseMarker;
-  if (!sourceMarker || sourceMarker.schemaVersion !== 3 || sourceMarker.manifestId !== "auth-multiuser-v1"
-    || sourceMarker.state !== "app-ready" || sourceMarker.deploySha !== sourceMarker.liveAppSha
-    || !/^[a-f0-9]{40}$/.test(String(sourceMarker.deploySha ?? ""))
-    || !/^[a-f0-9]{64}$/.test(String(sourceMarker.digest ?? "")) || typeof markerText !== "string") {
-    fail("the signed preflight does not contain a valid Auth app-ready source marker witness.");
-  }
-  if (createHash("sha256").update(markerText).digest("hex") !== sourceMarker.digest) {
-    fail("the current durable Auth marker bytes differ from the exact marker captured by the signed preflight.");
-  }
-  let validatedMarker;
-  try {
-    validatedMarker = validateAuthMarkerForTrainingMigrationHandoff(markerText, {
-      liveAppSha: sourceMarker.liveAppSha, repositoryPath,
-    });
-  } catch (error) {
-    fail(`the captured Auth source marker is not compatible with the current repository: ${error.message}`);
-  }
-  const currentWitness = { ...validatedMarker, liveAppSha: sourceMarker.liveAppSha };
-  if (canonicalSha256(currentWitness) !== canonicalSha256(sourceMarker)) {
-    fail("the durable Auth marker fields differ from the signed preflight source witness.");
-  }
-
-  try { assertProductionDatabaseIdentityMatches(preflightResult.identity, liveReport?.identity); }
-  catch (error) { fail(`live PostgreSQL identity differs from the exact pre-DDL source: ${error.message}`); }
-  if (canonicalSha256(liveReport?.identity) !== context.claims.productionIdentityDigest
-    || liveReport?.logicalDataFingerprint !== preflightResult.logicalDataFingerprint
-    || liveReport?.programlessSessionCount !== preflightResult.programlessSessionCount) {
-    fail("live database identity, full data/sequence fingerprint, or programless-session count changed after preflight.");
-  }
-  const baseline = verifyRestoredBackup(preflightReport, liveReport);
-  if (!baseline.verified) fail(`live schema, migration history, or readable baseline differs from the signed pre-DDL snapshot: ${baseline.blockers.join(" ")}`);
-  if (liveReport?.writerDrain?.activeClientBackends?.length !== 0
-    || liveReport?.writerDrain?.topology?.ready !== true
+  const drain = liveReport?.writerDrain;
+  if (!/^[a-f0-9]{64}$/.test(String(liveReport?.logicalDataFingerprint ?? ""))
+    || !Array.isArray(drain?.activeClientBackends) || drain.activeClientBackends.length !== 0
+    || drain?.topology?.ready !== true
     || !Array.isArray(liveReport?.conflictingLocks) || liveReport.conflictingLocks.length !== 0
     || !Array.isArray(liveReport?.preparedTransactions) || liveReport.preparedTransactions.length !== 0) {
-    fail("live production has a database writer, conflicting lock, prepared transaction, or incomplete topology observation.");
+    fail("production has an active writer, conflicting lock, prepared transaction, or incomplete read-only observation.");
   }
-
-  let previousApp;
-  let previousRecord;
-  try {
-    previousRecord = parsePreviousAppProvenance(recordText);
-    previousApp = verifyPreviousAppMigrationCompatibility({
-      recordText, targetSha: expectedFailedSha, contextVerified: context.verified,
-      preflightResultDigest: context.preflightResultDigest, preflightResult,
-      restoredReport: liveReport, restoreResult, readabilityReport: liveReport, repositoryPath,
-    });
-  } catch (error) {
-    fail(`the captured previous app is not compatible with the unchanged live database: ${error.message}`);
-  }
-  if (previousRecord.previousSha !== sourceMarker.deploySha) {
-    fail("the immutable previous app SHA differs from the signed Auth marker and live app witness.");
-  }
-  return {
-    verified: true,
-    manifestId: manifest.id,
-    productionIdentityDigest: context.claims.productionIdentityDigest,
-    liveDataFingerprint: liveReport.logicalDataFingerprint,
-    sourceMarkerDigest: sourceMarker.digest,
-    previousAppSha: previousRecord.previousSha,
-    previousImageId: previousRecord.previousImageId,
-    migrationCount: previousApp.migrationCount ?? previousApp.restoredMigrationCount,
-  };
+  return { verified: true, targetSha: record.targetSha, previousAppSha: record.previousSha,
+    previousImageId: record.previousImageId, databaseCompatibilityDigest: liveDigests.compatibilityDigest,
+    liveDataFingerprint: liveReport.logicalDataFingerprint };
 }
 
 export function verifyRecreatedPreviousAppRuntime({ recordText, container }) {
@@ -392,16 +337,14 @@ async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "--verify-context") {
     const [directory, expectedFailedRunId, expectedFailedSha, backupPath] = args;
-    const sourceAppOnly = backupPath === "--source-app-only";
     if (args.length !== 4 || !directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "")
-      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || (!sourceAppOnly && !backupPath)) {
-      fail("usage: --verify-context <bundle-dir> <failed-run-id> <failed-release-sha> <encrypted-backup-file|--source-app-only>.");
+      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath) {
+      fail("usage: --verify-context <bundle-dir> <failed-run-id> <failed-release-sha> <encrypted-backup-file>.");
     }
     const bundle = await readCutbackEvidenceBundle(directory);
-    const backupFileBytes = sourceAppOnly ? undefined : await readFile(backupPath);
+    const backupFileBytes = await readFile(backupPath);
     const allowlist = await readJson(path.resolve("scripts/production-migration-verification-keys.json"));
-    const result = verifyCutbackEvidenceBundle({ ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes,
-      requireBackupBytes: !sourceAppOnly });
+    const result = verifyCutbackEvidenceBundle({ ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
     process.stdout.write(JSON.stringify({ verified: result.verified, releaseSha: result.claims.releaseSha,
       preflightRunId: result.claims.preflightRunId, preflightRunAttempt: result.claims.preflightRunAttempt,
       backupArtifactId: result.claims.backupArtifactId, backupArtifactDigest: result.claims.backupArtifactDigest,
@@ -409,20 +352,13 @@ async function main() {
       preflightResultDigest: result.preflightResultDigest }) + "\n");
     return;
   }
-  if (mode === "--verify-pre-ddl-source-app-recovery") {
-    const [directory, expectedFailedRunId, expectedFailedSha, liveReportPath, capturePath, markerPath] = args;
-    if (!directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "")
-      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !liveReportPath || !capturePath || !markerPath) {
-      fail("usage: --verify-pre-ddl-source-app-recovery <bundle-dir> <failed-run-id> <failed-sha> <live-report> <capture-record> <source-marker>.");
+  if (mode === "--verify-captured-source-app-recovery") {
+    const [expectedFailedSha, liveReportPath, capturePath] = args;
+    if (!/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !liveReportPath || !capturePath) {
+      fail("usage: --verify-captured-source-app-recovery <failed-sha> <live-report> <capture-record>.");
     }
-    const [bundle, liveReport, recordText, markerText, allowlist] = await Promise.all([
-      readCutbackEvidenceBundle(directory), readJson(liveReportPath), readFile(capturePath, "utf8"), readFile(markerPath, "utf8"),
-      readJson(path.resolve("scripts/production-migration-verification-keys.json")),
-    ]);
-    const result = verifyPreDdlSourceAppRecovery({
-      ...bundle, allowlist, expectedFailedRunId, expectedFailedSha, liveReport, recordText, markerText,
-      repositoryPath: process.cwd(),
-    });
+    const [liveReport, recordText] = await Promise.all([readJson(liveReportPath), readFile(capturePath, "utf8")]);
+    const result = verifyCapturedPreDdlSourceAppRecovery({ expectedFailedSha, liveReport, recordText });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }

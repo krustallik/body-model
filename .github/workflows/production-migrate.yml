@@ -8,17 +8,11 @@ on:
         required: true
         type: string
       manifest_id:
-        description: Closed reviewed migration set
+        description: Reviewed schema contract; pending migrations are discovered from the exact release tree
         required: true
-        type: choice
-        options:
-          - active-energy-unified-v2
-          - unified-v4-republication-v1
-          - training-mutation-ledger-refresh-queue-v1
-          - auth-multiuser-v1
-          - training-session-context-v1
+        type: string
       confirmation:
-        description: Type MIGRATE_PRODUCTION to request a signed, current-state authorization
+        description: Type the exact MIGRATE_PRODUCTION SHA and pending-set digest shown by the preflight
         required: true
         type: string
       confirm_profile_one_ownership_backfill:
@@ -26,18 +20,6 @@ on:
         required: true
         default: false
         type: boolean
-      execution_mode:
-        description: Standard migration or the separately owner-authorized single forward-resume attempt
-        required: true
-        default: standard
-        type: choice
-        options:
-          - standard
-          - forward-resume
-      forward_resume_failed_migration_run_id:
-        description: Required only for forward-resume; the exact independently verified source run
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -67,8 +49,6 @@ jobs:
       preflight_url: ${{ steps.select.outputs.preflight_url }}
       workflow_id: ${{ steps.select.outputs.workflow_id }}
       ci_url: ${{ steps.select.outputs.ci_url }}
-      execution_mode: ${{ steps.select.outputs.execution_mode }}
-      forward_resume_failed_run_id: ${{ steps.select.outputs.forward_resume_failed_run_id }}
       profile_one_backfill_authorized: ${{ steps.select.outputs.profile_one_backfill_authorized }}
     steps:
       - name: Checkout exact current main tooling
@@ -85,8 +65,6 @@ jobs:
           MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirmation }}
           PROFILE_ONE_BACKFILL_AUTHORIZATION: ${{ inputs.confirm_profile_one_ownership_backfill }}
-          EXECUTION_MODE: ${{ inputs.execution_mode }}
-          FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -Eeuo pipefail
@@ -103,25 +81,14 @@ jobs:
             workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT, ref: "refs/heads/main", sha: process.env.DISPATCH_SHA,
             requireInProgress: true });
           NODE
-          [[ "$CONFIRMATION" == "MIGRATE_PRODUCTION" ]] || { echo "::error::Exact migration request confirmation is required."; exit 1; }
-          [[ "$EXECUTION_MODE" == "standard" || "$EXECUTION_MODE" == "forward-resume" ]] || { echo "::error::Unsupported migration execution mode."; exit 1; }
-          if [[ "$EXECUTION_MODE" == "forward-resume" ]]; then
-            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" || "$FORWARD_RESUME_FAILED_RUN_ID" == "38062632284" ]] || { echo "::error::Forward-resume requires an exact reviewed source failure run."; exit 1; }
-          else
-            [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "::error::A failed-run ID is only valid with explicit forward-resume mode."; exit 1; }
-          fi
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" \
-            || "$MANIFEST_ID" == "training-session-context-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
-          if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "::error::The nine-migration Training manifest accepts only standard exact-SHA execution."; exit 1;
-          fi
-          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "::error::The Auth migration manifest accepts standard exact-SHA execution only."; exit 1;
-          fi
-          if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "::error::The V4 republication manifest does not accept historical forward-resume evidence."; exit 1;
-          fi
+          [[ "$CONFIRMATION" =~ ^MIGRATE_PRODUCTION:[0-9a-f]{40}:[0-9a-f]{64}$ ]] || {
+            echo "::error::Confirmation must bind the exact release SHA and pending migration set shown by preflight."; exit 1;
+          }
+          node --input-type=module - "$MANIFEST_ID" <<'NODE'
+          import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
+          const manifest = getProductionMigrationManifest(process.argv[2]);
+          if (manifest.ciOnly === true) throw new Error("CI-only schema contracts cannot be used for production.");
+          NODE
           if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
             [[ "$PROFILE_ONE_BACKFILL_AUTHORIZATION" == "true" ]] || {
               echo "::error::The Auth manifest includes existing-row Profile 1 ownership updates and requires their explicit owner authorization."; exit 1;
@@ -138,8 +105,8 @@ jobs:
           }
           CI_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/ci.yml --jq .id)"
           PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-          gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/$CI_WORKFLOW_ID/runs?per_page=100" > "$RUNNER_TEMP/ci-runs.ndjson"
+          gh api --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/$CI_WORKFLOW_ID/runs?branch=main&event=push&head_sha=$MAIN_TIP&per_page=100" > "$RUNNER_TEMP/ci-runs.ndjson"
           CI_URL="$(node --input-type=module - "$RUNNER_TEMP/ci-runs.ndjson" "$MAIN_TIP" <<'NODE'
           import { readFileSync } from "node:fs";
           const runs = readFileSync(process.argv[2], "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse)
@@ -150,11 +117,11 @@ jobs:
           console.log(latest.html_url);
           NODE
           )"
-          gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" \
+          gh api --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?branch=main&event=workflow_dispatch&head_sha=$MAIN_TIP&per_page=100" \
             > "$RUNNER_TEMP/preflight-runs.ndjson"
           PRE_RUN_ID="$(node scripts/production-migration-select-preflight.mjs --select-run "$RUNNER_TEMP/preflight-runs.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$MAIN_TIP" "$MANIFEST_ID" | jq -r '.id')" || {
-            echo "::error::No latest successful admitted matching preflight run; a newer admitted failed/cancelled/in-progress attempt blocks older success."
+            echo "::error::No successful admitted preflight exists for this exact main SHA and manifest."
             exit 1
           }
           gh api --paginate --jq '.artifacts[] | @json' "repos/krustallik/body-model/actions/runs/$PRE_RUN_ID/artifacts?per_page=100" \
@@ -183,8 +150,6 @@ jobs:
           echo "preflight_url=$PRE_URL" >> "$GITHUB_OUTPUT"
           echo "workflow_id=$(gh api repos/krustallik/body-model/actions/workflows/production-migrate.yml --jq .id)" >> "$GITHUB_OUTPUT"
           echo "ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
-          echo "execution_mode=$EXECUTION_MODE" >> "$GITHUB_OUTPUT"
-          echo "forward_resume_failed_run_id=$FORWARD_RESUME_FAILED_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "profile_one_backfill_authorized=$PROFILE_ONE_BACKFILL_AUTHORIZATION" >> "$GITHUB_OUTPUT"
           {
             echo "## Signed production migration request"
@@ -192,7 +157,7 @@ jobs:
             echo "- release SHA: $MAIN_TIP"
             echo "- manifest: $MANIFEST_ID"
             echo "- current-main CI: $CI_URL"
-            echo "- selected latest exact preflight: $PRE_URL (run $PRE_RUN_ID attempt $PRE_ATTEMPT)"
+            echo "- selected exact-SHA preflight: $PRE_URL (run $PRE_RUN_ID attempt $PRE_ATTEMPT)"
             echo "- backup artifact: $ARTIFACT_ID ($ARTIFACT_DIGEST)"
             echo "- Profile 1 ownership backfill explicitly authorized: $PROFILE_ONE_BACKFILL_AUTHORIZATION"
             echo "- this job did not access production credentials or run DDL"
@@ -219,7 +184,7 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-      - name: Re-select current latest preflight and verify immutable artifact metadata
+      - name: Recheck the selected preflight and immutable artifact metadata
         id: evidence
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,10 +204,10 @@ jobs:
             echo "::error::Canonical main moved before signing."; exit 1;
           }
           PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-          gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" > "$RUNNER_TEMP/preflight-runs.ndjson"
-          gh api --paginate --jq '.artifacts[] | @json' \
-            "repos/krustallik/body-model/actions/runs/$EXPECTED_PREFLIGHT_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/preflight-artifacts.ndjson"
+          gh api "repos/krustallik/body-model/actions/runs/$EXPECTED_PREFLIGHT_RUN_ID" \
+            | jq -c . > "$RUNNER_TEMP/preflight-runs.ndjson"
+          gh api "repos/krustallik/body-model/actions/runs/$EXPECTED_PREFLIGHT_RUN_ID/artifacts" \
+            > "$RUNNER_TEMP/preflight-artifacts.ndjson"
           node scripts/production-migration-select-preflight.mjs --select "$RUNNER_TEMP/preflight-runs.ndjson" "$RUNNER_TEMP/preflight-artifacts.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$RELEASE_SHA" "$MANIFEST_ID" \
             > "$RUNNER_TEMP/selected-preflight.json"
           node --input-type=module - "$RUNNER_TEMP/selected-preflight.json" <<'NODE'
@@ -254,7 +219,7 @@ jobs:
             || s.backupArtifact.digest !== process.env.EXPECTED_BACKUP_ARTIFACT_DIGEST
             || String(s.evidenceArtifact.id) !== process.env.EXPECTED_EVIDENCE_ARTIFACT_ID
             || s.evidenceArtifact.digest !== process.env.EXPECTED_EVIDENCE_ARTIFACT_DIGEST) {
-            throw new Error("A newer admitted preflight attempt or changed artifact superseded the authorization request.");
+            throw new Error("The selected exact-SHA preflight or its immutable artifacts changed before signing.");
           }
           NODE
           BUNDLE="$RUNNER_TEMP/preflight-evidence"
@@ -269,12 +234,11 @@ jobs:
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
-          BODYCAST_MIGRATION_EXECUTION_MODE: ${{ needs.authorize.outputs.execution_mode }}
-          BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: ${{ needs.authorize.outputs.forward_resume_failed_run_id }}
           BODYCAST_PROFILE_ONE_BACKFILL_AUTHORIZED: ${{ needs.authorize.outputs.profile_one_backfill_authorized }}
           PRODUCTION_MIGRATION_SIGNING_KEY_ID: ${{ secrets.PRODUCTION_MIGRATION_SIGNING_KEY_ID }}
           PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY: ${{ secrets.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY }}
           EVIDENCE_BUNDLE: ${{ steps.evidence.outputs.bundle }}
+          BODYCAST_MIGRATION_CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -Eeuo pipefail
           MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
@@ -478,8 +442,6 @@ jobs:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
-          BODYCAST_MIGRATION_EXECUTION_MODE: ${{ needs.authorize.outputs.execution_mode }}
-          BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: ${{ needs.authorize.outputs.forward_resume_failed_run_id }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
@@ -498,28 +460,15 @@ jobs:
           AUTHORIZATION_RUN_ATTEMPT="$7"
           APP_HOST="$(printf '%s' "$8" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$9" | base64 --decode)"
-          EXECUTION_MODE="${10}"
-          FORWARD_RESUME_FAILED_RUN_ID="${11}"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA." >&2; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-              || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" \
-              || "$MANIFEST_ID" == "training-session-context-v1" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
-          if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "Forward-resume is unavailable for the nine-migration Training manifest." >&2; exit 1;
-          fi
-          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" && "$EXECUTION_MODE" != "standard" ]]; then
-            echo "Forward-resume is unavailable for the Auth migration manifest." >&2; exit 1;
-          fi
+          node --input-type=module - "$MANIFEST_ID" <<'NODE'
+          import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
+          const manifest = getProductionMigrationManifest(process.argv[2]);
+          if (manifest.ciOnly === true) throw new Error("CI-only schema contracts cannot be used for production.");
+          NODE
           [[ "$AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
             echo "Invalid authorization workflow identity." >&2; exit 1;
           }
-          if [[ "$EXECUTION_MODE" == "forward-resume" ]]; then
-            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" || "$FORWARD_RESUME_FAILED_RUN_ID" == "38062632284" ]] || { echo "Invalid forward-resume source run." >&2; exit 1; }
-          elif [[ "$EXECUTION_MODE" == "standard" ]]; then
-            [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "A source run is only valid for forward-resume." >&2; exit 1; }
-          else
-            echo "Invalid migration execution mode." >&2; exit 1
-          fi
           [[ "$DEPLOY_PATH" == /* && -d "$DEPLOY_PATH" ]] || { echo "Deployment path is not an existing absolute directory." >&2; exit 1; }
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || { echo "Production traffic topology inputs are invalid." >&2; exit 1; }
           [[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-migration-context-[0-9]+-[0-9]+$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || { echo "Invalid remote context path." >&2; exit 1; }
@@ -542,14 +491,12 @@ jobs:
           export BODYCAST_AUTHORIZATION_WORKFLOW_ID="$AUTHORIZATION_WORKFLOW_ID"
           export BODYCAST_AUTHORIZATION_RUN_ID="$AUTHORIZATION_RUN_ID"
           export BODYCAST_AUTHORIZATION_RUN_ATTEMPT="$AUTHORIZATION_RUN_ATTEMPT"
-          export BODYCAST_MIGRATION_EXECUTION_MODE="$EXECUTION_MODE"
-          export BODYCAST_FORWARD_RESUME_FAILED_RUN_ID="$FORWARD_RESUME_FAILED_RUN_ID"
           export APP_HOST CADDY_ROUTES_PATH
           bash scripts/deploy-migrate.sh
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64' '$BODYCAST_MIGRATION_EXECUTION_MODE' '$BODYCAST_FORWARD_RESUME_FAILED_RUN_ID'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
           timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
       - name: Remove temporary runner credentials
         if: always()

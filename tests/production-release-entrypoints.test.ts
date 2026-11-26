@@ -10,7 +10,6 @@ const releaseWorkflows = [
   "production-migrate.yml",
   "production-full-history-recalculate.yml",
   "production-database-cutback.yml",
-  "production-no-app-preflight.yml",
   "production-v4-derived-recovery.yml",
   "production-auth-runtime-configure.yml",
 ];
@@ -81,14 +80,14 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");
     expect(workflow).toContain("export GIT_OPTIONAL_LOCKS=0");
     expect(workflow).toContain("BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1");
-    expect(workflow).toContain("bash scripts/production-writer-drain.sh --assert >/dev/null");
     expect(workflow).toContain("bash scripts/production-db-target.sh --preflight bodycast-db-prod");
     const databaseDiagnostic = workflow.slice(workflow.indexOf("      - name: Inspect production database schema read-only"), workflow.indexOf("      - name: Remove temporary SSH credentials"));
     const writerDrainGateIndex = databaseDiagnostic.indexOf("bash scripts/production-writer-drain.sh --assert");
     const databaseScanIndex = databaseDiagnostic.indexOf("bash scripts/production-db-target.sh --preflight bodycast-db-prod");
-    expect(writerDrainGateIndex).toBeGreaterThanOrEqual(0);
+    expect(writerDrainGateIndex).toBe(-1);
     expect(databaseScanIndex).toBeGreaterThanOrEqual(0);
-    expect(writerDrainGateIndex).toBeLessThan(databaseScanIndex);
+    expect(databaseDiagnostic).not.toContain("APP_HOST");
+    expect(databaseDiagnostic).not.toContain("CADDY_ROUTES_PATH");
     expect(workflow).toContain("chmod 600 \"$DB_REPORT\" \"$DB_RESULT\"");
     expect(workflow).toContain("Only bounded escaped blocker messages follow.");
     expect(workflow).toContain("result.blockers.slice(0, 100)");
@@ -135,17 +134,27 @@ describe("active production release entrypoints", () => {
     expect(inspector).not.toContain("FROM target_workout_56_events AS e LIMIT 1");
   });
 
-  it("routes the Training ledger manifest through only the standard owner-gated migration path", () => {
+  it("discovers the current Training migration set without a migration-ID allowlist", () => {
     const migration = readFileSync(resolve(workflowDir, "production-migrate.yml"), "utf8");
     const preflight = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const runner = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
-    const marker = readFileSync(resolve("scripts/production-release-marker.mjs"), "utf8");
-    for (const source of [migration, preflight, runner, marker]) {
-      expect(source).toContain("training-mutation-ledger-refresh-queue-v1");
-    }
-    expect(migration).toContain("standard exact-SHA execution");
-    expect(preflight).toContain("does not accept historical resume evidence");
-    expect(runner).toContain("accepts standard exact-SHA execution only");
+    const manifests = readFileSync(resolve("scripts/production-migration-manifests.mjs"), "utf8");
+    const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const dockerfile = readFileSync(resolve("Dockerfile"), "utf8");
+    expect(manifests).toContain('id: "training-session-context-v1"');
+    expect(manifests).toContain("dynamicMigrationSet: true");
+    expect(manifests).toContain("migrations: Object.freeze([])");
+    expect(migration).toContain("pending migrations are discovered from the exact release tree");
+    expect(migration).toContain("MIGRATE_PRODUCTION:[0-9a-f]{40}:[0-9a-f]{64}");
+    expect(preflight).toContain("pending migrations are discovered from the exact release tree");
+    expect(preflight).not.toContain("type: choice");
+    expect(migration).not.toContain("type: choice");
+    expect(preflight).not.toMatch(/RESUME_SOURCE_RUN_ID|RESUME_MIGRATION_FAILURE_RUN_ID|FORWARD_RESUME/);
+    expect(runner).toContain('"$MANIFEST_ID" == "training-session-context-v1"');
+    expect(migration).not.toContain("execution_mode");
+    expect(cutover).toContain("getProductionMigrationManifest(id).ciOnly");
+    expect(cutover).not.toContain('"active-energy-unified-v2" ||');
+    expect(dockerfile).toContain("COPY scripts/production-writer-drain.mjs ./scripts/");
   });
 
   it("compares the retained Auth marker with the complete Training preflight witness", () => {
@@ -214,8 +223,8 @@ describe("active production release entrypoints", () => {
       .toBeLessThan(workflow.indexOf('git fetch --no-tags origin "$DEPLOY_SHA"'));
 
     expect(deploy).toContain("BODYCAST_MIGRATION_FREE_CANDIDATE");
-    expect(deploy).toContain("migration_free_expected_migration_count=74");
-    expect(deploy).toContain('BODYCAST_EXPECTED_MIGRATION_COUNT="$migration_free_expected_migration_count"');
+    expect(deploy).not.toContain("migration_free_expected_migration_count");
+    expect(deploy).not.toContain("BODYCAST_EXPECTED_MIGRATION_COUNT");
     expect(deploy).toContain("--capture-raw-input-fingerprint");
     expect(deploy).toContain("production-writer-drain.sh\" --assert");
     expect(deploy).toContain('production-traffic-cutover.sh" migration-free-serving');
@@ -223,8 +232,9 @@ describe("active production release entrypoints", () => {
     expect(deploy).toContain('--no-deps --force-recreate "$APP_SERVICE"');
     expect(deploy).not.toMatch(/prisma\s+migrate\s+deploy|prisma\s+migrate\s+reset/);
 
-    expect(schemaPreflight).toContain("EXPECTED_MIGRATION_COUNT");
-    expect(schemaPreflight).toContain('"_prisma_migrations"');
+    expect(schemaPreflight).toContain("prisma migrate status");
+    expect(schemaPreflight).not.toContain("EXPECTED_MIGRATION_COUNT");
+    expect(schemaPreflight).not.toContain('"_prisma_migrations"');
     expect(schemaPreflight).toContain("Database schema is up to date");
     expect(dbIdentity).toContain("current_database()");
     expect(dbIdentity).toContain("pg_is_in_recovery()");
@@ -381,139 +391,6 @@ describe("active production release entrypoints", () => {
     expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
     expect(workflow).toContain("BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID=\"$MANIFEST_ID\"");
     expect(capture).toContain('[[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]]');
-    expect(capture).toContain('if [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]]');
-    expect(capture).toContain('resume_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir"');
-    expect(capture).toContain('if [[ "${BODYCAST_FORWARD_RESUME_CAPTURE:-0}" == "1" ]]');
-  });
-
-  it("allows only explicit owner-gated V4 or Training capture refresh and preserves the old capture before replacing it", () => {
-    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
-    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
-    const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
-    const refreshGate = /if \[\[ -n "\$REFRESH_CAPTURE_CONFIRMATION" \]\]; then([\s\S]*?)\n\s*if \[\[ "\$MANIFEST_ID" == "unified-v4-republication-v1"/.exec(workflow)?.[1];
-    expect(workflow).toContain("refresh_existing_capture_confirmation:");
-    expect(workflow).toContain('"$REFRESH_CAPTURE_CONFIRMATION" == "refresh-stale-pre-ddl-capture"');
-    expect(workflow).toContain("Capture refresh requires its exact confirmation, an explicitly allowed release manifest, and no incident-resume inputs");
-    expect(refreshGate).toBeDefined();
-    const allowedRefreshManifestIds = [...(refreshGate ?? "").matchAll(/"\$MANIFEST_ID" == "([^"]+)"/g)]
-      .map((match) => match[1]).sort();
-    const blockedResumeInputs = [...(refreshGate ?? "").matchAll(/-z "\$([A-Z_]+)"/g)]
-      .map((match) => match[1]).sort();
-    expect(allowedRefreshManifestIds).toEqual(["training-session-context-v1", "unified-v4-republication-v1"]);
-    expect(blockedResumeInputs).toEqual([
-      "FORWARD_RESUME_FAILED_RUN_ID",
-      "RESUME_BLOCKED_CAPTURE_RUN_ID",
-      "RESUME_MIGRATION_FAILURE_RUN_ID",
-      "RESUME_SOURCE_RUN_ID",
-    ]);
-    expect(workflow).toContain("BODYCAST_REFRESH_PRE_DDL_CAPTURE=1");
-    expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID");
-    expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT");
-    expect(capture).toContain("refresh_pre_ddl_previous_release");
-    expect(capture).toContain('refresh_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir" "$preflight_result_path"');
-    expect(capture).toContain('--validate-training-capture-marker "$BODYCAST_MARKER_FILE_PATH" "$preflight_result_path" \\');
-    expect(capture).toContain('"${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" "$app_sha" "$ROOT_DIR"');
-    expect(capture).toContain('preflightMode: "pre-maintenance", releaseSha');
-    expect(capture.match(/assert_pre_ddl_refresh_marker_state "\$preflight_result_path"/g)).toHaveLength(2);
-    expect(capture).toContain('bodycast-production-pre-ddl-release-archive-${current_run_id}-${current_attempt}');
-    expect(capture).toContain('bodycast-app:rollback-preflight-${current_run_id}-${current_attempt}');
-    expect(capture.indexOf('ln -- "$record_path" "$archive_path"')).toBeLessThan(capture.indexOf('mv -fT -- "$record_tmp" "$record_path"'));
-    expect(capture).toContain("--verify-live-container");
-    expect(cutback).toContain('PREVIOUS_IMAGE_PIN="${record[5]#previousImagePin=}"');
-    expect(workflow).toContain('MANIFEST_ID" == "unified-v4-republication-v1"');
-  });
-
-  it("resumes a prior pre-DDL capture only after owner-run, maintenance, marker, image, drain, and live-DB checks", () => {
-    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
-    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
-    const resumeVerifier = readFileSync(resolve("scripts/production-preflight-resume.mjs"), "utf8");
-    expect(workflow).toContain("resume_previous_preflight_run_id:");
-    expect(workflow).toContain("production-preflight-resume.mjs --verify-source");
-    expect(workflow).toContain("sourceRunAttempt");
-    expect(workflow).toContain("RESUME_RECEIPT_B64");
-    expect(workflow).toContain("result.previousAppCaptureResume = {");
-    expect(resumeVerifier).toContain("assertTrustedOwnerWorkflowRun(sourceRun");
-    expect(resumeVerifier).toContain('"Restore snapshot, compare source state, and rehearse exact migrations": "failure"');
-    expect(resumeVerifier).toContain("sourceArtifacts?.total_count");
-    expect(resumeVerifier).toContain("another release or preflight workflow exists");
-    expect(resumeVerifier).toContain("assertHistoricalDeployRun");
-    expect(resumeVerifier).not.toContain("assertSafeFailedPreMaintenanceDeploy");
-    expect(resumeVerifier).not.toContain("safeFailedDeployRuns");
-    expect(resumeVerifier).toContain('historicalEffects: "UNVERIFIED"');
-    expect(resumeVerifier).not.toContain("deployControlFilesMatch");
-    expect(resumeVerifier).toContain('".github/workflows/production-full-history-recalculate.yml"');
-    expect(workflow.match(/actions\/runs\?per_page=100/g)).toHaveLength(2);
-    expect(workflow).toContain("resume-historical-deploys.ndjson");
-    expect(workflow).not.toContain("resume-safe-failed-deploys.ndjson");
-    expect(workflow).not.toContain('actions/runs/$deploy_run_id/jobs');
-    expect(workflow).toContain("--log-failed");
-    expect(workflow).not.toContain("resume-main-ci-runs.ndjson");
-
-    const resumeStart = capture.indexOf("resume_pre_ddl_previous_release() {");
-    const markerCheck = capture.indexOf("read_bodycast_release_marker", resumeStart);
-    const appCheck = capture.indexOf("docker ps --all", resumeStart);
-    const writerDrain = capture.indexOf('production-writer-drain.sh" --assert', resumeStart);
-    const recordPinValidation = capture.indexOf("--verify-record", resumeStart);
-    const imagePinCheck = capture.indexOf('docker image inspect --format \'{{.Id}}\' "$previous_image_pin"', resumeStart);
-    const freshDbCheck = capture.indexOf("--resume-capture", resumeStart);
-    const archive = capture.indexOf("bodycast-production-pre-ddl-release-before-", resumeStart);
-    const recordReplace = capture.indexOf('mv -f -- "$record_tmp" "$record_path"', resumeStart);
-    expect([resumeStart, markerCheck, appCheck, writerDrain, recordPinValidation, imagePinCheck, freshDbCheck, archive, recordReplace]
-      .every((index) => index >= 0)).toBe(true);
-    expect(markerCheck).toBeLessThan(appCheck);
-    expect(appCheck).toBeLessThan(writerDrain);
-    expect(writerDrain).toBeLessThan(imagePinCheck);
-    expect(recordPinValidation).toBeLessThan(imagePinCheck);
-    expect(imagePinCheck).toBeLessThan(freshDbCheck);
-    expect(freshDbCheck).toBeLessThan(recordReplace);
-    expect(recordReplace).toBeLessThan(capture.indexOf("BODYCAST_PRE_DDL_RESUME_RECEIPT=", resumeStart));
-    expect(capture).toContain("git merge-base --is-ancestor");
-    expect(capture).toContain("attempt-bound previous-app image pin differs from the captured immutable image");
-    expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
-  });
-
-  it("admits the migration-failure resume only with three exact run IDs and verifies its host-side recapture", () => {
-    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
-    const migrationWorkflow = readFileSync(resolve(workflowDir, "production-migrate.yml"), "utf8");
-    const resumeVerifier = readFileSync(resolve("scripts/production-preflight-resume.mjs"), "utf8");
-    const migrationScript = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
-    const prismaWrapper = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
-    expect(workflow).toContain("resume_pre_ddl_migration_failure_run_id:");
-    expect(workflow).toContain("resume_blocked_capture_preflight_run_id:");
-    expect(workflow).toContain("Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs.");
-    expect(workflow).toContain('MIGRATION_EXECUTION_JOB_ID="$(jq -er');
-    expect(workflow).toContain('node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP"');
-    expect(workflow).toContain('--job "$MIGRATION_EXECUTION_JOB_ID" --log-failed');
-    expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
-    expect(workflow).toContain('gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts"');
-    expect(workflow).toContain('artifacts: JSON.parse(readFileSync(artifactsPath, "utf8"))');
-    expect(migrationWorkflow).toMatch(/- name: Remove temporary runner credentials\s+if: always\(\)\s+run: rm -rf "\$RUNNER_TEMP\/bodycast-migrate-ssh"/);
-    expect(resumeVerifier).toContain("one exact reviewed pre-DDL failure in the fixed migration step");
-    expect(workflow).toContain("exact reviewed $RESUME_MIGRATION_FAILURE_KIND failure occurred before the marker/Prisma boundary");
-    expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");
-    expect(resumeVerifier).toContain("must create a new backup");
-    const finalGuard = migrationScript.indexOf("production-migration-final-guard.mjs");
-    const markerMount = migrationScript.indexOf('BODYCAST_RELEASE_MARKER_DIRECTORY:/run/bodycast-release-marker:rw');
-    const prismaInvocation = migrationScript.indexOf("run-prisma-migrate-with-lock-timeout.mjs");
-    const durableMarker = prismaWrapper.indexOf("markerWriter({");
-    const prismaSpawn = prismaWrapper.indexOf('spawn("npx", ["prisma", "migrate", "deploy"]');
-    expect(finalGuard).toBeGreaterThanOrEqual(0);
-    expect(markerMount).toBeGreaterThan(finalGuard);
-    expect(prismaInvocation).toBeGreaterThan(markerMount);
-    expect(durableMarker).toBeGreaterThanOrEqual(0);
-    expect(durableMarker).toBeLessThan(prismaSpawn);
-  });
-
-  it("collects complete dynamic GitHub evidence with native transport before production access", () => {
-    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
-    const collector = readFileSync(resolve("scripts/github-forward-resume-evidence.mjs"), "utf8");
-    expect(workflow).toContain("node scripts/github-forward-resume-evidence.mjs");
-    expect(workflow).not.toContain("FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS");
-    expect(workflow).not.toContain('actions/jobs/$inspect_job_id/logs');
-    expect(workflow).toContain('--log-failed');
-    expect(collector).toContain('"merge-base", "--is-ancestor"');
-    expect(collector).toContain('"repository-since-source"');
-    expect(collector).toContain('redirect: "manual"');
   });
 
   it("keeps Prisma-only lock-timeout URL options out of libpq postflight probes", () => {
@@ -585,11 +462,16 @@ describe("active production release entrypoints", () => {
     const lifecycle = readFileSync(resolve("scripts/production-database-cutback-lifecycle.sh"), "utf8");
     expect(workflow).toContain("source-app-only");
     expect(workflow).toContain("RECOVER_PRE_DDL_SOURCE_APP");
-    expect(workflow).toContain('manifest?.id === "training-session-context-v1"');
+    expect(workflow).toContain("id: source_gate");
+    expect(workflow).toContain("if: inputs.recovery_mode == 'source-app-only'");
+    expect(workflow).toContain("if: needs.authorize.outputs.recovery_mode == 'database-and-app'");
+    expect(workflow).not.toContain("manifest?.id === \"training-session-context-v1\"");
     expect(workflow).toContain('if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then');
-    expect(workflow).toContain("--source-app-only");
+    expect(workflow).not.toContain("--verify-context \"$BUNDLE\" \"$FAILED_MIGRATION_RUN_ID\" \"$FAILED_SHA\" --source-app-only");
     expect(workflow).toContain('FILES+=(production-backup.pgdump.enc)');
-    expect(workflow).toMatch(/if \[\[ "\$RECOVERY_MODE" == "database-and-app" \]\]; then\s+gh run download "\$PREFLIGHT_RUN_ID"/);
+    const signedEvidenceStep = workflow.split("- name: Resolve signed migration recovery evidence")[1]?.split("\n      - name: ")[0] ?? "";
+    expect(signedEvidenceStep).toContain("if: inputs.recovery_mode == 'database-and-app'");
+    expect(signedEvidenceStep).toContain("gh run download");
     expect(workflow).not.toContain('if (run.status !== "completed" || run.conclusion !== "failure")');
     expect(workflow).not.toContain('assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,\n            workflowPath: ".github/workflows/production-migration-preflight.yml"');
     expect(workflow).toContain('flock -n 9');
@@ -624,7 +506,7 @@ describe("active production release entrypoints", () => {
     const recovery = cutback.slice(recoveryStart, normalDatabasePath);
     const ordered = [
       'BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1',
-      '--verify-pre-ddl-source-app-recovery',
+      '--verify-captured-source-app-recovery',
       'docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest',
       'compose up -d --no-deps --no-build app',
       '--verify-previous-app-runtime',
@@ -634,7 +516,7 @@ describe("active production release entrypoints", () => {
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
     expect(recovery).not.toContain('APP_HOST="$APP_HOST"');
-    expect(recovery).toContain('"$record_path" "$BODYCAST_MARKER_FILE_PATH"');
+    expect(recovery).toContain('"$LIVE_REPORT" "$record_path"');
     expect(recovery).toContain('"$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk \'{print $1}\')" == "$marker_digest_before"');
     expect(recovery).not.toMatch(/write_bodycast_release_marker|clear_bodycast_release_marker|admin_sql|prisma migrate deploy|CREATE DATABASE|ALTER DATABASE/);
     expect(lifecycle).toContain('if [[ "${app_started:-false}" == "true" && "${route_committed:-false}" == "false" ]]; then');

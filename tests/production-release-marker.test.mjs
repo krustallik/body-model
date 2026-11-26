@@ -85,28 +85,6 @@ describe("durable Prisma DDL marker handoff", () => {
     expect(await readdir(fixture.markerDirectory)).toEqual([]);
   });
 
-  it.skipIf(process.platform === "win32")("atomically consumes one signed prior armed marker without reusing its run authorization", async () => {
-    const fixture = await markerFixture();
-    const prior = { workflowRunId: "38062632284", workflowRunAttempt: 1,
-      releaseSha: "b0a31fb6e6552d6ea5419939c96ee42ca7d6ffca",
-      authorizationId: "0e616010-fb95-4832-9dd5-df4c386fa003", lineageDigest: "9".repeat(64) };
-    await writeFile(fixture.markerPath, ["schemaVersion=2", "manifestId=active-energy-unified-v2",
-      `releaseSha=${prior.releaseSha}`, "state=forward-resume-armed",
-      `workflowRunId=${prior.workflowRunId}`, `workflowRunAttempt=${prior.workflowRunAttempt}`,
-      `authorizationId=${prior.authorizationId}`, `lineageDigest=${prior.lineageDigest}`,
-      "spawnState=not-started", ""].join("\n"), { flag: "wx", mode: 0o600 });
-    const before = await readProductionReleaseMarker(fixture.markerPath);
-    const next = await writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments,
-      expectedPriorDigest: before.digest, expectedPriorMarker: prior });
-    expect(next.marker).toMatchObject({ state: "ddl-starting", spawnState: "not-started",
-      releaseSha: markerArguments.releaseSha, workflowRunId: markerArguments.workflowRunId,
-      authorizationId: markerArguments.authorizationId });
-    expect((await readProductionReleaseMarker(fixture.markerPath)).digest).toBe(next.digest);
-    await expect(writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments,
-      expectedPriorDigest: before.digest, expectedPriorMarker: prior })).rejects.toThrow();
-    expect((await readdir(fixture.markerDirectory)).sort()).toEqual(["marker"]);
-  });
-
   it.skipIf(process.platform === "win32")("atomically chains only the exact Auth app-ready marker into Training DDL start", async () => {
     const fixture = await markerFixture();
     const compatibility = readGitCompatibility(process.cwd(), AUTH_PREVIOUS_DEPLOY_SHA,
@@ -179,39 +157,6 @@ describe("durable Prisma DDL marker handoff", () => {
     expect(await readFile(fixture.markerPath, "utf8")).toBe(before);
   }, 30_000);
 
-  it.skipIf(process.platform === "win32")("rejects a forged prior authorization without changing the armed marker", async () => {
-    const fixture = await markerFixture();
-    await writeFile(fixture.markerPath, ["schemaVersion=2", "manifestId=active-energy-unified-v2",
-      `releaseSha=${markerArguments.releaseSha}`, "state=forward-resume-armed",
-      "workflowRunId=38062632284", "workflowRunAttempt=1",
-      "authorizationId=0e616010-fb95-4832-9dd5-df4c386fa003", `lineageDigest=${"9".repeat(64)}`,
-      "spawnState=not-started", ""].join("\n"), { flag: "wx", mode: 0o600 });
-    const before = await readProductionReleaseMarker(fixture.markerPath);
-    await expect(writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments,
-      expectedPriorDigest: before.digest, expectedPriorMarker: {
-        releaseSha: markerArguments.releaseSha, workflowRunId: "38062632284", workflowRunAttempt: 1,
-        authorizationId: "forged-authorization-id", lineageDigest: "9".repeat(64),
-      } })).rejects.toThrow("lineage changed");
-    expect((await readProductionReleaseMarker(fixture.markerPath)).digest).toBe(before.digest);
-  });
-
-  it.skipIf(process.platform === "win32")("rejects a substituted old release SHA before publishing the new main SHA", async () => {
-    const fixture = await markerFixture();
-    const oldSha = "b0a31fb6e6552d6ea5419939c96ee42ca7d6ffca";
-    await writeFile(fixture.markerPath, ["schemaVersion=2", "manifestId=active-energy-unified-v2",
-      `releaseSha=${oldSha}`, "state=forward-resume-armed", "workflowRunId=38062632284",
-      "workflowRunAttempt=1", "authorizationId=0e616010-fb95-4832-9dd5-df4c386fa003",
-      `lineageDigest=${"9".repeat(64)}`, "spawnState=not-started", ""].join("\n"), { flag: "wx", mode: 0o600 });
-    const before = await readProductionReleaseMarker(fixture.markerPath);
-    await expect(writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments,
-      expectedPriorDigest: before.digest, expectedPriorMarker: {
-        releaseSha: "c".repeat(40), workflowRunId: "38062632284", workflowRunAttempt: 1,
-        authorizationId: "0e616010-fb95-4832-9dd5-df4c386fa003", lineageDigest: "9".repeat(64),
-      } })).rejects.toThrow("lineage changed");
-    expect((await readProductionReleaseMarker(fixture.markerPath)).digest).toBe(before.digest);
-    expect((await readdir(fixture.markerDirectory)).sort()).toEqual(["marker"]);
-  });
-
   it.skipIf(process.platform === "win32")("fsync-publishes a blocking pre-spawn marker before the caller can spawn Prisma", async () => {
     const fixture = await markerFixture();
     const marker = await writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments });
@@ -254,24 +199,6 @@ describe("durable Prisma DDL marker handoff", () => {
       state: "ddl-started",
       spawnState: "started",
     });
-  });
-
-  it.skipIf(process.platform === "win32")("rejects a forward-resume marker for the Training ledger manifest", async () => {
-    const fixture = await markerFixture();
-    const trainingReleaseSha = "c".repeat(40);
-    await writeFile(fixture.markerPath, [
-      "schemaVersion=2",
-      "manifestId=training-mutation-ledger-refresh-queue-v1",
-      `releaseSha=${trainingReleaseSha}`,
-      "state=forward-resume-armed",
-      "workflowRunId=390001",
-      "workflowRunAttempt=1",
-      "authorizationId=authorization-marker-test-12345",
-      `lineageDigest=${"d".repeat(64)}`,
-      "spawnState=not-started",
-      "",
-    ].join("\n"), { flag: "wx", mode: 0o600 });
-    await expect(readProductionReleaseMarker(fixture.markerPath)).rejects.toThrow("do not support forward resume");
   });
 
   it.skipIf(process.platform === "win32")("records Prisma as started only after the OS spawn acknowledgement and durable transition", async () => {

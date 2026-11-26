@@ -93,7 +93,7 @@ compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
 run_schema_preflight() {
   if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
-    BODYCAST_EXPECTED_MIGRATION_COUNT="$migration_free_expected_migration_count" BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="$database_identity_before" \
+    BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="$database_identity_before" \
       bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
   else
     bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
@@ -171,7 +171,6 @@ rollback_image_pinned=false
 active_schema_cutover=false
 active_recovered_v4_release=false
 auth_multiuser_migration_free=0
-migration_free_expected_migration_count=74
 auth_handoff_report_path=""
 post_commit_probe_failed=false
 
@@ -417,7 +416,6 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$BODYCAST_AUTH_HANDOFF_REA
     release_failure 1
   }
   auth_multiuser_migration_free=2
-  migration_free_expected_migration_count=77
 elif [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$marker_status" -ne 1 ]]; then
   if [[ "$marker_status" -eq 0 \
     && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
@@ -426,7 +424,6 @@ elif [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$marker_status" -ne 1 ]]
     node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
       "$BODYCAST_MARKER_FILE_PATH" "$DEPLOY_SHA" "$ROOT_DIR"
     auth_multiuser_migration_free=1
-    migration_free_expected_migration_count=77
   else
     echo "Migration-free serving accepts only an absent marker on the 74-migration lineage or a compatible Auth handoff on the 77-migration lineage." >&2
     release_failure 1
@@ -738,7 +735,7 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
   release_state="COMMITTED"
   trap - ERR
   set +e
-  echo "Exact SHA ${DEPLOY_SHA} passed database identity, raw-input integrity, ${migration_free_expected_migration_count}/${migration_free_expected_migration_count} schema, Training generation, Unified V4, and atomic serving-route fences."
+  echo "Exact SHA ${DEPLOY_SHA} passed database identity, raw-input integrity, Prisma schema compatibility, Training generation, Unified V4, and atomic serving-route fences."
   exit 0
 fi
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then

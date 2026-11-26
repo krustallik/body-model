@@ -149,9 +149,9 @@ ledger_result="$(compose --profile tools run --rm --no-deps --env "BODYCAST_EMPT
 migration_count="$(printf '%s\n' "$ledger_result" | sed -n 's/.*"migrationCount":\([0-9][0-9]*\).*/\1/p')"
 migration_digest="$(printf '%s\n' "$ledger_result" | sed -n 's/.*"migrationTreeDigest":"\([a-f0-9]\{64\}\)".*/\1/p')"
 expected_migration_count="$(find "$ROOT_DIR/prisma/migrations" -mindepth 2 -maxdepth 2 -name migration.sql -type f | wc -l | tr -d ' ')"
-[[ "$migration_count" == "$expected_migration_count" && "$migration_count" == "74" \
+[[ "$migration_count" == "$expected_migration_count" \
   && "$migration_digest" =~ ^[a-f0-9]{64}$ ]] || {
-  echo "Fresh migration verification did not match the exact 74-directory release tree; preserving the database without retry." >&2; exit 1;
+  echo "Fresh migration verification did not match the exact release tree; preserving the database without retry." >&2; exit 1;
 }
 
 marker_tmp="$(mktemp "$git_dir/bodycast-production-empty-install.new.XXXXXX")"

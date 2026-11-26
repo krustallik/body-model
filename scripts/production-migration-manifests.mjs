@@ -1856,12 +1856,6 @@ export const AUTH_MULTIUSER_MANIFEST = Object.freeze({
   ddlLockTargets: AUTH_MULTIUSER_DDL_LOCK_TARGETS,
 });
 
-// Keep Auth v1's historical 74→77 migration set immutable. This successor starts
-// from that exact postflight schema and contains only the two later nullable changes.
-const TRAINING_SESSION_CONTEXT_MIGRATIONS = Object.freeze([
-  Object.freeze({ name: "20261121130000_training_plan_intent", sha256: "42cc92bd6e2658e1859582d5b5a5899d610c731b3f3b3fc6f1f7e90bb00ff723" }),
-  Object.freeze({ name: "20261122140000_session_load_assessment", sha256: "01a5f94115c18ddb8dc9ecdb88092f45f2f6c3489ca21870f78b030f37e31959" }),
-]);
 const TRAINING_SESSION_CONTEXT_OBJECT_SIGNATURES = Object.freeze({
   "ProgramExercise.plannedRepsMin": "integer|nullable=true|default=",
   "ProgramExercise.plannedRepsMax": "integer|nullable=true|default=",
@@ -1900,12 +1894,14 @@ const TRAINING_SESSION_CONTEXT_BASELINE_SIGNATURE_EQUALS = Object.freeze(Object.
 export const TRAINING_SESSION_CONTEXT_MANIFEST = Object.freeze({
   id: "training-session-context-v1",
   cutbackSupported: false,
-  requireCompleteReleaseTree: true,
-  requiredAppliedMigrations: Object.freeze([
-    ...AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations,
-    ...AUTH_MULTIUSER_MANIFEST.migrations,
-  ]),
-  migrations: TRAINING_SESSION_CONTEXT_MIGRATIONS,
+  // The current main migration tree is the release set. Preflight derives the
+  // pending names from that tree and completed database history, then binds the
+  // exact result into owner authorization. This object describes schema state,
+  // not an allowlist of migration files.
+  dynamicMigrationSet: true,
+  requireCompleteReleaseTree: false,
+  requiredAppliedMigrations: Object.freeze([]),
+  migrations: Object.freeze([]),
   requiredTablesBefore: Object.freeze([
     ...AUTH_MULTIUSER_MANIFEST.requiredTablesBefore,
     "Account", "AuthRateLimitBucket", "ProfileApiKey", "Session", "User", "Verification",

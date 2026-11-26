@@ -112,32 +112,29 @@ read_bodycast_release_marker() {
   else
     echo "Production release marker is malformed or unsupported." >&2; return 2
   fi
-  [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" ) \
-      || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
-        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "training-session-context-v1" ) ) \
-      || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
-        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
-          || "$BODYCAST_MARKER_MANIFEST_ID" == "training-session-context-v1" ) ) ) \
-    && ( "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ || "$BODYCAST_MARKER_RELEASE_SHA" == "unknown" ) \
-    && "$BODYCAST_MARKER_STATE" =~ ^(ddl-starting|ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready|forward-resume-armed)$ ]] || {
+  if [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 ]]; then
+    [[ "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" ]] || {
+      echo "Legacy production release marker manifest is not recognized." >&2; return 2;
+    }
+  elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 ]]; then
+    node --input-type=module - "$BODYCAST_MARKER_MANIFEST_ID" <<'NODE' || {
+import { PRODUCTION_MIGRATION_MANIFESTS } from "./scripts/production-migration-manifests.mjs";
+const [manifestId] = process.argv.slice(2);
+const manifest = PRODUCTION_MIGRATION_MANIFESTS[manifestId];
+if (!Object.hasOwn(PRODUCTION_MIGRATION_MANIFESTS, manifestId) || manifest.ciOnly === true) {
+  throw new Error("Production release marker manifest is not a registered production contract.");
+}
+NODE
+      echo "Production release marker manifest is not recognized." >&2; return 2;
+    }
+  fi
+  [[ ( "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ || "$BODYCAST_MARKER_RELEASE_SHA" == "unknown" ) \
+    && "$BODYCAST_MARKER_STATE" =~ ^(ddl-starting|ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready)$ ]] || {
     echo "Production release marker values are not recognized." >&2; return 2;
   }
-  if [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
-    && "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-    && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" ]]; then
-    echo "Training ledger markers do not support forward resume." >&2; return 2;
-  fi
   if [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 ]]; then
     [[ "$BODYCAST_MARKER_STATE" == "ddl-starting" && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" \
-      || ( "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ && "$BODYCAST_MARKER_SPAWN_STATE" == "started" ) \
-      || "$BODYCAST_MARKER_STATE" == "forward-resume-armed" ]] || {
+      || ( "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ && "$BODYCAST_MARKER_SPAWN_STATE" == "started" ) ]] || {
       echo "Production release marker spawn state is inconsistent." >&2; return 2;
     }
   elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 ]]; then
@@ -206,46 +203,6 @@ write_bodycast_release_marker() {
   sync -f "$temporary"
   mv -f -- "$temporary" "$target_path"
   sync -f "$(dirname "$target_path")"
-  trap - RETURN
-}
-
-write_bodycast_forward_resume_marker() {
-  local source_sha="$1" release_sha="$2" run_id="$3" attempt="$4" authorization_id="$5" lineage_digest="$6" expected_source_digest="$7"
-  local marker_status=1 current_digest temporary
-  [[ "$source_sha" =~ ^[a-f0-9]{40}$ && "$release_sha" =~ ^[a-f0-9]{40}$ \
-    && "$run_id" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ \
-    && "$authorization_id" =~ ^[A-Za-z0-9-]{16,80}$ && "$lineage_digest" =~ ^[a-f0-9]{64}$ \
-    && "$expected_source_digest" =~ ^[a-f0-9]{64}$ ]] || {
-    echo "Forward-resume marker lineage is malformed." >&2; return 2;
-  }
-  if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
-  [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 \
-    && "$BODYCAST_MARKER_RELEASE_SHA" == "$source_sha" && "$BODYCAST_MARKER_STATE" == "ddl-started" ]] || {
-    echo "Forward-resume requires the exact legacy V1 ddl-started marker from the verified no-spawn failure." >&2; return 2;
-  }
-  current_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-  [[ "$current_digest" == "$expected_source_digest" ]] || { echo "Forward-resume source marker digest changed after verification." >&2; return 2; }
-  bodycast_prepare_release_marker_directory
-  temporary="$(mktemp "$BODYCAST_RELEASE_MARKER_PATH.new.XXXXXX")"
-  trap 'rm -f -- "$temporary"' RETURN
-  chmod 600 "$temporary"
-  printf 'schemaVersion=2\nmanifestId=%s\nreleaseSha=%s\nstate=forward-resume-armed\nworkflowRunId=%s\nworkflowRunAttempt=%s\nauthorizationId=%s\nlineageDigest=%s\nspawnState=not-started\n' \
-    "$BODYCAST_MARKER_MANIFEST_ID" \
-    "$release_sha" "$run_id" "$attempt" "$authorization_id" "$lineage_digest" > "$temporary"
-  sync -f "$temporary"
-  latest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-  [[ "$latest" == "$current_digest" ]] || { echo "Release marker changed during forward-resume lineage publication." >&2; return 2; }
-  if [[ "$BODYCAST_MARKER_FILE_PATH" == "$BODYCAST_RELEASE_MARKER_PATH" ]]; then
-    mv -f -- "$temporary" "$BODYCAST_RELEASE_MARKER_PATH"
-  else
-    ln -- "$temporary" "$BODYCAST_RELEASE_MARKER_PATH" || { echo "Current marker path is already occupied." >&2; return 2; }
-    rm -- "$temporary"
-  fi
-  sync -f "$BODYCAST_RELEASE_MARKER_DIRECTORY"
-  if [[ "$BODYCAST_MARKER_FILE_PATH" == "$BODYCAST_RELEASE_MARKER_LEGACY_PATH" ]]; then
-    rm -- "$BODYCAST_RELEASE_MARKER_LEGACY_PATH"
-    sync -f "$(dirname "$BODYCAST_RELEASE_MARKER_LEGACY_PATH")"
-  fi
   trap - RETURN
 }
 

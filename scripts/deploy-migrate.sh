@@ -19,18 +19,6 @@ source "$ROOT_DIR/scripts/production-release-lock.sh"
 
 fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 
-[[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-  || "$MANIFEST_ID" == "programless-workouts-health-sync-v1" \
-  || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-  || "$MANIFEST_ID" == "auth-multiuser-v1" \
-  || "$MANIFEST_ID" == "training-session-context-v1" ]] \
-  || fail "a closed reviewed manifest id is required."
-if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" && "${BODYCAST_MIGRATION_EXECUTION_MODE:-standard}" != "standard" ]]; then
-  fail "the Training mutation ledger manifest accepts standard exact-SHA execution only."
-fi
-if [[ "$MANIFEST_ID" == "auth-multiuser-v1" && "${BODYCAST_MIGRATION_EXECUTION_MODE:-standard}" != "standard" ]]; then
-  fail "the Auth migration manifest accepts standard exact-SHA execution only."
-fi
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_SHA must be a full lowercase commit SHA."
 [[ "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ \
   && "$BODYCAST_AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ \
@@ -51,9 +39,7 @@ if read_bodycast_release_marker; then
 else
   marker_status=$?
 fi
-FORWARD_RESUME_MODE=false
 SOURCE_MARKER_DIGEST=""
-FORWARD_SOURCE_MARKER_SCHEMA_VERSION=""
 if [[ "$marker_status" -eq 0 ]]; then
   if [[ "$MANIFEST_ID" == "training-session-context-v1" \
     && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
@@ -76,45 +62,8 @@ NODE
     SOURCE_MARKER_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker.digest' "$CONTEXT_DIR/preflight-result.json")"
     [[ "$SOURCE_MARKER_DIGEST" == "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" ]] \
       || fail "the Auth predecessor marker digest differs from the signed preflight source."
-  elif [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_STATE" == "ddl-started" ) \
-    || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
-      && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ) ) \
-    && "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] \
-    ; then
-    SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-    FORWARD_SOURCE_MARKER_SCHEMA_VERSION="$BODYCAST_MARKER_SCHEMA_VERSION"
-    node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$RELEASE_SHA" "$SOURCE_MARKER_DIGEST" <<'NODE' \
-    || fail "the existing marker is not bound to a verified forward-resume preflight context."
-import { readFileSync } from "node:fs";
-import { verifyForwardResumeContext } from "./scripts/production-forward-resume.mjs";
-const [file, targetSha, markerDigest] = process.argv.slice(2);
-const result = JSON.parse(readFileSync(file, "utf8"));
-const context = result.forwardResume;
-verifyForwardResumeContext(context, { targetSha,
-  preflightRunId: context?.currentPreflightRunId, preflightRunAttempt: context?.currentPreflightRunAttempt });
-if (context.markerDigest !== markerDigest || context.markerReleaseSha !== result.forwardResume.sourceSha) {
-  throw new Error("Forward-resume context does not match the current durable marker digest.");
-}
-NODE
-    [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.sourceSha' "$CONTEXT_DIR/preflight-result.json")" ]] \
-      || fail "legacy marker SHA differs from the verified forward-resume source SHA."
-    if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 2 ]]; then
-      node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" \
-        "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" "$BODYCAST_MARKER_AUTHORIZATION_ID" "$BODYCAST_MARKER_LINEAGE_DIGEST" <<'NODE' \
-      || fail "the armed marker does not match its signed pre-spawn source lineage."
-import { readFileSync } from "node:fs";
-const [file, runId, attempt, authorizationId, lineageDigest] = process.argv.slice(2);
-const context = JSON.parse(readFileSync(file, "utf8")).forwardResume;
-if (context?.markerSchemaVersion !== 2 || context.sourceRunId !== runId
-  || context.sourceRunAttempt !== Number(attempt) || context.sourceAuthorizationId !== authorizationId
-  || context.sourceMarkerLineageDigest !== lineageDigest) {
-  throw new Error("Armed marker identity or lineage differs from the verified source context.");
-}
-NODE
-    fi
-    FORWARD_RESUME_MODE=true
   else
-    fail "only an exact verified pre-spawn marker has an owner-authorized forward-resume path, or an exact retained Auth app-ready predecessor may precede Training DDL."
+    fail "an existing production marker is not the verified Auth app-ready predecessor for this Training migration."
   fi
 elif [[ "$marker_status" -ne 1 ]]; then
   fail "production release marker state is unknown; migration is blocked."
@@ -126,42 +75,14 @@ GIT_TERMINAL_PROMPT=0 git -c "remote.bodycast-canonical.url=$CANONICAL_URL" \
 CANONICAL_MAIN_SHA="$(git rev-parse --verify 'refs/remotes/bodycast-canonical/main^{commit}')"
 [[ "$CANONICAL_MAIN_SHA" == "$RELEASE_SHA" ]] || fail "release SHA is no longer the canonical repository main tip."
 
-# The manifest hash authority is the committed Git blob. The materialized host file
-# that Docker will copy must match those bytes exactly; line-ending normalization is forbidden.
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-manifest_migrations="$(node --input-type=module - "$MANIFEST_ID" <<'NODE'
-import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
-const manifest = getProductionMigrationManifest(process.argv[2]);
-for (const migration of new Map([
-  ...manifest.migrations,
-  ...(manifest.requiredAppliedMigrations ?? []),
-].map((migration) => [migration.name, migration])).values()) {
-  process.stdout.write(`${migration.name}|${migration.sha256}\n`);
-}
-NODE
-)" || fail "the closed migration manifest could not be loaded."
-[[ -n "$manifest_migrations" ]] || fail "the closed migration manifest contains no migration files."
-while IFS='|' read -r migration_name expected_hash; do
-  [[ "$migration_name" =~ ^[0-9]{14}_[a-z0-9_]+$ && "$expected_hash" =~ ^[a-f0-9]{64}$ ]] \
-    || fail "the closed migration manifest contains malformed byte bindings."
-  relative="prisma/migrations/$migration_name/migration.sql"
-  git cat-file blob "$RELEASE_SHA:$relative" > "$TMP_DIR/committed.sql"
-  actual_hash="$(sha256sum "$TMP_DIR/committed.sql" | awk '{print $1}')"
-  [[ "$actual_hash" == "$expected_hash" ]] || fail "committed Git blob differs from reviewed manifest: $migration_name."
-  cmp -s "$TMP_DIR/committed.sql" "$ROOT_DIR/$relative" || fail "working migration file differs byte-for-byte from committed Git blob: $migration_name."
-done <<< "$manifest_migrations"
-
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" \
   || fail "existing production PostgreSQL is unavailable; migration will not start it."
 [[ "$db_status" == "healthy" ]] || fail "existing production PostgreSQL is not healthy; migration will not start it."
 
 compose --profile tools build migrate
-IMAGE_RESULT="$(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-migration-image-check.mjs /app "$MANIFEST_ID")"
-printf '%s\n' "$IMAGE_RESULT"
 
-# Refresh a read-only report only after canonical fetch and image byte verification.
+# Refresh the read-only report immediately before the final freshness-bound writer drain.
 BODYCAST_DB_PREFLIGHT_MANIFEST="$MANIFEST_ID" \
   bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   > "$CONTEXT_DIR/live-report.json"
@@ -226,33 +147,8 @@ CANONICAL_MAIN_SHA="$(git rev-parse --verify 'refs/remotes/bodycast-canonical/ma
 # durably publishes ddl-starting before it attempts to create Prisma. The
 # mounted directory is limited to the marker; Git metadata is not mounted.
 bodycast_prepare_release_marker_directory
-if [[ "$FORWARD_RESUME_MODE" == true ]]; then
-  if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 1 ]]; then
-    [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-      || fail "the current marker directory contains unexpected or interrupted state."
-  else
-    [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 ! -name marker -print -quit)" ]] \
-      || fail "the armed marker directory contains unexpected or interrupted state."
-  fi
-  FORWARD_LINEAGE_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.proofDigest' "$CONTEXT_DIR/preflight-result.json")"
-  if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 1 ]]; then
-    write_bodycast_forward_resume_marker "$BODYCAST_MARKER_RELEASE_SHA" "$RELEASE_SHA" \
-      "$BODYCAST_AUTHORIZATION_RUN_ID" "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
-      "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).authorizationId' "$GUARD_RECEIPT")" \
-      "$FORWARD_LINEAGE_DIGEST" "$SOURCE_MARKER_DIGEST"
-    read_bodycast_release_marker || fail "the forward-resume marker could not be durably armed."
-    [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
-      && "$BODYCAST_MARKER_RELEASE_SHA" == "$RELEASE_SHA" \
-      && "$BODYCAST_MARKER_LINEAGE_DIGEST" == "$FORWARD_LINEAGE_DIGEST" ]] \
-      || fail "the armed marker does not match the signed forward-resume authorization."
-  else
-    [[ "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$SOURCE_MARKER_DIGEST" ]] \
-      || fail "the prior armed marker changed before the Prisma handoff."
-  fi
-else
-  [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-    || fail "the dedicated release-marker directory contains unexpected or interrupted state."
-fi
+[[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+  || fail "the release-marker directory contains unexpected or interrupted state."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
@@ -293,6 +189,7 @@ compose --profile tools run --rm --no-deps \
   --after-ddl \
   --report /run/bodycast/live-report-postflight.json \
   --restore /run/bodycast/restore-result.json \
+  --preflight /run/bodycast/preflight-result.json \
   --manifest "$MANIFEST_ID" \
   --repository /app \
   > "$CONTEXT_DIR/postflight-result.json"

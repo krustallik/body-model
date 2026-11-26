@@ -4,19 +4,20 @@ import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
 import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertPreMaintenanceStorageHeadroom, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, evaluateProductionMigrationTree, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, AUTH_MULTIUSER_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, TRAINING_SESSION_CONTEXT_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
-import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
+import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256, assertExactMigrationConfirmation } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
-import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
+import { readCommittedGitBlob, readCommittedMigrationTree, readPackagedMigrationFiles, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
 import { renderProductionDbPreflightSql, getExpectedSchemaObjectNames } from "../scripts/production-db-preflight.mjs";
 import { combineRestoreResults, verifyBaseRestore, verifyDisposablePostflight, verifyDisposableRehearsalAdmission } from "../scripts/production-migration-restore-check.mjs";
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
 import { assertAuthSourceProjectionMatchesRestore, assertLiveDataMatchesBackupReadability, sourceReleaseMarkerDigest, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
-import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
+import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { writeDdlStartingMarker } from "../scripts/production-release-marker.mjs";
 import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-database-identity.mjs";
 import { psqlCompatibleDatabaseUrl, psqlUrlFromRenderedComposeConfig } from "../scripts/production-db-target-url.mjs";
@@ -25,6 +26,7 @@ import { PRODUCTION_PRE_MAINTENANCE_TOPOLOGY_CONTRACT, PRODUCTION_WRITER_TOPOLOG
 import { assertPreDdlBackupArtifactMetadata, assertPreDdlRecoverySource, assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayBoundary, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
+const repositoryPath = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const validPreMaintenanceStorageHeadroom = Object.freeze({
   contract: "bodycast-auth-migration-pre-maintenance-headroom-v1",
   databaseBytes: 100,
@@ -561,6 +563,10 @@ const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
 const keyId = "fixture-key-2026";
 const allowlist = { schemaVersion: 1, keys: [{ keyId, publicKeyPem, status: "active" }] };
 const names = ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map(({ name }) => name).sort();
+const TRAINING_CONTEXT_PENDING_FIXTURE = Object.freeze([
+  "20261121130000_training_plan_intent",
+  "20261122140000_session_load_assessment",
+]);
 const { publicKey: oidcPublicKey, privateKey: oidcPrivateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const oidcJwk = { ...oidcPublicKey.export({ format: "jwk" }), kid: "fixture-github-oidc-key", use: "sig", alg: "RS256" };
 
@@ -785,7 +791,7 @@ function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret
 
 function trainingBoundaryWithSourceMarker(fixture, sourceReleaseMarker) {
   const baseline = authorizedBoundary(fixture);
-  const pending = TRAINING_SESSION_CONTEXT_MANIFEST.migrations.map(({ name }) => name).sort();
+  const pending = [...TRAINING_CONTEXT_PENDING_FIXTURE].sort();
   const preflightResult = { sourceReleaseMarker };
   const preflightResultDigest = canonicalSha256(preflightResult);
   const signedClaims = claims({
@@ -832,231 +838,26 @@ function authPredecessorMarkerFixture() {
 }
 
 describe("V5 closed migration manifest and full pending set", () => {
-  it("keeps the V4 runbook migration hashes bound to the release manifest", async () => {
-    const runbook = await readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8");
-    for (const migration of V4_REPUBLICATION_MANIFEST.migrations) {
-      expect(runbook).toContain(`| \`${migration.name}\` | \`${migration.sha256}\` |`);
-    }
-  });
-
-  it("keeps all nine Training release migration hashes bound to the runbook", async () => {
-    const runbook = await readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8");
-    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(9);
-    expect(TRAINING_MUTATION_LEDGER_MANIFEST.cutbackSupported).toBe(false);
-    for (const migration of TRAINING_MUTATION_LEDGER_MANIFEST.migrations) {
-      expect(runbook).toContain(`| \`${migration.name}\` | \`${migration.sha256}\` |`);
-    }
-    expect(runbook).toContain("there is no automatic forward-resume or rollback");
-    expect(runbook).toContain("Do not retry `migrate deploy`, run `prisma migrate resolve`");
-    expect(runbook).toContain("The Training manifest has `cutbackSupported: false`");
-  });
-
-  it("keeps Auth v1 pinned at 77 and admits the exact post-Auth 77-to-79 training context release", async () => {
-    const [migrationWorkflow, preflightWorkflow, safetyWorkflow, fingerprintScript, deployMigrateScript] = await Promise.all([
-      readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
+  it("discovers production migrations from the current tree without an ID allowlist", async () => {
+    const [preflightWorkflow, migrateWorkflow, runbook] = await Promise.all([
       readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8"),
-      readFile(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8"),
-      readFile(new URL("../scripts/production-db-data-fingerprint.sh", import.meta.url), "utf8"),
-      readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8"),
+      readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8"),
+      readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8"),
     ]);
-    const normalizedPreflightWorkflow = preflightWorkflow.replaceAll("\r\n", "\n");
-    expect(TRAINING_MUTATION_LEDGER_MANIFEST.requiredAppliedMigrations).toHaveLength(65);
-    expect(TRAINING_MUTATION_LEDGER_MANIFEST.migrations).toHaveLength(9);
-    expect(AUTH_MULTIUSER_MANIFEST.migrationOriginSha).toBe("0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
-    expect(AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations).toHaveLength(74);
-    expect(AUTH_MULTIUSER_MANIFEST.migrations).toHaveLength(3);
-    expect(AUTH_MULTIUSER_MANIFEST.requireCompleteReleaseTree).toBe(true);
-    expect(AUTH_MULTIUSER_MANIFEST.cutbackSupported).toBe(false);
-    expect(TRAINING_SESSION_CONTEXT_MANIFEST.requiredAppliedMigrations).toHaveLength(77);
-    expect(TRAINING_SESSION_CONTEXT_MANIFEST.migrations).toHaveLength(2);
-    expect(TRAINING_SESSION_CONTEXT_MANIFEST.requireCompleteReleaseTree).toBe(true);
-    expect(TRAINING_SESSION_CONTEXT_MANIFEST.ciOnly).not.toBe(true);
-    expect(TRAINING_SESSION_CONTEXT_MANIFEST.cutbackSupported).toBe(false);
+    const entries = await readdir(new URL("../prisma/migrations/", import.meta.url), { withFileTypes: true });
+    const directories = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const release = evaluateProductionMigrationTree(directories, TRAINING_SESSION_CONTEXT_MANIFEST.id);
+    const withNewMigration = evaluateProductionMigrationTree(
+      [...directories, "20991231120000_future_additive_change"], TRAINING_SESSION_CONTEXT_MANIFEST.id,
+    );
 
-    const migrationDirectories = await readdir(new URL("../prisma/migrations/", import.meta.url), { withFileTypes: true });
-    const releaseTree = evaluateProductionMigrationTree(
-      migrationDirectories.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-      AUTH_MULTIUSER_MANIFEST.id,
-    );
-    expect(releaseTree.ready).toBe(false);
-    expect(releaseTree.expectedDirectories).toHaveLength(77);
-    expect(releaseTree.actualDirectories).toHaveLength(79);
-    expect(releaseTree.blockers).toContain("Reviewed predecessor and pending sets do not cover the complete release migration tree exactly.");
-    const historicalAuthTree = evaluateProductionMigrationTree(
-      [...AUTH_MULTIUSER_MANIFEST.requiredAppliedMigrations, ...AUTH_MULTIUSER_MANIFEST.migrations].map(({ name }) => name),
-      AUTH_MULTIUSER_MANIFEST.id,
-    );
-    expect(historicalAuthTree.ready).toBe(true);
-    expect(historicalAuthTree.expectedDirectories).toHaveLength(77);
-
-    const sessionContextTree = evaluateProductionMigrationTree(
-      migrationDirectories.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-      TRAINING_SESSION_CONTEXT_MANIFEST.id,
-    );
-    expect(sessionContextTree.ready).toBe(true);
-    expect(sessionContextTree.expectedDirectories).toHaveLength(79);
-    for (const migration of TRAINING_SESSION_CONTEXT_MANIFEST.migrations) {
-      const sql = await readFile(new URL(`../prisma/migrations/${migration.name}/migration.sql`, import.meta.url), "utf8");
-      const cleanBlobBytes = Buffer.from(sql.replaceAll("\r\n", "\n"));
-      expect(createHash("sha256").update(cleanBlobBytes).digest("hex")).toBe(migration.sha256);
-    }
-
-    for (const migration of AUTH_MULTIUSER_MANIFEST.migrations) {
-      const sql = await readFile(new URL(`../prisma/migrations/${migration.name}/migration.sql`, import.meta.url), "utf8");
-      const cleanBlobBytes = Buffer.from(sql.replaceAll("\r\n", "\n"));
-      expect(createHash("sha256").update(cleanBlobBytes).digest("hex")).toBe(migration.sha256);
-    }
-
-    expect(migrationWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
-    expect(migrationWorkflow).not.toContain("programless-workouts-health-sync-v1");
-    expect(migrationWorkflow).toContain("auth-multiuser-v1");
-    expect(migrationWorkflow).toContain("training-session-context-v1");
-    expect(migrationWorkflow).toContain("The Auth migration manifest accepts standard exact-SHA execution only.");
-    expect(preflightWorkflow).toContain("training-mutation-ledger-refresh-queue-v1");
-    expect(preflightWorkflow).not.toContain("programless-workouts-health-sync-v1");
-    expect(preflightWorkflow).toContain("auth-multiuser-v1");
-    expect(preflightWorkflow).toContain("training-session-context-v1");
-    const maintenanceStepStart = normalizedPreflightWorkflow.indexOf("- name: Enter maintenance and drain the old app before backup");
-    const maintenanceStepEnd = normalizedPreflightWorkflow.indexOf("\n      - name:", maintenanceStepStart);
-    expect(maintenanceStepStart).toBeGreaterThanOrEqual(0);
-    expect(maintenanceStepEnd).toBeGreaterThan(maintenanceStepStart);
-    const maintenanceStep = normalizedPreflightWorkflow.slice(maintenanceStepStart, maintenanceStepEnd);
-    const remoteMaintenanceScriptStart = maintenanceStep.indexOf('REMOTE_SCRIPT="$(cat <<\'REMOTE\'');
-    const remoteMaintenanceScriptEnd = maintenanceStep.indexOf("\n          REMOTE\n", remoteMaintenanceScriptStart);
-    expect(remoteMaintenanceScriptStart).toBeGreaterThanOrEqual(0);
-    expect(remoteMaintenanceScriptEnd).toBeGreaterThan(remoteMaintenanceScriptStart);
-    const remoteMaintenanceScript = maintenanceStep.slice(remoteMaintenanceScriptStart, remoteMaintenanceScriptEnd);
-    expect(remoteMaintenanceScript).toContain('|| "$MANIFEST_ID" == "training-session-context-v1"');
-    expect(deployMigrateScript).toContain("training-session-context-v1");
-    expect(preflightWorkflow).toContain("Auth resume requires an exact failed-restore source alone or the complete source/migration-failure/blocked-preflight tuple");
-    const authResumeGuardStart = preflightWorkflow.indexOf('if [[ "$MANIFEST_ID" == "auth-multiuser-v1"');
-    const authResumeGuardEnd = preflightWorkflow.indexOf("          fi", authResumeGuardStart);
-    const authResumeGuard = preflightWorkflow.slice(authResumeGuardStart, authResumeGuardEnd);
-    expect(authResumeGuard).toContain('( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" )');
-    expect(authResumeGuard).toContain('( -z "$RESUME_MIGRATION_FAILURE_RUN_ID" && -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" )');
-    expect(authResumeGuard).toContain('( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ID" )');
-    expect(authResumeGuard).toContain("RESUME_MIGRATION_FAILURE_RUN_ID");
-    expect(authResumeGuard).toContain("RESUME_BLOCKED_CAPTURE_RUN_ID");
-    expect(authResumeGuard).toContain("FORWARD_RESUME_FAILED_RUN_ID");
-    const storageProbeStart = preflightWorkflow.indexOf("- name: Verify production container, PostgreSQL clients, and storage headroom");
-    const storageProbeEnd = preflightWorkflow.indexOf("- name: Enter maintenance and drain the old app before backup", storageProbeStart);
-    const storageProbe = preflightWorkflow.slice(storageProbeStart, storageProbeEnd);
-    expect(storageProbe).toContain('process.stdout.write([value.targetSha, value.previousImageId, value.previousImagePin].join(" ") + "\\n")');
-    expect(storageProbe).toContain("RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}");
-    expect(storageProbe).toContain('RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}');
-    expect(storageProbe).toContain('if [[ -n "$RESUME_SOURCE_SHA" ]]; then');
-    expect(storageProbe).toContain('"$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH"');
-    expect(storageProbe).toContain('EXPECTED_PREVIOUS_APP_HELPER_BLOB="$(git rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"');
-    expect(storageProbe).toContain("EXPECTED_PREVIOUS_APP_HELPER_BLOB=\"$6\"");
-    expect(storageProbe).toContain('"$EXPECTED_PREVIOUS_APP_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB"');
-    expect(storageProbe).not.toContain('git -C "$DEPLOY_PATH" cat-file -e "$RELEASE_SHA^{commit}"');
-    expect(storageProbe).not.toContain('git -C "$DEPLOY_PATH" merge-base --is-ancestor "$RESUME_SOURCE_SHA" "$RELEASE_SHA"');
-    expect(storageProbe).not.toContain('rev-parse HEAD)" == "$RESUME_SOURCE_SHA"');
-    expect(storageProbe).toContain('SOURCE_APP_SHA="$(sed -n \'s/^previousSha=//p\' "$CAPTURE_FILE")"');
-    expect(storageProbe).toContain('git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all');
-    expect(storageProbe).toContain('git@github.com:krustallik/body-model.git|https://github.com/krustallik/body-model.git');
-    expect(storageProbe).toContain("--verify-record");
-    expect(storageProbe.indexOf('"$(git -C "$DEPLOY_PATH" rev-parse HEAD)"'))
-      .toBeLessThan(storageProbe.indexOf('node "$CAPTURE_HELPER" --verify-record'));
-    expect(storageProbe).toContain('CAPTURE_TARGET_SHA" == "$RESUME_SOURCE_SHA"');
-    expect(storageProbe).toContain('APP_IMAGE_ID" == "$CAPTURE_IMAGE_ID"');
-    expect(storageProbe).toContain("docker inspect --format '{{.Image}}' bodycast-app-prod");
-    expect(normalizedPreflightWorkflow).toContain('SOURCE_APP_SHA: ${{ steps.target.outputs.source_app_sha }}');
-    const sourceMarkerStart = normalizedPreflightWorkflow.indexOf("SOURCE_MARKER_REPLY=");
-    const sourceMarkerEnd = normalizedPreflightWorkflow.indexOf('REMOTE\n            )"', sourceMarkerStart);
-    expect(sourceMarkerStart).toBeGreaterThanOrEqual(0);
-    expect(sourceMarkerEnd).toBeGreaterThan(sourceMarkerStart);
-    const sourceMarkerProbe = normalizedPreflightWorkflow.slice(sourceMarkerStart, sourceMarkerEnd);
-    expect(sourceMarkerProbe).toContain('source_app_sha="$2"');
-    expect(sourceMarkerProbe).not.toContain('docker inspect --format');
-    expect(safetyWorkflow).toContain("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
-    expect(safetyWorkflow).toContain("BASELINE_SHA: 0f93f37dd6a4208cfc74331a0fb4c063c542c6bd");
-    expect(safetyWorkflow).toContain("test \"$baseline_count\" = 74");
-    expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1");
-    expect(safetyWorkflow).toContain("--manifest training-session-context-v1");
-    expect(safetyWorkflow).not.toContain("--ci-only-manifest");
-    const trainingContextRehearsal = safetyWorkflow.slice(
-      safetyWorkflow.indexOf("# Rehearse the later 77-to-79 schema"),
-      safetyWorkflow.indexOf("- name: Run production migration release-tooling shell regressions"),
-    );
-    expect(trainingContextRehearsal).not.toContain("--ci-only-manifest");
-    expect(trainingContextRehearsal).not.toContain("--ci-only-restore-identity");
-    expect(safetyWorkflow).toContain("--test-url --auth-multiuser-source-inputs");
-    expect(safetyWorkflow).toContain("--test-url --training-session-context-source-inputs");
-    expect(safetyWorkflow).toContain("SESSION_CONTEXT_SOURCE_FINGERPRINT_BEFORE");
-    expect(safetyWorkflow).toContain("SESSION_CONTEXT_SOURCE_FINGERPRINT_AFTER");
-    expect(safetyWorkflow).toContain("Training session-context null sentinel failed for an unexpected reason.");
-    expect(safetyWorkflow).toContain("Training session-context fingerprint failed to detect a source-row mutation.");
-    expect(trainingContextRehearsal).not.toContain("--ci-only-restore-identity");
-    expect(safetyWorkflow).toContain('[[ "$AUTH_SOURCE_FINGERPRINT_BEFORE" == "$AUTH_SOURCE_FINGERPRINT_AFTER" ]]');
-    expect(safetyWorkflow).toContain('"PhysiologyV7Lifecycle" (');
-    expect(safetyWorkflow).toContain("Derived V7 lifecycle refresh changed the isolated immutable source-input projection.");
-    expect(fingerprintScript).toContain("bodycast-auth-multiuser-source-input-fingerprint-v2");
-    expect(fingerprintScript).toContain("excluded-derived-tables:PhysiologyV7Lifecycle");
-    expect(safetyWorkflow).toContain("isolated primary Health input mutation");
-    expect(safetyWorkflow).toContain("isolated Garmin/Workout input mutation");
-    expect(safetyWorkflow).toContain('"DailyHealthData" ("date", "weightKg", "rawPayload", "createdAt", "updatedAt")');
-    expect(safetyWorkflow).toContain('"Workout" ("dailyHealthDataId", "sourceIdentity", "type", "startAt", "endAt", "activeEnergyKcal", "createdAt", "updatedAt")');
-    expect(safetyWorkflow).toContain("CREATE DATABASE bodycast_health_mutation_test TEMPLATE bodycast_restore");
-    expect(safetyWorkflow).toContain("CREATE DATABASE bodycast_workout_mutation_test TEMPLATE bodycast_restore");
-    expect(safetyWorkflow).toContain("Auth Health mutation clone does not match the migrated source-input baseline.");
-    expect(safetyWorkflow).toContain("Auth Workout mutation clone does not match the migrated source-input baseline.");
-    expect(fingerprintScript).toContain('["bodycast_restore", "bodycast_health_mutation_test", "bodycast_workout_mutation_test"]');
-    expect(fingerprintScript).toContain('(database === "bodycast" && fingerprintMode === "--training-session-context-source-inputs")');
-    expect(fingerprintScript).toContain('["bodycast_restore", "bodycast"].includes(decodeURIComponent(url.pathname.slice(1)))');
-    expect(fingerprintScript).toContain("Training session-context fingerprints accept only the exact isolated BodyCast rehearsal databases.");
-    expect(fingerprintScript).toContain("V4 replay fingerprints are restricted to the isolated bodycast_restore database.");
-    const rehearsalStart = safetyWorkflow.indexOf("Rehearse the exact Auth manifest from the pinned 74-migration baseline");
-    const exactTreeCheck = safetyWorkflow.indexOf("--verify-release-tree", rehearsalStart);
-    const baselineMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema "$baseline_root/prisma/schema.prisma"', rehearsalStart);
-    const currentMigration = safetyWorkflow.indexOf('npx prisma migrate deploy --schema prisma/schema.prisma', rehearsalStart);
-    expect(rehearsalStart).toBeGreaterThan(0);
-    expect(exactTreeCheck).toBeGreaterThan(0);
-    expect(baselineMigration).toBeGreaterThan(rehearsalStart);
-    expect(exactTreeCheck).toBeGreaterThan(baselineMigration);
-    expect(exactTreeCheck).toBeLessThan(currentMigration);
-    expect(safetyWorkflow).toContain("npx prisma migrate deploy --schema prisma/schema.prisma");
-    expect(safetyWorkflow).toContain('npx prisma migrate deploy --schema "$auth_release_root/prisma/schema.prisma"');
-    const canonicalTrainingStart = safetyWorkflow.indexOf('SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE="');
-    const canonicalTrainingMigration = safetyWorkflow.lastIndexOf("npx prisma migrate deploy --schema prisma/schema.prisma");
-    const canonicalTrainingAfter = safetyWorkflow.indexOf('SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER="', canonicalTrainingMigration);
-    const canonicalTrainingPostflight = safetyWorkflow.indexOf("node scripts/production-migration-preflight.mjs --postflight", canonicalTrainingAfter);
-    expect(canonicalTrainingStart).toBeGreaterThan(0);
-    expect(canonicalTrainingMigration).toBeGreaterThan(canonicalTrainingStart);
-    expect(canonicalTrainingAfter).toBeGreaterThan(canonicalTrainingMigration);
-    expect(safetyWorkflow).toContain('[[ "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE" == "$SESSION_CONTEXT_CANONICAL_FINGERPRINT_AFTER" ]]');
-    expect(safetyWorkflow).toContain('PGAPPNAME=bodycast-production-preflight psql "$DATABASE_URL"');
-    expect(safetyWorkflow).toContain('--set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json"');
-    expect(safetyWorkflow).toContain("report.logicalDataFingerprint = fingerprint;");
-    const canonicalTrainingPreflightCapture = safetyWorkflow.indexOf(
-      "node scripts/production-db-preflight.mjs --manifest training-session-context-v1",
-      canonicalTrainingStart,
-    );
-    const canonicalTrainingPreflightCheck = safetyWorkflow.indexOf(
-      "node scripts/production-migration-preflight.mjs --preflight",
-      canonicalTrainingPreflightCapture,
-    );
-    const canonicalPreflightEvidence = safetyWorkflow.slice(canonicalTrainingStart, canonicalTrainingPreflightCheck);
-    expect(canonicalTrainingPreflightCapture).toBeGreaterThan(canonicalTrainingStart);
-    expect(canonicalTrainingPreflightCheck).toBeGreaterThan(canonicalTrainingPreflightCapture);
-    expect(canonicalTrainingMigration).toBeGreaterThan(canonicalTrainingPreflightCheck);
-    expect(canonicalPreflightEvidence).toContain("PGAPPNAME=bodycast-production-preflight psql");
-    expect(canonicalPreflightEvidence).toContain('--set="BODYCAST_WRITER_TOPOLOGY_JSON=$topology_json"');
-    expect(canonicalPreflightEvidence).toContain("report.logicalDataFingerprint = fingerprint;");
-    expect(canonicalPreflightEvidence).toContain("$SESSION_CONTEXT_CANONICAL_FINGERPRINT_BEFORE");
-    expect(canonicalTrainingPostflight).toBeGreaterThan(canonicalTrainingAfter);
-    expect(safetyWorkflow).toMatch(/\|\s*PGAPPNAME=bodycast-production-preflight\s+psql\s+"\$DATABASE_URL"/);
-    expect(safetyWorkflow).not.toMatch(/PGAPPNAME=bodycast-production-preflight\s+\\\s*\n\s*node scripts\/production-db-preflight\.mjs/);
-    expect(safetyWorkflow).toContain("AUTH_RELEASE_SHA: 18e67d53856af1f4742bbe9626abbd005b70e8bf");
-    expect(safetyWorkflow).toContain("test \"$auth_release_count\" = 77");
-    expect(safetyWorkflow.match(/--repository \"\$GITHUB_WORKSPACE\" --migration-tree \"\$auth_release_root\"/g)).toHaveLength(2);
-    expect(safetyWorkflow).toContain("--manifest auth-multiuser-v1 --release-sha \"$AUTH_RELEASE_SHA\"");
-    expect(safetyWorkflow).toContain('--release-sha "$GITHUB_SHA"');
-    expect(preflightWorkflow).toContain('BODYCAST_AUTH_SOURCE_COMPONENTS_OUT="$AUTH_SOURCE_COMPONENTS_BEFORE"');
-    expect(preflightWorkflow).toContain("Auth source fingerprint changed components:");
-    expect(fingerprintScript).toContain("Per-table source diagnostics are restricted to isolated PostgreSQL.");
+    expect(TRAINING_SESSION_CONTEXT_MANIFEST.dynamicMigrationSet).toBe(true);
+    expect(TRAINING_SESSION_CONTEXT_MANIFEST.migrations).toEqual([]);
+    expect(release.ready).toBe(true);
+    expect(release.expectedDirectories).toEqual(release.actualDirectories);
+    expect(withNewMigration.ready).toBe(true);
+    expect(withNewMigration.actualDirectories).toContain("20991231120000_future_additive_change");
   });
-
   it("reads an exact release inventory from a separate migration tree", async () => {
     const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "bodycast-migration-tree-"));
     const migrationTreePath = path.join(temporaryRoot, "release-tree");
@@ -1291,15 +1092,6 @@ describe("V5 closed migration manifest and full pending set", () => {
       expect(result.matchesManifest, migration.name).toBe(true);
     }
   }, 30_000);
-
-  it("loads the closed migration manifest for direct shell byte checks", async () => {
-    const script = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
-    expect(script).toContain('getProductionMigrationManifest(process.argv[2])');
-    expect(script).toContain("...manifest.migrations");
-    expect(script).toContain("...(manifest.requiredAppliedMigrations ?? [])");
-    expect(script).toContain('git cat-file blob "$RELEASE_SHA:$relative"');
-    expect(script).toContain('[[ "$actual_hash" == "$expected_hash" ]]');
-  });
 
   it("accepts only the exact full pending set and reviewed Stage 02 history", () => {
     const result = evaluateProductionPreflight(validPreflightReport(), dirs);
@@ -1804,21 +1596,20 @@ describe("V5 closed migration manifest and full pending set", () => {
       .toContain("checksum differs");
   });
 
-  it("accepts only the exact post-Auth 77-to-79 training session-context set", () => {
-    const dirs = [
-      ...TRAINING_SESSION_CONTEXT_MANIFEST.requiredAppliedMigrations,
-      ...TRAINING_SESSION_CONTEXT_MANIFEST.migrations,
-    ].map(({ name }) => name).sort();
+  it("derives pending Training migrations from the release tree and verifies applied checksums", () => {
+    const dirs = ["20260101000000_existing_schema", "20261125000000_new_schema"];
+    const checksums = { [dirs[0]]: "a".repeat(64), [dirs[1]]: "b".repeat(64) };
     const preReport = validTrainingSessionContextPreflightReport();
-    const preflight = evaluateProductionPreflight(preReport, dirs, TRAINING_SESSION_CONTEXT_MANIFEST.id);
+    preReport.migrations = [migrationRow({ name: dirs[0], sha256: checksums[dirs[0]] })];
+    const preflight = evaluateProductionPreflight(preReport, dirs, TRAINING_SESSION_CONTEXT_MANIFEST.id, {
+      migrationChecksums: checksums,
+    });
     expect(preflight.readyForOwnerAuthorization, preflight.blockers.join(" | ")).toBe(true);
-    expect(preflight.pending).toEqual(TRAINING_SESSION_CONTEXT_MANIFEST.migrations.map(({ name }) => name).sort());
+    expect(preflight.pending).toEqual([dirs[1]]);
 
-    const extra = evaluateProductionMigrationTree([...dirs, "20261123120000_unreviewed"], TRAINING_SESSION_CONTEXT_MANIFEST.id);
-    expect(extra.ready).toBe(false);
-    const missing = evaluateProductionMigrationTree(dirs.filter((name) => name !== TRAINING_SESSION_CONTEXT_MANIFEST.migrations[1].name),
-      TRAINING_SESSION_CONTEXT_MANIFEST.id);
-    expect(missing.ready).toBe(false);
+    const extra = evaluateProductionMigrationTree([...dirs, "20261126000000_added_later"], TRAINING_SESSION_CONTEXT_MANIFEST.id);
+    expect(extra.ready).toBe(true);
+    expect(extra.expectedDirectories).toEqual(extra.actualDirectories);
     const duplicate = evaluateProductionMigrationTree([...dirs, dirs[0]], TRAINING_SESSION_CONTEXT_MANIFEST.id);
     expect(duplicate.blockers).toContain("Release tree contains duplicate migration directory names.");
 
@@ -1836,8 +1627,9 @@ describe("V5 closed migration manifest and full pending set", () => {
       .toContain("Prior migration output objects should be absent");
 
     const postReport = validTrainingSessionContextPreflightReport({ applied: true });
+    postReport.migrations = dirs.map((name) => migrationRow({ name, sha256: checksums[name] }));
     const postflight = evaluateProductionPostflight(postReport, dirs, TRAINING_SESSION_CONTEXT_MANIFEST.id, {
-      expectedDatabase: "bodycast_restore", expectedRole: "bodycast",
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast", migrationChecksums: checksums,
     });
     expect(postflight.ready, postflight.blockers.join(" | ")).toBe(true);
     expect(postReport.objects.find((object) => object.name === "StrengthDiarySession.sessionLoadAssessment")?.signature)
@@ -1854,9 +1646,9 @@ describe("V5 closed migration manifest and full pending set", () => {
       expectedDatabase: "bodycast_restore", expectedRole: "bodycast",
     }).blockers.join(" ")).toContain("Postflight schema objects are missing");
     const changedChecksum = structuredClone(postReport);
-    changedChecksum.migrations.find((row) => row.name === TRAINING_SESSION_CONTEXT_MANIFEST.migrations[0].name).checksum = "0".repeat(64);
+    changedChecksum.migrations.find((row) => row.name === dirs[0]).checksum = "0".repeat(64);
     expect(evaluateProductionPostflight(changedChecksum, dirs, TRAINING_SESSION_CONTEXT_MANIFEST.id, {
-      expectedDatabase: "bodycast_restore", expectedRole: "bodycast",
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast", migrationChecksums: checksums,
     }).blockers.join(" ")).toContain("checksum differs");
   });
   it.each([
@@ -2452,41 +2244,6 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(() => assertLiveDataMatchesBackupReadability(counts, { ...counts, DailyModelState: null })).toThrow("snapshot-row-count:DailyModelState");
   });
 
-  it("ignores unadmitted queued runs and supersedes only after trusted admission", async () => {
-    const fixture = await executionBoundaryFixture(validPreflightReport().identity);
-    const toApiRun = (run) => ({
-      workflow_id: Number(run.workflowId), path: run.workflowPath + "@refs/heads/main", event: run.event,
-      actor: { id: Number(run.actorId) },
-      triggering_actor: { id: Number(run.actorId) },
-      head_branch: run.headBranch, head_sha: run.headSha, display_title: run.displayTitle,
-      id: Number(run.id), run_attempt: run.runAttempt, created_at: run.createdAt,
-      run_started_at: run.runStartedAt,
-      status: run.status, conclusion: run.conclusion, html_url: "https://example.invalid/run",
-    });
-    const queued = { ...fixture.latestPreflight, id: "1202", createdAt: "2026-10-05T10:01:00.000Z", runStartedAt: null, status: "queued", conclusion: null };
-    const fetchImpl = vi.fn(async (url) => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => ({ workflow_runs: [toApiRun(queued), toApiRun(fixture.latestPreflight)] }),
-      requestedUrl: String(url),
-    }));
-    await expect(readLatestApplicablePreflightForDdl(fixture.verifiedExecutionProof, fetchImpl))
-      .resolves.toMatchObject(fixture.latestPreflight);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0][0])).toContain("/actions/workflows/production-migration-preflight.yml/runs");
-
-    const admitted = { ...queued, runStartedAt: "2026-10-05T10:02:00.000Z", status: "in_progress" };
-    const admittedFetch = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => ({ workflow_runs: [toApiRun(admitted), toApiRun(fixture.latestPreflight)] }),
-    }));
-    await expect(readLatestApplicablePreflightForDdl(fixture.verifiedExecutionProof, admittedFetch))
-      .rejects.toThrow("Latest matching preflight attempt is in_progress");
-  });
-
   it("blocks when the final Prisma URL resolves to an endpoint different from signed identity", async () => {
     const signedIdentity = validPreflightReport().identity;
     const fixture = await executionBoundaryFixture(signedIdentity);
@@ -2593,10 +2350,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(migrate).not.toContain("actions/cache");
     expect(migrate).not.toMatch(/path:\s*\$\{\{ runner\.temp \}\}\/signed-migration-context\/\*/);
     expect(migrate).toContain("expected-sign-bundle-files.txt");
-    expect(migrate).toContain('EXECUTION_MODE="${10}"');
-    expect(migrate).toContain('FORWARD_RESUME_FAILED_RUN_ID="${11}"');
-    expect(migrate).toContain('export BODYCAST_MIGRATION_EXECUTION_MODE="$EXECUTION_MODE"');
-    expect(migrate).toContain("'$BODYCAST_MIGRATION_EXECUTION_MODE' '$BODYCAST_FORWARD_RESUME_FAILED_RUN_ID'");
+    expect(migrate).toContain("MIGRATE_PRODUCTION:[0-9a-f]{40}:[0-9a-f]{64}");
+    expect(migrate).toContain("BODYCAST_MIGRATION_CONFIRMATION: ${{ inputs.confirmation }}");
+    expect(migrate).not.toContain("FORWARD_RESUME_FAILED_RUN_ID");
+    expect(migrate).not.toContain("MIGRATION_EXECUTION_MODE");
     expect(migrate).toContain("signed-migration-context/authorization-envelope.json");
     for (const forbidden of ["execution-signer", "execution-key-certificate", "executionPrivateKeyPem", "--delegate", "--attest", "migration-run.json", "current-migration-run.json"]) {
       expect(migrate).not.toContain(forbidden);
@@ -2634,6 +2391,23 @@ describe("V5 closed migration manifest and full pending set", () => {
 });
 
 describe("Ed25519 authorization envelope and provenance matrix", () => {
+  it("requires owner confirmation for the exact release SHA and sorted pending set", () => {
+    const releaseSha = "a".repeat(40);
+    const pending = ["20261121130000_training_plan_intent", "20261122140000_session_load_assessment"];
+    const digest = canonicalSha256(pending);
+    const confirmation = `MIGRATE_PRODUCTION:${releaseSha}:${digest}`;
+    expect(assertExactMigrationConfirmation({ confirmation, releaseSha, pendingMigrationNames: pending })).toBe(digest);
+    expect(() => assertExactMigrationConfirmation({
+      confirmation, releaseSha: "b".repeat(40), pendingMigrationNames: pending,
+    })).toThrow("not bound to the exact release SHA");
+    expect(() => assertExactMigrationConfirmation({
+      confirmation, releaseSha, pendingMigrationNames: [pending[0]],
+    })).toThrow("not bound to the exact release SHA");
+    expect(() => assertExactMigrationConfirmation({
+      confirmation, releaseSha, pendingMigrationNames: [...pending].reverse(),
+    })).toThrow("must be unique and sorted");
+  });
+
   it("accepts a valid canonical signed envelope only when every live claim matches", () => {
     const serialized = createAuthorizationEnvelope(claims(), { keyId, privateKeyPem, allowlist });
     expect(verifyAuthorizationEnvelope(serialized, { allowlist, live: liveContext(), now }).verified).toBe(true);
@@ -2867,7 +2641,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
   });
 });
 
-describe("preflight supersession and artifact provenance", () => {
+describe("successful preflight artifact provenance", () => {
   const base = {
     repository: "krustallik/body-model",
     workflowPath: ".github/workflows/production-migration-preflight.yml",
@@ -2880,47 +2654,37 @@ describe("preflight supersession and artifact provenance", () => {
   const success = { ...base, id: 120, runAttempt: 1, createdAt: "2026-10-05T08:00:00Z", runStartedAt: "2026-10-05T08:01:00Z", status: "completed", conclusion: "success" };
   const failedNew = { ...base, id: 121, runAttempt: 1, createdAt: "2026-10-05T09:00:00Z", runStartedAt: "2026-10-05T09:01:00Z", status: "completed", conclusion: "failure" };
 
-  it("blocks supersession only after trusted preflight admission", () => {
-    expect(selectLatestApplicablePreflight([success], { repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id })).toEqual(success);
-    for (const newer of [
-      failedNew,
-      { ...failedNew, conclusion: "cancelled" },
-      { ...failedNew, status: "in_progress", conclusion: null },
-    ]) {
-      expect(() => selectLatestApplicablePreflight([success, newer], { repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id })).toThrow();
-    }
-    for (const unadmitted of ["queued", "pending", "waiting", "requested"]) {
-      expect(selectLatestApplicablePreflight([success, { ...failedNew, runStartedAt: null, status: unadmitted, conclusion: null }], {
-        repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
-      })).toEqual(success);
-    }
+  it("selects the newest successful exact-SHA preflight and ignores newer failures or queued runs", () => {
+    const newerSuccess = { ...success, id: 122, createdAt: "2026-10-05T09:30:00Z", runStartedAt: "2026-10-05T09:31:00Z" };
+    const queued = { ...failedNew, id: 123, status: "in_progress", conclusion: null,
+      createdAt: "2026-10-05T10:00:00Z", runStartedAt: "2026-10-05T10:01:00Z" };
+    expect(selectLatestApplicablePreflight([success, failedNew, queued], {
+      repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+    })).toEqual(success);
+    expect(selectLatestApplicablePreflight([success, newerSuccess, failedNew], {
+      repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+    })).toEqual(newerSuccess);
+    expect(() => selectLatestApplicablePreflight([{ ...success, runStartedAt: "invalid-date" }], {
+      repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+    })).toThrow("Successful preflight run metadata is invalid");
   });
 
-  it("treats an admitted failed or cancelled run as superseding even when no successful artifact exists", () => {
-    for (const conclusion of ["failure", "cancelled"]) {
-      expect(() => selectLatestApplicablePreflight([success, { ...failedNew, conclusion }], {
-        repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
-      })).toThrow("older success is superseded");
-    }
-  });
-
-  it("does not supersede another manifest or release SHA, and refuses operator-selected older runs", () => {
+  it("requires a successful run for the requested manifest and release SHA", () => {
     const differentManifest = { ...failedNew, displayTitle: "Preflight " + base.headSha + " other-manifest", status: "in_progress", conclusion: null };
     const differentSha = { ...failedNew, headSha: "b".repeat(40), displayTitle: "Preflight " + "b".repeat(40) + " " + ACTIVE_ENERGY_UNIFIED_MANIFEST.id, status: "in_progress", conclusion: null };
     expect(selectLatestApplicablePreflight([success, differentManifest, differentSha], { repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id })).toEqual(success);
-    expect(() => selectLatestApplicablePreflight([success], { repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id, selectedRunId: 120 })).toThrow("operator-selected");
+    expect(() => selectLatestApplicablePreflight([differentManifest, differentSha], {
+      repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+    })).toThrow("No successful production preflight");
   });
 
-  it("rejects artifacts from superseded runs or mismatched run attempts", () => {
+  it("rejects artifacts bound to a different run or attempt", () => {
     const artifact = { id: 150, digest: "sha256:" + "a".repeat(64), workflowRunId: "120", workflowRunAttempt: 1, headSha: base.headSha, expired: false };
     expect(verifyPreflightArtifactMetadata(artifact, success)).toBe(true);
     expect(() => verifyPreflightArtifactMetadata({ ...artifact, workflowRunId: "119" }, success)).toThrow();
     expect(() => verifyPreflightArtifactMetadata({ ...artifact, workflowRunAttempt: 2 }, success)).toThrow();
-    const newerSuccess = { ...success, id: 121, createdAt: "2026-10-05T09:00:00Z" };
-    expect(() => verifyPreflightArtifactMetadata(artifact, newerSuccess)).toThrow("different workflow run");
-    expect(() => selectLatestApplicablePreflight([{ ...success, createdAt: "invalid-date" }], {
-      repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
-    })).toThrow("invalid trusted ordering metadata");
+    const otherRun = { ...success, id: 121 };
+    expect(() => verifyPreflightArtifactMetadata(artifact, otherRun)).toThrow("different workflow run");
   });
 
   it("uses the workflow ID returned by trusted GitHub metadata instead of substituting the requested ID", () => {
@@ -2933,11 +2697,54 @@ describe("preflight supersession and artifact provenance", () => {
     expect(() => selectAndVerifyArtifact({
       runs: [run], artifacts: [], workflowId: "100", releaseSha: base.headSha,
       manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
-    })).toThrow("No matching production preflight run");
+    })).toThrow("No successful production preflight");
   });
 });
 
 describe("Git blob checksum authority and execution integrity", () => {
+  it("derives the dynamic set from the exact release Git tree and rejects worktree additions or byte changes", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-dynamic-migrations-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: directory });
+      execFileSync("git", ["config", "user.name", "V5 Test"], { cwd: directory });
+      execFileSync("git", ["config", "user.email", "v5@example.invalid"], { cwd: directory });
+      execFileSync("git", ["config", "core.autocrlf", "true"], { cwd: directory });
+      const migrationName = "20991231120000_future_additive_change";
+      const migrationPath = `prisma/migrations/${migrationName}/migration.sql`;
+      await mkdir(path.dirname(path.join(directory, migrationPath)), { recursive: true });
+      await writeFile(path.join(directory, "prisma/migrations/migration_lock.toml"), "provider = \"postgresql\"\n");
+      const committedSql = Buffer.from("CREATE TABLE fixture (id integer);\n");
+      await writeFile(path.join(directory, migrationPath), committedSql);
+      execFileSync("git", ["add", "prisma/migrations"], { cwd: directory });
+      execFileSync("git", ["commit", "-qm", "fixture"], { cwd: directory });
+      const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim();
+
+      const migrationTree = await readCommittedMigrationTree(directory, releaseSha);
+      const inventory = migrationTree.files;
+      const lockSha256 = sha256(Buffer.from('provider = "postgresql"\n'));
+      expect(migrationTree).toEqual({ files: [{ name: migrationName, relativePath: migrationPath,
+        bytes: committedSql.length, sha256: sha256(committedSql) }], migrationLockSha256: lockSha256 });
+      const blobIntegrity = inventory.map((file) => ({ name: file.name, expectedSha256: file.sha256, actualSha256: file.sha256, matches: true }));
+      expect(await readPackagedMigrationFiles(directory, blobIntegrity, lockSha256)).toEqual(inventory);
+
+      await writeFile(path.join(directory, "prisma/migrations/migration_lock.toml"), 'provider = "sqlite"\n');
+      await expect(readPackagedMigrationFiles(directory, blobIntegrity, lockSha256)).rejects.toThrow("migration lock differs");
+      await writeFile(path.join(directory, "prisma/migrations/migration_lock.toml"), 'provider = "postgresql"\n');
+
+      await mkdir(path.join(directory, "prisma/migrations/20991231130000_uncommitted"), { recursive: true });
+      await writeFile(path.join(directory, "prisma/migrations/20991231130000_uncommitted/migration.sql"), "SELECT 1;\n");
+      await expect(readCommittedMigrationTree(directory, releaseSha)).rejects.toThrow("outside the exact release SHA");
+      await expect(readPackagedMigrationFiles(directory, blobIntegrity, lockSha256)).rejects.toThrow("Unexpected entry in packaged Prisma migration tree");
+      await rm(path.join(directory, "prisma/migrations/20991231130000_uncommitted"), { recursive: true, force: true });
+
+      await writeFile(path.join(directory, migrationPath), Buffer.from(committedSql.toString("utf8").replace(/\n/g, "\r\n")));
+      await expect(readCommittedMigrationTree(directory, releaseSha)).rejects.toThrow();
+      await expect(readPackagedMigrationFiles(directory, blobIntegrity, lockSha256)).rejects.toThrow("differs from signed exact-release inventory");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("uses committed Git blob bytes despite autocrlf checkout conversion and rejects working-tree mismatch", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-blob-"));
     try {
@@ -3006,6 +2813,7 @@ describe("Git blob checksum authority and execution integrity", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
 });
 
 describe("freshness boundaries, restore identity, and Prisma lock timeout", () => {

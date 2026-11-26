@@ -348,8 +348,10 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain("BODYCAST_MIGRATION_FREE_CANDIDATE");
     expect(deploySh).toContain("production-writer-drain.sh");
     expect(deploySh).toContain("bodycast_capture_production_db_identity");
-    expect(preflightSh).toContain("BODYCAST_EXPECTED_MIGRATION_COUNT");
-    expect(preflightSh).toContain('"_prisma_migrations"');
+    expect(preflightSh).toContain("prisma migrate status");
+    expect(preflightSh).toContain("Database schema is up to date");
+    expect(preflightSh).not.toContain("BODYCAST_EXPECTED_MIGRATION_COUNT");
+    expect(preflightSh).not.toContain('"_prisma_migrations"');
     expect(readFileSync(resolve("scripts/production-db-identity.sh"), "utf8"))
       .toContain("bodycast_assert_production_db_identity_unchanged");
     expect(migrateSh).toContain("authorization-envelope.json");
@@ -381,11 +383,11 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain('BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1"');
     expect(deploySh).toContain('BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1"');
     expect(deploySh).toContain('BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1"');
-    expect(releaseMarkerSh.split('"auth-multiuser-v1"')).toHaveLength(3);
+    expect(releaseMarkerSh).toContain("PRODUCTION_MIGRATION_MANIFESTS");
+    expect(releaseMarkerSh).not.toContain('"auth-multiuser-v1"');
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(migrateSh).toContain("read_bodycast_release_marker");
-    expect(migrateSh).toContain("only an exact verified pre-spawn marker has an owner-authorized forward-resume path");
-    expect(migrateSh).toContain('"$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 2');
+    expect(migrateSh).toContain("an existing production marker is not the verified Auth app-ready predecessor");
     expect(migrateSh).toContain('"$SOURCE_MARKER_DIGEST"');
     expect(releaseMarkerSh).toContain("Both current and legacy production release markers exist; state is ambiguous.");
     expect(migrateGuard).toContain('["prisma", "migrate", "deploy"]');
@@ -409,7 +411,7 @@ describe("production maintenance-first deploy safety contracts", () => {
     const handoffApply = deploySh.indexOf('production-schema-deploy-handoff.mjs" --apply', authAdvance);
 
     expect(authCheck).toBeGreaterThan(-1);
-    expect(deploySh).toContain("migration_free_expected_migration_count=77");
+    expect(deploySh).not.toContain("migration_free_expected_migration_count");
     expect(schemaPreflight).toBeGreaterThan(authCheck);
     expect(maintenance).toBeGreaterThan(schemaPreflight);
     expect(previousReleaseCapture).toBeGreaterThan(maintenance);

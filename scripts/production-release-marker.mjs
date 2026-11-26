@@ -1,18 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
+import { PRODUCTION_MIGRATION_MANIFESTS } from "./production-migration-manifests.mjs";
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[1-9][0-9]*$/;
-const MANIFEST_IDS = new Set([
-  "active-energy-unified-v2", "unified-v4-republication-v1", "programless-workouts-health-sync-v1",
-  "training-mutation-ledger-refresh-queue-v1", "auth-multiuser-v1", "training-session-context-v1",
-]);
 const MARKER_NAME = "marker";
 const STATES = new Set([
   "ddl-starting", "ddl-started", "schema-applied", "app-ready", "v4-ready",
-  "database-restored", "rollback-app-ready", "forward-resume-armed",
+  "database-restored", "rollback-app-ready",
 ]);
 
 export function parseProductionReleaseMarker(text) {
@@ -51,14 +48,13 @@ export function parseProductionReleaseMarker(text) {
     lineageDigest: values.lineageDigest,
     spawnState: values.spawnState,
   };
-  if (!MANIFEST_IDS.has(marker.manifestId) || !SHA.test(marker.releaseSha) || !STATES.has(marker.state)
+  if (!Object.hasOwn(PRODUCTION_MIGRATION_MANIFESTS, marker.manifestId)
+    || PRODUCTION_MIGRATION_MANIFESTS[marker.manifestId].ciOnly === true
+    || !SHA.test(marker.releaseSha) || !STATES.has(marker.state)
     || !RUN_ID.test(marker.workflowRunId) || !Number.isSafeInteger(marker.workflowRunAttempt) || marker.workflowRunAttempt < 1
     || !/^[A-Za-z0-9-]{16,80}$/.test(marker.authorizationId) || !DIGEST.test(marker.lineageDigest)
     || !new Set(["not-started", "started"]).has(marker.spawnState)) {
     throw new Error("release marker values are invalid");
-  }
-  if (marker.manifestId === "training-mutation-ledger-refresh-queue-v1" && marker.state === "forward-resume-armed") {
-    throw new Error("Training ledger markers do not support forward resume");
   }
   if (marker.state === "ddl-starting" && marker.spawnState !== "not-started") throw new Error("ddl-starting marker has an invalid spawn state");
   if (["ddl-started", "schema-applied", "app-ready", "v4-ready"].includes(marker.state) && marker.spawnState !== "started") {
@@ -79,7 +75,9 @@ function serializeMarker(marker) {
     lineageDigest: marker.lineageDigest,
     spawnState: marker.spawnState,
   };
-  if (!MANIFEST_IDS.has(normalized.manifestId) || !SHA.test(normalized.releaseSha) || !STATES.has(normalized.state) || !RUN_ID.test(normalized.workflowRunId)
+  if (!Object.hasOwn(PRODUCTION_MIGRATION_MANIFESTS, normalized.manifestId)
+    || PRODUCTION_MIGRATION_MANIFESTS[normalized.manifestId].ciOnly === true
+    || !SHA.test(normalized.releaseSha) || !STATES.has(normalized.state) || !RUN_ID.test(normalized.workflowRunId)
     || !Number.isSafeInteger(normalized.workflowRunAttempt) || normalized.workflowRunAttempt < 1
     || !/^[A-Za-z0-9-]{16,80}$/.test(normalized.authorizationId) || !DIGEST.test(normalized.lineageDigest)
     || !new Set(["not-started", "started"]).has(normalized.spawnState)) throw new Error("refusing malformed release marker values");
@@ -194,18 +192,7 @@ export async function writeDdlStartingMarker({ markerDirectory, releaseSha, mani
       if (existing) throw new Error("release marker appeared before DDL handoff");
     } else if (expectedPriorMode === "auth-to-training-session-context") {
       assertAuthPredecessorMarker(existing, expectedPriorDigest, expectedPriorMarker, releaseSha);
-    } else {
-      const expected = expectedPriorMarker ?? { releaseSha, workflowRunId: String(workflowRunId),
-        workflowRunAttempt: Number(workflowRunAttempt), authorizationId, lineageDigest };
-      if (!existing || existing.digest !== expectedPriorDigest || existing.marker.releaseSha !== expected.releaseSha
-        || existing.marker.state !== "forward-resume-armed" || existing.marker.spawnState !== "not-started"
-        || existing.marker.workflowRunId !== String(expected.workflowRunId)
-        || existing.marker.workflowRunAttempt !== Number(expected.workflowRunAttempt)
-        || existing.marker.authorizationId !== expected.authorizationId
-        || existing.marker.lineageDigest !== expected.lineageDigest) {
-        throw new Error("forward-resume marker lineage changed before DDL handoff");
-      }
-    }
+    } else if (expectedPriorDigest !== null) throw new Error("unsupported production marker predecessor transition");
     const marker = { manifestId, releaseSha, state: "ddl-starting", workflowRunId, workflowRunAttempt, authorizationId, lineageDigest, spawnState: "not-started" };
     const bytes = serializeMarker(marker);
     const temporary = path.join(directory, `.marker.new.${process.pid}.${randomUUID()}`);
@@ -214,12 +201,8 @@ export async function writeDdlStartingMarker({ markerDirectory, releaseSha, mani
     try {
       if (expectedPriorDigest === null) await link(temporary, markerPath);
       else {
-        const latest = expectedPriorMode === "auth-to-training-session-context"
-          ? await readAuthPredecessorMarker(markerPath)
-          : await readProductionReleaseMarker(markerPath);
-        if (expectedPriorMode === "auth-to-training-session-context") {
-          assertAuthPredecessorMarker(latest, expectedPriorDigest, expectedPriorMarker, releaseSha);
-        }
+        const latest = await readAuthPredecessorMarker(markerPath);
+        assertAuthPredecessorMarker(latest, expectedPriorDigest, expectedPriorMarker, releaseSha);
         if (!latest || latest.digest !== expectedPriorDigest) throw new Error("release marker changed during DDL handoff");
         await rename(temporary, markerPath);
       }

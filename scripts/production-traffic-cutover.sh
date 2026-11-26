@@ -158,21 +158,9 @@ capture_pre_ddl_previous_release() {
   git_dir="$(git rev-parse --absolute-git-dir)"
   record_path="$git_dir/bodycast-production-pre-ddl-release"
   if [[ -e "$record_path" || -L "$record_path" ]]; then
-    if [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
-      refresh_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir" "$preflight_result_path"
-      return
-    fi
-    [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]] || {
-      echo "An earlier pre-DDL release capture exists; operator review is required before another migration attempt." >&2
-      return 1
-    }
-    resume_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir"
-    return
-  fi
-  [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" != "1" ]] || {
-    echo "Fresh capture refresh was requested but no earlier capture exists to preserve." >&2
+    echo "A pre-DDL recovery capture already exists; recover or review that release before starting another preflight." >&2
     return 1
-  }
+  fi
   existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
   [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "A healthy prior app is required for recoverable migration preflight." >&2; return 1; }
   if [[ -n "$preflight_result_path" ]]; then
@@ -217,254 +205,6 @@ capture_pre_ddl_previous_release() {
   sync -f "$git_dir"
   trap - RETURN
   echo "Captured versioned prior-app provenance and read-only pre-DDL database compatibility digests for manual cutback."
-}
-
-assert_pre_ddl_refresh_marker_state() {
-  local preflight_result_path="$1" marker_status app_sha
-  if read_bodycast_release_marker; then
-    [[ "${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}" == "training-session-context-v1" \
-      && -n "$preflight_result_path" && -f "$preflight_result_path" && ! -L "$preflight_result_path" ]] || {
-      echo "Only a retained Auth marker bound to fresh Training pre-maintenance evidence can precede capture refresh." >&2
-      return 1
-    }
-    app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" || {
-      echo "The running Auth predecessor app SHA is unavailable during capture refresh." >&2; return 1;
-    }
-    node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" \
-      --validate-training-capture-marker "$BODYCAST_MARKER_FILE_PATH" "$preflight_result_path" \
-      "${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" "$app_sha" "$ROOT_DIR"
-  else
-    marker_status=$?
-    [[ "$marker_status" -eq 1 ]] || { echo "Release-marker state is unknown; capture refresh is blocked." >&2; return 1; }
-  fi
-}
-
-refresh_pre_ddl_previous_release() {
-  local target_sha="$1" record_path="$2" git_dir="$3" preflight_result_path="${4:-}"
-  local current_run_id current_attempt marker_status maintenance_marker existing_app app_status old_meta old_pin old_image archive_path
-  local capture_text capture_meta new_pin new_image pin_id record_tmp canonical_record
-  current_run_id="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID:-}"
-  current_attempt="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT:-}"
-  [[ "$current_run_id" =~ ^[1-9][0-9]*$ && "$current_attempt" =~ ^[1-9][0-9]*$ ]] || {
-    echo "Fresh capture refresh lacks the trusted current workflow run identity." >&2; return 1;
-  }
-  bodycast_assert_current_main_sha "$target_sha" || return 1
-  assert_pre_ddl_refresh_marker_state "$preflight_result_path" || return 1
-  [[ -f "$record_path" && ! -L "$record_path" ]] || { echo "The existing previous-app capture is not a regular file." >&2; return 1; }
-  old_meta="$(cat -- "$record_path" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)" || {
-    echo "The existing previous-app capture is invalid and cannot be safely archived." >&2; return 1;
-  }
-  old_pin="$(printf '%s' "$old_meta" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; process.stdout.write(JSON.parse(s).previousImagePin)')"
-  old_image="$(printf '%s' "$old_meta" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; process.stdout.write(JSON.parse(s).previousImageId)')"
-  [[ "$(docker image inspect --format '{{.Id}}' "$old_pin" 2>/dev/null || true)" == "$old_image" ]] || {
-    echo "The existing capture's immutable prior-app image pin is unavailable or mismatched; refresh is blocked." >&2; return 1;
-  }
-  if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
-    echo "Docker app listing failed; the current app identity is UNKNOWN." >&2; return 1;
-  fi
-  [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "Capture refresh requires exactly one existing BodyCast app container." >&2; return 1; }
-  if ! app_status="$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$APP_CONTAINER")"; then
-    echo "Docker app state inspection failed; capture refresh is blocked." >&2; return 1;
-  fi
-  [[ "$app_status" == "running|healthy" ]] || { echo "Capture refresh requires the current app to be running and healthy." >&2; return 1; }
-
-  # Revalidate the exact marker witness immediately before any route mutation.
-  assert_pre_ddl_refresh_marker_state "$preflight_result_path" || return 1
-  if bodycast_verify_exact_maintenance_route; then
-    maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
-    bodycast_probe_public_maintenance "$maintenance_marker" || return 1
-  else
-    bodycast_verify_exact_serving_route || {
-      echo "Capture refresh requires an exact serving route or verified maintenance." >&2; return 1;
-    }
-    bodycast_assert_current_main_sha "$target_sha" || return 1
-    publish_maintenance_route || return 1
-    maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
-    bodycast_probe_public_maintenance "$maintenance_marker" || return 1
-  fi
-
-  new_pin="bodycast-app:rollback-preflight-${current_run_id}-${current_attempt}"
-  capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha" "$new_pin")" || {
-    echo "The current app or read-only database compatibility snapshot could not be captured." >&2; return 1;
-  }
-  capture_meta="$(printf '%s\n' "$capture_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)" || {
-    echo "The refreshed previous-app capture failed its closed-schema validation." >&2; return 1;
-  }
-  new_image="$(printf '%s' "$capture_meta" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); if(r.targetSha!==process.argv[1]||r.previousImagePin!==process.argv[2]||r.schemaVersion!==3) process.exit(2); process.stdout.write(r.previousImageId)' "$target_sha" "$new_pin")" || {
-    echo "The refreshed capture is not bound to the exact target SHA and attempt-specific pin." >&2; return 1;
-  }
-  archive_path="$git_dir/bodycast-production-pre-ddl-release-archive-${current_run_id}-${current_attempt}"
-  if [[ -e "$archive_path" || -L "$archive_path" ]]; then
-    [[ -f "$archive_path" && ! -L "$archive_path" ]] || { echo "The attempt-specific capture archive is not a regular file." >&2; return 1; }
-    cmp -s -- "$record_path" "$archive_path" || { echo "The attempt-specific capture archive already contains different bytes." >&2; return 1; }
-  else
-    ln -- "$record_path" "$archive_path" || { echo "Could not preserve the existing capture without overwriting an archive." >&2; return 1; }
-    sync -f "$git_dir"
-  fi
-  [[ "$(docker image inspect --format '{{.Id}}' "$new_pin" 2>/dev/null || true)" == "" ]] || {
-    pin_id="$(docker image inspect --format '{{.Id}}' "$new_pin" 2>/dev/null || true)"
-    [[ "$pin_id" == "$new_image" ]] || { echo "The attempt-specific image pin already names a different image." >&2; return 1; }
-  }
-  if [[ "$(docker image inspect --format '{{.Id}}' "$new_pin" 2>/dev/null || true)" == "" ]]; then
-    docker image tag "$new_image" "$new_pin" || { echo "Could not create the attempt-specific immutable previous-app image pin." >&2; return 1; }
-  fi
-  pin_id="$(docker image inspect --format '{{.Id}}' "$new_pin")" || { echo "The refreshed image pin is unreadable." >&2; return 1; }
-  [[ "$pin_id" == "$new_image" ]] || { echo "The refreshed image pin does not match the captured immutable image." >&2; return 1; }
-  record_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release.new.XXXXXX")"
-  trap 'rm -f -- "$record_tmp"' RETURN
-  chmod 600 "$record_tmp"
-  printf '%s\n' "$capture_text" > "$record_tmp"
-  sync -f "$record_tmp"
-  bodycast_assert_current_main_sha "$target_sha" || return 1
-  mv -fT -- "$record_tmp" "$record_path"
-  sync -f "$git_dir"
-  trap - RETURN
-  canonical_record="$(cat -- "$record_path")"
-  [[ "$canonical_record" == "$capture_text" ]] || { echo "The durable refreshed capture differs from the verified record." >&2; return 1; }
-  [[ "$(docker image inspect --format '{{.Id}}' "$new_pin")" == "$new_image" ]] || { echo "The refreshed image pin changed after the capture was committed." >&2; return 1; }
-  printf '%s\n' "$capture_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-live-container || return 1
-  echo "Preserved the prior capture and image pin, durably refreshed current-app provenance, and verified the exact live app before stop."
-}
-
-resume_pre_ddl_previous_release() {
-  local target_sha="$1" record_path="$2" git_dir="$3"
-  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id previous_image_pin record_verification pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest capture_provenance_kind capture_previous_sha
-  failed_run_id=""; failed_sha=""; failure_proof_digest=""; expected_marker_digest=""
-  source_sha="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA:-}"
-  source_run_id="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID:-}"
-  source_attempt="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT:-}"
-  current_run_id="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID:-}"
-  current_attempt="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT:-}"
-  [[ "$source_sha" =~ ^[a-f0-9]{40}$ && "$source_run_id" =~ ^[1-9][0-9]*$ && "$source_attempt" =~ ^[1-9][0-9]*$ \
-    && "$current_run_id" =~ ^[1-9][0-9]*$ && "$current_attempt" =~ ^[1-9][0-9]*$ ]] || {
-    echo "Preflight capture resume lacks verified source-run identity." >&2; return 1;
-  }
-  git merge-base --is-ancestor "$source_sha" "$target_sha" || {
-    echo "The prior failed preflight SHA is not an ancestor of the current release SHA." >&2; return 1;
-  }
-  bodycast_assert_current_main_sha "$target_sha" || return 1
-  if [[ "${BODYCAST_FORWARD_RESUME_CAPTURE:-0}" == "1" ]]; then
-    forward_resume=true
-    failed_run_id="${BODYCAST_FORWARD_RESUME_FAILED_RUN_ID:-}"
-    failed_sha="${BODYCAST_FORWARD_RESUME_FAILED_SHA:-}"
-    failure_proof_digest="${BODYCAST_FORWARD_RESUME_FAILURE_PROOF_DIGEST:-}"
-    expected_marker_digest="${BODYCAST_FORWARD_RESUME_MARKER_DIGEST:-}"
-    if ! read_bodycast_release_marker; then
-      echo "The expected verified pre-spawn marker is missing or invalid; forward capture resume is blocked." >&2
-      return 1
-    fi
-    marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-    [[ ( "$failed_run_id" == "38022978032" || "$failed_run_id" == "38062632284" ) && "$failed_sha" == "$source_sha" \
-      && "$failure_proof_digest" =~ ^[a-f0-9]{64}$ && "$expected_marker_digest" =~ ^[a-f0-9]{64}$ \
-      && "$marker_digest" == "$expected_marker_digest" && "$BODYCAST_MARKER_RELEASE_SHA" == "$failed_sha" \
-      && ( ( "$failed_run_id" == "38022978032" && "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 \
-        && "$BODYCAST_MARKER_STATE" == "ddl-started" ) \
-        || ( "$failed_run_id" == "38062632284" && "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
-          && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" && "$BODYCAST_MARKER_WORKFLOW_RUN_ID" == "$failed_run_id" \
-          && "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" == 1 && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ) ) ]] || {
-      echo "The marker does not match the independently verified no-spawn failure and source digest." >&2
-      return 1
-    }
-  elif read_bodycast_release_marker; then
-    marker_status=0
-  else
-    marker_status=$?
-    [[ "$marker_status" -eq 1 ]] || { echo "Production marker state is unknown; capture resume is blocked." >&2; return 1; }
-  fi
-  if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
-    echo "Docker app listing failed; previous-app state is UNKNOWN." >&2; return 1;
-  fi
-  [[ -z "$existing_app" ]] || { echo "A BodyCast app container exists; preflight capture resume is blocked." >&2; return 1; }
-  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert || {
-    echo "A complete production writer drain is required before resuming the prior-app capture." >&2; return 1;
-  }
-  [[ -f "$record_path" && ! -L "$record_path" ]] || { echo "The saved previous-app capture is not a regular file." >&2; return 1; }
-  source_target="$(sed -n 's/^targetSha=//p' "$record_path")"
-  archive_path="$git_dir/bodycast-production-pre-ddl-release-before-$target_sha"
-  if [[ "$source_target" == "$source_sha" ]]; then
-    source_record_text="$(cat -- "$record_path")"
-    if [[ -e "$archive_path" || -L "$archive_path" ]]; then
-      [[ -f "$archive_path" && ! -L "$archive_path" ]] || { echo "An earlier capture archive is not a regular file." >&2; return 1; }
-      cmp -s -- "$record_path" "$archive_path" || { echo "An earlier capture archive differs from the canonical preflight record." >&2; return 1; }
-    fi
-  elif [[ "$source_target" == "$target_sha" && "$source_sha" != "$target_sha" ]]; then
-    [[ -f "$archive_path" && ! -L "$archive_path" ]] || { echo "The original capture archive required for resume is missing." >&2; return 1; }
-    source_record_text="$(cat -- "$archive_path")"
-  elif [[ "$source_target" == "$target_sha" && "$source_sha" == "$target_sha" ]]; then
-    source_record_text="$(cat -- "$record_path")"
-  else
-    echo "The durable previous-app capture belongs to neither the verified source nor the exact target SHA." >&2
-    return 1
-  fi
-  previous_image_id="$(printf '%s\n' "$source_record_text" | sed -n 's/^previousImageId=//p')"
-  [[ "$previous_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Saved immutable prior-app image identity is malformed." >&2; return 1; }
-  if ! record_verification="$(printf '%s\n' "$source_record_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)"; then
-    echo "Saved previous-app capture is invalid; capture resume is blocked." >&2; return 1;
-  fi
-  if [[ "$forward_resume" != true && "$marker_status" -eq 0 ]]; then
-    capture_provenance_kind="$(printf '%s\n' "$source_record_text" | sed -n 's/^provenanceKind=//p')"
-    capture_previous_sha="$(printf '%s\n' "$source_record_text" | sed -n 's/^previousSha=//p')"
-    [[ "${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}" == "training-session-context-v1" \
-      && "$capture_provenance_kind" == "release-sha-v1" && "$capture_previous_sha" =~ ^[a-f0-9]{40}$ \
-      && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
-      && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
-      && "$BODYCAST_MARKER_STATE" == "app-ready" \
-      && "$BODYCAST_MARKER_RELEASE_SHA" == "$capture_previous_sha" \
-      && "$BODYCAST_MARKER_DEPLOY_SHA" == "$capture_previous_sha" ]] || {
-      echo "Only the captured Auth app-ready marker may remain during a Training pre-DDL capture resume." >&2
-      return 1
-    }
-  fi
-  previous_image_pin="$(printf '%s' "$record_verification" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(r.previousImagePin)')"
-  [[ "$previous_image_pin" == "bodycast-app:rollback" \
-    || "$previous_image_pin" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ]] || {
-    echo "Saved previous-app capture has no supported immutable image pin." >&2; return 1;
-  }
-  if ! pinned_id="$(docker image inspect --format '{{.Id}}' "$previous_image_pin")"; then
-    echo "The pinned previous-app image is unavailable; capture resume is blocked." >&2; return 1;
-  fi
-  [[ "$pinned_id" == "$previous_image_id" ]] || { echo "The attempt-bound previous-app image pin differs from the captured immutable image." >&2; return 1; }
-  if ! resume_json="$(printf '%s\n' "$source_record_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" \
-    --resume-capture "$source_sha" "$target_sha" "$source_run_id" "$source_attempt")"; then
-    echo "Fresh production DB compatibility does not match the durable previous-app capture." >&2
-    return 1
-  fi
-  rebound_record="$(printf '%s' "$resume_json" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(r.recordText)')"
-  receipt_json="$(printf '%s' "$resume_json" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(JSON.stringify(r.receipt))')"
-  receipt_json="$(printf '%s' "$receipt_json" | node "$ROOT_DIR/scripts/production-capture-resume-receipt.mjs" --produce \
-    "$source_run_id" "$source_attempt" "$source_sha" "$target_sha" "$current_run_id" "$current_attempt" \
-    "$failed_run_id" "$failed_sha" "$failure_proof_digest" "$expected_marker_digest")"
-  receipt_path="$git_dir/bodycast-production-pre-ddl-release-resume-$current_run_id-$current_attempt"
-  [[ ! -e "$receipt_path" && ! -L "$receipt_path" ]] || { echo "A receipt already exists for this exact preflight attempt." >&2; return 1; }
-  if [[ "$source_target" != "$target_sha" ]]; then
-    if [[ ! -e "$archive_path" && ! -L "$archive_path" ]]; then
-      ln -- "$record_path" "$archive_path"
-      sync -f "$git_dir"
-    fi
-    cmp -s -- "$record_path" "$archive_path" || { echo "The original preflight capture archive does not match the canonical record." >&2; return 1; }
-    record_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release.new.XXXXXX")"
-    trap 'rm -f -- "$record_tmp"' RETURN
-    chmod 600 "$record_tmp"
-    printf '%s\n' "$rebound_record" > "$record_tmp"
-    sync -f "$record_tmp"
-    mv -f -- "$record_tmp" "$record_path"
-    sync -f "$git_dir"
-    trap - RETURN
-  else
-    current_record="$(cat -- "$record_path")"
-    [[ "$current_record" == "$rebound_record" ]] || { echo "The current capture record differs from the verified resume result." >&2; return 1; }
-  fi
-  receipt_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release-resume.new.XXXXXX")"
-  trap 'rm -f -- "$receipt_tmp"' RETURN
-  chmod 600 "$receipt_tmp"
-  printf '%s\n' "$receipt_json" > "$receipt_tmp"
-  sync -f "$receipt_tmp"
-  ln -- "$receipt_tmp" "$receipt_path"
-  rm -- "$receipt_tmp"
-  sync -f "$git_dir"
-  trap - RETURN
-  printf 'BODYCAST_PRE_DDL_RESUME_RECEIPT=%s\n' "$(printf '%s' "$receipt_json" | base64 -w0)"
-  echo "Verified and rebound the durable previous-app capture after matching fresh DB identity, migration history, schema, image pin, maintenance, and writer drain."
 }
 
 publish_candidate_route() {
@@ -720,7 +460,7 @@ restore_training_maintenance_after_fence_failure() {
 serve_training_release() {
   local expected_release_sha="$1" migration_free_serving="${2:-false}" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
-  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha auth_multiuser_serving=false expected_migration_count=74
+  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha auth_multiuser_serving=false
   stepper_diagnostic_workout_id=""
   target_strength_session_id=""
   local recovered_v4_release=false recovery_marker_path recovery_marker_digest
@@ -760,7 +500,6 @@ serve_training_release() {
       marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
       [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Auth release marker digest is invalid." >&2; return 1; }
       auth_multiuser_serving=true
-      expected_migration_count=77
     else
       if read_bodycast_release_marker; then
         echo "Migration-free serving is blocked by any present schema/release marker." >&2
@@ -808,7 +547,6 @@ serve_training_release() {
     && "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" ]]; then
     marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
     [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training session-context release marker digest is invalid." >&2; return 1; }
-    expected_migration_count=79
   else
     require_ready_release_marker
     [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
@@ -844,7 +582,7 @@ serve_training_release() {
   compose --profile tools build migrate
   if [[ "$migration_free_serving" == "true" ]]; then
     bodycast_assert_production_db_identity_unchanged "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
-    BODYCAST_EXPECTED_MIGRATION_COUNT="$expected_migration_count" BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="${BODYCAST_EXPECTED_DB_IDENTITY:-}" \
+    BODYCAST_EXPECTED_PRODUCTION_DB_IDENTITY="${BODYCAST_EXPECTED_DB_IDENTITY:-}" \
       bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
     bodycast_assert_prisma_database_identity_matches "${BODYCAST_EXPECTED_DB_IDENTITY:-}"
     if ! timeout 20m docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
@@ -1124,7 +862,7 @@ serve_training_release() {
   fi
   cleanup_pre_ddl_recovery_pin_after_serving_commit "$expected_release_sha"
   if [[ "$auth_multiuser_serving" == "true" ]]; then
-    echo "Exact Auth 77-migration SHA is serving after unchanged DB/raw-input identity and the held Training/Unified currentness fence."
+    echo "Exact Auth app-ready SHA is serving after unchanged DB/raw-input identity and the held Training/Unified currentness fence."
   else
     echo "Training exact-SHA route is serving after V3 marker, immutable image, and fenced Unified V4 currentness checks."
   fi
@@ -1168,11 +906,12 @@ assert_pre_maintenance_migration_state() (
   target_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   manifest_id="${BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID:-}"
   [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-maintenance checks require the exact release SHA." >&2; exit 1; }
-  [[ "$manifest_id" == "active-energy-unified-v2" || "$manifest_id" == "unified-v4-republication-v1" \
-    || "$manifest_id" == "training-mutation-ledger-refresh-queue-v1" || "$manifest_id" == "auth-multiuser-v1" \
-    || "$manifest_id" == "training-session-context-v1" ]] || {
-    echo "Pre-maintenance checks require a closed reviewed migration manifest." >&2; exit 1;
-  }
+  node --input-type=module - "$ROOT_DIR/scripts/production-migration-manifests.mjs" "$manifest_id" <<'NODE'
+import { pathToFileURL } from "node:url";
+const [modulePath, id] = process.argv.slice(2);
+const { getProductionMigrationManifest } = await import(pathToFileURL(modulePath));
+if (getProductionMigrationManifest(id).ciOnly === true) throw new Error("CI-only manifest cannot enter production maintenance.");
+NODE
   bodycast_assert_current_main_sha "$target_sha"
   if read_bodycast_release_marker; then
     [[ "$manifest_id" == "training-session-context-v1" \
@@ -1241,30 +980,17 @@ enter_maintenance() {
     [[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]] || {
       echo "Migration maintenance requires the existing owner-authorized prior-app capture path." >&2; return 1;
     }
-    if [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
-      # Resume is only valid after an earlier, already-verified maintenance
-      # transition. Its marker/proof, writer drain, and DB compatibility are
-      # rechecked by resume_pre_ddl_previous_release before it mutates capture.
-      [[ -f "$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release" \
-        && ! -L "$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release" ]] || {
-        echo "Pre-DDL capture resume requires the existing durable prior-app record." >&2; return 1;
-      }
-      capture_pre_ddl_previous_release || return 1
-    else
-      preflight_result_path="$(mktemp /tmp/bodycast-pre-maintenance-result.XXXXXX)" || return 1
-      chmod 0600 "$preflight_result_path"
-      if ! assert_pre_maintenance_migration_state "$preflight_result_path"; then
-        rm -f -- "$preflight_result_path"
-        return 1
-      fi
-      # Capture and pin the known prior app before changing traffic. A failed
-      # recovery capture therefore cannot strand a healthy serving app in maintenance.
-      if ! capture_pre_ddl_previous_release "$preflight_result_path"; then
-        rm -f -- "$preflight_result_path"
-        return 1
-      fi
+    preflight_result_path="$(mktemp /tmp/bodycast-pre-maintenance-result.XXXXXX)" || return 1
+    chmod 0600 "$preflight_result_path"
+    if ! assert_pre_maintenance_migration_state "$preflight_result_path"; then
       rm -f -- "$preflight_result_path"
+      return 1
     fi
+    if ! capture_pre_ddl_previous_release "$preflight_result_path"; then
+      rm -f -- "$preflight_result_path"
+      return 1
+    fi
+    rm -f -- "$preflight_result_path"
     bodycast_assert_current_main_sha "${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}" || return 1
     if bodycast_verify_exact_maintenance_route >/dev/null 2>&1; then
       maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
@@ -1277,16 +1003,10 @@ enter_maintenance() {
       publish_maintenance_route || return 1
     fi
   else
-    if [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
-      # A refresh has its own marker/evidence gate and only publishes maintenance
-      # after the prior capture and current app have been validated.
-      capture_pre_ddl_previous_release || return 1
-    else
-      if ! publish_maintenance_route; then
-        return 1
-      fi
-      capture_pre_ddl_previous_release
+    if ! publish_maintenance_route; then
+      return 1
     fi
+    capture_pre_ddl_previous_release
   fi
   stop_old_app
 }
@@ -1607,7 +1327,7 @@ if [[ "$MODE" == "migration-free-serving" ]]; then
     echo "Migration-free serving requires an exact requested release SHA." >&2; exit 1;
   }
   git cat-file -e "$requested_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null || {
-    echo "Migration-free serving is restricted to the exact 74-migration Training release lineage." >&2; exit 1;
+    echo "Migration-free serving is restricted to the exact Training mutation-ledger release lineage." >&2; exit 1;
   }
   if ! serve_training_release "$requested_release_sha" true; then exit 1; fi
   exit 0

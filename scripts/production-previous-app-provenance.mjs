@@ -406,37 +406,6 @@ export function verifyPreviousAppCaptureMatchesPreMaintenanceSnapshot(record, da
   return { verified: true, compatibilityDigest: capturedDigests.compatibilityDigest };
 }
 
-export function rebindPreviousAppProvenanceForPreflightResume({
-  record, sourceSha, targetSha, sourceRunId, sourceRunAttempt, databaseReport,
-}) {
-  validatePreviousAppProvenance(record, sourceSha);
-  if (!RELEASE_SHA.test(String(targetSha ?? ""))
-    || !/^[1-9][0-9]*$/.test(String(sourceRunId ?? ""))
-    || !Number.isSafeInteger(sourceRunAttempt) || sourceRunAttempt < 1) {
-    throw new Error("Preflight resume identity is malformed.");
-  }
-  const digests = previousAppDatabaseCompatibilityDigests(databaseReport);
-  if (digests.databaseIdentityDigest !== record.preDdlDatabaseIdentityDigest
-    || digests.migrationHistoryDigest !== record.preDdlMigrationHistoryDigest
-    || digests.schemaDigest !== record.preDdlSchemaInventoryDigest
-    || digests.compatibilityDigest !== record.preDdlDatabaseCompatibilityDigest) {
-    throw new Error("The current production DB identity, migration history, or schema differs from the durable pre-DDL app capture.");
-  }
-  const reboundRecord = Object.freeze({ ...record, targetSha });
-  validatePreviousAppProvenance(reboundRecord, targetSha);
-  const receipt = Object.freeze({
-    schemaVersion: 1,
-    sourceRunId: String(sourceRunId),
-    sourceRunAttempt,
-    sourceSha,
-    targetSha,
-    sourceRecordDigest: canonicalSha256(record),
-    currentRecordDigest: canonicalSha256(reboundRecord),
-    compatibilityDigest: digests.compatibilityDigest,
-  });
-  return Object.freeze({ record: reboundRecord, recordText: serializePreviousAppProvenance(reboundRecord), receipt });
-}
-
 export function verifyLegacyPreviousAppRestoredCompatibility({
   record, targetSha, preflightResult, preflightResultDigest, contextVerified, restoredReport, restoreResult, readabilityReport,
 }) {
@@ -628,18 +597,6 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ receiptDigest: receipt.receiptDigest, schemaVersion: receipt.schemaVersion })}\n`);
     return;
   }
-  if (mode === "--resume-capture") {
-    if (args.length !== 4) throw new Error("Usage: --resume-capture <source-sha> <target-sha> <source-run-id> <source-run-attempt> (capture record on stdin)");
-    const [sourceSha, targetSha, sourceRunId, sourceAttemptText] = args;
-    if (!/^[1-9][0-9]*$/.test(sourceAttemptText)) throw new Error("Preflight resume source attempt is invalid.");
-    const record = parsePreviousAppProvenance(await readBoundedStdin());
-    const databaseReport = await readCurrentPreviousAppDatabaseReport(process.cwd());
-    const result = rebindPreviousAppProvenanceForPreflightResume({
-      record, sourceSha, targetSha, sourceRunId, sourceRunAttempt: Number(sourceAttemptText), databaseReport,
-    });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return;
-  }
   if (mode === "--verify-preflight") {
     if (args.length !== 2) throw new Error("Usage: --verify-preflight <preflight-result.json> <exact-release-sha> (capture record on stdin)");
     const [reportPath, targetSha] = args;
@@ -649,7 +606,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ verified: true, previousAppProvenance: result.previousAppProvenance })}\n`);
     return;
   }
-  throw new Error("Usage: production-previous-app-provenance.mjs capture <target-sha> [attempt-bound-image-pin]|--verify-record|--verify-live-container|--resume-capture <source-sha> <target-sha> <source-run-id> <source-run-attempt>|--verify-preflight <preflight-result.json>");
+  throw new Error("Usage: production-previous-app-provenance.mjs capture <target-sha> [attempt-bound-image-pin]|--verify-record|--verify-live-container|--verify-preflight <preflight-result.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

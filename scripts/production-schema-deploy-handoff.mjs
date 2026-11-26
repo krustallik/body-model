@@ -42,7 +42,7 @@ const AUTH_MULTIUSER_NON_RUNTIME_PATH = /^(?:tests\/|research\/|docs\/research\/
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/app\/api\/forecast\/(?:action\/)?route\.ts$|src\/app\/api\/v1\/model\/recalculate\/route\.ts$|src\/lib\/logger\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
-const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-v4-fingerprint-forensics\.(?:mjs|d\.mts)$)/;
+const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/(?:production-schema-deploy-handoff|github-no-app-preflight-evidence)\.mjs$|scripts\/production-v4-fingerprint-forensics\.(?:mjs|d\.mts)$)/;
 const V4_RETIRED_WORKFLOW_PATH = ".github/workflows/activate-unified-v4-production.yml";
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
@@ -61,14 +61,6 @@ const CONTENT_BOUND_PATHS = Object.freeze({
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "14e4caa5645ce8b95c16ecc03b3937bd0e60a1e3",
     deployBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
-  }),
-  "scripts/production-forward-resume.mjs": Object.freeze({
-    migrationOriginBlob: "2c07e0636146caaa5bfef69522f351c4e37aa13d",
-    deployBlob: "43373e740cdad93d6f88c37c565288b2db1ad70d",
-  }),
-  "scripts/github-forward-resume-evidence.mjs": Object.freeze({
-    migrationOriginBlob: "b62a7e09fd871e68829e9fad3902510a9e3bd6ca",
-    deployBlob: "9d76e1612f86f700c5e3950fc67c77f0fa6c7912",
   }),
   "scripts/production-app-container-health-wait.sh": Object.freeze({
     migrationOriginBlob: null,
@@ -177,10 +169,6 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "76782d626c633a37c3de2330a6ef1d58df67d0d0",
   }),
-  "scripts/github-no-app-preflight-evidence.mjs": Object.freeze({
-    migrationOriginBlob: "b98263494d504228b1fdb207a249d5b9f3f77d5e",
-    deployBlob: "954cc02644a9c46cb3b3e7c2d73f73385a9c0eae",
-  }),
   "scripts/production-migration-preflight.mjs": Object.freeze({
     migrationOriginBlob: "1f83a82cff68b3b9bbf3669156ae15be2f0e4a9b",
     deployBlob: "dfb007dfde094aa359dc0c5f0260b820e1a908de",
@@ -195,7 +183,10 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-traffic-cutover.sh": Object.freeze({
     migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",
-    deployBlob: "7b1d61f367d1b2e909fe435d50a5cdcdc736247f",
+    deployBlob: Object.freeze([
+      "7b1d61f367d1b2e909fe435d50a5cdcdc736247f",
+      "31631c8dce4ef102f7e7a60e147f5abd71f4b4ff",
+    ]),
   }),
   "scripts/unified-v4-activate-replay.ts": Object.freeze({
     migrationOriginBlob: "2bb3f1130241dcc0e354e70a60f5284452849a12",
@@ -220,6 +211,10 @@ const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock
 const AUTH_MULTIUSER_CRITICAL_TREES = Object.freeze(["prisma"]);
 const AUTH_MULTIUSER_CRITICAL_FILES = Object.freeze([...CRITICAL_FILES, "Dockerfile"]);
 export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
+  Dockerfile: Object.freeze({
+    migrationOriginBlob: "2dc903fcaff366e932064b7f52f26773fd942b38",
+    deployBlob: "e4b835ff3a2de07219941c4c57e7c43aa63edf7c",
+  }),
   "src/modules/health/normalize-shortcut-numeric-values.ts": Object.freeze({
     migrationOriginBlob: "21d794a84044655b88a6f2eeb0a2d72ff5ce9b1e",
     deployBlob: "f3cdcb33d6496b0b7f7036ea9dde7001331c5299",
@@ -477,6 +472,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "f8f1260935d060bac853ebf9678e2c86e5876195",
       "1ddf90306cfae3823195c9e17cd50453e3158adb",
       "b8806a7319f5f9d9308edf9f0079f1db967048b4",
+      "9154d32837e29499c481532e5745e0619e5958fb",
     ]),
   }),
   "scripts/production-db-target.sh": Object.freeze({
@@ -500,6 +496,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "d600fd3de2c9f025774e1c950baac2e2c4e92667",
       "e412b404f3e8d70b9c005572cdbb18e39d2c68bb",
       "623359e02225bb7ab2372463144c0552d0f4feed",
+      "31631c8dce4ef102f7e7a60e147f5abd71f4b4ff",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({
@@ -1560,7 +1557,10 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
   for (const objectPath of [...criticalTrees, ...criticalFiles]) {
     const originId = objectId(repo, origin, objectPath);
     const deployId = objectId(repo, deploySha, objectPath);
-    if (originId !== deployId) reject(`${objectPath} differs from the migration origin`);
+    const reviewedAuthDockerfileChange = authMultiuserRelease && objectPath === "Dockerfile"
+      && originId === AUTH_MULTIUSER_CONTENT_BOUND_PATHS.Dockerfile.migrationOriginBlob
+      && AUTH_MULTIUSER_CONTENT_BOUND_PATHS.Dockerfile.deployBlob === deployId;
+    if (originId !== deployId && !reviewedAuthDockerfileChange) reject(`${objectPath} differs from the migration origin`);
     criticalObjects[objectPath] = originId;
   }
   const changedPathObjects = {};

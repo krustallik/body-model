@@ -2,16 +2,15 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createClaimsFromPreflight, createAuthorizationEnvelope, canonicalSha256 } from "./production-migration-authorization.mjs";
+import { createClaimsFromPreflight, createAuthorizationEnvelope, canonicalSha256, assertExactMigrationConfirmation } from "./production-migration-authorization.mjs";
 import { verifyPreflightArtifactMetadata } from "./production-migration-release.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
-import { verifyForwardResumeContext, FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID } from "./production-forward-resume.mjs";
 import { assertPreMaintenanceStorageHeadroom } from "./production-migration-preflight.mjs";
 
 async function json(file) { return JSON.parse(await readFile(file, "utf8")); }
 
 export async function createSignedAuthorization({ evidence, report, restore, run, artifact, allowlist, keyId, privateKeyPem,
-  executionMode = "standard", forwardResumeFailedRunId = "", profileOneOwnershipBackfillAuthorized = false, now = Date.now() }) {
+  confirmation, profileOneOwnershipBackfillAuthorized = false, now = Date.now() }) {
   const repository = "krustallik/body-model";
   if (profileOneOwnershipBackfillAuthorized !== (evidence?.manifestId === "auth-multiuser-v1")) {
     throw new Error("Production migration authorization must explicitly bind Profile 1 ownership-backfill consent to the Auth manifest.");
@@ -31,7 +30,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     || run.workflowPath !== ".github/workflows/production-migration-preflight.yml"
     || run.repository !== repository || String(run.headSha) !== String(evidence.releaseSha)
     || String(run.displayTitle) !== "Preflight " + evidence.releaseSha + " " + evidence.manifestId) {
-    throw new Error("Selected preflight run is not the latest successful exact-SHA workflow attempt.");
+    throw new Error("Selected preflight run is not a successful exact-SHA workflow attempt.");
   }
   assertPinnedOwnerId(run.actorId, "Migration workflow actor ID");
   if (typeof run.runStartedAt !== "string" || !Number.isFinite(Date.parse(run.runStartedAt))
@@ -39,6 +38,16 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     throw new Error("Selected preflight run lacks trusted admission metadata.");
   }
   if (canonicalSha256(report) !== evidence.preflightResultDigest) throw new Error("Preflight report digest differs from the attested digest.");
+  const pendingSetDigest = assertExactMigrationConfirmation({
+    confirmation,
+    releaseSha: evidence.releaseSha,
+    pendingMigrationNames: report.pending,
+  });
+  if (report.pendingSetDigest !== pendingSetDigest
+    || evidence.pendingSetDigest !== pendingSetDigest
+    || JSON.stringify(evidence.pendingMigrationNames) !== JSON.stringify(report.pending)) {
+    throw new Error("Exact pending migration set differs from the completed preflight evidence.");
+  }
   assertPreMaintenanceStorageHeadroom(report?.preMaintenanceStorageHeadroom);
   if (canonicalSha256(restore) !== evidence.restoreResultDigest || restore?.verified !== true) throw new Error("Restore result digest or verified status is invalid.");
   if (canonicalSha256(report.identity) !== evidence.productionIdentityDigest) throw new Error("Production identity digest differs from the verified preflight report.");
@@ -53,24 +62,6 @@ export async function createSignedAuthorization({ evidence, report, restore, run
   }
   if (canonicalSha256([...report.pending].sort()) !== report.pendingSetDigest) throw new Error("Preflight pending-set digest is invalid.");
   if (report.readyForOwnerAuthorization !== true || report.manifestId !== evidence.manifestId) throw new Error("Preflight did not produce an owner-authorization-ready result.");
-  let forwardResume;
-  if (executionMode === "forward-resume") {
-    if (![FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID].includes(String(forwardResumeFailedRunId))) {
-      throw new Error("Forward-resume requires the exact explicitly owner-selected failed migration run.");
-    }
-    forwardResume = verifyForwardResumeContext(report.forwardResume, {
-      targetSha: evidence.releaseSha, preflightRunId: String(run.id), preflightRunAttempt: Number(run.runAttempt),
-    });
-    if (forwardResume.sourceRunId !== String(forwardResumeFailedRunId)) {
-      throw new Error("Forward-resume preflight is bound to a different failed migration run.");
-    }
-  } else if (executionMode === "standard") {
-    if (forwardResumeFailedRunId || report.forwardResume) {
-      throw new Error("A forward-resume preflight requires the separate explicit owner-authorized forward-resume mode.");
-    }
-  } else {
-    throw new Error("Unsupported production migration execution mode.");
-  }
   verifyPreflightArtifactMetadata(artifact, run);
   if (!/^[1-9][0-9]*$/.test(String(artifact.id)) || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest)) throw new Error("Backup artifact metadata is incomplete.");
   const snapshotMs = Date.parse(evidence.backupSnapshotAt);
@@ -100,7 +91,6 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     writerDrainDigest: evidence.writerDrainDigest,
     writerTopologyDigest: evidence.writerTopologyDigest,
     snapshotDataFingerprint: report.logicalDataFingerprint,
-    forwardResume,
     issuedAt: new Date(issuedMs).toISOString(),
     expiresAt: new Date(expiresMs).toISOString(),
     authorizationId: randomUUID(),
@@ -124,9 +114,8 @@ async function main() {
     evidence, report, restore, run, artifact, allowlist,
     keyId: process.env.PRODUCTION_MIGRATION_SIGNING_KEY_ID,
     privateKeyPem: process.env.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY,
-    executionMode: process.env.BODYCAST_MIGRATION_EXECUTION_MODE ?? "standard",
-    forwardResumeFailedRunId: process.env.BODYCAST_FORWARD_RESUME_FAILED_RUN_ID ?? "",
     profileOneOwnershipBackfillAuthorized: process.env.BODYCAST_PROFILE_ONE_BACKFILL_AUTHORIZED === "true",
+    confirmation: process.env.BODYCAST_MIGRATION_CONFIRMATION ?? "",
   });
   await writeFile(path.resolve(outputPath), `${result.serialized}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(JSON.stringify({ authorizationId: result.claims.authorizationId, digest: result.digest }) + "\n");

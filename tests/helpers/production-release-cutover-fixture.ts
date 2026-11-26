@@ -908,7 +908,6 @@ export function createFixture(): Fixture {
     "production-app-container-health-wait.sh",
     "production-writer-drain.sh",
     "production-previous-app-provenance.mjs",
-    "production-capture-resume-receipt.mjs",
     "production-db-target.sh",
     "production-db-data-fingerprint.sh",
     "production-db-endpoint-binding.mjs",

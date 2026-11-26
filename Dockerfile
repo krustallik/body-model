@@ -44,17 +44,13 @@ ENV NODE_ENV=production
 COPY prisma ./prisma
 RUN DATABASE_URL=postgresql://build:build@localhost:5432/build npx prisma generate --schema prisma/schema.prisma
 COPY scripts/production-migration-*.mjs ./scripts/
+COPY scripts/production-writer-drain.mjs ./scripts/
 COPY scripts/production-deploy-attestation.mjs ./scripts/
 COPY scripts/production-empty-install-ledger.mjs ./scripts/
 COPY scripts/production-migration-verification-keys.json ./scripts/
-COPY scripts/production-migration-preflight.mjs ./scripts/
-COPY scripts/production-migration-manifests.mjs ./scripts/
-COPY scripts/production-migration-integrity.mjs ./scripts/
-COPY scripts/production-migration-authorization.mjs ./scripts/
 COPY scripts/github-owner-identity.mjs scripts/postgres-database-identity.mjs ./scripts/
 COPY scripts/production-migration-release.mjs ./scripts/
-COPY scripts/production-writer-drain.mjs ./scripts/
-COPY scripts/production-forward-resume.mjs scripts/production-release-marker.mjs ./scripts/
+COPY scripts/production-release-marker.mjs ./scripts/
 COPY scripts/production-db-preflight.mjs ./scripts/
 COPY scripts/production-db-preflight.sql ./scripts/
 COPY scripts/run-prisma-migrate-with-lock-timeout.mjs ./scripts/

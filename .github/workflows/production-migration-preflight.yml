@@ -9,38 +9,12 @@ on:
         required: true
         type: string
       manifest_id:
-        description: Closed reviewed migration set
+        description: Reviewed schema contract; pending migrations are discovered from the exact release tree
         required: true
-        type: choice
-        options:
-          - active-energy-unified-v2
-          - unified-v4-republication-v1
-          - training-mutation-ledger-refresh-queue-v1
-          - auth-multiuser-v1
-          - training-session-context-v1
+        type: string
       confirm_production_preflight:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
         required: true
-        type: string
-      refresh_existing_capture_confirmation:
-        description: Type refresh-stale-pre-ddl-capture only when an existing capture must be preserved and refreshed for the current live app
-        required: false
-        type: string
-      resume_previous_preflight_run_id:
-        description: Optional exact owner preflight run whose durable prior-app capture may be resumed only after verified live-state checks
-        required: false
-        type: string
-      resume_pre_ddl_migration_failure_run_id:
-        description: Required with the source run only to prove the reviewed exact pre-DDL migration failure before the DDL marker
-        required: false
-        type: string
-      resume_blocked_capture_preflight_run_id:
-        description: Required with the migration failure run to identify the retry that stopped at the existing capture guard or exact absent-app check before maintenance
-        required: false
-        type: string
-      forward_resume_failed_migration_run_id:
-        description: Exact reviewed pre-spawn failure run (38022978032 or its armed retry 38062632284)
-        required: false
         type: string
 
 permissions:
@@ -53,21 +27,13 @@ concurrency:
 
 jobs:
   authorize:
-    name: Authorize read-only preflight
+    name: Authorize exact-main preflight
+    if: github.repository == 'krustallik/body-model' && github.ref == 'refs/heads/main' && github.actor_id == '126446430'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       release_sha: ${{ steps.gate.outputs.release_sha }}
       manifest_id: ${{ steps.gate.outputs.manifest_id }}
-      resume_source_sha: ${{ steps.gate.outputs.resume_source_sha }}
-      resume_source_run_id: ${{ steps.gate.outputs.resume_source_run_id }}
-      resume_source_run_attempt: ${{ steps.gate.outputs.resume_source_run_attempt }}
-      unverified_historical_runs: ${{ steps.gate.outputs.unverified_historical_runs }}
-      forward_resume_failure_proof_b64: ${{ steps.gate.outputs.forward_resume_failure_proof_b64 }}
-      forward_resume_authorization_bundle_proof_b64: ${{ steps.gate.outputs.forward_resume_authorization_bundle_proof_b64 }}
-      forward_resume_failure_proof_digest: ${{ steps.gate.outputs.forward_resume_failure_proof_digest }}
-      forward_resume_mutation_history_digest: ${{ steps.gate.outputs.forward_resume_mutation_history_digest }}
-      refresh_capture: ${{ steps.gate.outputs.refresh_capture }}
     steps:
       - name: Checkout current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -75,7 +41,7 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate canonical repository, exact main, and successful CI
+      - name: Validate owner, release SHA, manifest, and exact-main CI
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -83,21 +49,20 @@ jobs:
           MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirm_production_preflight }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
-          RESUME_SOURCE_RUN_ID: ${{ inputs.resume_previous_preflight_run_id }}
-          RESUME_MIGRATION_FAILURE_RUN_ID: ${{ inputs.resume_pre_ddl_migration_failure_run_id }}
-          RESUME_BLOCKED_CAPTURE_RUN_ID: ${{ inputs.resume_blocked_capture_preflight_run_id }}
-          FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
-          REFRESH_CAPTURE_CONFIRMATION: ${{ inputs.refresh_existing_capture_confirmation }}
         run: |
           set -Eeuo pipefail
           umask 077
-          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
-          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch this workflow from main."; exit 1; }
-          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may authorize maintenance and preflight."; exit 1; }
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "::error::Dispatch this workflow from canonical main only."; exit 1;
+          }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the BodyCast owner may authorize production preflight."; exit 1; }
+          [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact preflight confirmation is required."; exit 1; }
+          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
           gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-preflight-run.json"
-          node --input-type=module - "$RUNNER_TEMP/current-preflight-run.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/current-preflight-run.json" "$MANIFEST_ID" <<'NODE'
           import { readFileSync } from "node:fs";
           import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
           assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
             actorId: process.env.DISPATCH_ACTOR_ID,
             workflowPath: ".github/workflows/production-migration-preflight.yml",
@@ -107,374 +72,40 @@ jobs:
             sha: process.env.GITHUB_SHA,
             requireInProgress: true,
           });
+          const manifest = getProductionMigrationManifest(process.argv[3]);
+          if (manifest.ciOnly === true) throw new Error("CI-only schema contracts cannot be used for production.");
           NODE
-          [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact maintenance/preflight confirmation is required."; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" \
-            || "$MANIFEST_ID" == "training-session-context-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
-          if [[ "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
-            && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
-              || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
-            echo "::error::The nine-migration Training manifest does not accept historical resume evidence."; exit 1;
-          fi
-          if [[ "$MANIFEST_ID" == "auth-multiuser-v1" \
-            && ( -n "$FORWARD_RESUME_FAILED_RUN_ID" \
-              || ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" ) \
-              || ( -z "$RESUME_MIGRATION_FAILURE_RUN_ID" && -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" ) \
-              || ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ID" ) ) ]]; then
-            echo "::error::Auth resume requires an exact failed-restore source alone or the complete source/migration-failure/blocked-preflight tuple; forward-resume is not accepted."; exit 1;
-          fi
-          REFRESH_CAPTURE=0
-          if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then
-            [[ "$REFRESH_CAPTURE_CONFIRMATION" == "refresh-stale-pre-ddl-capture" \
-              && ( "$MANIFEST_ID" == "unified-v4-republication-v1" \
-                || "$MANIFEST_ID" == "training-session-context-v1" ) \
-              && -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_MIGRATION_FAILURE_RUN_ID" \
-              && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" && -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || {
-              echo "::error::Capture refresh requires its exact confirmation, an explicitly allowed release manifest, and no incident-resume inputs."; exit 1;
-            }
-            REFRESH_CAPTURE=1
-            echo "- explicitly authorized preservation and refresh of the existing pre-DDL app capture" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            && ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" \
-              || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
-            echo "::error::The V4 republication manifest cannot reuse historical migration-failure or forward-resume evidence."; exit 1;
-          fi
-          if [[ "$REFRESH_CAPTURE" == "1" && -n "$RESUME_SOURCE_RUN_ID" ]]; then
-            echo "::error::Capture refresh cannot be combined with a previous-preflight resume."; exit 1;
-          fi
-          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
           git fetch --no-tags origin main
           MAIN_TIP="$(git rev-parse --verify FETCH_HEAD)"
           [[ "$MAIN_TIP" == "$(git rev-parse origin/main)" && "$MAIN_TIP" == "$GITHUB_SHA" && "$MAIN_TIP" == "$DISPATCH_SHA" ]] || {
-            echo "::error::Requested SHA, checked out main and canonical main do not match."; exit 1;
+            echo "::error::Requested SHA, checkout, origin/main, and canonical main must match."; exit 1;
           }
-          gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" \
+          gh api --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=$MAIN_TIP&per_page=100" \
             > "$RUNNER_TEMP/bodycast-ci-runs.ndjson"
           CI_URL="$(node --input-type=module - "$RUNNER_TEMP/bodycast-ci-runs.ndjson" "$MAIN_TIP" <<'NODE'
           import { readFileSync } from "node:fs";
-          const runs = readFileSync(process.argv[2], "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-          const matching = runs.filter((run) => run.head_sha === process.argv[3] && run.head_branch === "main" && run.event === "push");
-          matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-          const latest = matching[0];
-          if (!latest || latest.status !== "completed" || latest.conclusion !== "success") throw new Error("Current main has no latest successful push CI run.");
+          const runs = readFileSync(process.argv[2], "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse)
+            .filter((run) => run.head_sha === process.argv[3] && run.head_branch === "main" && run.event === "push");
+          runs.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
+          const latest = runs[0];
+          if (!latest || latest.status !== "completed" || latest.conclusion !== "success") {
+            throw new Error("Exact current-main BodyCast CI is not successful.");
+          }
           console.log(latest.html_url);
           NODE
           )"
-          RESUME_SOURCE_SHA=""
-          RESUME_SOURCE_ATTEMPT=""
-          RESUME_KIND=""
-          UNVERIFIED_HISTORICAL_RUNS='[]'
-          FORWARD_FAILURE_PROOF_B64=""
-          FORWARD_AUTH_BUNDLE_PROOF_B64=""
-          FORWARD_FAILURE_PROOF_DIGEST=""
-          FORWARD_MUTATION_HISTORY_DIGEST=""
-          if [[ -n "$FORWARD_RESUME_FAILED_RUN_ID" ]]; then
-            [[ ( "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" || "$FORWARD_RESUME_FAILED_RUN_ID" == "38062632284" ) \
-              && -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_MIGRATION_FAILURE_RUN_ID" \
-              && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" ]] || {
-              echo "::error::Forward-resume only admits the exact source failure and cannot combine with another resume mode."; exit 1;
-            }
-            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP" "$FORWARD_RESUME_FAILED_RUN_ID"
-            mkdir -m 700 "$RUNNER_TEMP/forward-source-bundle"
-            gh run download "$FORWARD_RESUME_FAILED_RUN_ID" --repo krustallik/body-model \
-              --name "bodycast-migration-auth-$FORWARD_RESUME_FAILED_RUN_ID-1" --dir "$RUNNER_TEMP/forward-source-bundle"
-            FORWARD_PROOF_META="$(node --input-type=module - "$RUNNER_TEMP/forward-source-bundle" "$RUNNER_TEMP/forward-github-evidence/github-evidence.json" "$FORWARD_RESUME_FAILED_RUN_ID" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          import { verifyForwardResumeAuthorizationBundle } from "./scripts/production-forward-resume.mjs";
-          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const [bundleDir, githubEvidencePath, failedRunId] = process.argv.slice(2);
-          const { failureProof, mutationHistoryDigest } = JSON.parse(readFileSync(githubEvidencePath, "utf8"));
-          const authorizationBundleProof = verifyForwardResumeAuthorizationBundle({
-            envelope: readFileSync(`${bundleDir}/authorization-envelope.json`, "utf8").trimEnd(),
-            preflightEvidence: JSON.parse(readFileSync(`${bundleDir}/preflight-evidence.json`, "utf8")),
-            preflightResult: JSON.parse(readFileSync(`${bundleDir}/preflight-result.json`, "utf8")),
-            restoreResult: JSON.parse(readFileSync(`${bundleDir}/restore-result.json`, "utf8")),
-            artifactMetadata: JSON.parse(readFileSync(`${bundleDir}/artifact-metadata.json`, "utf8")),
-            allowlist: JSON.parse(readFileSync("scripts/production-migration-verification-keys.json", "utf8")),
-            failedRunId,
-          });
-          const failureProofDigest = canonicalSha256(failureProof);
-          writeFileSync(`${bundleDir}/verified-failure-proof.json`, `${JSON.stringify(failureProof)}\n`, { flag: "wx", mode: 0o600 });
-          writeFileSync(`${bundleDir}/verified-authorization-proof.json`, `${JSON.stringify(authorizationBundleProof)}\n`, { flag: "wx", mode: 0o600 });
-          process.stdout.write(JSON.stringify({ failureProofDigest, mutationHistoryDigest,
-            sourceSha: failureProof.sourceSha, sourcePreflightRunId: authorizationBundleProof.preflightRunId,
-            sourcePreflightRunAttempt: authorizationBundleProof.preflightRunAttempt }));
-          NODE
-            )"
-            RESUME_SOURCE_SHA="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sourceSha)' "$FORWARD_PROOF_META")"
-            RESUME_SOURCE_RUN_ID="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sourcePreflightRunId)' "$FORWARD_PROOF_META")"
-            RESUME_SOURCE_ATTEMPT="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sourcePreflightRunAttempt))' "$FORWARD_PROOF_META")"
-            FORWARD_FAILURE_PROOF_DIGEST="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).failureProofDigest)' "$FORWARD_PROOF_META")"
-            FORWARD_MUTATION_HISTORY_DIGEST="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).mutationHistoryDigest)' "$FORWARD_PROOF_META")"
-            FORWARD_FAILURE_PROOF_B64="$(base64 -w0 "$RUNNER_TEMP/forward-source-bundle/verified-failure-proof.json")"
-            FORWARD_AUTH_BUNDLE_PROOF_B64="$(base64 -w0 "$RUNNER_TEMP/forward-source-bundle/verified-authorization-proof.json")"
-            RESUME_KIND="verified-forward-resume-no-prisma-spawn"
-            echo "- verified original migration run $FORWARD_RESUME_FAILED_RUN_ID failed at the final live writer-drain guard before Prisma spawn" >> "$GITHUB_STEP_SUMMARY"
-            echo "- forward-resume will use a newly generated current-live backup and isolated restore/rehearsal; the historical backup is provenance only" >> "$GITHUB_STEP_SUMMARY"
-          elif [[ -n "$RESUME_MIGRATION_FAILURE_RUN_ID" || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" ]]; then
-            [[ "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \
-              && "$RESUME_MIGRATION_FAILURE_RUN_ID" =~ ^[1-9][0-9]*$ \
-              && "$RESUME_BLOCKED_CAPTURE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
-              echo "::error::Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs."; exit 1;
-            }
-            PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-            MIGRATION_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migrate.yml --jq .id)"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID" > "$RUNNER_TEMP/resume-source-run.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-source-jobs.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-source-artifacts.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_MIGRATION_FAILURE_RUN_ID" > "$RUNNER_TEMP/resume-migration-run.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_MIGRATION_FAILURE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-migration-jobs.json"
-            MIGRATION_EXECUTION_JOB_ID="$(jq -er '[.jobs[] | select(.name == "Final live guard and authorized migration") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("migration execution job ID is missing or ambiguous") end' "$RUNNER_TEMP/resume-migration-jobs.json")"
-            [[ "$MIGRATION_EXECUTION_JOB_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Migration execution job ID is malformed."; exit 1; }
-            gh run view "$RESUME_MIGRATION_FAILURE_RUN_ID" --repo krustallik/body-model --job "$MIGRATION_EXECUTION_JOB_ID" --log-failed > "$RUNNER_TEMP/resume-migration-failure.log"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID" > "$RUNNER_TEMP/resume-blocked-capture-run.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-blocked-capture-jobs.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-blocked-capture-artifacts.json"
-            gh run view "$RESUME_BLOCKED_CAPTURE_RUN_ID" --repo krustallik/body-model --log-failed > "$RUNNER_TEMP/resume-blocked-capture-failure.log"
-            : > "$RUNNER_TEMP/resume-later-runs.ndjson"
-            gh api --paginate --jq '.workflow_runs[] | @json' \
-              "repos/krustallik/body-model/actions/runs?per_page=100" \
-              >> "$RUNNER_TEMP/resume-later-runs.ndjson"
-            : > "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson"
-            node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
-              "$RUNNER_TEMP/resume-safe-preflight-retry-ids.txt" "$RESUME_SOURCE_RUN_ID" \
-              "$RESUME_BLOCKED_CAPTURE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          import { serializePreflightRetryRunIds } from "./scripts/production-preflight-resume.mjs";
-          const [historyPath, idsPath, sourceIdText, blockedIdText, currentIdText] = process.argv.slice(2);
-          const sourceId = BigInt(sourceIdText);
-          const blockedId = BigInt(blockedIdText);
-          const currentId = BigInt(currentIdText);
-          const retryIds = new Set();
-          for (const line of readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean)) {
-            const run = JSON.parse(line);
-            const runIdText = String(run.id ?? "");
-            if (!/^[1-9][0-9]*$/.test(runIdText)) throw new Error("Production workflow history contains a malformed run ID.");
-            const runId = BigInt(runIdText);
-            const workflowPath = typeof run.path === "string" ? run.path.split("@")[0] : "";
-            if (workflowPath !== ".github/workflows/production-migration-preflight.yml"
-              || runId <= sourceId || runId === blockedId || runId >= currentId) continue;
-            if (run.status === "completed" && run.conclusion === "failure") retryIds.add(runIdText);
-          }
-          writeFileSync(idsPath, serializePreflightRetryRunIds([...retryIds]), { mode: 0o600 });
-          NODE
-            while IFS= read -r retry_run_id; do
-              [[ "$retry_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed failed preflight retry ID."; exit 1; }
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-run.json"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-jobs.json"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-artifacts.json"
-              node --input-type=module - "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-run.json" \
-                "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-jobs.json" \
-                >> "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson" <<'NODE'
-          import { readFileSync } from "node:fs";
-          const [runPath, jobsPath] = process.argv.slice(2);
-          const artifactsPath = runPath.replace(/-run\.json$/, "-artifacts.json");
-          if (artifactsPath === runPath) throw new Error("Preflight retry artifact inventory path is malformed.");
-          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
-            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")) })}\n`);
-          NODE
-            done < "$RUNNER_TEMP/resume-safe-preflight-retry-ids.txt"
-            node scripts/production-preflight-resume.mjs --verify-pre-ddl-migration-failure \
-              "$RUNNER_TEMP/resume-source-run.json" "$RUNNER_TEMP/resume-source-jobs.json" \
-              "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-migration-run.json" \
-              "$RUNNER_TEMP/resume-migration-jobs.json" "$RUNNER_TEMP/resume-migration-failure.log" \
-              "$RUNNER_TEMP/resume-blocked-capture-run.json" "$RUNNER_TEMP/resume-blocked-capture-jobs.json" \
-              "$RUNNER_TEMP/resume-blocked-capture-artifacts.json" "$RUNNER_TEMP/resume-blocked-capture-failure.log" \
-              "$RUNNER_TEMP/resume-later-runs.ndjson" "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson" \
-              "$RESUME_SOURCE_RUN_ID" "$RESUME_MIGRATION_FAILURE_RUN_ID" \
-              "$RESUME_BLOCKED_CAPTURE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$PREFLIGHT_WORKFLOW_ID" "$MIGRATION_WORKFLOW_ID" \
-              "$MANIFEST_ID" \
-              > "$RUNNER_TEMP/preflight-resume-proof.json"
-            RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
-            RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
-            RESUME_KIND="$(jq -r .resumeKind "$RUNNER_TEMP/preflight-resume-proof.json")"
-            RESUME_MIGRATION_FAILURE_KIND="$(jq -r .migrationFailureKind "$RUNNER_TEMP/preflight-resume-proof.json")"
-            UNVERIFIED_HISTORICAL_RUNS="$(jq -c '[.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]? | {runId: ., kind: "authorization-only-preflight"}]' "$RUNNER_TEMP/preflight-resume-proof.json")"
-            {
-              echo "- verified pre-DDL resume source preflight: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
-              echo "- verified failed migration run: $RESUME_MIGRATION_FAILURE_RUN_ID; exact reviewed $RESUME_MIGRATION_FAILURE_KIND failure occurred before the marker/Prisma boundary"
-              echo "- verified blocked preflight retry: $RESUME_BLOCKED_CAPTURE_RUN_ID; this preflight still verifies the captured image and creates a fresh backup and isolated rehearsal"
-              while IFS= read -r auth_retry_id; do
-                [[ "$auth_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- historical authorization-only preflight run $auth_retry_id: UNVERIFIED; its in-step side effects were not established and it grants no DDL authorization"
-              done < <(jq -r '.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
-            } >> "$GITHUB_STEP_SUMMARY"
-          elif [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then
-            [[ "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Resume source run ID must be a positive numeric identifier."; exit 1; }
-            PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID" > "$RUNNER_TEMP/resume-source-run.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-source-jobs.json"
-            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-source-artifacts.json"
-            : > "$RUNNER_TEMP/resume-later-runs.ndjson"
-            gh api --paginate --jq '.workflow_runs[] | @json' \
-              "repos/krustallik/body-model/actions/runs?per_page=100" \
-              >> "$RUNNER_TEMP/resume-later-runs.ndjson"
-            DEPLOY_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/deploy-production.yml --jq .id)"
-            NO_APP_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-no-app-preflight.yml --jq .id)"
-            : > "$RUNNER_TEMP/resume-historical-deploy-ids.txt"
-            node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
-              "$RUNNER_TEMP/resume-historical-deploy-ids.txt" "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const [historyPath, idsPath, sourceIdText, currentIdText] = process.argv.slice(2);
-          const sourceId = BigInt(sourceIdText);
-          const currentId = BigInt(currentIdText);
-          const candidates = new Set();
-          for (const line of readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean)) {
-            const run = JSON.parse(line);
-            const runIdText = String(run.id ?? "");
-            if (!/^[1-9][0-9]*$/.test(runIdText)) throw new Error("Production workflow history contains a malformed run ID.");
-            if (run.path?.split("@")[0] !== ".github/workflows/deploy-production.yml") continue;
-            const runId = BigInt(runIdText);
-            if (runId > sourceId && runId < currentId) candidates.add(runIdText);
-          }
-          writeFileSync(idsPath, candidates.size ? `${[...candidates].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1).join("\n")}\n` : "", { mode: 0o600 });
-          NODE
-            : > "$RUNNER_TEMP/resume-historical-deploys.ndjson"
-            while IFS= read -r deploy_run_id; do
-              [[ "$deploy_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed later deploy run ID."; exit 1; }
-              run_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-run.json"
-              gh api "repos/krustallik/body-model/actions/runs/$deploy_run_id" > "$run_file"
-              chmod 600 "$run_file"
-              node --input-type=module - "$run_file" \
-                >> "$RUNNER_TEMP/resume-historical-deploys.ndjson" <<'NODE'
-          import { readFileSync } from "node:fs";
-          const [runPath] = process.argv.slice(2);
-          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")) })}\n`);
-          NODE
-            done < "$RUNNER_TEMP/resume-historical-deploy-ids.txt"
-            : > "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt"
-            node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
-              "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt" "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const [historyPath, idsPath, sourceIdText, currentIdText] = process.argv.slice(2);
-          const sourceId = BigInt(sourceIdText);
-          const currentId = BigInt(currentIdText);
-          const candidates = new Set();
-          for (const line of readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean)) {
-            const run = JSON.parse(line);
-            const runIdText = String(run.id ?? "");
-            if (!/^[1-9][0-9]*$/.test(runIdText)) throw new Error("Production workflow history contains a malformed run ID.");
-            if (run.path?.split("@")[0] !== ".github/workflows/production-migration-preflight.yml") continue;
-            const runId = BigInt(runIdText);
-            if (runId > sourceId && runId < currentId && run.status === "completed" && run.conclusion === "failure") {
-              candidates.add(runIdText);
-            }
-          }
-          const sorted = [...candidates].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1);
-          writeFileSync(idsPath, sorted.length ? `${sorted.join("\n")}\n` : "", { mode: 0o600 });
-          NODE
-            : > "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson"
-            while IFS= read -r retry_run_id; do
-              [[ "$retry_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed later preflight run ID."; exit 1; }
-              run_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-run.json"
-              jobs_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-jobs.json"
-              artifacts_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-artifacts.json"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$run_file"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$jobs_file"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts" > "$artifacts_file"
-              chmod 600 "$run_file" "$jobs_file" "$artifacts_file"
-              node --input-type=module - "$run_file" "$jobs_file" "$artifacts_file" \
-                >> "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson" <<'NODE'
-          import { readFileSync } from "node:fs";
-          const [runPath, jobsPath, artifactsPath] = process.argv.slice(2);
-          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
-            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")) })}\n`);
-          NODE
-            done < "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt"
-            : > "$RUNNER_TEMP/resume-safe-no-app-ids.txt"
-            node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
-              "$RUNNER_TEMP/resume-safe-no-app-ids.txt" "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const [historyPath, idsPath, sourceIdText, currentIdText] = process.argv.slice(2);
-          const sourceId = BigInt(sourceIdText);
-          const currentId = BigInt(currentIdText);
-          const candidates = new Set();
-          for (const line of readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean)) {
-            const run = JSON.parse(line);
-            const runIdText = String(run.id ?? "");
-            if (!/^[1-9][0-9]*$/.test(runIdText)) throw new Error("Production workflow history contains a malformed run ID.");
-            if (run.path?.split("@")[0] !== ".github/workflows/production-no-app-preflight.yml") continue;
-            const runId = BigInt(runIdText);
-            if (runId > sourceId && runId < currentId) candidates.add(runIdText);
-          }
-          const sorted = [...candidates].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1);
-          writeFileSync(idsPath, sorted.length ? `${sorted.join("\n")}\n` : "", { mode: 0o600 });
-          NODE
-            : > "$RUNNER_TEMP/resume-safe-no-app-runs.ndjson"
-            while IFS= read -r prep_run_id; do
-              [[ "$prep_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed historical no-app run ID."; exit 1; }
-              run_file="$RUNNER_TEMP/resume-no-app-$prep_run_id-run.json"
-              jobs_file="$RUNNER_TEMP/resume-no-app-$prep_run_id-jobs.json"
-              gh api "repos/krustallik/body-model/actions/runs/$prep_run_id" > "$run_file"
-              gh api "repos/krustallik/body-model/actions/runs/$prep_run_id/jobs" > "$jobs_file"
-              chmod 600 "$run_file" "$jobs_file"
-              node --input-type=module - "$run_file" "$jobs_file" \
-                >> "$RUNNER_TEMP/resume-safe-no-app-runs.ndjson" <<'NODE'
-          import { readFileSync } from "node:fs";
-          const [runPath, jobsPath] = process.argv.slice(2);
-          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
-            jobs: JSON.parse(readFileSync(jobsPath, "utf8")) })}\n`);
-          NODE
-            done < "$RUNNER_TEMP/resume-safe-no-app-ids.txt"
-            node scripts/production-preflight-resume.mjs --verify-source \
-              "$RUNNER_TEMP/resume-source-run.json" "$RUNNER_TEMP/resume-source-jobs.json" \
-              "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-later-runs.ndjson" \
-              "$RUNNER_TEMP/resume-historical-deploys.ndjson" "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson" \
-              "$RUNNER_TEMP/resume-safe-no-app-runs.ndjson" \
-              "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$MANIFEST_ID" "$PREFLIGHT_WORKFLOW_ID" "$DEPLOY_WORKFLOW_ID" \
-              "$NO_APP_WORKFLOW_ID" \
-              > "$RUNNER_TEMP/preflight-resume-proof.json"
-            RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
-            RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
-            RESUME_KIND="$(jq -r .resumeKind "$RUNNER_TEMP/preflight-resume-proof.json")"
-            UNVERIFIED_HISTORICAL_RUNS="$(jq -c '([.unverifiedHistoricalDeployRunIds[]? | {runId: ., kind: "deploy"}] + [.unverifiedHistoricalPreflightRunIds[]? | {runId: ., kind: "capture-blocked-preflight"}] + [.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]? | {runId: ., kind: "authorization-only-preflight"}] + [.unverifiedHistoricalRunIds[]? | {runId: ., kind: "no-app-preparation"}])' "$RUNNER_TEMP/preflight-resume-proof.json")"
-            {
-              echo "- verified preflight resume kind: $RESUME_KIND"
-              echo "- previous failed preflight run: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
-              echo "- failed preflight backup/rehearsal artifacts are not reused; this run must create a fresh current-live backup and pass isolated restore/rehearsal"
-              while IFS= read -r safe_deploy_id; do
-                [[ "$safe_deploy_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- later ordinary deploy $safe_deploy_id historical effects: UNVERIFIED; fresh live app/traffic/database gates determine current safety"
-              done < <(jq -r '.unverifiedHistoricalDeployRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
-              while IFS= read -r safe_retry_id; do
-                [[ "$safe_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- later preflight $safe_retry_id historical effects: UNVERIFIED; this run must pass fresh live-state, backup, and restore gates"
-              done < <(jq -r '.unverifiedHistoricalPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
-              while IFS= read -r auth_retry_id; do
-                [[ "$auth_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- historical authorization-only preflight run $auth_retry_id: UNVERIFIED; its in-step side effects were not established and it grants no DDL authorization"
-              done < <(jq -r '.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
-              while IFS= read -r prep_run_id; do
-                [[ "$prep_run_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- later no-app preparation $prep_run_id historical artifacts/effects: UNVERIFIED and not reused" >> "$GITHUB_STEP_SUMMARY"
-              done < <(jq -r '.unverifiedHistoricalRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            [[ -z "$RESUME_SOURCE_RUN_ID" ]] || { echo "::error::Resume source is malformed."; exit 1; }
-          fi
           echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
           echo "manifest_id=$MANIFEST_ID" >> "$GITHUB_OUTPUT"
-          echo "resume_source_sha=$RESUME_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          echo "resume_source_run_id=$RESUME_SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "resume_source_run_attempt=$RESUME_SOURCE_ATTEMPT" >> "$GITHUB_OUTPUT"
-          echo "unverified_historical_runs=$UNVERIFIED_HISTORICAL_RUNS" >> "$GITHUB_OUTPUT"
-          echo "forward_resume_failure_proof_b64=$FORWARD_FAILURE_PROOF_B64" >> "$GITHUB_OUTPUT"
-          echo "forward_resume_authorization_bundle_proof_b64=$FORWARD_AUTH_BUNDLE_PROOF_B64" >> "$GITHUB_OUTPUT"
-          echo "forward_resume_failure_proof_digest=$FORWARD_FAILURE_PROOF_DIGEST" >> "$GITHUB_OUTPUT"
-          echo "forward_resume_mutation_history_digest=$FORWARD_MUTATION_HISTORY_DIGEST" >> "$GITHUB_OUTPUT"
-          echo "refresh_capture=$REFRESH_CAPTURE" >> "$GITHUB_OUTPUT"
           {
-            echo "## Read-only production preflight"
+            echo "## Production migration preflight authorization"
             echo ""
-            echo "- release SHA: $MAIN_TIP"
-            echo "- manifest: $MANIFEST_ID"
-            echo "- successful current-main CI: $CI_URL"
-            echo "- production DDL: NOT EXECUTED"
+            echo "- exact current-main SHA: $MAIN_TIP"
+            echo "- exact-main CI: $CI_URL"
+            echo "- schema contract: $MANIFEST_ID"
+            echo "- production scope: read-only inspection, maintenance, encrypted backup, isolated restore, and migration rehearsal"
+            echo "- DDL: not authorized by this workflow"
           } >> "$GITHUB_STEP_SUMMARY"
-
   inspect_backup_restore:
     name: Inspect, back up, restore, and rehearse on disposable PostgreSQL
     needs: authorize
@@ -533,27 +164,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
-          FORWARD_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
-          EXPECTED_FORWARD_HISTORY_DIGEST: ${{ needs.authorize.outputs.forward_resume_mutation_history_digest }}
-          EXPECTED_FORWARD_FAILURE_DIGEST: ${{ needs.authorize.outputs.forward_resume_failure_proof_digest }}
         run: |
           set -Eeuo pipefail
           TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
           [[ "$TIP" == "$RELEASE_SHA" && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || {
             echo "::error::Canonical main moved; no production connection was opened."; exit 1;
           }
-          if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
-            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-recheck" "$GITHUB_RUN_ID" "$RELEASE_SHA" "$FORWARD_FAILED_RUN_ID"
-            node --input-type=module - "$RUNNER_TEMP/forward-recheck/github-evidence.json" <<'NODE'
-          import { readFileSync } from "node:fs";
-          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const observed = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          if (observed.mutationHistoryDigest !== process.env.EXPECTED_FORWARD_HISTORY_DIGEST
-            || canonicalSha256(observed.failureProof) !== process.env.EXPECTED_FORWARD_FAILURE_DIGEST) {
-            throw new Error("Verified forward-resume history or no-spawn proof changed before production access.");
-          }
-          NODE
-          fi
       - name: Validate production-only SSH and backup secrets
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -595,19 +211,13 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
-          RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -Eeuo pipefail
-          EXPECTED_PREVIOUS_APP_HELPER_BLOB="$(git rev-parse "$RELEASE_SHA:scripts/production-previous-app-provenance.mjs")"
-          [[ "$EXPECTED_PREVIOUS_APP_HELPER_BLOB" =~ ^[a-f0-9]{40,64}$ ]] || {
-            echo "::error::Exact release previous-app provenance helper is unavailable."; exit 1;
-          }
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Source}}{{end}}{{end}}" bodycast-db-prod')"
           [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy|"* ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
@@ -619,65 +229,18 @@ jobs:
           import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
           NODE
-          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
-          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$DEPLOY_PATH_B64' '$RESUME_SOURCE_SHA' '$RELEASE_SHA' '$EXPECTED_PREVIOUS_APP_HELPER_BLOB'" <<'REMOTE'
+          HOST_CAPACITY="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$CONTAINER_ID' '$DB_DATA_PATH' '$RELEASE_SHA'" <<'REMOTE'
           set -Eeuo pipefail
           CONTAINER_ID="$1"
           DB_DATA_PATH="$2"
-          DEPLOY_PATH="$(printf '%s' "$3" | base64 --decode)"
-          RESUME_SOURCE_SHA="$4"
-          RELEASE_SHA="$5"
-          EXPECTED_PREVIOUS_APP_HELPER_BLOB="$6"
+          RELEASE_SHA="$3"
           [[ "$(docker inspect --format '{{.Id}}' bodycast-db-prod)" == "$CONTAINER_ID" ]] || { echo "Production PostgreSQL container changed during the pre-maintenance probe." >&2; exit 1; }
           [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Exact current release SHA is malformed." >&2; exit 1; }
           DB_BYTES="$(docker exec "$CONTAINER_ID" sh -ec 'psql --no-psqlrc --quiet --tuples-only --no-align --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="SELECT pg_database_size(current_database())"')"
           DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
-          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
-            [[ "$RESUME_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Verified previous-app source SHA is malformed." >&2; exit 1; }
-            [[ "$DEPLOY_PATH" == /* && -d "$DEPLOY_PATH" && ! -L "$DEPLOY_PATH" ]] || {
-              echo "Verified previous-app deployment checkout is unavailable or unsafe." >&2; exit 1;
-            }
-            [[ "$(git -C "$DEPLOY_PATH" rev-parse --show-toplevel)" == "$DEPLOY_PATH" \
-              && -z "$(git -C "$DEPLOY_PATH" status --porcelain=v1 --untracked-files=all)" ]] || {
-              echo "Previous-app provenance helper checkout is not clean or canonical." >&2; exit 1;
-            }
-            [[ "$EXPECTED_PREVIOUS_APP_HELPER_BLOB" =~ ^[a-f0-9]{40,64}$ ]] || {
-              echo "Exact release provenance helper binding is malformed." >&2; exit 1;
-            }
-            CHECKOUT_HELPER_BLOB="$(git -C "$DEPLOY_PATH" rev-parse "HEAD:scripts/production-previous-app-provenance.mjs")"
-            [[ "$EXPECTED_PREVIOUS_APP_HELPER_BLOB" == "$CHECKOUT_HELPER_BLOB" ]] || {
-              echo "Current checkout does not contain the exact release's previous-app provenance verifier." >&2; exit 1;
-            }
-            ORIGIN_URL="$(git -C "$DEPLOY_PATH" remote get-url origin)"
-            case "$ORIGIN_URL" in
-              git@github.com:krustallik/body-model.git|https://github.com/krustallik/body-model.git) ;;
-              *) echo "Previous-app provenance helper checkout origin is not the canonical BodyCast repository." >&2; exit 1 ;;
-            esac
-            DEPLOY_GIT_DIR="$(git -C "$DEPLOY_PATH" rev-parse --absolute-git-dir)"
-            CAPTURE_FILE="$DEPLOY_GIT_DIR/bodycast-production-pre-ddl-release"
-            CAPTURE_HELPER="$DEPLOY_PATH/scripts/production-previous-app-provenance.mjs"
-            [[ -f "$CAPTURE_FILE" && ! -L "$CAPTURE_FILE" && -f "$CAPTURE_HELPER" && ! -L "$CAPTURE_HELPER" ]] || {
-              echo "Verified previous-app capture or provenance helper is unavailable." >&2; exit 1;
-            }
-            CAPTURE_META="$(cat -- "$CAPTURE_FILE" | node "$CAPTURE_HELPER" --verify-record)"
-            read -r CAPTURE_TARGET_SHA CAPTURE_IMAGE_ID CAPTURE_IMAGE_PIN < <(node --input-type=module -e 'const value=JSON.parse(process.argv[1]); process.stdout.write([value.targetSha, value.previousImageId, value.previousImagePin].join(" ") + "\n")' "$CAPTURE_META")
-            [[ "$CAPTURE_TARGET_SHA" == "$RESUME_SOURCE_SHA" && "$CAPTURE_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
-              && ( "$CAPTURE_IMAGE_PIN" == "bodycast-app:rollback" \
-                || "$CAPTURE_IMAGE_PIN" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) ]] || {
-              echo "Durable previous-app image capture does not match the verified resume source." >&2; exit 1;
-            }
-            APP_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$CAPTURE_IMAGE_PIN")"
-            [[ "$APP_IMAGE_ID" == "$CAPTURE_IMAGE_ID" ]] || { echo "Pinned previous-app image differs from its durable capture." >&2; exit 1; }
-            CAPTURE_PROVENANCE_KIND="$(sed -n 's/^provenanceKind=//p' "$CAPTURE_FILE")"
-            SOURCE_APP_SHA="$(sed -n 's/^previousSha=//p' "$CAPTURE_FILE")"
-            [[ "$CAPTURE_PROVENANCE_KIND" == "release-sha-v1" && "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ ]] || {
-              echo "The durable previous-app capture lacks an exact source release SHA." >&2; exit 1;
-            }
-          else
-            APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
-            SOURCE_APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
-            [[ "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ ]] || SOURCE_APP_SHA="unavailable"
-          fi
+          APP_IMAGE_ID="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
+          SOURCE_APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
+          [[ "$SOURCE_APP_SHA" =~ ^[a-f0-9]{40}$ ]] || SOURCE_APP_SHA="unavailable"
           APP_IMAGE_BYTES="$(docker image inspect --format '{{.Size}}' "$APP_IMAGE_ID")"
           DB_FREE_BYTES="$(df -B1 --output=avail "$DB_DATA_PATH" | tail -n1 | tr -d '[:space:]')"
           DOCKER_FREE_BYTES="$(df -B1 --output=avail "$DOCKER_ROOT" | tail -n1 | tr -d '[:space:]')"
@@ -866,28 +429,11 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
-          RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
-          SOURCE_APP_SHA: ${{ steps.target.outputs.source_app_sha }}
-          RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
-          RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
-          FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
-          FORWARD_RESUME_FAILURE_PROOF_DIGEST: ${{ needs.authorize.outputs.forward_resume_failure_proof_digest }}
-          FORWARD_RESUME_MUTATION_HISTORY_DIGEST: ${{ needs.authorize.outputs.forward_resume_mutation_history_digest }}
-          REFRESH_CAPTURE: ${{ needs.authorize.outputs.refresh_capture }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
-          RESUME_SOURCE_SHA_B64="$(printf '%s' "$RESUME_SOURCE_SHA" | base64 -w0)"
-          RESUME_SOURCE_RUN_ID_B64="$(printf '%s' "$RESUME_SOURCE_RUN_ID" | base64 -w0)"
-          RESUME_SOURCE_RUN_ATTEMPT_B64="$(printf '%s' "$RESUME_SOURCE_RUN_ATTEMPT" | base64 -w0)"
-          CURRENT_RUN_ID_B64="$(printf '%s' "$GITHUB_RUN_ID" | base64 -w0)"
-          CURRENT_RUN_ATTEMPT_B64="$(printf '%s' "$GITHUB_RUN_ATTEMPT" | base64 -w0)"
-          FORWARD_FAILURE_PROOF_DIGEST_B64="$(printf '%s' "$FORWARD_RESUME_FAILURE_PROOF_DIGEST" | base64 -w0)"
-          FORWARD_FAILED_RUN_ID_B64="$(printf '%s' "$FORWARD_RESUME_FAILED_RUN_ID" | base64 -w0)"
-          FORWARD_HISTORY_DIGEST_B64="$(printf '%s' "$FORWARD_RESUME_MUTATION_HISTORY_DIGEST" | base64 -w0)"
-          REFRESH_CAPTURE_B64="$(printf '%s' "$REFRESH_CAPTURE" | base64 -w0)"
           MANIFEST_ID_B64="$(printf '%s' "$MANIFEST_ID" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
@@ -895,39 +441,18 @@ jobs:
           DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
-          RESUME_SOURCE_SHA="$(printf '%s' "$5" | base64 --decode)"
-          RESUME_SOURCE_RUN_ID="$(printf '%s' "$6" | base64 --decode)"
-          RESUME_SOURCE_RUN_ATTEMPT="$(printf '%s' "$7" | base64 --decode)"
-          CURRENT_RUN_ID="$(printf '%s' "$8" | base64 --decode)"
-          CURRENT_RUN_ATTEMPT="$(printf '%s' "$9" | base64 --decode)"
-          FORWARD_FAILURE_PROOF_DIGEST="$(printf '%s' "${10}" | base64 --decode)"
-          FORWARD_FAILED_RUN_ID="$(printf '%s' "${11}" | base64 --decode)"
-          FORWARD_HISTORY_DIGEST="$(printf '%s' "${12}" | base64 --decode)"
-          REFRESH_CAPTURE="$(printf '%s' "${13}" | base64 --decode)"
-          MANIFEST_ID="$(printf '%s' "${14}" | base64 --decode)"
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            || "$MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" || "$MANIFEST_ID" == "auth-multiuser-v1" \
-            || "$MANIFEST_ID" == "training-session-context-v1" ]] || exit 2
-          export BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID="$MANIFEST_ID"
-          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
-            [[ "$RESUME_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \
-              && "$RESUME_SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$CURRENT_RUN_ID" =~ ^[1-9][0-9]*$ \
-              && "$CURRENT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 2
-          else
-            [[ -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ATTEMPT" ]] || exit 2
-          fi
-          if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
-            [[ ( ( "$FORWARD_FAILED_RUN_ID" == "38022978032" && "$RESUME_SOURCE_SHA" == "3cbf47ef73b83cdc9cd2ad548dbb36ca2b65bf74" ) \
-              || ( "$FORWARD_FAILED_RUN_ID" == "38062632284" && "$RESUME_SOURCE_SHA" == "b0a31fb6e6552d6ea5419939c96ee42ca7d6ffca" ) ) \
-              && "$FORWARD_FAILURE_PROOF_DIGEST" =~ ^[a-f0-9]{64}$ && "$FORWARD_HISTORY_DIGEST" =~ ^[a-f0-9]{64}$ ]] || exit 2
-          else
-            [[ -z "$FORWARD_FAILURE_PROOF_DIGEST" && -z "$FORWARD_HISTORY_DIGEST" ]] || exit 2
-          fi
-          [[ "$REFRESH_CAPTURE" == "0" || "$REFRESH_CAPTURE" == "1" ]] || exit 2
+          MANIFEST_ID="$(printf '%s' "$5" | base64 --decode)"
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* \
+            && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
+          node --input-type=module - "$MANIFEST_ID" <<'NODE'
+          import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
+          const manifest = getProductionMigrationManifest(process.argv[2]);
+          if (manifest.ciOnly === true) throw new Error("CI-only schema contracts cannot run in production.");
+          NODE
           cd -- "$DEPLOY_PATH"
-          [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
-            echo "Production checkout is not clean or does not match DEPLOY_PATH." >&2; exit 1;
+          [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" \
+            && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Production checkout is dirty or differs from DEPLOY_PATH." >&2; exit 1;
           }
           ORIGIN_URL="$(git remote get-url origin)"
           case "$ORIGIN_URL" in
@@ -939,76 +464,29 @@ jobs:
             [[ -f "$GITHUB_DEPLOY_KEY" && ! -L "$GITHUB_DEPLOY_KEY" \
               && "$(stat -c '%u' "$GITHUB_DEPLOY_KEY")" == "0" \
               && ( "$(stat -c '%a' "$GITHUB_DEPLOY_KEY")" == "600" || "$(stat -c '%a' "$GITHUB_DEPLOY_KEY")" == "400" ) ]] || {
-              echo "The root-only read-only GitHub deploy key is unavailable or has unsafe permissions." >&2; exit 1;
+              echo "The read-only GitHub deploy key is unavailable or has unsafe permissions." >&2; exit 1;
             }
             export GIT_SSH_COMMAND="ssh -i $GITHUB_DEPLOY_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"
-            git ls-remote origin refs/heads/main >/dev/null || {
-              echo "The configured read-only GitHub deploy key cannot read the canonical BodyCast repository." >&2; exit 1;
-            }
           fi
           git fetch --no-tags origin "$RELEASE_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Release SHA is no longer current origin/main." >&2; exit 1; }
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || {
+            echo "Release SHA is no longer current origin/main." >&2; exit 1;
+          }
           git checkout --detach "$RELEASE_SHA"
-          [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
-          if [[ "$REFRESH_CAPTURE" == "1" ]]; then
-            [[ -z "$RESUME_SOURCE_SHA" && -z "$FORWARD_FAILED_RUN_ID" ]] || exit 2
-            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
-              BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 BODYCAST_REFRESH_PRE_DDL_CAPTURE=1 \
-              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID="$CURRENT_RUN_ID" \
-              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT="$CURRENT_RUN_ATTEMPT" \
-              exec bash scripts/production-traffic-cutover.sh maintenance
-          fi
-          if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
-            MARKER_OBSERVATION="$(node scripts/production-forward-resume.mjs --inspect-marker "$RESUME_SOURCE_SHA" "$FORWARD_FAILED_RUN_ID")"
-            SOURCE_MARKER_DIGEST="$(printf '%s' "$MARKER_OBSERVATION" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const value=JSON.parse(s); const armed=process.argv[2]==="38062632284"; if (value.schemaVersion !== 1 || value.markerSchemaVersion !== (armed?2:1) || value.releaseSha !== process.argv[1] || value.state !== (armed?"forward-resume-armed":"ddl-started") || !/^[a-f0-9]{64}$/.test(value.markerDigest)) throw new Error("Exact forward-resume marker observation failed."); process.stdout.write(value.markerDigest)' "$RESUME_SOURCE_SHA" "$FORWARD_FAILED_RUN_ID")"
-            printf 'BODYCAST_FORWARD_RESUME_MARKER_OBSERVATION=%s\n' "$(printf '%s' "$MARKER_OBSERVATION" | base64 -w0)"
-            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
-              BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 BODYCAST_RESUME_PRE_DDL_CAPTURE=1 \
-              BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA="$RESUME_SOURCE_SHA" \
-              BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID="$RESUME_SOURCE_RUN_ID" \
-              BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT="$RESUME_SOURCE_RUN_ATTEMPT" \
-              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID="$CURRENT_RUN_ID" \
-              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT="$CURRENT_RUN_ATTEMPT" \
-              BODYCAST_FORWARD_RESUME_CAPTURE=1 BODYCAST_FORWARD_RESUME_FAILED_RUN_ID="$FORWARD_FAILED_RUN_ID" \
-              BODYCAST_FORWARD_RESUME_FAILED_SHA="$RESUME_SOURCE_SHA" \
-              BODYCAST_FORWARD_RESUME_FAILURE_PROOF_DIGEST="$FORWARD_FAILURE_PROOF_DIGEST" \
-              BODYCAST_FORWARD_RESUME_MARKER_DIGEST="$SOURCE_MARKER_DIGEST" \
-              exec bash scripts/production-traffic-cutover.sh maintenance
-          fi
-          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
-            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
-              BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 BODYCAST_RESUME_PRE_DDL_CAPTURE=1 \
-              BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA="$RESUME_SOURCE_SHA" \
-              BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID="$RESUME_SOURCE_RUN_ID" \
-              BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT="$RESUME_SOURCE_RUN_ATTEMPT" \
-              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID="$CURRENT_RUN_ID" \
-              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT="$CURRENT_RUN_ATTEMPT" \
-              exec bash scripts/production-traffic-cutover.sh maintenance
-          fi
-          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 \
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" \
+            && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          BODYCAST_PRODUCTION_MIGRATION_MANIFEST_ID="$MANIFEST_ID" \
+            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+            BODYCAST_DEPLOY_SHA="$RELEASE_SHA" BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 \
             exec bash scripts/production-traffic-cutover.sh maintenance
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RESUME_SOURCE_SHA_B64' '$RESUME_SOURCE_RUN_ID_B64' '$RESUME_SOURCE_RUN_ATTEMPT_B64' '$CURRENT_RUN_ID_B64' '$CURRENT_RUN_ATTEMPT_B64' '$FORWARD_FAILURE_PROOF_DIGEST_B64' '$FORWARD_FAILED_RUN_ID_B64' '$FORWARD_HISTORY_DIGEST_B64' '$REFRESH_CAPTURE_B64' '$MANIFEST_ID_B64'"
-          REMOTE_OUTPUT_FILE="$RUNNER_TEMP/production-maintenance-output.txt"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$MANIFEST_ID_B64'"
           timeout 20m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" | tee "$REMOTE_OUTPUT_FILE"
-          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
-            mapfile -t RECEIPT_LINES < <(sed -n 's/^BODYCAST_PRE_DDL_RESUME_RECEIPT=//p' "$REMOTE_OUTPUT_FILE")
-            [[ "${#RECEIPT_LINES[@]}" -eq 1 && "${RECEIPT_LINES[0]}" =~ ^[A-Za-z0-9+/]+=*$ ]] || {
-              echo "::error::Resumed pre-DDL capture did not return exactly one validated receipt."; exit 1;
-            }
-            echo "resume_receipt_b64=${RECEIPT_LINES[0]}" >> "$GITHUB_OUTPUT"
-          fi
-          if [[ -n "$FORWARD_RESUME_FAILED_RUN_ID" ]]; then
-            mapfile -t MARKER_LINES < <(sed -n 's/^BODYCAST_FORWARD_RESUME_MARKER_OBSERVATION=//p' "$REMOTE_OUTPUT_FILE")
-            [[ "${#MARKER_LINES[@]}" -eq 1 && "${MARKER_LINES[0]}" =~ ^[A-Za-z0-9+/]+=*$ ]] || {
-              echo "::error::Forward-resume did not return exactly one sanitized marker observation."; exit 1;
-            }
-            echo "forward_resume_marker_observation_b64=${MARKER_LINES[0]}" >> "$GITHUB_OUTPUT"
-          fi
+            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 \
+            "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
       - name: Read-only production identity, full migration set, schema signatures, and locks
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -1031,18 +509,6 @@ jobs:
           STORAGE_REQUIRED_DOCKER_FREE_BYTES: ${{ steps.target.outputs.required_docker_free_bytes }}
           STORAGE_REQUIRED_RUNNER_FREE_BYTES: ${{ steps.target.outputs.required_runner_free_bytes }}
           STORAGE_REQUIRED_RUNNER_DOCKER_FREE_BYTES: ${{ steps.target.outputs.required_runner_docker_free_bytes }}
-          RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
-          RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
-          RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
-          RESUME_RECEIPT_B64: ${{ steps.maintenance.outputs.resume_receipt_b64 }}
-          FORWARD_RESUME_FAILURE_PROOF_B64: ${{ needs.authorize.outputs.forward_resume_failure_proof_b64 }}
-          FORWARD_RESUME_AUTHORIZATION_BUNDLE_PROOF_B64: ${{ needs.authorize.outputs.forward_resume_authorization_bundle_proof_b64 }}
-          FORWARD_RESUME_FAILURE_PROOF_DIGEST: ${{ needs.authorize.outputs.forward_resume_failure_proof_digest }}
-          FORWARD_RESUME_MUTATION_HISTORY_DIGEST: ${{ needs.authorize.outputs.forward_resume_mutation_history_digest }}
-          FORWARD_RESUME_MARKER_OBSERVATION_B64: ${{ steps.maintenance.outputs.forward_resume_marker_observation_b64 }}
-          FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
-          PREFLIGHT_RUN_ID: ${{ github.run_id }}
-          PREFLIGHT_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -Eeuo pipefail
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
@@ -1101,14 +567,11 @@ jobs:
             -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_CAPTURE_COMMAND" \
             | node scripts/production-previous-app-provenance.mjs --verify-preflight "$RUNNER_TEMP/preflight-result.json" "$RELEASE_SHA" \
             > "$RUNNER_TEMP/previous-app-provenance-verification.json"
-          node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" "$RUNNER_TEMP/preflight-report.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           import { assertPreMaintenanceStorageHeadroom } from "./scripts/production-migration-preflight.mjs";
-          import { previousAppDatabaseCompatibilityDigests, validatePreviousAppProvenanceBinding } from "./scripts/production-previous-app-provenance.mjs";
-          import { validateCaptureResumeReceipt } from "./scripts/production-capture-resume-receipt.mjs";
-          import { verifyForwardResumeMarkerObservation } from "./scripts/production-forward-resume.mjs";
-          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const [resultPath, verificationPath, reportPath] = process.argv.slice(2);
+          import { validatePreviousAppProvenanceBinding } from "./scripts/production-previous-app-provenance.mjs";
+          const [resultPath, verificationPath] = process.argv.slice(2);
           const result = JSON.parse(readFileSync(resultPath, "utf8"));
           const verification = JSON.parse(readFileSync(verificationPath, "utf8"));
           const binding = verification.previousAppProvenance;
@@ -1140,47 +603,6 @@ jobs:
           };
           assertPreMaintenanceStorageHeadroom(headroom);
           result.preMaintenanceStorageHeadroom = headroom;
-          if (process.env.RESUME_SOURCE_SHA) {
-            if (!process.env.RESUME_RECEIPT_B64 || !/^[A-Za-z0-9+/]+=*$/.test(process.env.RESUME_RECEIPT_B64)) {
-              throw new Error("Validated preflight capture resume receipt is missing or malformed.");
-            }
-            const receipt = JSON.parse(Buffer.from(process.env.RESUME_RECEIPT_B64, "base64").toString("utf8"));
-            const rawReport = JSON.parse(readFileSync(reportPath, "utf8"));
-            const { compatibilityDigest } = previousAppDatabaseCompatibilityDigests(rawReport);
-            let forwardExpected;
-            let sourceRecordDigest;
-            if (process.env.FORWARD_RESUME_FAILED_RUN_ID) {
-              const proof = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_FAILURE_PROOF_B64, "base64").toString("utf8"));
-              const bundle = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_AUTHORIZATION_BUNDLE_PROOF_B64, "base64").toString("utf8"));
-              const marker = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_MARKER_OBSERVATION_B64, "base64").toString("utf8"));
-              verifyForwardResumeMarkerObservation(marker, proof, bundle);
-              if (canonicalSha256(proof) !== process.env.FORWARD_RESUME_FAILURE_PROOF_DIGEST
-                || proof.sourceRunId !== process.env.FORWARD_RESUME_FAILED_RUN_ID || proof.sourceRunAttempt !== 1
-                || proof.sourceSha !== process.env.RESUME_SOURCE_SHA
-                || bundle.preflightRunId !== process.env.RESUME_SOURCE_RUN_ID
-                || bundle.preflightRunAttempt !== Number(process.env.RESUME_SOURCE_RUN_ATTEMPT)
-                || bundle.sourceRunId !== proof.sourceRunId || bundle.sourceSha !== proof.sourceSha) {
-                throw new Error("Forward receipt source context differs from verified authorization.");
-              }
-              sourceRecordDigest = bundle.previousAppProvenance.recordDigest;
-              forwardExpected = { sourceFailedRunId: proof.sourceRunId, sourceFailedRunAttempt: proof.sourceRunAttempt,
-                sourceFailedSha: proof.sourceSha, failureProofDigest: canonicalSha256(proof), sourceMarkerDigest: marker.markerDigest };
-            }
-            validateCaptureResumeReceipt(receipt, {
-              mode: forwardExpected ? "forward" : "ordinary", sourceRunId: process.env.RESUME_SOURCE_RUN_ID,
-              sourceRunAttempt: Number(process.env.RESUME_SOURCE_RUN_ATTEMPT), sourceSha: process.env.RESUME_SOURCE_SHA,
-              targetSha: process.env.RELEASE_SHA, captureRunId: process.env.GITHUB_RUN_ID,
-              captureRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT), currentRecordDigest: binding.recordDigest,
-              compatibilityDigest, sourceRecordDigest, ...(forwardExpected ? { forwardResume: forwardExpected } : {}),
-            });
-            result.previousAppCaptureResume = {
-              ...receipt,
-              verifiedByRunId: process.env.GITHUB_RUN_ID,
-              verifiedByRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-            };
-          } else if (process.env.RESUME_RECEIPT_B64) {
-            throw new Error("A resume receipt was supplied without a verified owner-approved source run.");
-          }
           writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
           NODE
           cat "$RUNNER_TEMP/preflight-result.json" >> "$GITHUB_STEP_SUMMARY"
@@ -1279,7 +701,7 @@ jobs:
             fi
           fi
           node scripts/production-db-preflight.mjs --manifest "$MANIFEST_ID" | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
-          node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" --repository "$GITHUB_WORKSPACE" \
+          node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"
           if [[ "$MANIFEST_ID" == "auth-multiuser-v1" ]]; then
             node scripts/production-migration-restore-check.mjs --combine \
@@ -1292,63 +714,10 @@ jobs:
               --manifest "$MANIFEST_ID" > "$RUNNER_TEMP/restore-result.json"
           fi
           cat "$RUNNER_TEMP/restore-result.json" >> "$GITHUB_STEP_SUMMARY"
-      - name: Bind forward-resume authorization to the fresh live snapshot and rehearsal
-        if: inputs.forward_resume_failed_migration_run_id != ''
-        env:
-          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
-          FAILURE_PROOF_B64: ${{ needs.authorize.outputs.forward_resume_failure_proof_b64 }}
-          AUTHORIZATION_BUNDLE_PROOF_B64: ${{ needs.authorize.outputs.forward_resume_authorization_bundle_proof_b64 }}
-          FAILURE_PROOF_DIGEST: ${{ needs.authorize.outputs.forward_resume_failure_proof_digest }}
-          MUTATION_HISTORY_DIGEST: ${{ needs.authorize.outputs.forward_resume_mutation_history_digest }}
-          MARKER_OBSERVATION_B64: ${{ steps.maintenance.outputs.forward_resume_marker_observation_b64 }}
-          FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
-          PREFLIGHT_RUN_ID: ${{ github.run_id }}
-          PREFLIGHT_RUN_ATTEMPT: ${{ github.run_attempt }}
-          BACKUP_FILE: ${{ steps.backup.outputs.file }}
-        run: |
-          set -Eeuo pipefail
-          [[ ( "$FAILED_RUN_ID" == "38022978032" || "$FAILED_RUN_ID" == "38062632284" ) \
-            && "$FAILURE_PROOF_DIGEST" =~ ^[a-f0-9]{64}$ \
-            && "$MUTATION_HISTORY_DIGEST" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Forward-resume proof inputs are missing or malformed."; exit 1; }
-          printf '%s' "$FAILURE_PROOF_B64" | base64 --decode > "$RUNNER_TEMP/forward-failure-proof.json"
-          printf '%s' "$AUTHORIZATION_BUNDLE_PROOF_B64" | base64 --decode > "$RUNNER_TEMP/forward-auth-bundle-proof.json"
-          printf '%s' "$MARKER_OBSERVATION_B64" | base64 --decode > "$RUNNER_TEMP/forward-marker-observation.json"
-          chmod 600 "$RUNNER_TEMP/forward-"*.json
-          node --input-type=module - "$RUNNER_TEMP/forward-failure-proof.json" \
-            "$RUNNER_TEMP/forward-auth-bundle-proof.json" "$RUNNER_TEMP/forward-marker-observation.json" \
-            "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/preflight-report.json" \
-            "$RUNNER_TEMP/restore-result.json" "$BACKUP_FILE" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          import { createForwardResumeContext } from "./scripts/production-forward-resume.mjs";
-          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const [failurePath, authPath, markerPath, resultPath, reportPath, restorePath, backupPath] = process.argv.slice(2);
-          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
-          const failureProof = readJson(failurePath);
-          const authorizationBundleProof = readJson(authPath);
-          const markerObservation = readJson(markerPath);
-          const preflightResult = readJson(resultPath);
-          const report = readJson(reportPath);
-          const restoreResult = readJson(restorePath);
-          if (canonicalSha256(failureProof) !== process.env.FAILURE_PROOF_DIGEST) {
-            throw new Error("Verified no-spawn proof digest differs from the independently checked workflow output.");
-          }
-          const context = createForwardResumeContext({ failureProof, authorizationBundleProof, markerObservation,
-            preflightRunId: process.env.PREFLIGHT_RUN_ID, preflightRunAttempt: Number(process.env.PREFLIGHT_RUN_ATTEMPT),
-            targetSha: process.env.RELEASE_SHA, mutationHistoryDigest: process.env.MUTATION_HISTORY_DIGEST,
-            preflightResult, report, restoreResult, backupBytes: readFileSync(backupPath) });
-          preflightResult.forwardResume = context;
-          writeFileSync(resultPath, `${JSON.stringify(preflightResult, null, 2)}\n`, { mode: 0o600 });
-          process.stdout.write(JSON.stringify({ mode: "forward-resume", targetSha: context.targetSha,
-            liveDatabaseIdentityDigest: context.currentDatabaseIdentityDigest,
-            migrationHistoryDigest: context.currentMigrationHistoryDigest, schemaDigest: context.currentSchemaDigest,
-            pendingSetDigest: context.currentPendingSetDigest, currentDataFingerprint: context.currentDataFingerprint,
-            encryptedBackupDigest: context.encryptedBackupDigest, restoreResultDigest: context.restoreResultDigest }) + "\n");
-          NODE
       - name: Create preflight evidence bundle
         env:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
-          UNVERIFIED_HISTORICAL_RUNS: ${{ needs.authorize.outputs.unverified_historical_runs }}
         run: |
           set -Eeuo pipefail
           install -d -m 700 "$RUNNER_TEMP/bodycast-evidence-artifact"
@@ -1379,6 +748,8 @@ jobs:
           retention-days: 90
       - name: Report read-only completion
         if: success()
+        env:
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           {
             echo ""
@@ -1389,6 +760,24 @@ jobs:
             echo "- disposable restored schema rehearsal: PASS"
             echo "- production migration: NOT EXECUTED"
           } >> "$GITHUB_STEP_SUMMARY"
+          node --input-type=module - "$RUNNER_TEMP/preflight-result.json" <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          import { readFileSync } from "node:fs";
+          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const pending = result.pending;
+          if (!Array.isArray(pending) || !pending.length || JSON.stringify([...pending].sort()) !== JSON.stringify(pending)) {
+            throw new Error("Owner confirmation requires a nonempty sorted pending migration set.");
+          }
+          const digest = canonicalSha256(pending);
+          if (digest !== result.pendingSetDigest) throw new Error("Preflight pending migration digest is inconsistent.");
+          console.log("");
+          console.log("### Exact DDL authorization binding");
+          console.log("");
+          console.log("- Release SHA: " + process.env.RELEASE_SHA);
+          console.log("- Pending migrations: " + pending.join(", "));
+          console.log("- Pending set SHA-256: " + digest);
+          console.log("- Required confirmation: MIGRATE_PRODUCTION:" + process.env.RELEASE_SHA + ":" + digest);
+          NODE
       - name: Remove temporary SSH credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-ssh"

@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST, TRAINING_MUTATION_LEDGER_MANIFEST, PRODUCTION_MIGRATION_MANIFESTS, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
-import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
+import { verifyManifestBlob, verifyExecutionFileMatchesBlob, readCommittedMigrationTree } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { evaluateProductionPreMaintenanceReadiness, evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
 import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
@@ -90,14 +90,27 @@ function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.s
 
 export function evaluateProductionMigrationTree(migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
   const manifest = getProductionMigrationManifest(manifestId);
-  const expectedDirectories = [
-    ...(manifest.requiredAppliedMigrations ?? []).map(({ name }) => name),
-    ...manifest.migrations.map(({ name }) => name),
-  ];
+  const actualDirectories = sorted(migrationDirectories);
   const blockers = [];
   if (!sameArray(migrationDirectories, [...new Set(migrationDirectories)])) {
     blockers.push("Release tree contains duplicate migration directory names.");
   }
+  if (actualDirectories.some((name) => !/^\d{14}_[A-Za-z0-9_]+$/.test(name))) {
+    blockers.push("Release tree contains a malformed Prisma migration directory name.");
+  }
+  if (manifest.dynamicMigrationSet === true) {
+    return {
+      manifestId: manifest.id,
+      expectedDirectories: actualDirectories,
+      actualDirectories,
+      ready: blockers.length === 0 && actualDirectories.length > 0,
+      blockers: actualDirectories.length ? blockers : [...blockers, "Release tree contains no Prisma migrations."],
+    };
+  }
+  const expectedDirectories = [
+    ...(manifest.requiredAppliedMigrations ?? []).map(({ name }) => name),
+    ...manifest.migrations.map(({ name }) => name),
+  ];
   if (manifest.requireCompleteReleaseTree === true
     && (!sameArray(expectedDirectories, [...new Set(expectedDirectories)])
       || !sameArray(expectedDirectories, migrationDirectories))) {
@@ -106,7 +119,7 @@ export function evaluateProductionMigrationTree(migrationDirectories, manifestId
   return {
     manifestId: manifest.id,
     expectedDirectories: sorted(expectedDirectories),
-    actualDirectories: sorted(migrationDirectories),
+    actualDirectories,
     ready: blockers.length === 0,
     blockers,
   };
@@ -474,7 +487,7 @@ export function normalizeObjectSignature(signature) {
   return normalized.trim();
 }
 
-function migrationState(report, migrationDirectories) {
+function migrationState(report, migrationDirectories, { requireStage02 = true, migrationChecksums } = {}) {
   const blockers = [];
   const rows = Array.isArray(report?.migrations) ? report.migrations : [];
   const rowGroups = new Map();
@@ -520,12 +533,27 @@ function migrationState(report, migrationDirectories) {
   if (rolledBack.length) blockers.push(`Rolled-back migration rows require manual review: ${sorted(rolledBack).join(", ")}.`);
   if (duplicate.length) blockers.push(`Duplicate migration history rows require manual review: ${sorted(duplicate).join(", ")}.`);
 
-  for (const migration of STAGE_02_MANIFEST.migrations) {
+  for (const migration of requireStage02 ? STAGE_02_MANIFEST.migrations : []) {
     const rowsForName = rowGroups.get(migration.name) ?? [];
     if (rowsForName.length !== 1 || !rowsForName[0].finishedAt || rowsForName[0].rolledBackAt) {
       blockers.push(`Required Stage 02 migration ${migration.name} is not recorded exactly once as successful.`);
     } else if (rowsForName[0].checksum !== migration.sha256) {
       blockers.push(`Stage 02 migration ${migration.name} checksum differs from the reviewed Git blob.`);
+    }
+  }
+
+  if (!requireStage02) {
+    if (!migrationChecksums || typeof migrationChecksums !== "object" || Array.isArray(migrationChecksums)
+      || !sameArray(Object.keys(migrationChecksums), releaseNames)
+      || releaseNames.some((name) => !/^[a-f0-9]{64}$/.test(String(migrationChecksums[name] ?? "")))) {
+      blockers.push("Exact current-release migration file checksums are unavailable or incomplete.");
+    } else {
+      for (const [name, entries] of rowGroups) {
+        if (entries.some((row) => row.finishedAt && !row.rolledBackAt)
+          && entries.some((row) => row.checksum !== migrationChecksums[name])) {
+          blockers.push(`Applied migration ${name} checksum differs from its exact release file.`);
+        }
+      }
     }
   }
 
@@ -546,19 +574,23 @@ function appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, bl
 
 export function evaluateProductionPreflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, options = {}) {
   const manifest = getProductionMigrationManifest(manifestId);
-  const { blockers, rows, rowGroups, applied, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories);
-  const partialPendingManifestRows = manifest.migrations
+  const dynamicMigrationSet = manifest.dynamicMigrationSet === true;
+  const { blockers, rows, rowGroups, applied, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories, {
+    requireStage02: !dynamicMigrationSet,
+    migrationChecksums: options.migrationChecksums,
+  });
+  const partialPendingManifestRows = (dynamicMigrationSet ? [] : manifest.migrations)
     .map(({ name }) => name)
     .filter((name) => rowGroups.has(name) && !applied.has(name));
   if (partialPendingManifestRows.length) {
     blockers.push(`Pending manifest migration(s) already have incomplete or unknown history rows: ${sorted(partialPendingManifestRows).join(", ")}.`);
   }
-  appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
-  const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
+  if (!dynamicMigrationSet) appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
+  const missingManifestDirectories = (dynamicMigrationSet ? [] : manifest.migrations).map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
   blockers.push(...evaluateProductionMigrationTree(migrationDirectories, manifestId).blockers);
-  const expectedPending = sorted(manifest.migrations.map(({ name }) => name));
-  if (!sameArray(pending, expectedPending)) blockers.push(`Full release-tree pending set differs from manifest ${manifest.id}: ${sorted(pending).join(", ") || "none"}.`);
+  const expectedPending = dynamicMigrationSet ? sorted(pending) : sorted(manifest.migrations.map(({ name }) => name));
+  if (!dynamicMigrationSet && !sameArray(pending, expectedPending)) blockers.push(`Full release-tree pending set differs from manifest ${manifest.id}: ${sorted(pending).join(", ") || "none"}.`);
 
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
   const objectNames = objectRows.map((object) => object?.name);
@@ -677,10 +709,14 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
 
 export function evaluateProductionPostflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, options = {}) {
   const manifest = getProductionMigrationManifest(manifestId);
-  const state = migrationState(report, migrationDirectories);
+  const dynamicMigrationSet = manifest.dynamicMigrationSet === true;
+  const state = migrationState(report, migrationDirectories, {
+    requireStage02: !dynamicMigrationSet,
+    migrationChecksums: options.migrationChecksums,
+  });
   const blockers = [...state.blockers];
   blockers.push(...evaluateProductionMigrationTree(migrationDirectories, manifestId).blockers);
-  appendRequiredAppliedMigrationBlockers(manifest, state.rowGroups, state.applied, blockers);
+  if (!dynamicMigrationSet) appendRequiredAppliedMigrationBlockers(manifest, state.rowGroups, state.applied, blockers);
   if (state.pending.length) blockers.push(`Pending migrations remain after DDL: ${state.pending.join(", ")}.`);
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
   const names = objectRows.map((entry) => entry?.name);
@@ -692,7 +728,7 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (missing.length) blockers.push(`Postflight schema objects are missing: ${missing.join(", ")}.`);
   const missingStage02 = EXPECTED_MIGRATION_OBJECTS.filter((name) => !expectedAbsent.has(name) && byName.get(name)?.present !== true);
   if (missingStage02.length) blockers.push(`Stage 02 schema objects are missing after migration: ${missingStage02.join(", ")}.`);
-  const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
+  const missingManifestDirectories = (dynamicMigrationSet ? [] : manifest.migrations).map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
   const unexpectedLegacyIndexes = manifest.postflightAbsentObjects.filter((name) => byName.get(name)?.present === true);
   if (unexpectedLegacyIndexes.length) blockers.push(`Legacy Relative Muscle indexes remain after migration: ${unexpectedLegacyIndexes.join(", ")}.`);
@@ -721,7 +757,7 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (objectRows.some((entry) => entry?.present === true && (typeof entry.signature !== "string" || !entry.signature))) {
     blockers.push("Postflight schema inventory is missing a required object signature.");
   }
-  for (const migration of manifest.migrations) {
+  for (const migration of dynamicMigrationSet ? [] : manifest.migrations) {
     const matches = state.rowGroups.get(migration.name) ?? [];
     if (matches.length !== 1 || !matches[0].finishedAt || matches[0].rolledBackAt) blockers.push(`Migration ${migration.name} is not recorded exactly once as successful.`);
     else if (matches[0].checksum !== migration.sha256) blockers.push(`Migration ${migration.name} checksum differs from the Git blob checksum.`);
@@ -758,8 +794,8 @@ export function verifyRestoredBackup(sourceReport, restoredReport) {
   return { verified: blockers.length === 0, blockers, migrationCount: restoredHistory?.length ?? null, migrationHistoryDifferences };
 }
 
-export function verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
-  const result = evaluateProductionPostflight(report, migrationDirectories, manifestId);
+export function verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, options = {}) {
+  const result = evaluateProductionPostflight(report, migrationDirectories, manifestId, options);
   const blockers = [...result.blockers];
   if (restoreResult?.verified !== true || restoreResult?.postflightReady !== true) blockers.push("Disposable restored migration validation is not successful.");
   const expected = restoreResult?.postSchemaDigest;
@@ -809,15 +845,24 @@ async function main() {
         : "CI-only scope opt-in cannot be used with a production migration manifest.");
     }
     const files = [];
-    const reviewedBlobs = [...new Map([
-      ...manifest.migrations,
-      ...(manifest.requiredAppliedMigrations ?? []),
-    ].map((migration) => [migration.name, migration])).values()];
-    for (const migration of reviewedBlobs) {
-      const result = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha, migration });
-      files.push(result);
+    let migrationLockSha256;
+    if (manifest.dynamicMigrationSet === true) {
+      const tree = await readCommittedMigrationTree(repositoryPath, releaseSha);
+      migrationLockSha256 = tree.migrationLockSha256;
+      files.push(...tree.files.map((file) => ({
+        ...file, expectedSha256: file.sha256, exactMatch: true,
+      })));
+    } else {
+      const reviewedBlobs = [...new Map([
+        ...manifest.migrations,
+        ...(manifest.requiredAppliedMigrations ?? []),
+      ].map((migration) => [migration.name, migration])).values()];
+      for (const migration of reviewedBlobs) {
+        const result = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha, migration });
+        files.push(result);
+      }
     }
-    const result = { exactExecutionBytes: files.every((item) => item.exactMatch), files };
+    const result = { exactExecutionBytes: files.every((item) => item.exactMatch), migrationLockSha256, files };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (!result.exactExecutionBytes) {
       const mismatchCount = files.filter((item) => !item.exactMatch).length;
@@ -865,20 +910,34 @@ async function main() {
     if (mode === "--preflight" || mode === "--pre-maintenance") {
       const preMaintenance = mode === "--pre-maintenance";
       preMaintenanceNow = preMaintenance ? Date.now() : undefined;
-      result = evaluateProductionPreflight(report, migrationDirectories, manifestId, { preMaintenance, now: preMaintenanceNow });
       const manifest = getProductionMigrationManifest(manifestId);
       const integrity = [];
-      const reviewedMigrations = [...new Map([
-        ...STAGE_02_MANIFEST.migrations,
-        ...manifest.migrations,
-        ...(manifest.requiredAppliedMigrations ?? []),
-      ].map((migration) => [migration.name, migration])).values()];
-      for (const migration of reviewedMigrations) {
-        const item = await verifyManifestBlob({ repositoryPath, releaseSha: value("--release-sha"), migration });
-        integrity.push({ name: item.name, expectedSha256: item.expectedSha256, actualSha256: item.actualSha256, matches: item.matchesManifest, bytes: item.bytes });
-        if (!item.matchesManifest) result.blockers.push(`Committed migration blob ${item.name} differs from the reviewed manifest checksum.`);
+      let migrationLockSha256;
+      if (manifest.dynamicMigrationSet === true) {
+        const tree = await readCommittedMigrationTree(repositoryPath, value("--release-sha"));
+        migrationLockSha256 = tree.migrationLockSha256;
+        const migrationChecksums = Object.fromEntries(tree.files.map((item) => [item.name, item.sha256]));
+        integrity.push(...tree.files.map((item) => ({
+          name: item.name, expectedSha256: item.sha256, actualSha256: item.sha256, matches: true, bytes: item.bytes,
+        })));
+        result = evaluateProductionPreflight(report, migrationDirectories, manifestId, {
+          preMaintenance, now: preMaintenanceNow, migrationChecksums,
+        });
+      } else {
+        result = evaluateProductionPreflight(report, migrationDirectories, manifestId, { preMaintenance, now: preMaintenanceNow });
+        const reviewedMigrations = [...new Map([
+          ...STAGE_02_MANIFEST.migrations,
+          ...manifest.migrations,
+          ...(manifest.requiredAppliedMigrations ?? []),
+        ].map((migration) => [migration.name, migration])).values()];
+        for (const migration of reviewedMigrations) {
+          const item = await verifyManifestBlob({ repositoryPath, releaseSha: value("--release-sha"), migration });
+          integrity.push({ name: item.name, expectedSha256: item.expectedSha256, actualSha256: item.actualSha256, matches: item.matchesManifest, bytes: item.bytes });
+          if (!item.matchesManifest) result.blockers.push(`Committed migration blob ${item.name} differs from the reviewed manifest checksum.`);
+        }
       }
       result.blobIntegrity = integrity;
+      if (migrationLockSha256) result.migrationLockSha256 = migrationLockSha256;
       if (sourceReleaseMarkerJson) {
         let sourceReleaseMarker;
         try { sourceReleaseMarker = JSON.parse(sourceReleaseMarkerJson); }
@@ -902,14 +961,23 @@ async function main() {
       result.readyForOwnerAuthorization = !preMaintenance && result.blockers.length === 0;
       if (preMaintenance) result.readyForPreMaintenance = result.blockers.length === 0;
     } else {
-      result = evaluateProductionPostflight(report, migrationDirectories, manifestId, ciOnlyRestoreIdentity
-        ? { expectedDatabase: "bodycast_restore", expectedRole: "bodycast" }
-        : {});
       const integrity = [];
-      for (const migration of getProductionMigrationManifest(manifestId).migrations) {
-        const item = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha: value("--release-sha"), migration });
-        integrity.push(item);
-        if (!item.exactMatch) result.blockers.push(item.blocker);
+      const manifest = getProductionMigrationManifest(manifestId);
+      const options = ciOnlyRestoreIdentity
+        ? { expectedDatabase: "bodycast_restore", expectedRole: "bodycast" }
+        : {};
+      if (manifest.dynamicMigrationSet === true) {
+        const { files } = await readCommittedMigrationTree(repositoryPath, value("--release-sha"));
+        options.migrationChecksums = Object.fromEntries(files.map((item) => [item.name, item.sha256]));
+        result = evaluateProductionPostflight(report, migrationDirectories, manifestId, options);
+        integrity.push(...files.map((item) => ({ ...item, exactMatch: true })));
+      } else {
+        result = evaluateProductionPostflight(report, migrationDirectories, manifestId, options);
+        for (const migration of manifest.migrations) {
+          const item = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha: value("--release-sha"), migration });
+          integrity.push(item);
+          if (!item.exactMatch) result.blockers.push(item.blocker);
+        }
       }
       result.executionFileIntegrity = integrity;
       result.ready = result.blockers.length === 0;

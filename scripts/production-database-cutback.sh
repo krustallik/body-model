@@ -12,7 +12,7 @@ readonly CADDY_CONTAINER="gymbeam-caddy"
 readonly POSTGRES_IMAGE="docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly CURRENT_MAIN_SHA="${BODYCAST_CUTBACK_CURRENT_MAIN_SHA:-}"
-readonly FAILED_RELEASE_SHA="${BODYCAST_CUTBACK_FAILED_RELEASE_SHA:-}"
+FAILED_RELEASE_SHA="${BODYCAST_CUTBACK_FAILED_RELEASE_SHA:-}"
 readonly FAILED_MIGRATION_RUN_ID="${BODYCAST_CUTBACK_FAILED_RUN_ID:-}"
 readonly CUTBACK_RUN_ID="${BODYCAST_CUTBACK_RUN_ID:-}"
 readonly CUTBACK_RUN_ATTEMPT="${BODYCAST_CUTBACK_RUN_ATTEMPT:-}"
@@ -46,17 +46,20 @@ case "$RECOVERY_MODE:$CONFIRMATION" in
   source-app-only:RECOVER_PRE_DDL_SOURCE_APP) [[ "$ARCHIVE_SHA256" == "-" ]] || fail "source-app recovery must not receive plaintext backup bytes." ;;
   *) fail "the owner-only confirmation does not match the recovery mode." ;;
 esac
-[[ "$CURRENT_MAIN_SHA" =~ ^[a-f0-9]{40}$ && "$FAILED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || fail "current-main and failed-release SHA values must be full commits."
+[[ "$CURRENT_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]] || fail "current-main SHA must be a full commit."
 [[ "$FAILED_MIGRATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$CUTBACK_RUN_ID" =~ ^[1-9][0-9]*$ \
   && "$CUTBACK_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || fail "workflow run IDs or attempt are invalid."
-[[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-cutback-context-[1-9][0-9]*-[1-9][0-9]*$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || fail "the fixed signed-context directory is unavailable."
-for name in authorization-envelope.json artifact-metadata.json preflight-evidence.json preflight-report.json preflight-result.json restore-result.json; do
-  [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "signed cutback provenance is missing or unsafe: $name"
-done
 if [[ "$RECOVERY_MODE" == "database-and-app" ]]; then
+  [[ "$FAILED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ \
+    && "$CONTEXT_DIR" =~ ^/tmp/bodycast-cutback-context-[1-9][0-9]*-[1-9][0-9]*$ \
+    && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || fail "the exact signed recovery context is unavailable."
+  for name in authorization-envelope.json artifact-metadata.json preflight-evidence.json preflight-report.json preflight-result.json restore-result.json; do
+    [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "signed cutback provenance is missing or unsafe: $name"
+  done
   [[ -f "$CONTEXT_DIR/production-backup.pgdump.enc" && ! -L "$CONTEXT_DIR/production-backup.pgdump.enc" ]] \
     || fail "the encrypted pre-DDL backup is missing or unsafe."
 fi
+[[ "$RECOVERY_MODE" != "source-app-only" || "$ARCHIVE_SHA256" == "-" ]] || fail "source-app recovery cannot use backup bytes."
 
 bodycast_acquire_production_release_lock
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" && "$(git rev-parse HEAD)" == "$CURRENT_MAIN_SHA" ]] || fail "the host checkout is not the exact cutback tooling SHA."
@@ -126,18 +129,25 @@ fi
 marker_status=1
 if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
 if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
-  [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
-    && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" && "$BODYCAST_MARKER_STATE" == "app-ready" \
-    && "$BODYCAST_MARKER_RELEASE_SHA" == "$PREVIOUS_SHA" \
-    && "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" ]] \
-    || fail "source-app recovery requires the exact retained Auth app-ready marker and its captured release SHA."
+  [[ "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ && "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" ]] \
+    || fail "source-app recovery requires an exact previously healthy app SHA."
+  if [[ "$marker_status" -eq 0 ]]; then
+    [[ "$BODYCAST_MARKER_STATE" =~ ^(app-ready|v4-ready|rollback-app-ready)$ \
+      && "$BODYCAST_MARKER_RELEASE_SHA" == "$PREVIOUS_SHA" ]] \
+      || fail "the retained release marker does not identify the captured serving app."
+  else
+    [[ "$marker_status" -eq 1 ]] || fail "release-marker state is unknown; source-app recovery is blocked."
+  fi
 else
   [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_RELEASE_SHA" == "$FAILED_RELEASE_SHA" \
     && "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ ]] \
     || fail "the exact failed-release marker is absent, conflicting, or outside the reviewed cutback states."
 fi
-SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-[[ "$SOURCE_MARKER_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "the failed-release marker digest is unavailable."
+SOURCE_MARKER_DIGEST="-"
+if [[ "$marker_status" -eq 0 ]]; then
+  SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+  [[ "$SOURCE_MARKER_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "the release-marker digest is unavailable."
+fi
 bodycast_verify_exact_maintenance_route
 maintenance_marker="$(bodycast_maintenance_marker_from_route)"
 bodycast_probe_public_maintenance "$maintenance_marker"
@@ -182,18 +192,16 @@ cleanup_cutback() {
 trap cleanup_cutback EXIT
 
 if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
-  [[ "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ && "$PREVIOUS_SHA" == "$BODYCAST_MARKER_RELEASE_SHA" ]] \
-    || fail "source-app recovery cannot select an unproven or non-marker app SHA."
+  [[ "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ ]] || fail "source-app recovery cannot select an unproven app SHA."
   marker_digest_before="$SOURCE_MARKER_DIGEST"
   record_digest_before="$(sha256sum "$record_path" | awk '{print $1}')"
   [[ "$record_digest_before" =~ ^[a-f0-9]{64}$ ]] || fail "the immutable previous-app capture digest is unavailable."
 
-  LIVE_REPORT="$CONTEXT_DIR/live-report.json"
+  LIVE_REPORT="$TMP_DIR/live-report.json"
   BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
     bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
-  node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-pre-ddl-source-app-recovery \
-    "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" \
-    "$LIVE_REPORT" "$record_path" "$BODYCAST_MARKER_FILE_PATH" > "$TMP_DIR/source-app-recovery-verification.json"
+  node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-captured-source-app-recovery \
+    "$FAILED_RELEASE_SHA" "$LIVE_REPORT" "$record_path" > "$TMP_DIR/source-app-recovery-verification.json"
 
   bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
   [[ "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$DB_CONTAINER_ID" \
@@ -240,7 +248,7 @@ if [[ "$RECOVERY_MODE" == "source-app-only" ]]; then
     && "$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")" == "$app_started_container_id" \
     && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" \
     && "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$DB_CONTAINER_ID" \
-    && "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest_before" \
+    && ( "$marker_digest_before" == "-" || "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest_before" ) \
     && "$(sha256sum "$record_path" | awk '{print $1}')" == "$record_digest_before" ]] \
     || fail "source app, database, source marker, or immutable recovery capture changed before serving commit."
   bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"

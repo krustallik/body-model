@@ -12,14 +12,26 @@ export const REQUIRED_AUTHORIZATION_CLAIMS = Object.freeze([
   "writerDrainDigest", "writerTopologyDigest",
   "issuedAt", "expiresAt", "authorizationId", "nonce",
 ]);
-const FORWARD_RESUME_CLAIMS = Object.freeze([
-  "executionMode", "forwardResumeProofDigest", "forwardResumeSourceRunId", "forwardResumeSourceRunAttempt",
-  "forwardResumeSourceSha", "forwardResumeMarkerDigest", "forwardResumeSourceAuthorizationId",
-  "forwardResumeSourcePreflightResultDigest", "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest",
-]);
-
 export function canonicalSha256(value) {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+export function assertExactMigrationConfirmation({ confirmation, releaseSha, pendingMigrationNames }) {
+  if (!/^[a-f0-9]{40}$/.test(String(releaseSha ?? ""))
+    || !Array.isArray(pendingMigrationNames) || pendingMigrationNames.length === 0
+    || pendingMigrationNames.some((name) => typeof name !== "string" || !/^\d{14}_[A-Za-z0-9_]+$/.test(name))) {
+    reject("exact confirmation requires a full release SHA and a nonempty pending migration set.");
+  }
+  const pending = [...pendingMigrationNames].sort();
+  if (new Set(pending).size !== pending.length
+    || JSON.stringify(pending) !== JSON.stringify(pendingMigrationNames)) {
+    reject("pending migration names must be unique and sorted before owner confirmation.");
+  }
+  const digest = canonicalSha256(pending);
+  if (confirmation !== `MIGRATE_PRODUCTION:${releaseSha}:${digest}`) {
+    reject("owner confirmation is not bound to the exact release SHA and pending migration set.");
+  }
+  return digest;
 }
 
 function reject(message) {
@@ -58,7 +70,6 @@ function validateClaimsShape(claims) {
   const claimSets = [
     required,
     [...required, "snapshotDataFingerprint"].sort(),
-    [...required, "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS].sort(),
   ];
   if (claims.manifestId === "auth-multiuser-v1") {
     claimSets.push(
@@ -75,23 +86,6 @@ function validateClaimsShape(claims) {
   if ((claims.manifestId === "auth-multiuser-v1" && claims.profileOneOwnershipBackfillAuthorized !== true)
     || (claims.manifestId !== "auth-multiuser-v1" && Object.hasOwn(claims, "profileOneOwnershipBackfillAuthorized"))) {
     reject("Profile 1 ownership-backfill consent must be explicitly true only for the Auth manifest.");
-  }
-  if (Object.hasOwn(claims, "executionMode")) {
-    if (claims.executionMode !== "forward-resume") reject("executionMode is not a supported owner-authorized mode.");
-    for (const key of ["forwardResumeProofDigest", "forwardResumeMarkerDigest", "forwardResumeSourcePreflightResultDigest",
-      "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest"]) {
-      if (!/^[a-f0-9]{64}$/.test(String(claims[key] ?? ""))) reject(`${key} must be a lowercase SHA-256 digest.`);
-    }
-    for (const key of ["forwardResumeSourceRunId"]) {
-      if (!/^[1-9][0-9]*$/.test(String(claims[key] ?? ""))) reject(`${key} must be a positive numeric identifier.`);
-    }
-    if (!Number.isSafeInteger(claims.forwardResumeSourceRunAttempt) || claims.forwardResumeSourceRunAttempt < 1) {
-      reject("forwardResumeSourceRunAttempt must be a positive integer.");
-    }
-    if (!/^[a-f0-9]{40}$/.test(String(claims.forwardResumeSourceSha ?? ""))) reject("forwardResumeSourceSha must be a full lowercase commit SHA.");
-    if (typeof claims.forwardResumeSourceAuthorizationId !== "string" || claims.forwardResumeSourceAuthorizationId.length < 16) {
-      reject("forwardResumeSourceAuthorizationId is malformed.");
-    }
   }
   for (const key of REQUIRED_AUTHORIZATION_CLAIMS) {
     const value = claims[key];
@@ -128,7 +122,7 @@ function compareLiveClaims(claims, live, { requireTrustedActorId = true } = {}) 
     "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest", "preflightRunId",
     "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
     "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest", "writerDrainDigest", "writerTopologyDigest",
-    "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS,
+    "snapshotDataFingerprint",
     "profileOneOwnershipBackfillAuthorized",
   ];
   for (const field of fields) {
@@ -238,7 +232,7 @@ export function createClaimsFromPreflight({
   manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightRunStartedAt, preflightResultDigest,
   backupArtifactId, backupArtifactDigest, backupSnapshotAt, restoreResultDigest, productionIdentityDigest,
   writerDrainDigest, writerTopologyDigest,
-  issuedAt, expiresAt, authorizationId, nonce, snapshotDataFingerprint, forwardResume,
+  issuedAt, expiresAt, authorizationId, nonce, snapshotDataFingerprint,
   profileOneOwnershipBackfillAuthorized = false,
 }) {
   const names = [...pendingMigrationNames].sort();
@@ -250,18 +244,5 @@ export function createClaimsFromPreflight({
   };
   if (profileOneOwnershipBackfillAuthorized) claims.profileOneOwnershipBackfillAuthorized = true;
   if (snapshotDataFingerprint !== undefined) claims.snapshotDataFingerprint = snapshotDataFingerprint;
-  if (forwardResume !== undefined) {
-    if (!forwardResume || typeof forwardResume !== "object") reject("forward-resume authorization context is malformed.");
-    claims.executionMode = "forward-resume";
-    claims.forwardResumeProofDigest = forwardResume.proofDigest;
-    claims.forwardResumeSourceRunId = forwardResume.sourceRunId;
-    claims.forwardResumeSourceRunAttempt = forwardResume.sourceRunAttempt;
-    claims.forwardResumeSourceSha = forwardResume.sourceSha;
-    claims.forwardResumeMarkerDigest = forwardResume.markerDigest;
-    claims.forwardResumeSourceAuthorizationId = forwardResume.sourceAuthorizationId;
-    claims.forwardResumeSourcePreflightResultDigest = forwardResume.sourcePreflightResultDigest;
-    claims.forwardResumeFailureLogDigest = forwardResume.failureLogDigest;
-    claims.forwardResumeGuardRuntimeDigest = forwardResume.sourceGuardRuntimeDigest;
-  }
   return claims;
 }

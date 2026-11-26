@@ -4,28 +4,12 @@ import { pathToFileURL } from "node:url";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { assertPreMaintenanceStorageHeadroom, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
+import { readPackagedMigrationFiles } from "./production-migration-integrity.mjs";
 import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
 import { matchesPostgresDatabaseIdentityDigest } from "./postgres-database-identity.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
-import { assertForwardResumeCurrentSnapshot } from "./production-forward-resume.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
-
-function forwardResumeClaims(context) {
-  if (!context) return {};
-  return {
-    executionMode: "forward-resume",
-    forwardResumeProofDigest: context.proofDigest,
-    forwardResumeSourceRunId: context.sourceRunId,
-    forwardResumeSourceRunAttempt: context.sourceRunAttempt,
-    forwardResumeSourceSha: context.sourceSha,
-    forwardResumeMarkerDigest: context.markerDigest,
-    forwardResumeSourceAuthorizationId: context.sourceAuthorizationId,
-    forwardResumeSourcePreflightResultDigest: context.sourcePreflightResultDigest,
-    forwardResumeFailureLogDigest: context.failureLogDigest,
-    forwardResumeGuardRuntimeDigest: context.sourceGuardRuntimeDigest,
-  };
-}
 
 export const SNAPSHOT_READABILITY_TABLES = Object.freeze([
   "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog",
@@ -94,7 +78,7 @@ export function sourceReleaseMarkerDigest(preflightResult, manifestId) {
   return witness.digest;
 }
 
-export function verifyFinalMigrationAuthorization({ envelope, preflightResult, evidence, restoreResult, artifactMetadata, liveReport, liveMainSha, releaseSha, manifestId, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, now = Date.now() }) {
+export function verifyFinalMigrationAuthorization({ envelope, preflightResult, evidence, restoreResult, artifactMetadata, liveReport, liveMainSha, releaseSha, manifestId, allowlist, migrationChecksums, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, now = Date.now() }) {
   assertSignedAuthorizationRequired({ envelope, confirmation: process.env.CONFIRM_PRODUCTION_MIGRATE });
   const manifest = getProductionMigrationManifest(manifestId);
   assertPreMaintenanceStorageHeadroom(preflightResult?.preMaintenanceStorageHeadroom);
@@ -127,21 +111,9 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   if (canonicalSha256(preflightResult.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: signed preflight identity digest is inconsistent.");
   if (!matchesPostgresDatabaseIdentityDigest(liveReport?.identity, evidence.productionIdentityDigest)) throw new Error("Migration blocked: production identity changed after preflight.");
   const directories = manifestTreeNames(manifest);
-  const readiness = evaluateProductionPreflight(liveReport, directories, manifest.id);
+  const readiness = evaluateProductionPreflight(liveReport, directories, manifest.id, { migrationChecksums });
   if (!readiness.readyForOwnerAuthorization) throw new Error("Migration blocked by final live readiness: " + readiness.blockers.join(" "));
   assertFreshWriterDrain(liveReport, { now, maxAgeMs: 30_000 });
-  const forwardContext = preflightResult.forwardResume ?? null;
-  if (forwardContext) {
-    assertForwardResumeCurrentSnapshot(forwardContext, {
-      preflightResult,
-      liveReport,
-      evidence,
-      restoreResult,
-      targetSha: releaseSha,
-      preflightRunId: evidence.workflowRunId,
-      preflightRunAttempt: Number(evidence.workflowRunAttempt),
-    });
-  }
   const pending = [...readiness.pending].sort();
   const verified = verifyAuthorizationEnvelope(envelope, {
     allowlist,
@@ -172,12 +144,8 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
       writerTopologyDigest: evidence.writerTopologyDigest,
       snapshotDataFingerprint,
       ...(manifest.id === "auth-multiuser-v1" ? { profileOneOwnershipBackfillAuthorized: true } : {}),
-      ...forwardResumeClaims(forwardContext),
     },
   });
-  if ((verified.payload.executionMode === "forward-resume") !== Boolean(forwardContext)) {
-    throw new Error("Migration blocked: signed execution mode differs from the verified preflight forward-resume context.");
-  }
   assertPinnedOwnerId(verified.payload.actorId, "Signed migration owner actor ID");
   if (String(artifactMetadata?.id) !== verified.payload.backupArtifactId
     || String(artifactMetadata?.digest).replace(/^sha256:/, "") !== verified.payload.backupArtifactDigest
@@ -225,12 +193,10 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     ...(previousReleaseMarkerDigest ? { sourceReleaseMarkerDigest: previousReleaseMarkerDigest } : {}),
     verifiedAt: new Date(now).toISOString(),
   };
-  if (forwardContext) Object.assign(receipt, forwardResumeClaims(forwardContext));
   return receipt;
 }
 
 export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, currentMainSha, releaseSha, now = Date.now() }) {
-  const isForwardResume = receipt?.executionMode === "forward-resume";
   const fields = [
     "schemaVersion", "ready", "authorizationId", "manifestId", "releaseSha", "currentMainSha", "workflowId",
     "workflowRunId", "workflowRunAttempt", "actorId", "pending", "pendingSetDigest", "preflightRunId", "preflightRunAttempt",
@@ -239,9 +205,6 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     "finalWriterDrainDigest", "finalWriterTopologyDigest", "finalWriterDrainObservedAt", "finalTopologyObservedAt",
     "postSchemaDigest", "snapshotDataFingerprint", "verifiedAt",
     ...(receipt?.sourceReleaseMarkerDigest !== undefined ? ["sourceReleaseMarkerDigest"] : []),
-    ...(isForwardResume ? ["executionMode", "forwardResumeProofDigest", "forwardResumeSourceRunId", "forwardResumeSourceRunAttempt",
-      "forwardResumeSourceSha", "forwardResumeMarkerDigest", "forwardResumeSourceAuthorizationId",
-      "forwardResumeSourcePreflightResultDigest", "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest"] : []),
   ].sort();
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
     || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(fields)) {
@@ -291,17 +254,6 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
       writerDrainDigest: receipt.preflightWriterDrainDigest,
       writerTopologyDigest: receipt.preflightWriterTopologyDigest,
       snapshotDataFingerprint: receipt.snapshotDataFingerprint,
-      ...(isForwardResume ? forwardResumeClaims({
-        proofDigest: receipt.forwardResumeProofDigest,
-        sourceRunId: receipt.forwardResumeSourceRunId,
-        sourceRunAttempt: receipt.forwardResumeSourceRunAttempt,
-        sourceSha: receipt.forwardResumeSourceSha,
-        markerDigest: receipt.forwardResumeMarkerDigest,
-        sourceAuthorizationId: receipt.forwardResumeSourceAuthorizationId,
-        sourcePreflightResultDigest: receipt.forwardResumeSourcePreflightResultDigest,
-        failureLogDigest: receipt.forwardResumeFailureLogDigest,
-        sourceGuardRuntimeDigest: receipt.forwardResumeGuardRuntimeDigest,
-      }) : {}),
     },
   });
   const payload = verified.payload;
@@ -327,17 +279,6 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     preflightWriterDrainDigest: payload.writerDrainDigest,
     preflightWriterTopologyDigest: payload.writerTopologyDigest,
     snapshotDataFingerprint: payload.snapshotDataFingerprint,
-    ...(isForwardResume ? forwardResumeClaims({
-      proofDigest: payload.forwardResumeProofDigest,
-      sourceRunId: payload.forwardResumeSourceRunId,
-      sourceRunAttempt: payload.forwardResumeSourceRunAttempt,
-      sourceSha: payload.forwardResumeSourceSha,
-      markerDigest: payload.forwardResumeMarkerDigest,
-      sourceAuthorizationId: payload.forwardResumeSourceAuthorizationId,
-      sourcePreflightResultDigest: payload.forwardResumeSourcePreflightResultDigest,
-      failureLogDigest: payload.forwardResumeFailureLogDigest,
-      sourceGuardRuntimeDigest: payload.forwardResumeGuardRuntimeDigest,
-    }) : {}),
   };
   for (const [field, expected] of Object.entries(receiptClaims)) {
     if (JSON.stringify(receipt[field]) !== JSON.stringify(expected)) throw new Error("Migration blocked: final guard receipt differs from signed claim " + field + ".");
@@ -354,13 +295,20 @@ function manifestTreeNames(manifest) {
   const names = process.env.BODYCAST_MIGRATION_DIRECTORIES;
   if (!names) throw new Error("Migration blocked: full release-tree migration list is unavailable.");
   const parsed = JSON.parse(names);
-  if (!Array.isArray(parsed) || !parsed.includes(manifest.migrations[0].name)) throw new Error("Migration blocked: release migration tree does not match the manifest.");
+  if (!Array.isArray(parsed) || !parsed.length
+    || parsed.some((name) => typeof name !== "string" || !/^\d{14}_[A-Za-z0-9_]+$/.test(name))
+    || new Set(parsed).size !== parsed.length) {
+    throw new Error("Migration blocked: release migration tree is missing or malformed.");
+  }
+  if (manifest.dynamicMigrationSet !== true && !parsed.includes(manifest.migrations[0]?.name)) {
+    throw new Error("Migration blocked: release migration tree does not match the manifest.");
+  }
   return parsed;
 }
 
 export function verifyPostflightResult({ report, restoreResult, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
-  authSourceDataFingerprint = process.env.BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT }) {
-  const result = verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId);
+  authSourceDataFingerprint = process.env.BODYCAST_AUTH_SOURCE_DATA_FINGERPRINT, migrationChecksums }) {
+  const result = verifyPostflightMatchesRestore(report, restoreResult, migrationDirectories, manifestId, { migrationChecksums });
   if (result.ready) {
     assertAuthSourceProjectionMatchesRestore({ manifestId, restoreResult, liveFingerprint: authSourceDataFingerprint });
   }
@@ -378,13 +326,21 @@ async function main() {
       readJson(value("--restore")), readJson(value("--artifact")), readJson(value("--live-report")), readJson(value("--keys")),
     ]);
     const repository = path.resolve(value("--repository"));
-    const migrationDirectories = (await readdir(path.join(repository, "prisma/migrations"), { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const manifest = getProductionMigrationManifest(value("--manifest"));
+    const migrationFiles = manifest.dynamicMigrationSet === true
+      ? await readPackagedMigrationFiles(repository, preflightResult.blobIntegrity, preflightResult.migrationLockSha256)
+      : null;
+    const migrationDirectories = migrationFiles?.map(({ name }) => name)
+      ?? (await readdir(path.join(repository, "prisma/migrations"), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const migrationChecksums = migrationFiles
+      ? Object.fromEntries(migrationFiles.map(({ name, sha256 }) => [name, sha256]))
+      : undefined;
     process.env.BODYCAST_MIGRATION_DIRECTORIES = JSON.stringify(migrationDirectories);
     const result = verifyFinalMigrationAuthorization({
       envelope, preflightResult, evidence, restoreResult, artifactMetadata, liveReport,
       liveMainSha: value("--main-sha"), releaseSha: value("--release-sha"),
-      manifestId: value("--manifest"), allowlist,
+      manifestId: value("--manifest"), allowlist, migrationChecksums,
       currentWorkflowId: value("--current-workflow-id"),
       currentWorkflowRunId: value("--current-workflow-run-id"),
       currentWorkflowRunAttempt: Number(value("--current-workflow-run-attempt")),
@@ -393,13 +349,24 @@ async function main() {
     return;
   }
   if (mode === "--after-ddl") {
-    const required = ["--report", "--restore", "--manifest", "--repository"];
+    const required = ["--report", "--restore", "--preflight", "--manifest", "--repository"];
     for (const key of required) if (!value(key)) throw new Error("Missing required option " + key + ".");
-    const [report, restoreResult] = await Promise.all([readJson(value("--report")), readJson(value("--restore"))]);
+    const [report, restoreResult, preflightResult] = await Promise.all([
+      readJson(value("--report")), readJson(value("--restore")), readJson(value("--preflight")),
+    ]);
     const repository = path.resolve(value("--repository"));
-    const migrationDirectories = (await readdir(path.join(repository, "prisma/migrations"), { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    const result = verifyPostflightResult({ report, restoreResult, migrationDirectories, manifestId: value("--manifest") });
+    const manifestId = value("--manifest");
+    const manifest = getProductionMigrationManifest(manifestId);
+    const migrationFiles = manifest.dynamicMigrationSet === true
+      ? await readPackagedMigrationFiles(repository, preflightResult.blobIntegrity, preflightResult.migrationLockSha256)
+      : null;
+    const migrationDirectories = migrationFiles?.map(({ name }) => name)
+      ?? (await readdir(path.join(repository, "prisma/migrations"), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const migrationChecksums = migrationFiles
+      ? Object.fromEntries(migrationFiles.map(({ name, sha256 }) => [name, sha256]))
+      : undefined;
+    const result = verifyPostflightResult({ report, restoreResult, migrationDirectories, manifestId, migrationChecksums });
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     if (!result.ready) process.exitCode = 1;
     return;

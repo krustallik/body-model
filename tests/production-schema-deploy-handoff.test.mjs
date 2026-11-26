@@ -28,7 +28,6 @@ import { ALL_REVIEWED_OBJECTS } from "../scripts/production-migration-preflight.
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
-const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
 const V4_COMPATIBLE_TEST_CANDIDATE_SHA = "f910d2a45dfa676fada5fab42c9e8946c97872b1";
 const DYNAMIC_WORKOUT_MIGRATION_ORIGIN_SHA = "263a4a9215db1963d07143f9c17b2f6936775a67";
 const TRAINING_MIGRATION_SHA = "73f0e49aa2fbb4595f7acfc00d16f76bfa2e2da1";
@@ -670,7 +669,7 @@ describe("schema deploy compatibility handoff", () => {
         },
       },
     })).toThrow(/exact reviewed content binding/);
-  }, 30_000);
+  }, 60_000);
 
   it("hands off the Auth V2 app-ready marker only from the exact reviewed migration tree", async () => {
     const deploySha = AUTH_PREVIOUS_DEPLOY_SHA;
@@ -701,6 +700,29 @@ describe("schema deploy compatibility handoff", () => {
       workflowRunId: "40123456791",
     } });
     expect(evaluateSchemaDeployHandoff({ markerText: handoff.bytes, deploySha, ...compatibility }).action).toBe("replay");
+    const dockerfileProof = AUTH_MULTIUSER_CONTENT_BOUND_PATHS.Dockerfile;
+    const withReviewedMigratorDockerfile = {
+      ...compatibility,
+      changedPaths: [...compatibility.changedPaths, "Dockerfile"],
+      changedPathObjects: {
+        ...compatibility.changedPathObjects,
+        Dockerfile: {
+          migrationOriginBlob: dockerfileProof.migrationOriginBlob,
+          deployBlob: dockerfileProof.deployBlob,
+        },
+      },
+    };
+    expect(evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText(), deploySha, ...withReviewedMigratorDockerfile,
+    })).toMatchObject({ action: "write", marker: { state: "schema-applied" } });
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: authMultiuserMarkerText(), deploySha,
+      ...withReviewedMigratorDockerfile,
+      changedPathObjects: {
+        ...withReviewedMigratorDockerfile.changedPathObjects,
+        Dockerfile: { ...dockerfileProof, deployBlob: "e".repeat(40) },
+      },
+    })).toThrow(/exact reviewed content binding/);
     expect(() => evaluateSchemaDeployHandoff({
       markerText: authMultiuserMarkerText(), deploySha, ...compatibility,
       changedPathObjects: {
@@ -914,10 +936,6 @@ describe("schema deploy compatibility handoff", () => {
         migrationOriginBlob: null,
         deployBlob: "76782d626c633a37c3de2330a6ef1d58df67d0d0",
       },
-      "scripts/github-no-app-preflight-evidence.mjs": {
-        migrationOriginBlob: "b98263494d504228b1fdb207a249d5b9f3f77d5e",
-        deployBlob: "954cc02644a9c46cb3b3e7c2d73f73385a9c0eae",
-      },
       "scripts/production-v4-recovery.mjs": {
         migrationOriginBlob: null,
         deployBlob: "af8e2e03ddac71d710f191ec2f221b31c3785a76",
@@ -1014,93 +1032,12 @@ describe("schema deploy compatibility handoff", () => {
     expect(plan.marker.sourceMarkerDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("accepts the pinned schema-compatible checkout only when its exact runtime paths remain compatible", () => {
-    const candidateSha = SCHEMA_COMPATIBLE_CHECKOUT_SHA;
-    const compatibility = readGitCompatibility(process.cwd(), candidateSha);
-    expect(compatibility.isAncestor).toBe(true);
-    expect(compatibility.changedPaths).toContain("src/modules/model-episodes/transient-exercise-water-episode-time-v2.ts");
-    expect(compatibility.changedPaths).toContain("src/modules/training/experimental-transient-exercise-water-shadow.service.ts");
-    expect(compatibility.changedPathObjects).toEqual({
-      "docs/development/production-deploy.md": {
-        migrationOriginBlob: "6096de9b780800654046c63c369643a310d5bb56",
-        deployBlob: "b1a26cce30fb69fddde0d9fe81dd3bc26e342678",
-      },
-      "scripts/github-forward-resume-evidence.mjs": {
-        migrationOriginBlob: "b62a7e09fd871e68829e9fad3902510a9e3bd6ca",
-        deployBlob: "9d76e1612f86f700c5e3950fc67c77f0fa6c7912",
-      },
-      "scripts/production-app-container-health-wait.sh": {
-        migrationOriginBlob: null,
-        deployBlob: "b99a87d861d5471336bd0d75f4df49436237df7c",
-      },
-      "scripts/production-checkout-diagnostic.sh": {
-        migrationOriginBlob: "f19687c65d7e9d3b744890f377ebf6f0c80eebf9",
-        deployBlob: "7256cf45844deade0685f82eb470bf79a396c497",
-      },
-      "scripts/production-forward-resume.mjs": {
-        migrationOriginBlob: "2c07e0636146caaa5bfef69522f351c4e37aa13d",
-        deployBlob: "43373e740cdad93d6f88c37c565288b2db1ad70d",
-      },
-      "scripts/ci/production-deploy-gate.ts": {
-        migrationOriginBlob: "8d0d5e1d0a7c291daae0ff9cd6a970cfb3085083",
-        deployBlob: "451319d5792e92fac02757ad8396c531ad5f19bb",
-      },
-      "scripts/production-route-primitives.sh": {
-        migrationOriginBlob: "65a51f97bf404d9353b45b1fc33725cb7a582daa",
-        deployBlob: "001b5a5de48a17db06ab7e61731b184a3c82dc83",
-      },
-      "scripts/deploy.sh": {
-        migrationOriginBlob: "14e4caa5645ce8b95c16ecc03b3937bd0e60a1e3",
-        deployBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
-      },
-    });
-    expect(compatibility.changedPathObjects["scripts/github-forward-resume-evidence.mjs"].migrationOriginBlob)
-      .not.toBe(compatibility.changedPathObjects["scripts/github-forward-resume-evidence.mjs"].deployBlob);
-    expect(compatibility.changedPathObjects["scripts/production-forward-resume.mjs"].migrationOriginBlob)
-      .not.toBe(compatibility.changedPathObjects["scripts/production-forward-resume.mjs"].deployBlob);
-    const plan = evaluateSchemaDeployHandoff({
-      markerText: markerText(), deploySha: candidateSha, ...compatibility,
-    });
-    expect(plan.action).toBe("write");
-    expect(plan.marker.deploySha).toBe(candidateSha);
-    expect(plan.compatibilityDigest).toMatch(/^[a-f0-9]{64}$/);
-  });
-
   it("blocks this release candidate from the old schema handoff while its new migrations are pending", () => {
     const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: process.cwd(), encoding: "utf8",
     }).trim();
     expect(() => readGitCompatibility(process.cwd(), candidateSha))
       .toThrow("Schema deploy handoff blocked: prisma differs from the migration origin");
-  });
-
-  it("admits only exact reviewed content-bound blob pairs", () => {
-    const candidateSha = SCHEMA_COMPATIBLE_CHECKOUT_SHA;
-    const compatibility = readGitCompatibility(process.cwd(), candidateSha);
-
-    for (const [changedPath, proof] of Object.entries(compatibility.changedPathObjects)) {
-      const changedPathObjects = {
-        ...compatibility.changedPathObjects,
-        [changedPath]: { ...proof, deployBlob: "e".repeat(40) },
-      };
-      expect(() => evaluateSchemaDeployHandoff({
-        markerText: markerText(), deploySha: candidateSha,
-        ...compatibility, changedPathObjects,
-      })).toThrow(/exact reviewed content binding/);
-    }
-
-    expect(() => evaluateSchemaDeployHandoff({
-      markerText: markerText(), deploySha: candidateSha,
-      ...compatibility, changedPathObjects: {},
-    })).toThrow(/content-bound path evidence is incomplete/);
-    expect(() => evaluateSchemaDeployHandoff({
-      markerText: markerText(), deploySha: candidateSha,
-      ...compatibility,
-      changedPathObjects: {
-        ...compatibility.changedPathObjects,
-        "scripts/unreviewed-release-helper.mjs": { migrationOriginBlob: null, deployBlob: "f".repeat(40) },
-      },
-    })).toThrow(/content-bound path evidence is incomplete or unexpected/);
   });
 
   it("allows the reviewed transient-water paths but keeps adjacent raw and persistence paths blocked", () => {

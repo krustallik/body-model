@@ -1218,6 +1218,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(preflight).toContain('marker_dir="$git_dir/bodycast-production-release-marker"');
     expect(preflight).toContain('marker_path="$marker_dir/marker"');
     expect(preflight).toContain("--source-release-marker-json");
+    expect(preflight).toContain('const [liveAppSha, repositoryPath, markerBase64] = process.argv.slice(2);');
+    expect(preflight).toContain('const text = Buffer.from(markerBase64, "base64").toString("utf8");');
+    expect(preflight).not.toContain('SOURCE_MARKER_TEXT="$(printf \'%s\' "$SOURCE_MARKER_B64" | base64 --decode)"');
     expect(preflight).toContain('JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sourceReleaseMarker');
     expect(preflight).toContain(`trap 'rm -rf -- "$stage"' EXIT`);
     const productionCheckoutOriginGate = preflight.indexOf('ORIGIN_URL="$(git remote get-url origin)"');

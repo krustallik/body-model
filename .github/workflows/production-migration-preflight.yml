@@ -838,10 +838,10 @@ jobs:
               git merge-base --is-ancestor "$SOURCE_APP_SHA" "$RELEASE_SHA" || {
                 echo "Production Auth app-ready SHA is not an ancestor of the exact Training release." >&2; exit 1;
               }
-              SOURCE_MARKER_TEXT="$(printf '%s' "$SOURCE_MARKER_B64" | base64 --decode)"
-              SOURCE_MARKER_JSON="$(node --input-type=module - "$SOURCE_APP_SHA" "$GITHUB_WORKSPACE" "$SOURCE_MARKER_TEXT" <<'NODE'
+              SOURCE_MARKER_JSON="$(node --input-type=module - "$SOURCE_APP_SHA" "$GITHUB_WORKSPACE" "$SOURCE_MARKER_B64" <<'NODE'
           import { validateAuthMarkerForTrainingMigrationHandoff } from "./scripts/production-schema-deploy-handoff.mjs";
-          const [liveAppSha, repositoryPath, text] = process.argv.slice(2);
+          const [liveAppSha, repositoryPath, markerBase64] = process.argv.slice(2);
+          const text = Buffer.from(markerBase64, "base64").toString("utf8");
           const marker = validateAuthMarkerForTrainingMigrationHandoff(text, { liveAppSha, repositoryPath });
           process.stdout.write(JSON.stringify({ ...marker, liveAppSha }));
           NODE

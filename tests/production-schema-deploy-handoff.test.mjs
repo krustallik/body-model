@@ -314,6 +314,32 @@ describe("schema deploy compatibility handoff", () => {
     expect(() => validateHistoricalAuthMigrationRuns(migrationRun, { ...ciRun, head_sha: "f".repeat(40) })).toThrow(/historical owner-authorized Auth migration/);
   });
 
+  it("preserves the terminal marker newline through Base64 transport", () => {
+    const markerText = [
+      "schemaVersion=3",
+      "manifestId=auth-multiuser-v1",
+      `migrationOriginSha=${AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA}`,
+      `deploySha=${AUTH_PREVIOUS_DEPLOY_SHA}`,
+      "state=app-ready",
+      "workflowRunId=44842238326",
+      "workflowRunAttempt=1",
+      `authorizationId=${"a".repeat(64)}`,
+      `lineageDigest=${"b".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"c".repeat(64)}`,
+      `compatibilityDigest=${"d".repeat(64)}`,
+      "",
+    ].join("\n");
+    const markerBase64 = Buffer.from(markerText, "utf8").toString("base64");
+    const transportedMarkerText = Buffer.from(markerBase64, "base64").toString("utf8");
+    const expectedDigest = parseSchemaDeployMarker(markerText).digest;
+
+    expect(markerText.endsWith("\n")).toBe(true);
+    expect(transportedMarkerText).toBe(markerText);
+    expect(parseSchemaDeployMarker(transportedMarkerText).digest).toBe(expectedDigest);
+    expect(parseSchemaDeployMarker(markerText.replace(/\n$/, "")).digest).not.toBe(expectedDigest);
+  });
+
   it("creates an Auth marker only from the full read-only schema and migration evidence", () => {
     const report = authPostflightReport();
     const plan = buildAuthSchemaReattestation({

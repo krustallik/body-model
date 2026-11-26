@@ -248,7 +248,7 @@ describe("production database cutback gates", () => {
   it("admits source-app recovery only on the exact signed Auth marker and unchanged Training database", () => {
     const fixture = sourceAppRecoveryFixture();
     const parsedBundle = parseCutbackEvidenceBundle([
-      fixture.envelope,
+      `${fixture.envelope}\n`,
       JSON.stringify(fixture.artifactMetadata),
       JSON.stringify(fixture.preflightEvidence),
       JSON.stringify(fixture.preflightReport),
@@ -256,10 +256,24 @@ describe("production database cutback gates", () => {
       JSON.stringify(fixture.restoreResult),
     ]);
     expect(typeof parsedBundle.envelope).toBe("string");
+    expect(parsedBundle.envelope).toBe(fixture.envelope);
     expect(verifyCutbackEvidenceBundle({
       ...parsedBundle, allowlist: fixture.allowlist, expectedFailedRunId: "5001", expectedFailedSha: fixture.failedSha,
       backupFileBytes: fixture.encryptedBackup,
     })).toMatchObject({ verified: true, claims: { workflowRunId: "5001", manifestId: "training-session-context-v1" } });
+
+    const overTerminatedBundle = parseCutbackEvidenceBundle([
+      `${fixture.envelope}\n\n`,
+      JSON.stringify(fixture.artifactMetadata),
+      JSON.stringify(fixture.preflightEvidence),
+      JSON.stringify(fixture.preflightReport),
+      JSON.stringify(fixture.preflightResult),
+      JSON.stringify(fixture.restoreResult),
+    ]);
+    expect(() => verifyCutbackEvidenceBundle({
+      ...overTerminatedBundle, allowlist: fixture.allowlist, expectedFailedRunId: "5001", expectedFailedSha: fixture.failedSha,
+      backupFileBytes: fixture.encryptedBackup,
+    })).toThrow(/not canonical JSON/);
 
     const verify = (overrides = {}) => verifyPreDdlSourceAppRecovery({
       envelope: fixture.envelope, artifactMetadata: fixture.artifactMetadata,

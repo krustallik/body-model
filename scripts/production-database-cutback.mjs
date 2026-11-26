@@ -31,7 +31,8 @@ export function parseCutbackEvidenceBundle(values) {
     fail("cutback evidence bundle does not contain its canonical authorization envelope and complete JSON evidence.");
   }
   const [artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.slice(1).map((value) => JSON.parse(value));
-  return { envelope: values[0], artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult };
+  const envelope = values[0].endsWith("\n") ? values[0].slice(0, -1) : values[0];
+  return { envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult };
 }
 
 async function readCutbackEvidenceBundle(directory) {

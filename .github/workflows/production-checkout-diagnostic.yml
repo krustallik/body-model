@@ -272,7 +272,7 @@ jobs:
           }
           cd -- "$deploy_path"
           APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" BODYCAST_DB_PREFLIGHT_MANIFEST=training-session-context-v1 \
-            bash scripts/production-db-target.sh --preflight bodycast-db-prod
+            bash scripts/production-db-target.sh --previous-app-compatibility-snapshot bodycast-db-prod
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"

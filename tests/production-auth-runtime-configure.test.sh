@@ -6,6 +6,34 @@ WORKFLOW="$ROOT/.github/workflows/production-auth-runtime-configure.yml"
 TEMP="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP"' EXIT
 
+cat > "$TEMP/maintenance.headers" <<'HEADERS'
+HTTP/2 503
+Cache-Control: no-store
+X-BodyCast-Deploy-Maintenance: fixture-release-1
+HEADERS
+printf '%s\n' 'BodyCast is temporarily unavailable while the model is updated.' > "$TEMP/maintenance.body"
+maintenance_state="$(BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --public-route-state-test 503 "$TEMP/maintenance.headers" "$TEMP/maintenance.body")"
+[[ "$maintenance_state" == "maintenance:fixture-release-1" ]]
+cat > "$TEMP/serving.headers" <<'HEADERS'
+HTTP/2 200
+Content-Type: text/html
+HEADERS
+printf '%s\n' '<!doctype html><title>BodyCast</title>' > "$TEMP/serving.body"
+serving_state="$(BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --public-route-state-test 200 "$TEMP/serving.headers" "$TEMP/serving.body")"
+[[ "$serving_state" == "serving" ]]
+grep -Fv 'Cache-Control: no-store' "$TEMP/maintenance.headers" > "$TEMP/maintenance.no-store.headers"
+if BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --public-route-state-test 503 "$TEMP/maintenance.no-store.headers" "$TEMP/maintenance.body" > "$TEMP/no-store.stdout" 2> "$TEMP/no-store.stderr"; then
+  echo "Uncached maintenance responses must fail closed." >&2
+  exit 1
+fi
+cat >> "$TEMP/maintenance.headers" <<'HEADERS'
+X-BodyCast-Deploy-Maintenance: duplicate-marker
+HEADERS
+if BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --public-route-state-test 503 "$TEMP/maintenance.headers" "$TEMP/maintenance.body" > "$TEMP/invalid-state.stdout" 2> "$TEMP/invalid-state.stderr"; then
+  echo "Duplicate maintenance markers must fail closed." >&2
+  exit 1
+fi
+
 cat > "$TEMP/.env" <<'ENV'
 NODE_ENV=production
 POSTGRES_DB=bodycast

@@ -66,6 +66,22 @@ rewrite_runtime_env() {
   ' "$source_file" > "$target_file"
 }
 
+public_route_state() {
+  local status="$1" headers="$2" body="$3" marker
+  if [[ "$status" =~ ^(200|301|302|303|307|308)$ ]] \
+      && ! grep -qi '^X-BodyCast-Deploy-Maintenance:' "$headers" \
+      && ! grep -Fq 'BodyCast is temporarily unavailable while the model is updated.' "$body"; then
+    printf 'serving'
+    return 0
+  fi
+  [[ "$status" == "503" ]] \
+    && grep -Fqx 'BodyCast is temporarily unavailable while the model is updated.' "$body" \
+    && awk 'tolower($0) ~ /^cache-control:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*\r$/, ""); if (tolower($0) == "no-store") found = 1 } END { exit !found }' "$headers" || return 1
+  marker="$(awk 'tolower($0) ~ /^x-bodycast-deploy-maintenance:/ { count++; sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*\r$/, ""); value = $0 } END { if (count != 1) exit 1; print value }' "$headers")" || return 1
+  [[ "$marker" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+  printf 'maintenance:%s' "$marker"
+}
+
 select_better_auth_secret() {
   local source_file="$1" count value
   count="$(awk -F= '$1 == "BETTER_AUTH_SECRET" { count++ } END { print count + 0 }' "$source_file")"
@@ -92,6 +108,10 @@ if [[ "${BODYCAST_AUTH_CONFIG_TEST_ONLY:-}" == "1" ]]; then
   fi
   if [[ "$#" == 4 && "$1" == "--verify-pinned-file-test" ]]; then
     verify_pinned_release_file "$2" "$3" "$4"
+    exit $?
+  fi
+  if [[ "$#" == 4 && "$1" == "--public-route-state-test" ]]; then
+    public_route_state "$2" "$3" "$4"
     exit $?
   fi
   [[ "$#" == 3 && "$1" == "--rewrite-test" ]] || exit 2
@@ -249,26 +269,42 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
-assert_public_serving() {
-  local tag="$1" home_status api_status
-  command -v curl >/dev/null 2>&1 || { echo "HTTPS health probe is unavailable." >&2; return 1; }
-  home_status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+capture_public_state() {
+  local tag="$1" home_status home_state api_status api_state
+  command -v curl >/dev/null 2>&1 || { echo "HTTPS state probe is unavailable." >&2; return 1; }
+  home_status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
     --dump-header "$TEMP_ROOT/${tag}-home.headers" --output "$TEMP_ROOT/${tag}-home.body" \
     --write-out '%{http_code}' "https://$APP_HOST/" 2>"$TEMP_ROOT/${tag}-home.err")" || {
     echo "The current BodyCast HTTPS endpoint is unavailable." >&2; return 1;
   }
-  [[ "$home_status" =~ ^(200|301|302|303|307|308)$ ]] \
-    && ! grep -qi '^x-bodycast-deploy-maintenance:' "$TEMP_ROOT/${tag}-home.headers" \
-    && ! grep -Fq 'BodyCast is temporarily unavailable while the model is updated.' "$TEMP_ROOT/${tag}-home.body" || {
-      echo "The current BodyCast website is in maintenance or returned an unexpected status." >&2; return 1;
-    }
-  api_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
-    --output "$TEMP_ROOT/${tag}-health.body" --write-out '%{http_code}' \
-    "https://$APP_HOST/api/health" 2>"$TEMP_ROOT/${tag}-health.err")" || {
-    echo "The current BodyCast health API is unavailable." >&2; return 1;
+  home_state="$(public_route_state "$home_status" "$TEMP_ROOT/${tag}-home.headers" "$TEMP_ROOT/${tag}-home.body")" || {
+    echo "The current BodyCast website state could not be verified." >&2; return 1;
   }
-  [[ "$api_status" == 200 ]] && grep -Fq '"status":"ok"' "$TEMP_ROOT/${tag}-health.body" || {
-    echo "The current BodyCast health API is not healthy." >&2; return 1;
+  api_status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 10 \
+    --dump-header "$TEMP_ROOT/${tag}-health.headers" --output "$TEMP_ROOT/${tag}-health.body" \
+    --write-out '%{http_code}' "https://$APP_HOST/api/health" 2>"$TEMP_ROOT/${tag}-health.err")" || {
+    echo "The current BodyCast health endpoint is unavailable." >&2; return 1;
+  }
+  api_state="$(public_route_state "$api_status" "$TEMP_ROOT/${tag}-health.headers" "$TEMP_ROOT/${tag}-health.body")" || {
+    echo "The current BodyCast health endpoint state could not be verified." >&2; return 1;
+  }
+  if [[ "$home_state" == "serving" ]]; then
+    [[ "$api_state" == "serving" ]] && grep -Fq '"status":"ok"' "$TEMP_ROOT/${tag}-health.body" || {
+      echo "The current BodyCast health API is not healthy." >&2; return 1;
+    }
+  elif [[ "$api_state" != "$home_state" ]]; then
+    echo "The current BodyCast maintenance response is inconsistent across routes." >&2
+    return 1
+  fi
+  printf '%s' "$home_state"
+}
+
+assert_public_state() {
+  local tag="$1" expected="$2" actual
+  actual="$(capture_public_state "$tag")" || return 1
+  [[ "$actual" == "$expected" ]] || {
+    echo "The public BodyCast route changed state during Auth configuration." >&2
+    return 1
   }
 }
 
@@ -287,7 +323,7 @@ DB_ID_BEFORE="${DB_BEFORE%%|*}"
   echo "The existing BodyCast app or PostgreSQL is not healthy; runtime configuration was not changed." >&2
   exit 1
 }
-assert_public_serving before || exit 1
+PUBLIC_STATE_BEFORE="$(capture_public_state before)" || exit 1
 
 CADDY_IDS="$(docker ps -aq --filter name=caddy)"
 CADDY_MATCHES=0
@@ -509,7 +545,7 @@ if ! validate_candidate "$RUNTIME_JSON" "$VALIDATION_RESULT"; then
   echo "Committed Auth environment failed provider validation; restoring the previous configuration." >&2
   exit 1
 fi
-assert_public_serving after || { echo "Public health changed during configuration; restoring the previous configuration." >&2; exit 1; }
+assert_public_state after "$PUBLIC_STATE_BEFORE" || { echo "Public state changed during configuration; restoring the previous configuration." >&2; exit 1; }
 
 APP_AFTER="$(app_state)" || { echo "The existing app container disappeared during configuration." >&2; exit 1; }
 DB_AFTER="$(db_state)" || { echo "PostgreSQL disappeared during configuration." >&2; exit 1; }

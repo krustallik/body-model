@@ -445,7 +445,12 @@ describe("serving-route commit boundary", () => {
     expect(existsSync(markerPath)).toBe(false);
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
     expect(events).toContain("unified-v4-fence-ready");
+    expect(events).toContain("public-probe:200:https://bodycast.example.test/login");
+    expect(events).toContain("public-probe:401:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
+    expect(events).toContain("public-probe:401:https://bodycast.example.test/api/v1/workouts/1/stepper-diagnostic");
     expect(events).toContain("live-route-mutation:serving");
+    expect(result.stdout).toContain("BODYCAST_AUTH_HISTORY_ANONYMOUS=unauthorized");
+    expect(result.stdout).toContain("BODYCAST_AUTH_STEPPER_DIAGNOSTIC_ANONYMOUS=unauthorized");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("prisma migrate deploy");
   }, 30_000);
 

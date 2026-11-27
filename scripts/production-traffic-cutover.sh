@@ -521,7 +521,11 @@ serve_training_release() {
       || "$migration_free_marker_mode" == "training" ]] || {
       echo "Migration-free release marker mode is malformed." >&2; return 1;
     }
-    if [[ "$migration_free_marker_mode" == "auth" ]]; then BODYCAST_AUTH_MULTIUSER_SERVE=1; else BODYCAST_AUTH_MULTIUSER_SERVE=0; fi
+    if [[ "$migration_free_marker_mode" == "auth" || "$migration_free_marker_mode" == "training" ]]; then
+      BODYCAST_AUTH_MULTIUSER_SERVE=1
+    else
+      BODYCAST_AUTH_MULTIUSER_SERVE=0
+    fi
     export BODYCAST_AUTH_MULTIUSER_SERVE
     if [[ "$migration_free_marker_mode" == "none" ]]; then
       if read_bodycast_release_marker; then

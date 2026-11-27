@@ -61,7 +61,7 @@ describe("one-time fresh empty BodyCast install contract", () => {
     expect(workflow).toContain('"initialize-empty-bodycast-db"');
     expect(workflow).toContain('[[ "$SSH_HOST" == "169.58.239.149" ]]');
     expect(workflow).toContain('[[ "$APP_HOST" == "bodycast.ihorhub.eu" ]]');
-    expect(workflow).toContain('if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" ]]; then');
+    expect(workflow).toContain('if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" || "$DEPLOY_MODE" == "schema-ready-serving" ]]; then');
     expect(workflow).toContain("production-empty-install-host.sh");
     expect(workflow).toContain("assertTrustedOwnerWorkflowRun");
     expect(workflow).toContain("Exact current main SHA");

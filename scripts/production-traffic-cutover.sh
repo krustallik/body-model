@@ -494,7 +494,7 @@ restore_training_maintenance_after_fence_failure() {
 serve_training_release() {
   local expected_release_sha="$1" migration_free_serving="${2:-false}" marker_digest="" app_image_id latest_image_id maintenance_marker staged_route
   local fence_output_fd fence_input_fd fence_pid fence_deadline fence_remaining fence_line fence_ready=false
-  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha auth_multiuser_serving=false
+  local fence_status fence_route_budget_ms app_release_sha app_health expected_raw_source_fingerprint expected_health_sync_audit_retention_baseline expected_health_sync_audit_prune_events expected_prisma_database_identity serving_db_identity stepper_diagnostic_workout_id target_strength_session_id require_absent_marker=false route_marker_sha auth_multiuser_serving=false
   stepper_diagnostic_workout_id=""
   target_strength_session_id=""
   local recovered_v4_release=false recovery_marker_path recovery_marker_digest
@@ -644,6 +644,17 @@ serve_training_release() {
   fi
   if [[ "$recovered_v4_release" == "true" ]]; then
     bodycast_assert_completed_v4_recovery_for_release "$expected_release_sha"
+  fi
+  if [[ "$migration_free_serving" != "true" && "$recovered_v4_release" != "true" ]]; then
+    serving_db_identity="$(bodycast_capture_production_db_identity "$DB_CONTAINER")" || return 1
+    expected_prisma_database_identity="$(bodycast_production_db_endpoint_from_identity "$serving_db_identity")" || return 1
+    if ! timeout 20m docker compose -f "$COMPOSE_FILE" --profile tools run --rm --no-deps \
+      -e "BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=$expected_prisma_database_identity" --entrypoint node migrate \
+      /app/scripts/unified-v4-traffic-check.mjs --profile-id 1 --wait-training-refresh-current; then
+      echo "Training refresh and Unified V4 did not converge; traffic remains in maintenance." >&2
+      return 1
+    fi
+    bodycast_assert_production_db_identity_unchanged "$serving_db_identity" || return 1
   fi
   bodycast_stage_serving_route_config
   staged_route="$BODYCAST_ROUTE_STAGE_PATH"

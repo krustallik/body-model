@@ -354,6 +354,19 @@ if [[ "$joined" == *" run --rm --no-deps "* && "$joined" == *"--entrypoint node 
       event "training-refresh-generations-current"
       exit 0
     fi
+    if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--wait-training-refresh-current"* ]]; then
+      [[ "$joined" == *"BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=$PRODUCTION_DB_ENDPOINT_IDENTITY"* ]] || {
+        event "training-refresh-current-identity-missing"
+        exit 43
+      }
+      event "training-refresh-current-wait"
+      if [[ "\${FAIL_TRAINING_REFRESH_CURRENT_WAIT:-0}" == "1" ]]; then
+        event "training-refresh-current-timeout"
+        exit 42
+      fi
+      event "training-refresh-current"
+      exit 0
+    fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* && "$joined" == *"--hold-currentness-fence"* ]]; then
       event "unified-v4-fence-start"
       if [[ "$joined" == *"--expected-raw-input-fingerprint"* ]]; then event "unified-v4-raw-fingerprint-assertion"; fi

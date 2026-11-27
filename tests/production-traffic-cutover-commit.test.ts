@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { bashAvailable, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish, PRODUCTION_DB_IDENTITY } from "./helpers/production-release-cutover-fixture";
+import { bashAvailable, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish, PRODUCTION_DB_ENDPOINT_IDENTITY, PRODUCTION_DB_IDENTITY } from "./helpers/production-release-cutover-fixture";
 
 const AUDIT_RETENTION_BASELINE = JSON.stringify({ schemaVersion: 1, capturedAt: "2026-10-22T20:00:00.000Z",
   rowCount: 0, maxId: 0, rowXor: "0".repeat(64) });
@@ -161,6 +161,8 @@ describe("serving-route commit boundary", () => {
     expect(existsSync(path.join(fixture.root, "image-rollback"))).toBe(false);
     expect(readdirSync(fixture.routes).some((name) => name.startsWith(".bodycast-maintenance-backup."))).toBe(false);
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    const currentWait = events.indexOf("training-refresh-current-wait");
+    const fenceStart = events.indexOf("unified-v4-fence-start");
     const fenceReady = events.indexOf("unified-v4-fence-ready");
     const finalMainFetch = events.lastIndexOf("canonical-main-fetch");
     const finalMaintenanceProbe = events.lastIndexOf("public-probe:503:https://bodycast.example.test/");
@@ -168,6 +170,11 @@ describe("serving-route commit boundary", () => {
     const reload = events.indexOf("caddy-reload:serving");
     const healthProbe = events.indexOf("public-probe:200:https://bodycast.example.test/api/health");
     const fenceCommit = events.indexOf("unified-v4-fence-committed");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(currentWait).toBeGreaterThanOrEqual(0);
+    expect(currentWait).toBeLessThan(fenceStart);
+    expect(dockerLog).toContain(`BODYCAST_EXPECTED_PRISMA_DB_IDENTITY=${PRODUCTION_DB_ENDPOINT_IDENTITY}`);
+    expect(events).not.toContain("training-refresh-current-identity-missing");
     expect(fenceReady).toBeGreaterThanOrEqual(0);
     expect(fenceReady).toBeLessThan(finalMainFetch);
     expect(finalMainFetch).toBeLessThan(routeCommit);
@@ -179,6 +186,24 @@ describe("serving-route commit boundary", () => {
     expect(events).not.toContain("public-probe:200:https://bodycast.example.test/api/readiness");
     expect(events).not.toContain("public-probe:200:https://bodycast.example.test/api/v1/days?to=2026-10-22&limit=100&offset=0");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("migration-context-pin");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps schema-ready Training traffic in maintenance when refresh currentness does not converge", () => {
+    const { fixture, trainingReleaseSha } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      FAIL_TRAINING_REFRESH_CURRENT_WAIT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Training refresh and Unified V4 did not converge; traffic remains in maintenance.");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("training-refresh-current-timeout");
+    expect(events).not.toContain("unified-v4-fence-start");
+    expect(events).not.toContain("live-route-mutation:serving");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("serves the exact Training session-context V3 app-ready release under the existing fence", () => {

@@ -34,6 +34,17 @@ if BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --public-route-state-test 503
   exit 1
 fi
 
+app_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --current-app-ready-marker-test app-ready "$app_sha" "$app_sha"
+if BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --current-app-ready-marker-test schema-applied "$app_sha" "$app_sha"; then
+  echo "Auth configuration must not accept a schema-applied marker." >&2
+  exit 1
+fi
+if BODYCAST_AUTH_CONFIG_TEST_ONLY=1 bash "$SCRIPT" --current-app-ready-marker-test app-ready "$app_sha" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
+  echo "Auth configuration must not accept a marker for a different live app." >&2
+  exit 1
+fi
+
 cat > "$TEMP/.env" <<'ENV'
 NODE_ENV=production
 POSTGRES_DB=bodycast
@@ -132,6 +143,8 @@ grep -Fq 'BREVO_API_KEY' "$WORKFLOW"
 ! grep -Fq 'BODYCAST_AUTH_CONFIG_TEST_ONLY' "$WORKFLOW"
 grep -Fq 'production-release-lock.sh' "$SCRIPT"
 grep -Fq 'verify_pinned_release_file' "$SCRIPT"
+grep -Fq 'current_app_ready_marker_matches "$APP_RELEASE_SHA"' "$SCRIPT"
+grep -Fq 'assert_bodycast_release_marker_matches "$RELEASE_MARKER_SHA" "app-ready" "$RELEASE_MARKER_DIGEST"' "$SCRIPT"
 grep -Fq 'production-schema-deploy-handoff.mjs" "$SCHEMA_HANDOFF_SHA256"' "$SCRIPT"
 grep -Fq 'production-app-capabilities.mjs" "$APP_CAPABILITIES_SHA256"' "$SCRIPT"
 grep -Fq 'cd -- "$DEPLOY_PATH"' "$SCRIPT"

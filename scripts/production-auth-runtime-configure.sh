@@ -101,6 +101,13 @@ select_better_auth_secret() {
   fi
 }
 
+current_app_ready_marker_matches() {
+  local app_sha="$1"
+  [[ "$app_sha" =~ ^[a-f0-9]{40}$ \
+    && "$BODYCAST_MARKER_STATE" == "app-ready" \
+    && "$BODYCAST_MARKER_RELEASE_SHA" == "$app_sha" ]]
+}
+
 if [[ "${BODYCAST_AUTH_CONFIG_TEST_ONLY:-}" == "1" ]]; then
   if [[ "$#" == 2 && "$1" == "--select-secret-test" ]]; then
     select_better_auth_secret "$2"
@@ -112,6 +119,12 @@ if [[ "${BODYCAST_AUTH_CONFIG_TEST_ONLY:-}" == "1" ]]; then
   fi
   if [[ "$#" == 4 && "$1" == "--public-route-state-test" ]]; then
     public_route_state "$2" "$3" "$4"
+    exit $?
+  fi
+  if [[ "$#" == 4 && "$1" == "--current-app-ready-marker-test" ]]; then
+    BODYCAST_MARKER_STATE="$2"
+    BODYCAST_MARKER_RELEASE_SHA="$3"
+    current_app_ready_marker_matches "$4"
     exit $?
   fi
   [[ "$#" == 3 && "$1" == "--rewrite-test" ]] || exit 2
@@ -215,19 +228,6 @@ REMOTE_MAIN="$(git -C "$DEPLOY_PATH" ls-remote origin refs/heads/main | awk 'NR 
   exit 1
 }
 
-# Reuse the release marker reader used by existing production paths.
-source "$DEPLOY_PATH/scripts/production-release-marker.sh"
-if read_bodycast_release_marker; then
-  echo "An active production release marker blocks Auth configuration." >&2
-  exit 1
-else
-  marker_status=$?
-  [[ "$marker_status" == 1 ]] || {
-    echo "Production release marker state is ambiguous." >&2
-    exit 1
-  }
-fi
-
 ENV_FILE="$DEPLOY_PATH/.env"
 [[ -f "$ENV_FILE" && ! -L "$ENV_FILE" && "$(stat -c '%u' "$ENV_FILE")" == "0" ]] || {
   echo "The BodyCast runtime environment file is absent or not root-owned." >&2
@@ -323,6 +323,35 @@ DB_ID_BEFORE="${DB_BEFORE%%|*}"
   echo "The existing BodyCast app or PostgreSQL is not healthy; runtime configuration was not changed." >&2
   exit 1
 }
+APP_RELEASE_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod 2>/dev/null)" || {
+  echo "The existing BodyCast app release SHA could not be verified." >&2; exit 1;
+}
+[[ "$APP_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+  echo "The existing BodyCast app release SHA is invalid." >&2; exit 1;
+}
+
+# Auth configuration may run during a held app-ready handoff. Keep that
+# marker intact and require it to identify the healthy live app exactly.
+source "$DEPLOY_PATH/scripts/production-release-marker.sh"
+RELEASE_MARKER_SHA=""
+RELEASE_MARKER_DIGEST=""
+if read_bodycast_release_marker; then
+  current_app_ready_marker_matches "$APP_RELEASE_SHA" || {
+    echo "Auth configuration requires an app-ready marker for the healthy live app." >&2
+    exit 1
+  }
+  RELEASE_MARKER_SHA="$BODYCAST_MARKER_RELEASE_SHA"
+  RELEASE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+  [[ "$RELEASE_MARKER_DIGEST" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "The live app-ready marker digest is invalid." >&2; exit 1;
+  }
+else
+  marker_status=$?
+  [[ "$marker_status" == 1 ]] || {
+    echo "Production release marker state is ambiguous." >&2
+    exit 1
+  }
+fi
 PUBLIC_STATE_BEFORE="$(capture_public_state before)" || exit 1
 
 CADDY_IDS="$(docker ps -aq --filter name=caddy)"
@@ -554,6 +583,12 @@ DB_AFTER="$(db_state)" || { echo "PostgreSQL disappeared during configuration." 
   echo "A BodyCast container changed during Auth configuration; restoring the previous configuration." >&2
   exit 1
 }
+if [[ -n "$RELEASE_MARKER_SHA" ]]; then
+  assert_bodycast_release_marker_matches "$RELEASE_MARKER_SHA" "app-ready" "$RELEASE_MARKER_DIGEST" || {
+    echo "The retained app-ready marker changed during Auth configuration; restoring the previous configuration." >&2
+    exit 1
+  }
+fi
 
 cat "$VALIDATION_RESULT"
 printf 'auth_config_prepared=yes\ncurrent_live_container_unchanged=yes\ncandidate_runtime_verified=yes\n'

@@ -35,8 +35,9 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
         COALESCE((
           SELECT json_agg(json_build_object('present', true))
           FROM pg_stat_activity a
-          WHERE a.datname = current_database() AND a.backend_type = 'client backend' AND a.pid <> pg_backend_pid()
-        ), '[]'::json) AS "activeClientBackends"
+          WHERE a.datname = current_database() AND a.backend_type = 'client backend'
+            AND a.pid <> pg_backend_pid() AND a.xact_start IS NOT NULL
+        ), '[]'::json) AS "activeClientTransactions"
       `);
     });
     if (!Array.isArray(rows) || rows.length !== 1) reject("identity query returned an unexpected row count.");
@@ -54,9 +55,9 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
       schemaVersion: 1,
       observerPid: Number(row.observerPid),
       observerApplicationName: row.observerApplicationName,
-      identityPolicy: "no-other-client-backends",
+      identityPolicy: "no-other-client-transactions",
       observedAt: row.observedAt instanceof Date ? row.observedAt.toISOString() : String(row.observedAt),
-      activeClientBackends: row.activeClientBackends,
+      activeClientTransactions: row.activeClientTransactions,
     };
     return { identity, writerDrain };
   } finally {
@@ -78,10 +79,10 @@ export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, no
     { id: "writer-drain-schema", passed: writerDrain?.schemaVersion === 1 },
     { id: "writer-drain-observer-pid", passed: Number.isSafeInteger(writerDrain?.observerPid) && writerDrain.observerPid > 0 },
     { id: "fixed-observer-application", passed: writerDrain?.observerApplicationName === "bodycast-prisma-ddl-guard" },
-    { id: "zero-other-client-policy", passed: writerDrain?.identityPolicy === "no-other-client-backends" },
-    { id: "complete-backend-inventory", passed: Array.isArray(writerDrain?.activeClientBackends) },
-    { id: "zero-other-client-backends", passed: Array.isArray(writerDrain?.activeClientBackends)
-      && writerDrain.activeClientBackends.length === 0 },
+    { id: "zero-other-client-transaction-policy", passed: writerDrain?.identityPolicy === "no-other-client-transactions" },
+    { id: "complete-transaction-inventory", passed: Array.isArray(writerDrain?.activeClientTransactions) },
+    { id: "zero-other-client-transactions", passed: Array.isArray(writerDrain?.activeClientTransactions)
+      && writerDrain.activeClientTransactions.length === 0 },
     { id: "fresh-writer-drain-observation", passed: Number.isFinite(ageMs) && ageMs >= -60_000 && ageMs <= 30_000 },
   ];
   if (checks.some((entry) => !entry.passed)) reject("final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=" + JSON.stringify(checks));

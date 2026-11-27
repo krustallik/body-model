@@ -377,9 +377,9 @@ function validPrismaTargetState(identity, at = now, overrides = {}) {
       schemaVersion: 1,
       observerPid: 222,
       observerApplicationName: "bodycast-prisma-ddl-guard",
-      identityPolicy: "no-other-client-backends",
+      identityPolicy: "no-other-client-transactions",
       observedAt: new Date(at).toISOString(),
-      activeClientBackends: [],
+      activeClientTransactions: [],
       ...overrides,
     },
   };
@@ -2277,12 +2277,11 @@ describe("V5 closed migration manifest and full pending set", () => {
     }, now)).toThrow("differs from the verified production identity");
     try {
       assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
-        activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
+        activeClientTransactions: [{ present: true }],
       }), now);
-      throw new Error("a non-empty writer inventory unexpectedly passed the final guard");
+      throw new Error("an active client transaction unexpectedly passed the final guard");
     } catch (error) {
-      expect(JSON.parse(error.message.split("checks=")[1])).toContainEqual({ id: "zero-other-client-backends", passed: false });
-      expect(error.message).not.toContain("bodycast-reconnected-writer");
+      expect(JSON.parse(error.message.split("checks=")[1])).toContainEqual({ id: "zero-other-client-transactions", passed: false });
     }
   });
 

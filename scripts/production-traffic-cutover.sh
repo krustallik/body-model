@@ -507,6 +507,9 @@ serve_training_release() {
   git cat-file -e "$expected_release_sha:prisma/migrations/20261016120000_training_mutation_ledger_queue/migration.sql" 2>/dev/null || {
     echo "The exact requested SHA does not contain the Training queue migration." >&2; return 1;
   }
+  if [[ "$migration_free_serving" != "true" && "${BODYCAST_RECOVERED_V4_SERVE:-0}" != "1" ]]; then
+    require_ready_release_marker || return 1
+  fi
   if [[ "$migration_free_serving" == "true" ]]; then
     [[ "${BODYCAST_MIGRATION_FREE_SERVE:-0}" == "1" ]] || {
       echo "Migration-free serving requires the owner-authorized release runner context." >&2; return 1;
@@ -581,8 +584,15 @@ serve_training_release() {
     && "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" ]]; then
     marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
     [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training session-context release marker digest is invalid." >&2; return 1; }
+  elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+    && "$BODYCAST_MARKER_MANIFEST_ID" == "training-session-context-v1" \
+    && "$BODYCAST_MARKER_STATE" == "app-ready" \
+    && "$BODYCAST_MARKER_DEPLOY_SHA" == "$expected_release_sha" ]]; then
+    node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
+      "$BODYCAST_MARKER_FILE_PATH" "$expected_release_sha" "$ROOT_DIR"
+    marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+    [[ "$marker_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Training session-context V3 marker digest is invalid." >&2; return 1; }
   else
-    require_ready_release_marker
     [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
       && "$BODYCAST_MARKER_MANIFEST_ID" == "training-mutation-ledger-refresh-queue-v1" \
       && "$BODYCAST_MARKER_STATE" == "app-ready" \

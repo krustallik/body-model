@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   AUTH_MULTIUSER_CONTENT_BOUND_PATHS,
+  V4_CONTENT_BOUND_PATHS,
   AUTH_MULTIUSER_MIGRATION_CI_RUN_ID,
   AUTH_MULTIUSER_MIGRATION_ORIGIN_SHA,
   AUTH_MULTIUSER_MIGRATION_WORKFLOW_RUN_ID,
@@ -275,6 +276,21 @@ async function createTrainingMutationHandoffRepository({ file, contents }) {
   return { repository, candidateSha };
 }
 
+async function createTrainingSessionContextHandoffRepository({ file, contents }) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-training-context-handoff-"));
+  directories.push(directory);
+  const repository = path.join(directory, "repo");
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+  execFileSync("git", ["-C", repository, "checkout", "--quiet", "--detach", "HEAD"]);
+  const originSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  await writeFile(path.join(repository, file), contents);
+  execFileSync("git", ["-C", repository, "add", file]);
+  execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+    "commit", "--quiet", "-m", "compatible training context handoff fixture"]);
+  const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return { repository, originSha, candidateSha };
+}
+
 const compatible = {
   changedPaths: [".github/workflows/deploy-production.yml", "tests/deploy-script-ordering.test.ts"],
   isAncestor: true,
@@ -398,7 +414,7 @@ describe("schema deploy compatibility handoff", () => {
     await expect(applyAuthSchemaReattestation(options)).rejects.toThrow(/existing release marker/);
   }, 30_000);
 
-  it("pins the current migration-free fence script blobs on the effective Auth map entries", () => {
+  it("pins the current traffic-cutover blob for Auth and V4 handoffs", () => {
     for (const [filePath, migrationOriginBlob] of [
       ["scripts/production-traffic-cutover.sh", "3fd321d857e2aa024e4875a2689a588dc07078ee"],
       ["scripts/unified-v4-traffic-check.ts", "109395c697f53934123e73c75920be6cd58ea447"],
@@ -408,6 +424,10 @@ describe("schema deploy compatibility handoff", () => {
       expect(binding?.migrationOriginBlob).toBe(migrationOriginBlob);
       expect(allowedDeployBlobs(binding)).toContain(workingBlob);
     }
+    const cutoverBlob = execFileSync("git", ["hash-object", "scripts/production-traffic-cutover.sh"], { encoding: "utf8" }).trim();
+    const v4Binding = V4_CONTENT_BOUND_PATHS["scripts/production-traffic-cutover.sh"];
+    expect(v4Binding?.migrationOriginBlob).toBe("baeb3ff34c52c606a653d9e0c027c79d7b7c72da");
+    expect(allowedDeployBlobs(v4Binding)).toContain(cutoverBlob);
   });
   it("keeps the new Training analytics schema and runtime blobs outside migration-free Auth deployment", () => {
     const currentSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -1291,6 +1311,42 @@ describe("schema deploy compatibility handoff", () => {
       })).toThrow();
     }
   });
+
+  it("hands the Training session-context marker to a tooling-only descendant and rejects runtime changes", async () => {
+    const originSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const toolingCandidate = await createTrainingSessionContextHandoffRepository({
+      file: "tests/training-context-handoff-fixture.txt",
+      contents: "tooling-only compatibility fixture\n",
+    });
+    const compatibility = readGitCompatibility(toolingCandidate.repository, toolingCandidate.candidateSha,
+      originSha, TRAINING_SESSION_CONTEXT_MANIFEST.id);
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: trainingSessionContextMarkerText({ releaseSha: originSha }),
+      deploySha: toolingCandidate.candidateSha,
+      ...compatibility,
+    });
+    expect(plan.action).toBe("write");
+    expect(plan.marker).toMatchObject({
+      manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+      migrationOriginSha: originSha,
+      deploySha: toolingCandidate.candidateSha,
+      state: "schema-applied",
+      workflowRunId: "40123456792",
+    });
+    const appReady = renderSchemaDeployTransition(plan.bytes, "app-ready");
+    expect(parseSchemaDeployMarker(appReady).marker).toMatchObject({
+      manifestId: TRAINING_SESSION_CONTEXT_MANIFEST.id,
+      deploySha: toolingCandidate.candidateSha,
+      state: "app-ready",
+    });
+
+    const runtimeCandidate = await createTrainingSessionContextHandoffRepository({
+      file: "src/modules/training/training.service.ts",
+      contents: `${await readFile(path.join(process.cwd(), "src/modules/training/training.service.ts"), "utf8")}\n// incompatible runtime fixture\n`,
+    });
+    expect(() => readGitCompatibility(runtimeCandidate.repository, runtimeCandidate.candidateSha,
+      runtimeCandidate.originSha, TRAINING_SESSION_CONTEXT_MANIFEST.id)).toThrow(/src differs from the migration origin/);
+  }, 30_000);
 
   it("rejects an altered Training migration checksum at the declared origin", async () => {
     const migration = TRAINING_MUTATION_LEDGER_MANIFEST.migrations[0];

@@ -136,6 +136,25 @@ describe("evaluateProductionDeployGate", () => {
       candidateSha: stale })).toMatchObject({ decision: "skip" });
   });
 
+  it("allows serving an already staged schema-ready app only with its exact confirmation", () => {
+    expect(manualGate({ dispatchConfirm: "serve-schema-ready", nonServingDeploy: false, schemaReadyServing: true }))
+      .toEqual({
+        decision: "deploy",
+        reason: "Owner-authorized serving is bound to the exact current main SHA and requires the staged app-ready schema marker plus the existing Training/Unified currentness fence.",
+        candidateSha: tip,
+        mode: "schema-ready-serving",
+      });
+    expect(manualGate({ schemaReadyServing: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "deploy", nonServingDeploy: false, schemaReadyServing: true }))
+      .toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-schema-ready", nonServingDeploy: true, schemaReadyServing: true }))
+      .toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-schema-ready", nonServingDeploy: false,
+      schemaReadyServing: true, migrationFreeServing: true })).toMatchObject({ decision: "block" });
+    expect(manualGate({ dispatchConfirm: "serve-schema-ready", nonServingDeploy: false,
+      schemaReadyServing: true, candidateSha: stale })).toMatchObject({ decision: "skip" });
+  });
+
   it("allows automatic serving only from successful CI for the exact current main SHA", () => {
     expect(automaticGate()).toEqual({
       decision: "deploy",

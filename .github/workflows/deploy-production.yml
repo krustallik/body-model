@@ -32,6 +32,11 @@ on:
         required: true
         default: false
         type: boolean
+      serve_schema_ready_release:
+        description: Open traffic for the exact current-main app already staged behind maintenance with an app-ready schema marker
+        required: true
+        default: false
+        type: boolean
       reattest_auth_handoff:
         description: Re-attest the previously owner-applied Auth schema only from the pinned historical migration run and a fresh exact-schema read-only report
         required: true
@@ -81,6 +86,7 @@ jobs:
           FRESH_EMPTY_INSTALL: ${{ inputs.fresh_empty_install }}
           SERVE_RECOVERED_V4: ${{ inputs.serve_recovered_v4 }}
           MIGRATION_FREE_SERVING: ${{ inputs.migration_free_serving }}
+          SERVE_SCHEMA_READY: ${{ inputs.serve_schema_ready_release }}
           AUTH_HANDOFF_REATTEST: ${{ inputs.reattest_auth_handoff }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_EVENT_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
@@ -99,9 +105,15 @@ jobs:
           CI_RUN_URL=""
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may use manual deploy."; exit 1; }
-            if [[ "$FRESH_EMPTY_INSTALL" == "true" && ( "$SERVE_RECOVERED_V4" == "true" || "$MIGRATION_FREE_SERVING" == "true" ) ]] \
-              || [[ "$SERVE_RECOVERED_V4" == "true" && "$MIGRATION_FREE_SERVING" == "true" ]]; then
-              echo "::error::Fresh install, recovered-V4 serving, and migration-free serving are mutually exclusive."; exit 1
+            if [[ "$FRESH_EMPTY_INSTALL" == "true" && ( "$SERVE_RECOVERED_V4" == "true" || "$MIGRATION_FREE_SERVING" == "true" || "$SERVE_SCHEMA_READY" == "true" ) ]] \
+              || [[ "$SERVE_RECOVERED_V4" == "true" && ( "$MIGRATION_FREE_SERVING" == "true" || "$SERVE_SCHEMA_READY" == "true" ) ]] \
+              || [[ "$MIGRATION_FREE_SERVING" == "true" && "$SERVE_SCHEMA_READY" == "true" ]]; then
+              echo "::error::Serving modes and fresh install are mutually exclusive."; exit 1
+            elif [[ "$SERVE_SCHEMA_READY" == "true" ]]; then
+              [[ "$CONFIRMATION" == "serve-schema-ready" && "$NON_SERVING" == "false" ]] || {
+                echo "::error::Schema-ready serving requires its exact owner confirmation and serving mode."; exit 1;
+              }
+              MODE="schema-ready-serving"
             elif [[ "$MIGRATION_FREE_SERVING" == "true" ]]; then
               [[ "$CONFIRMATION" == "serve-migration-free" && "$NON_SERVING" == "false" ]] || {
                 echo "::error::Migration-free serving requires its distinct confirmation and serving mode."; exit 1;
@@ -202,6 +214,7 @@ jobs:
             REPO="$REPOSITORY" EVENT_NAME="$EVENT_NAME" MAIN_TIP="$MAIN_TIP" CANDIDATE="$CANDIDATE" \
               CONFIRMATION="$CONFIRMATION" NON_SERVING="$NON_SERVING" FRESH_EMPTY_INSTALL="$FRESH_EMPTY_INSTALL" \
               SERVE_RECOVERED_V4="$SERVE_RECOVERED_V4" MIGRATION_FREE_SERVING="$MIGRATION_FREE_SERVING" \
+              SERVE_SCHEMA_READY="$SERVE_SCHEMA_READY" \
               node --experimental-strip-types --input-type=module <<'NODE'
           import { appendFileSync } from "node:fs";
           import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
@@ -210,9 +223,11 @@ jobs:
             dispatchConfirm: process.env.CONFIRMATION, nonServingDeploy: process.env.NON_SERVING === "true",
             freshEmptyInstall: process.env.FRESH_EMPTY_INSTALL === "true",
             recoveredV4Serve: process.env.SERVE_RECOVERED_V4 === "true",
-            migrationFreeServing: process.env.MIGRATION_FREE_SERVING === "true" });
+            migrationFreeServing: process.env.MIGRATION_FREE_SERVING === "true",
+            schemaReadyServing: process.env.SERVE_SCHEMA_READY === "true" });
           const expectedMode = process.env.SERVE_RECOVERED_V4 === "true" ? "recovered-v4-serving"
             : process.env.MIGRATION_FREE_SERVING === "true" ? "migration-free-serving"
+              : process.env.SERVE_SCHEMA_READY === "true" ? "schema-ready-serving"
               : process.env.FRESH_EMPTY_INSTALL === "true" ? "fresh-empty-install" : "non-serving";
           if (result.decision !== "deploy" || result.mode !== expectedMode) throw new Error(result.reason);
           appendFileSync(process.env.GITHUB_OUTPUT, `decision=deploy\ncandidate_sha=${result.candidateSha}\nreason=${result.reason}\n`);
@@ -256,6 +271,8 @@ jobs:
             if [[ "$AUTH_HANDOFF_REATTEST" == "true" ]]; then
               echo "- Auth lineage: re-attested only from the pinned historical owner migration/CI and a fresh read-only full schema report; no migrations or DDL run" >> "$GITHUB_STEP_SUMMARY"
             fi
+          elif [[ "$MODE" == "schema-ready-serving" ]]; then
+            echo "- mode: owner-confirmed route cutover for the already staged exact-SHA schema-ready app; existing Training/Unified currentness fence must pass" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- mode: owner-authorized non-serving schema-cutover deploy; traffic remains in maintenance" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -378,7 +395,7 @@ jobs:
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned production SSH fingerprint."; exit 1; }
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Production traffic topology inputs are invalid."; exit 1; }
-          if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" ]]; then
+          if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" || "$DEPLOY_MODE" == "schema-ready-serving" ]]; then
             [[ "$SSH_HOST" == "169.58.239.149" ]] || { echo "::error::New-VPS release is restricted to the verified BodyCast VPS address."; exit 1; }
             [[ "$APP_HOST" == "bodycast.ihorhub.eu" ]] || { echo "::error::New-VPS release is restricted to bodycast.ihorhub.eu."; exit 1; }
             getent ahostsv4 "$APP_HOST" | awk '$1 == "169.58.239.149" { found = 1 } END { exit !found }' || {
@@ -415,7 +432,7 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
-          [[ "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" || "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" ]] || { echo "::error::Invalid authorized deploy mode."; exit 1; }
+          [[ "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" || "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" || "$DEPLOY_MODE" == "schema-ready-serving" ]] || { echo "::error::Invalid authorized deploy mode."; exit 1; }
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           DEPLOY_SHA="$1"
@@ -443,7 +460,7 @@ jobs:
             trap 'rm -f -- "$OIDC_TOKEN_FILE" "/run/bodycast-migration-free-receipt.${RELEASE_WORKFLOW_RUN_ID}.${RELEASE_WORKFLOW_RUN_ATTEMPT}"; rm -rf -- "/run/bodycast-migration-free-verify.${RELEASE_WORKFLOW_RUN_ID}.${RELEASE_WORKFLOW_RUN_ATTEMPT}"' EXIT
           fi
           [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* \
-            && ( "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" || "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" ) ]] || exit 2
+            && ( "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" || "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "migration-free-serving" || "$DEPLOY_MODE" == "schema-ready-serving" ) ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" ]] || { echo "Unexpected production checkout." >&2; exit 1; }
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "Production checkout is dirty; refusing to overwrite files." >&2; exit 1; }
@@ -464,7 +481,7 @@ jobs:
               echo "The configured read-only GitHub deploy key cannot read the canonical BodyCast repository." >&2; exit 1;
             }
           fi
-          if [[ "$DEPLOY_MODE" == "migration-free-serving" ]]; then
+          if [[ "$DEPLOY_MODE" == "migration-free-serving" || "$DEPLOY_MODE" == "schema-ready-serving" ]]; then
             source scripts/production-release-lock.sh
             bodycast_acquire_production_release_lock
           fi
@@ -512,6 +529,17 @@ jobs:
                 DEPLOY_SHA="$DEPLOY_SHA" bash scripts/deploy.sh
               exit 0
               ;;
+            schema-ready-serving)
+              [[ "$RELEASE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ && "$RELEASE_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 2
+              [[ "$APP_HOST" == "bodycast.ihorhub.eu" ]] || {
+                echo "Schema-ready serving is restricted to the exact BodyCast hostname." >&2; exit 1;
+              }
+              getent ahostsv4 "$APP_HOST" | awk '$1 == "169.58.239.149" { found = 1 } END { exit !found }' || {
+                echo "APP_HOST does not resolve to the authorized BodyCast VPS." >&2; exit 1;
+              }
+              BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" \
+                exec bash scripts/production-traffic-cutover.sh serve
+              ;;
             *) echo "Invalid deploy mode." >&2; exit 1 ;;
           esac
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_NON_SERVING_DEPLOY="$NON_SERVING" \
@@ -546,7 +574,7 @@ jobs:
             timeout 35m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
               -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
           fi
-          if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" ]]; then
+          if [[ "$DEPLOY_MODE" == "fresh-empty-install" || "$DEPLOY_MODE" == "recovered-v4-serving" || "$DEPLOY_MODE" == "schema-ready-serving" ]]; then
             curl --fail --silent --show-error --max-time 20 "https://$APP_HOST/api/health" | grep -Fq '"status":"ok"'
             curl --fail --silent --show-error --output /dev/null --max-time 20 "https://$APP_HOST/settings/profile"
           fi

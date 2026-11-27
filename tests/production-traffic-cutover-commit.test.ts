@@ -181,6 +181,41 @@ describe("serving-route commit boundary", () => {
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("migration-context-pin");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("serves the exact Training session-context V3 app-ready release under the existing fence", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    writeFileSync(markerPath, [
+      "schemaVersion=3",
+      "manifestId=training-session-context-v1",
+      `migrationOriginSha=${trainingReleaseSha}`,
+      `deploySha=${trainingReleaseSha}`,
+      "state=app-ready",
+      "workflowRunId=40123456792",
+      "workflowRunAttempt=1",
+      "authorizationId=training-context-authorization",
+      `lineageDigest=${"d".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"e".repeat(64)}`,
+      `compatibilityDigest=${"f".repeat(64)}`,
+      "",
+    ].join("\n"));
+    const parsedMarker = runFixture(fixture,
+      'source scripts/production-release-marker.sh; read_bodycast_release_marker; printf "%s|%s|%s|%s|%s\\n" "$BODYCAST_MARKER_SCHEMA_VERSION" "$BODYCAST_MARKER_MANIFEST_ID" "$BODYCAST_MARKER_STATE" "$BODYCAST_MARKER_DEPLOY_SHA" "$BODYCAST_DEPLOY_SHA"',
+      { BODYCAST_DEPLOY_SHA: trainingReleaseSha });
+    expect(parsedMarker.status, parsedMarker.stderr).toBe(0);
+    expect(parsedMarker.stdout.trim()).toBe(`3|training-session-context-v1|app-ready|${trainingReleaseSha}|${trainingReleaseSha}`);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy bodycast-app-prod:3000");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("unified-v4-fence-ready");
+    expect(existsSync(markerPath)).toBe(false);
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("serves a migration-free Training candidate only after 74/74 schema, raw identity, and held currentness gates", () => {
     const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
     rmSync(markerPath, { force: true });

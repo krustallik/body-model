@@ -22,6 +22,7 @@ export type DeployGateInput = {
   freshEmptyInstall?: boolean;
   recoveredV4Serve?: boolean;
   migrationFreeServing?: boolean;
+  schemaReadyServing?: boolean;
   currentWorkflowRun?: WorkflowRunEvidence;
   currentWorkflowRunId?: number | string | null;
   currentWorkflowRunAttempt?: number | string | null;
@@ -36,7 +37,7 @@ export type DeployGateResult = {
   decision: "deploy" | "block" | "skip";
   reason: string;
   candidateSha: string | null;
-  mode?: "serving" | "non-serving" | "fresh-empty-install" | "recovered-v4-serving" | "migration-free-serving";
+  mode?: "serving" | "non-serving" | "fresh-empty-install" | "recovered-v4-serving" | "migration-free-serving" | "schema-ready-serving";
 };
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -109,9 +110,8 @@ function trustedSuccessfulMainCiRun(input: DeployGateInput): boolean {
 
 /**
  * Ordinary app deploy follows successful current-main CI. Manual deployment
- * supports the existing non-serving schema cutover, one-time empty-host install,
- * separately confirmed recovered-V4 serving, and a currentness-fenced
- * migration-free serving transition.
+ * supports non-serving schema cutover and the serving modes required for
+ * empty-host, recovered-V4, migration-free, and staged schema-ready releases.
  */
 export function evaluateProductionDeployGate(input: DeployGateInput): DeployGateResult {
   if (input.repositoryFullName !== REPOSITORY) {
@@ -122,10 +122,18 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
     const freshEmptyInstall = input.freshEmptyInstall === true;
     const recoveredV4Serve = input.recoveredV4Serve === true;
     const migrationFreeServing = input.migrationFreeServing === true;
-    if ([freshEmptyInstall, recoveredV4Serve, migrationFreeServing].filter(Boolean).length > 1) {
-      return { decision: "block", reason: "Fresh install, recovered-V4 serving, and migration-free serving are mutually exclusive release paths.", candidateSha: null };
+    const schemaReadyServing = input.schemaReadyServing === true;
+    if ([freshEmptyInstall, recoveredV4Serve, migrationFreeServing, schemaReadyServing].filter(Boolean).length > 1) {
+      return { decision: "block", reason: "Fresh install and serving release paths are mutually exclusive.", candidateSha: null };
     }
-    if (migrationFreeServing) {
+    if (schemaReadyServing) {
+      if (input.dispatchConfirm !== "serve-schema-ready") {
+        return { decision: "block", reason: "Serving a staged schema-ready app requires its distinct owner confirmation.", candidateSha: null };
+      }
+      if (input.nonServingDeploy !== false) {
+        return { decision: "block", reason: "Schema-ready serving must explicitly select serving mode.", candidateSha: null };
+      }
+    } else if (migrationFreeServing) {
       if (input.dispatchConfirm !== "serve-migration-free") {
         return { decision: "block", reason: "Migration-free serving requires its distinct owner confirmation.", candidateSha: null };
       }
@@ -149,7 +157,7 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
     } else if (input.dispatchConfirm !== "deploy") {
       return { decision: "block", reason: "Manual deploy requires confirm_production_deploy=deploy.", candidateSha: null };
     }
-    if (!freshEmptyInstall && !recoveredV4Serve && !migrationFreeServing && input.nonServingDeploy !== true) {
+    if (!freshEmptyInstall && !recoveredV4Serve && !migrationFreeServing && !schemaReadyServing && input.nonServingDeploy !== true) {
       return { decision: "block", reason: "Manual deploy is reserved for the owner-authorized non-serving schema-cutover path.", candidateSha: null };
     }
     if (!FULL_SHA.test(input.candidateSha)) {
@@ -166,9 +174,12 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
           ? "Owner-authorized migration-free serving is bound to the exact current main SHA and requires unchanged database/raw-input identity plus the held Training/Unified currentness fence before route commit."
         : recoveredV4Serve
           ? "Owner-authorized recovered-V4 serving is bound to the exact current main SHA and requires the completed production recovery marker plus the atomic currentness fence."
+          : schemaReadyServing
+            ? "Owner-authorized serving is bound to the exact current main SHA and requires the staged app-ready schema marker plus the existing Training/Unified currentness fence."
         : "Owner-authorized non-serving deploy is bound to the exact current main SHA.",
       candidateSha: input.candidateSha,
       mode: freshEmptyInstall ? "fresh-empty-install" : migrationFreeServing ? "migration-free-serving"
+        : schemaReadyServing ? "schema-ready-serving"
         : recoveredV4Serve ? "recovered-v4-serving" : "non-serving",
     };
   }

@@ -235,6 +235,21 @@ describe("active production release entrypoints", () => {
     expect(cutover).toContain('marker_status" -eq 1 && -f "$recovery_record"');
   });
 
+  it("serves a staged schema-ready release through the existing locked cutover", () => {
+    const workflow = readFileSync(resolve(workflowDir, "deploy-production.yml"), "utf8");
+    const gate = readFileSync(resolve("scripts/ci/production-deploy-gate.ts"), "utf8");
+    expect(workflow).toContain("serve_schema_ready_release:");
+    expect(workflow).toContain('CONFIRMATION" == "serve-schema-ready"');
+    expect(workflow).toContain('MODE="schema-ready-serving"');
+    expect(workflow).toContain('schemaReadyServing: process.env.SERVE_SCHEMA_READY === "true"');
+    expect(workflow).toContain('BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 APP_HOST="$APP_HOST"');
+    expect(workflow).toContain('exec bash scripts/production-traffic-cutover.sh serve');
+    expect(workflow.indexOf('source scripts/production-release-lock.sh'))
+      .toBeLessThan(workflow.indexOf('git fetch --no-tags origin "$DEPLOY_SHA"'));
+    expect(gate).toContain('"schema-ready-serving"');
+    expect(gate).toContain('input.dispatchConfirm !== "serve-schema-ready"');
+  });
+
   it("limits migration-free serving to exact owner confirmation and fenced existing-host replacement", () => {
     const workflow = readFileSync(resolve(workflowDir, "deploy-production.yml"), "utf8");
     const deploy = readFileSync(resolve("scripts/deploy.sh"), "utf8");

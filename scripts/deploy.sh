@@ -170,7 +170,7 @@ previous_app_healthy=false
 rollback_image_pinned=false
 active_schema_cutover=false
 active_recovered_v4_release=false
-auth_multiuser_migration_free=0
+migration_free_marker_mode=none
 auth_handoff_report_path=""
 post_commit_probe_failed=false
 
@@ -415,19 +415,36 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$BODYCAST_AUTH_HANDOFF_REA
     echo "Auth schema re-attestation is only available when both current and legacy release markers are absent." >&2
     release_failure 1
   }
-  auth_multiuser_migration_free=2
+  migration_free_marker_mode=reauth
 elif [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$marker_status" -ne 1 ]]; then
-  if [[ "$marker_status" -eq 0 \
-    && "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
-    && "$BODYCAST_MARKER_MANIFEST_ID" == "auth-multiuser-v1" \
-    && ( "$BODYCAST_MARKER_STATE" == "app-ready" || "$BODYCAST_MARKER_STATE" == "schema-applied" ) ]]; then
-    node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
-      "$BODYCAST_MARKER_FILE_PATH" "$DEPLOY_SHA" "$ROOT_DIR"
-    auth_multiuser_migration_free=1
-  else
-    echo "Migration-free serving accepts only an absent marker on the 74-migration lineage or a compatible Auth handoff on the 77-migration lineage." >&2
+  if [[ "$marker_status" -ne 0 ]]; then
+    echo "Migration-free serving requires an absent marker or a compatible Auth/Training handoff." >&2
     release_failure 1
   fi
+  case "$BODYCAST_MARKER_MANIFEST_ID" in
+    auth-multiuser-v1)
+      [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+        && ( "$BODYCAST_MARKER_STATE" == "app-ready" || "$BODYCAST_MARKER_STATE" == "schema-applied" ) ]] || {
+        echo "Migration-free Auth serving requires a valid V3 handoff marker." >&2
+        release_failure 1
+      }
+      migration_free_marker_mode=auth
+      ;;
+    training-session-context-v1)
+      [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == "3" \
+        && ( "$BODYCAST_MARKER_STATE" == "app-ready" || "$BODYCAST_MARKER_STATE" == "schema-applied" ) ]] || {
+        echo "Migration-free Training serving requires a V3 app-ready or schema-applied handoff marker." >&2
+        release_failure 1
+      }
+      migration_free_marker_mode=training
+      ;;
+    *)
+      echo "Migration-free serving is blocked by an unsupported or unrelated schema/release marker." >&2
+      release_failure 1
+      ;;
+  esac
+  node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
+    "$BODYCAST_MARKER_FILE_PATH" "$DEPLOY_SHA" "$ROOT_DIR"
 fi
 if [[ "$BODYCAST_RECOVERED_V4_SERVE" == "1" ]]; then
   [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 1 ]] || {
@@ -437,7 +454,8 @@ if [[ "$BODYCAST_RECOVERED_V4_SERVE" == "1" ]]; then
   active_recovered_v4_release=true
 fi
 if [[ "$active_recovered_v4_release" != "true" && "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 0 \
-  && ! ( "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" ) \
+  && ! ( "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" \
+    && ( "$migration_free_marker_mode" == "auth" || "$migration_free_marker_mode" == "training" ) ) \
   && ( \
     ( "$BODYCAST_MARKER_RELEASE_SHA" != "$DEPLOY_SHA" && ( \
       ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "schema-applied" ) \
@@ -471,9 +489,10 @@ if [[ "$active_recovered_v4_release" != "true" && "$BODYCAST_NON_SERVING_DEPLOY"
   if read_release_marker; then marker_status=0; else marker_status=$?; fi
 fi
 if [[ "$marker_status" -eq 0 ]]; then
-  if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" ]]; then
-    # The existing Auth app-ready marker is compatibility-checked above. Its
-    # SHA advances only after maintenance is confirmed below.
+  if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" \
+    && ( "$migration_free_marker_mode" == "auth" || "$migration_free_marker_mode" == "training" ) ]]; then
+    # The existing app-ready marker is compatibility-checked above. Its SHA
+    # advances only after maintenance is confirmed below.
     active_schema_cutover=false
   else
     [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA" \
@@ -529,7 +548,8 @@ fi
 
 # Maintenance is externally proven before prior-release capture or any app stop.
 publish_and_confirm_maintenance
-if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" ]]; then
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" \
+  && ( "$migration_free_marker_mode" == "auth" || "$migration_free_marker_mode" == "training" ) ]]; then
   # Advance only the audited app-ready handoff after compatibility, schema,
   # and maintenance checks pass; this app-only path never runs migrations.
   node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --apply \
@@ -537,7 +557,7 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_
   read_release_marker || release_failure 1
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA" \
     && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ]] || {
-    echo "Auth handoff did not advance to the exact candidate SHA after maintenance." >&2
+    echo "Schema handoff did not advance to the exact candidate SHA after maintenance." >&2
     release_failure 1
   }
   marker_status=0
@@ -569,7 +589,7 @@ if [[ "$previous_app_present" == "true" ]]; then
   stop_exact_app_container "$previous_app_sha" "$previous_app_image_id" "$previous_app_container_id"
 fi
 
-if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "2" ]]; then
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$migration_free_marker_mode" == "reauth" ]]; then
   # Auth re-attestation needs the exact post-maintenance, app-absent writer
   # inventory. The ordinary schema check above remains pre-maintenance, while
   # this report is captured only after the old image is pinned and removed.
@@ -595,7 +615,7 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_
     release_failure 1
   }
   marker_status=0
-  auth_multiuser_migration_free=1
+  migration_free_marker_mode=auth
   echo "Published exact-SHA Auth schema evidence from historical owner migration, drained read-only 77/77 ledger/schema report, and consumed OIDC receipt."
 fi
 
@@ -696,12 +716,13 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
   done
 fi
 
-if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" ]]; then
+if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" \
+  && ( "$migration_free_marker_mode" == "auth" || "$migration_free_marker_mode" == "training" ) ]]; then
   write_bodycast_release_marker "$DEPLOY_SHA" app-ready
   read_release_marker || release_failure 1
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA" \
     && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {
-    echo "Healthy Auth candidate could not advance its exact release marker to app-ready." >&2
+    echo "Healthy candidate could not advance its exact release marker to app-ready." >&2
     release_failure 1
   }
 fi
@@ -729,7 +750,7 @@ if [[ "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" ]]; then
     BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT="$expected_raw_source_fingerprint" \
     BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE="$expected_health_sync_audit_retention_baseline" \
     BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS="$expected_health_sync_audit_prune_events" \
-    BODYCAST_AUTH_MULTIUSER_SERVE="$auth_multiuser_migration_free" \
+    BODYCAST_MIGRATION_FREE_MARKER_MODE="$migration_free_marker_mode" \
     BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" \
     bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving
   release_state="COMMITTED"

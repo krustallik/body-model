@@ -422,6 +422,22 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(authReattest).toBeGreaterThan(schemaReportValidation);
     expect(authAdvance).toBeGreaterThan(maintenance);
     expect(handoffApply).toBeGreaterThan(authAdvance);
-    expect(deploySh).toContain('&& ! ( "$BODYCAST_MIGRATION_FREE_CANDIDATE" == "1" && "$auth_multiuser_migration_free" == "1" )');
+    expect(deploySh).toContain("migration_free_marker_mode=reauth");
+  });
+
+  it("serves compatible Training handoff markers through migration-free checks without applying migrations", () => {
+    const markerCheck = deploySh.indexOf('production-schema-deploy-handoff.mjs" --check');
+    const maintenance = deploySh.indexOf("\npublish_and_confirm_maintenance\n");
+    const markerApply = deploySh.indexOf('production-schema-deploy-handoff.mjs" --apply', maintenance);
+    const migrationFreeCutover = deploySh.indexOf('bash "$ROOT_DIR/scripts/production-traffic-cutover.sh" migration-free-serving');
+
+    expect(deploySh).toContain("training-session-context-v1)");
+    expect(deploySh).toContain("migration_free_marker_mode=training");
+    expect(deploySh).toContain('BODYCAST_MIGRATION_FREE_MARKER_MODE="$migration_free_marker_mode"');
+    expect(deploySh).not.toContain("auth_multiuser_migration_free");
+    expect(markerCheck).toBeGreaterThan(-1);
+    expect(maintenance).toBeGreaterThan(markerCheck);
+    expect(markerApply).toBeGreaterThan(maintenance);
+    expect(migrationFreeCutover).toBeGreaterThan(markerApply);
   });
 });

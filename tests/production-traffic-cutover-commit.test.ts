@@ -317,7 +317,7 @@ describe("serving-route commit boundary", () => {
       DEPLOY_SHA: trainingReleaseSha,
       CANDIDATE_SHA: trainingReleaseSha,
       BODYCAST_MIGRATION_FREE_SERVE: "1",
-      BODYCAST_AUTH_MULTIUSER_SERVE: "1",
+      BODYCAST_MIGRATION_FREE_MARKER_MODE: "auth",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
       BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
@@ -374,7 +374,7 @@ describe("serving-route commit boundary", () => {
       DEPLOY_SHA: trainingReleaseSha,
       CANDIDATE_SHA: trainingReleaseSha,
       BODYCAST_MIGRATION_FREE_SERVE: "1",
-      BODYCAST_AUTH_MULTIUSER_SERVE: "1",
+      BODYCAST_MIGRATION_FREE_MARKER_MODE: "auth",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
       BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
@@ -397,7 +397,7 @@ describe("serving-route commit boundary", () => {
       DEPLOY_SHA: trainingReleaseSha,
       CANDIDATE_SHA: trainingReleaseSha,
       BODYCAST_MIGRATION_FREE_SERVE: "1",
-      BODYCAST_AUTH_MULTIUSER_SERVE: "1",
+      BODYCAST_MIGRATION_FREE_MARKER_MODE: "auth",
       BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
       BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
       BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
@@ -406,7 +406,67 @@ describe("serving-route commit boundary", () => {
 
     expect(result.status).not.toBe(0);
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-    expect(result.stderr).toContain("exact current-SHA app-ready Auth marker");
+    expect(result.stderr).toContain("Auth migration-free serving requires the Auth V3 handoff marker.");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("serves a compatible exact-SHA Training session-context handoff through migration-free currentness checks", () => {
+    const { fixture, trainingReleaseSha, markerPath } = prepareTrainingServeFixture();
+    writeFileSync(markerPath, [
+      "schemaVersion=3",
+      "manifestId=training-session-context-v1",
+      `migrationOriginSha=${trainingReleaseSha}`,
+      `deploySha=${trainingReleaseSha}`,
+      "state=app-ready",
+      "workflowRunId=40123456792",
+      "workflowRunAttempt=1",
+      "authorizationId=training-context-authorization",
+      `lineageDigest=${"d".repeat(64)}`,
+      "spawnState=started",
+      `sourceMarkerDigest=${"e".repeat(64)}`,
+      `compatibilityDigest=${"f".repeat(64)}`,
+      "",
+    ].join("\n"));
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_MIGRATION_FREE_MARKER_MODE: "training",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+      PRODUCTION_MIGRATION_LEDGER_STATE: "79|0",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(existsSync(markerPath)).toBe(false);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-fence-ready");
+    expect(events).toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("prisma migrate deploy");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps migration-free serving closed for an unsupported Training marker", () => {
+    const { fixture, trainingReleaseSha } = prepareTrainingServeFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh migration-free-serving", {
+      BODYCAST_DEPLOY_SHA: trainingReleaseSha,
+      DEPLOY_SHA: trainingReleaseSha,
+      CANDIDATE_SHA: trainingReleaseSha,
+      BODYCAST_MIGRATION_FREE_SERVE: "1",
+      BODYCAST_MIGRATION_FREE_MARKER_MODE: "training",
+      BODYCAST_EXPECTED_DB_IDENTITY: PRODUCTION_DB_IDENTITY,
+      BODYCAST_EXPECTED_RAW_SOURCE_FINGERPRINT: "e".repeat(64),
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_RETENTION_BASELINE: AUDIT_RETENTION_BASELINE,
+      BODYCAST_EXPECTED_HEALTH_SYNC_AUDIT_PRUNE_EVENTS: AUDIT_PRUNE_EVENTS,
+      PRODUCTION_MIGRATION_LEDGER_STATE: "79|0",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(result.stderr).toContain("Training migration-free serving requires a Training V3 handoff marker.");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
   }, 30_000);
 

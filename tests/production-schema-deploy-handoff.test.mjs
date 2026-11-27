@@ -414,7 +414,7 @@ describe("schema deploy compatibility handoff", () => {
     await expect(applyAuthSchemaReattestation(options)).rejects.toThrow(/existing release marker/);
   }, 30_000);
 
-  it("pins the current traffic-cutover blob for Auth and V4 handoffs", () => {
+  it("pins the current deploy and traffic-cutover blobs for Auth and V4 handoffs", () => {
     for (const [filePath, migrationOriginBlob] of [
       ["scripts/production-traffic-cutover.sh", "3fd321d857e2aa024e4875a2689a588dc07078ee"],
       ["scripts/unified-v4-traffic-check.ts", "109395c697f53934123e73c75920be6cd58ea447"],
@@ -428,6 +428,11 @@ describe("schema deploy compatibility handoff", () => {
     const v4Binding = V4_CONTENT_BOUND_PATHS["scripts/production-traffic-cutover.sh"];
     expect(v4Binding?.migrationOriginBlob).toBe("baeb3ff34c52c606a653d9e0c027c79d7b7c72da");
     expect(allowedDeployBlobs(v4Binding)).toContain(cutoverBlob);
+
+    const deployBlob = execFileSync("git", ["hash-object", "scripts/deploy.sh"], { encoding: "utf8" }).trim();
+    const v4DeployBinding = V4_CONTENT_BOUND_PATHS["scripts/deploy.sh"];
+    expect(v4DeployBinding?.migrationOriginBlob).toBe("4844bdc0b586f29dbc3b60952717e249a04bbbbc");
+    expect(allowedDeployBlobs(v4DeployBinding)).toContain(deployBlob);
   });
   it("keeps the new Training analytics schema and runtime blobs outside migration-free Auth deployment", () => {
     const currentSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -451,7 +456,7 @@ describe("schema deploy compatibility handoff", () => {
       else expect(Object.hasOwn(AUTH_MULTIUSER_CONTENT_BOUND_PATHS, filePath)).toBe(false);
     }
   });
-  it("pins the candidate public-asset permission fix by exact deploy-script blob", () => {
+  it("pins the current deploy-script blob for Auth handoffs", () => {
     const binding = AUTH_MULTIUSER_CONTENT_BOUND_PATHS["scripts/deploy.sh"];
     const workingBlob = execFileSync("git", ["hash-object", "scripts/deploy.sh"], { encoding: "utf8" }).trim();
     expect(binding?.migrationOriginBlob).toBe("557dafb14f1b68e3cd0d904a8668a1f1073bd025");

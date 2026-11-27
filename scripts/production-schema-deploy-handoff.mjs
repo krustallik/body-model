@@ -129,7 +129,10 @@ export const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
-    deployBlob: "b3c119c2442d11361612228122718351d36beff4",
+    deployBlob: Object.freeze([
+      "b3c119c2442d11361612228122718351d36beff4",
+      "e77fd7b1f65640a3cb956c9077fbfc99e517a990",
+    ]),
   }),
   "src/modules/health/health.service.ts": Object.freeze({
     migrationOriginBlob: "17a2e1c47b2b7fe1d0d7b968b9e91fffc51a8431",
@@ -190,6 +193,7 @@ export const V4_CONTENT_BOUND_PATHS = Object.freeze({
       "31631c8dce4ef102f7e7a60e147f5abd71f4b4ff",
       "e8a422cc180f2e408dacaa5243ce665458886404",
       TRAINING_CURRENTNESS_CUTOVER_BLOB,
+      "b20d9be428c7af2b5316adbe14bcbbfa5bd0dbd6",
     ]),
   }),
   "scripts/unified-v4-activate-replay.ts": Object.freeze({
@@ -477,6 +481,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "1ddf90306cfae3823195c9e17cd50453e3158adb",
       "b8806a7319f5f9d9308edf9f0079f1db967048b4",
       "9154d32837e29499c481532e5745e0619e5958fb",
+      "e77fd7b1f65640a3cb956c9077fbfc99e517a990",
     ]),
   }),
   "scripts/production-db-target.sh": Object.freeze({
@@ -504,6 +509,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "3a96950fbc46f972ee047bcc552476a3819d63d4",
       "e8a422cc180f2e408dacaa5243ce665458886404",
       TRAINING_CURRENTNESS_CUTOVER_BLOB,
+      "b20d9be428c7af2b5316adbe14bcbbfa5bd0dbd6",
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({

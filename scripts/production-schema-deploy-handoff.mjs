@@ -32,6 +32,7 @@ export const V4_REPUBLICATION_HANDOFF_PROVENANCE = Object.freeze({
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
+const TRAINING_CURRENTNESS_CUTOVER_BLOB = "0f8be5ec6ba93079c943b067748a6c34a25fd9e4";
 const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const AUTH_MULTIUSER_MANIFEST_ID = AUTH_MULTIUSER_MANIFEST.id;
 const DYNAMIC_WORKOUT_MANIFEST_ID = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id;
@@ -188,6 +189,7 @@ export const V4_CONTENT_BOUND_PATHS = Object.freeze({
       "7b1d61f367d1b2e909fe435d50a5cdcdc736247f",
       "31631c8dce4ef102f7e7a60e147f5abd71f4b4ff",
       "e8a422cc180f2e408dacaa5243ce665458886404",
+      TRAINING_CURRENTNESS_CUTOVER_BLOB,
     ]),
   }),
   "scripts/unified-v4-activate-replay.ts": Object.freeze({
@@ -501,6 +503,7 @@ export const AUTH_MULTIUSER_CONTENT_BOUND_PATHS = Object.freeze({
       "31631c8dce4ef102f7e7a60e147f5abd71f4b4ff",
       "3a96950fbc46f972ee047bcc552476a3819d63d4",
       "e8a422cc180f2e408dacaa5243ce665458886404",
+      TRAINING_CURRENTNESS_CUTOVER_BLOB,
     ]),
   }),
   "scripts/production-route-primitives.sh": Object.freeze({
